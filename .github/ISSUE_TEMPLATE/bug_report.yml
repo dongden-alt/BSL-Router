@@ -1,0 +1,29 @@
+---
+name: Bug Report
+about: Report a bug in BSL Router
+title: "[BUG] "
+labels: bug
+---
+
+## Describe the Bug
+A clear description of what the bug is.
+
+## To Reproduce
+Steps to reproduce the behavior:
+1. Start BSL Router with config '...'
+2. Send request to '....'
+3. See error
+
+## Expected Behavior
+What you expected to happen.
+
+## Logs
+```
+Paste relevant log output here
+```
+
+## Environment
+- OS: [e.g., Windows 11, Ubuntu 22.04]
+- Python version: [e.g., 3.10.11]
+- BSL Router version: [e.g., 1.0.0]
+- Provider(s) affected: [e.g., OpenAI, Anthropic]

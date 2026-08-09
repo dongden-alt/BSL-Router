@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "antigravity-bridge": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "D:/Tools/antigravity-bridge/dist/index.js",
+        "--workspace",
+        "d:/Projects/BSL Router"
+      ]
+    }
+  }
+}
