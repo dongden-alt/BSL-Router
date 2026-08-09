@@ -1,0 +1,59 @@
+# BSL Router — Example Configuration
+# Copy this file to config.yaml and fill in your provider credentials.
+# See docs/CONFIGURATION.md for full documentation.
+
+tools:
+  output_thinking_squeeze: false
+
+upstream_stream_buffer:
+  enabled: false
+
+providers:
+  openai-provider:
+    type: custom
+    format: openai
+    connections:
+    - enabled: true
+      api_key: enc:YOUR_ENCRYPTED_API_KEY_HERE
+      base_url: https://api.openai.com/v1
+    models:
+    - id: gpt-4o
+      enabled: true
+      thinking: auto
+      reasoning_mode: standard
+      reasoning_context: all_turns
+
+combos:
+- alias: Example-Combo
+  chain:
+  - provider: openai-provider
+    model: gpt-4o
+    thinking: auto
+  strategy: fallback
+
+aliases: {}
+
+admin:
+  password_enabled: false
+  password: enc:YOUR_ENCRYPTED_ADMIN_PASSWORD_HERE
+
+update:
+  github_repo: ''
+  check_enabled: true
+  auto_check_interval: 300
+
+antigravity_integration:
+  enabled: false
+  mappings: {}
+
+# Google OAuth client credentials for the "antigravity" login flow.
+# Not shipped with the project: these belong to Google's desktop client, and
+# committing them would leak a third-party secret. Leave blank to disable the
+# Antigravity login flow entirely; every other provider works without it.
+#
+# You may instead export these as environment variables, which take precedence:
+#   BSL_ANTIGRAVITY_CLIENT_ID
+#   BSL_ANTIGRAVITY_CLIENT_SECRET
+antigravity_oauth:
+  client_id: ''
+  client_secret: ''

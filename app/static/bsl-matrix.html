@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BSL Router — Model Matrix</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0c14;--surface:#131722;--surface2:#1a1f2e;--surface3:#222838;
+  --border:#2a3041;--border-bright:#3a4256;
+  --text:#e4e7ef;--text-dim:#8892a6;--text-mute:#5a6378;
+  --accent:#00d4aa;--accent2:#7c5cfc;--accent3:#ff6b9d;
+  --warn:#ffaa00;--danger:#ff4757;--success:#00d4aa;
+  --tier-fast:#4fc3f7;--tier-standard:#ab47bc;--tier-deep:#ff7043;
+}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
+.mono{font-family:'JetBrains Mono',monospace}
+.app{max-width:1500px;margin:0 auto;padding:24px}
+
+/* Header */
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px}
+.header h1{font-size:22px;font-weight:700;letter-spacing:-0.5px}
+.header h1 span{background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.header .sub{color:var(--text-dim);font-size:13px;margin-top:2px}
+.header-actions{display:flex;gap:10px;align-items:center}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--success);box-shadow:0 0 8px var(--success);animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+
+/* Panel */
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;margin-bottom:20px}
+.panel-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.panel-title{font-size:15px;font-weight:600}
+.panel-desc{color:var(--text-dim);font-size:12px;margin-top:2px}
+
+/* Toolbar */
+.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:20px}
+.toolbar-group{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:4px;display:flex;gap:2px}
+.toolbar-btn{background:transparent;border:none;color:var(--text-dim);padding:8px 16px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:all 0.2s;font-family:inherit}
+.toolbar-btn:hover{background:var(--surface2);color:var(--text)}
+.toolbar-btn.active{background:var(--accent);color:#0a0c14}
+
+/* Matrix Grid */
+.matrix-scroll{overflow-x:auto;padding-bottom:4px}
+.matrix-grid{display:grid;grid-template-columns:160px repeat(3,minmax(200px,1fr));gap:1px;background:var(--border);border-radius:12px;overflow:hidden;min-width:760px}
+.matrix-header{background:var(--surface2);padding:10px 14px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-dim)}
+.matrix-row-label{background:var(--surface2);padding:14px;font-weight:600;font-size:13px;display:flex;align-items:center;gap:8px}
+.matrix-row-label .cat-icon{width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.cell{background:var(--surface);padding:12px;cursor:pointer;transition:all 0.2s;position:relative;min-height:72px;display:flex;flex-direction:column;justify-content:center}
+.cell:hover{background:var(--surface2)}
+.cell.selected{background:var(--surface3);box-shadow:inset 0 0 0 2px var(--accent)}
+.cell .route{font-size:13px;font-weight:600;margin-bottom:2px}
+.cell .meta{font-size:11px;color:var(--text-mute);display:flex;gap:6px;align-items:center}
+.cell .tier-badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:600;text-transform:uppercase}
+.cell .tier-badge.fast{background:rgba(79,195,247,0.15);color:var(--tier-fast)}
+.cell .tier-badge.standard{background:rgba(171,71,188,0.15);color:var(--tier-standard)}
+.cell .tier-badge.deep{background:rgba(255,112,67,0.15);color:var(--tier-deep)}
+.cell .auto-icon{position:absolute;top:8px;right:8px;font-size:10px;color:var(--accent2);opacity:0;transition:opacity 0.2s}
+.cell.has-auto .auto-icon{opacity:1}
+.cell .override-badge{position:absolute;top:8px;right:8px;background:var(--warn);color:#0a0c14;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:600}
+
+/* Preview Panel */
+.preview-panel{background:var(--surface);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+.preview-header{background:var(--surface2);padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.preview-body{padding:20px}
+.score-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)}
+.score-row:last-child{border-bottom:none}
+.score-row .label{font-size:13px;color:var(--text-dim)}
+.score-row .value{font-size:13px;font-weight:600}
+.score-bar{width:100%;height:6px;background:var(--surface3);border-radius:3px;overflow:hidden;margin-top:4px}
+.score-fill{height:100%;border-radius:3px;transition:width 0.4s ease}
+.explanation-box{background:var(--surface2);border-radius:8px;padding:12px;margin-top:12px;font-size:12px;color:var(--text-dim);line-height:1.6}
+.warning-box{background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.2);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;color:var(--warn)}
+
+/* Buttons */
+.btn{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 16px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:all 0.2s;font-family:inherit;display:inline-flex;align-items:center;gap:6px}
+.btn:hover{background:var(--surface3);border-color:var(--border-bright)}
+.btn.primary{background:linear-gradient(135deg,var(--accent),#00b896);border:none;color:#0a0c14;font-weight:600}
+.btn.primary:hover{box-shadow:0 4px 16px rgba(0,212,170,0.3)}
+.btn.purple{background:linear-gradient(135deg,var(--accent2),#6845d9);border:none;color:#fff}
+.btn.purple:hover{box-shadow:0 4px 16px rgba(124,92,252,0.3)}
+.btn.danger{background:var(--danger);border:none;color:#fff}
+.btn:disabled{opacity:0.4;cursor:not-allowed}
+
+/* Toggle */
+.toggle-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0}
+.toggle-row label{font-size:13px;font-weight:500}
+.toggle-row .desc{font-size:11px;color:var(--text-mute);margin-top:2px}
+.toggle{position:relative;width:40px;height:22px;background:var(--surface3);border-radius:11px;cursor:pointer;transition:background 0.3s}
+.toggle.on{background:var(--accent)}
+.toggle::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border-radius:50%;transition:transform 0.3s}
+.toggle.on::after{transform:translateX(18px)}
+
+/* Input */
+.input-row{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+.input-row label{font-size:12px;font-weight:500;color:var(--text-dim)}
+.input-row input,.input-row select{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;font-family:inherit;outline:none}
+.input-row input:focus,.input-row select:focus{border-color:var(--accent)}
+
+/* Loading */
+.loading{display:flex;align-items:center;justify-content:center;padding:40px;gap:12px;color:var(--text-dim)}
+.spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Toast */
+.toast-container{position:fixed;bottom:24px;right:24px;display:flex;flex-direction:column;gap:8px;z-index:9999}
+.toast{background:var(--surface2);border:1px solid var(--border);padding:12px 20px;border-radius:10px;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,0.4);animation:toastIn 0.3s ease;display:flex;align-items:center;gap:10px}
+.toast.success{border-color:var(--accent)}
+.toast.warn{border-color:var(--warn)}
+.toast.error{border-color:var(--danger)}
+@keyframes toastIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+
+/* Stats bar */
+.stats-bar{display:flex;gap:20px;padding:16px 20px;background:var(--surface2);border-radius:12px;margin-bottom:20px}
+.stat{display:flex;flex-direction:column;gap:2px}
+.stat .val{font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.stat .lbl{font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:0.5px}
+.stat .val.green{color:var(--accent)}
+.stat .val.purple{color:var(--accent2)}
+.stat .val.orange{color:var(--tier-deep)}
+
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:100}
+.modal-overlay.show{display:flex}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto}
+.modal h3{font-size:16px;font-weight:600;margin-bottom:16px}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Header -->
+  <div class="header">
+    <div>
+      <h1>BSL <span>Model Matrix</span></h1>
+      <div class="sub">13 categories × 3 tiers — benchmark-powered route selection</div>
+    </div>
+    <div class="header-actions">
+      <div class="status-dot"></div>
+      <span class="mono" style="font-size:12px;color:var(--text-dim)">:6969</span>
+    </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="toolbar-group">
+      <button class="toolbar-btn active" data-view="matrix">Grid View</button>
+      <button class="toolbar-btn" data-view="config">Raw Config</button>
+    </div>
+    <button class="btn purple" id="btn-auto-select-all">⚡ Auto-Select All Cells</button>
+    <button class="btn primary" id="btn-save">Save Config</button>
+    <button class="btn" id="btn-enable-toggle">Enable BSL Routing</button>
+  </div>
+
+  <!-- Settings Panel: Default Route + Global Last Fallback -->
+  <div class="panel" id="settings-panel">
+    <div class="panel-header">
+      <div>
+        <div class="panel-title">Routing Overrides</div>
+        <div class="panel-desc">Default Route bypasses the entire matrix (all-in-one). Global Last Fallback is the final safety net appended to every chain.</div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <!-- Default Route Toggle -->
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:16px">
+        <div class="toggle-row">
+          <div>
+            <label>Default Route</label>
+            <div class="desc">Complexity override — routes ALL requests to one model, bypassing the 13×3 matrix</div>
+          </div>
+          <div class="toggle" id="toggle-default-route"></div>
+        </div>
+        <div class="input-row" style="margin-top:8px;margin-bottom:0">
+          <label>Default Route Model</label>
+          <input type="text" id="input-default-route" placeholder="e.g. coder-2 or glm-5.2" class="mono" style="width:100%">
+        </div>
+      </div>
+      <!-- Global Last Fallback Toggle -->
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:16px">
+        <div class="toggle-row">
+          <div>
+            <label>Global Last Fallback</label>
+            <div class="desc">Final safety net — appended to every fallback chain when all else fails</div>
+          </div>
+          <div class="toggle on" id="toggle-global-fallback"></div>
+        </div>
+        <div class="input-row" style="margin-top:8px;margin-bottom:0">
+          <label>Global Fallback Model</label>
+          <input type="text" id="input-global-fallback" placeholder="e.g. glm-5.2" class="mono" style="width:100%">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-bar" id="stats-bar">
+    <div class="stat"><div class="val green" id="stat-families">0</div><div class="lbl">Available Families</div></div>
+    <div class="stat"><div class="val purple" id="stat-cells">39</div><div class="lbl">Matrix Cells</div></div>
+    <div class="stat"><div class="val orange" id="stat-overrides">0</div><div class="lbl">Manual Overrides</div></div>
+    <div class="stat"><div class="val" id="stat-enabled">OFF</div><div class="lbl">Routing Status</div></div>
+  </div>
+
+  <!-- Matrix View -->
+  <div id="view-matrix">
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">Routing Matrix</div>
+          <div class="panel-desc">Click any cell to view details. Purple lightning = auto-selected. Orange = manual override.</div>
+        </div>
+      </div>
+      <div class="matrix-scroll">
+        <div class="matrix-grid" id="matrix-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Preview Panel -->
+  <div class="preview-panel" id="preview-panel" style="display:none">
+    <div class="preview-header">
+      <div>
+        <div class="panel-title" id="preview-title">Cell Details</div>
+        <div class="sub" id="preview-sub" style="font-size:12px;color:var(--text-dim)"></div>
+      </div>
+      <button class="btn purple" id="btn-auto-select-cell">⚡ Auto-Select This Cell</button>
+    </div>
+    <div class="preview-body" id="preview-body">
+      <div class="loading"><div class="spinner"></div>Select a cell to view details</div>
+    </div>
+  </div>
+
+  <!-- Raw Config View -->
+  <div id="view-config" style="display:none">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">bsl_models Configuration</div>
+      </div>
+      <textarea id="config-editor" class="mono" style="width:100%;min-height:400px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:16px;border-radius:8px;font-size:13px;resize:vertical" spellcheck="false"></textarea>
+    </div>
+  </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+const API = '';
+let stateData = null;
+let selectedCell = null;
+let pendingChanges = {};
+
+// ─── API helpers ─────────────────────────────────────────────────────────────
+async function apiGet(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+async function apiPost(path, body) {
+  const r = await fetch(API + path, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body || {})
+  });
+  return r.json();
+}
+
+// ─── Toast ──────────────────────────────────────────────────────────────────
+function toast(msg, type = 'info') {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateX(100%)'; setTimeout(() => t.remove(), 300); }, 3000);
+}
+
+// ─── Init ────────────────────────────────────────────────────────────────────
+async function init() {
+  try {
+    stateData = await apiGet('/api/bsl-matrix/state');
+    renderStats();
+    renderMatrix();
+    renderConfigEditor();
+    updateEnableButton();
+    renderSettings();
+  } catch (e) {
+    toast(`Failed to load: ${e.message}`, 'error');
+  }
+}
+
+function renderStats() {
+  document.getElementById('stat-families').textContent = stateData.available_families.length;
+  const bslModels = stateData.bsl_models || {};
+  let overrides = 0;
+  for (const cat of stateData.all_categories) {
+    const catData = bslModels[cat] || (bslModels.bsl_chat && bslModels.bsl_chat.categories && bslModels.bsl_chat.categories[cat]) || {};
+    for (const tier of stateData.all_tiers) {
+      const cell = catData[tier];
+      if (cell && cell.override) overrides++;
+    }
+  }
+  document.getElementById('stat-overrides').textContent = overrides;
+  const enabled = bslModels.bsl_chat && bslModels.bsl_chat.enabled;
+  document.getElementById('stat-enabled').textContent = enabled ? 'ON' : 'OFF';
+  document.getElementById('stat-enabled').className = 'val ' + (enabled ? 'green' : '');
+}
+
+function renderMatrix() {
+  const grid = document.getElementById('matrix-grid');
+  grid.innerHTML = '';
+  // Header row
+  grid.appendChild(makeCell('Category', 'matrix-header'));
+  for (const tier of stateData.all_tiers) {
+    const h = makeCell(tier.toUpperCase(), 'matrix-header');
+    h.style.textAlign = 'center';
+    grid.appendChild(h);
+  }
+  // Category rows
+  for (const cat of stateData.all_categories) {
+    grid.appendChild(makeRowLabel(cat));
+    for (const tier of stateData.all_tiers) {
+      const cellData = getCellConfig(cat, tier);
+      const cell = makeCell('', 'cell');
+      cell.dataset.category = cat;
+      cell.dataset.tier = tier;
+      cell.onclick = () => selectCell(cat, tier);
+      if (cellData) {
+        const route = cellData.primary || cellData.route || '—';
+        const provider = cellData.provider || '';
+        cell.innerHTML = `
+          <span class="tier-badge ${tier}">${tier}</span>
+          <div class="route mono">${route}</div>
+          <div class="meta">${provider ? `<span>${provider}</span>` : ''}</div>
+          ${cellData.override ? '<span class="override-badge">OVR</span>' : ''}
+        `;
+        if (cellData.auto_selected) cell.classList.add('has-auto');
+      } else {
+        cell.innerHTML = `<span class="tier-badge ${tier}">${tier}</span><div class="route" style="color:var(--text-mute)">Not configured</div>`;
+      }
+      grid.appendChild(cell);
+    }
+  }
+}
+
+function getCellConfig(cat, tier) {
+  const bsl = stateData.bsl_models || {};
+  // Check bsl_chat.categories.cat.tier structure
+  const chatCfg = bsl.bsl_chat || {};
+  const categories = chatCfg.categories || {};
+  const catData = categories[cat] || {};
+  return catData[tier] || null;
+}
+
+function makeRowLabel(cat) {
+  const d = document.createElement('div');
+  d.className = 'matrix-row-label';
+  d.innerHTML = `<span class="cat-icon"></span>${cat}`;
+  return d;
+}
+
+function makeCell(text, cls) {
+  const d = document.createElement('div');
+  d.className = cls;
+  d.textContent = text;
+  return d;
+}
+
+function selectCell(cat, tier) {
+  selectedCell = { cat, tier };
+  document.querySelectorAll('.cell').forEach(c => c.classList.remove('selected'));
+  document.querySelector(`.cell[data-category="${cat}"][data-tier="${tier}"]`).classList.add('selected');
+  loadCellPreview(cat, tier);
+}
+
+async function loadCellPreview(cat, tier) {
+  const panel = document.getElementById('preview-panel');
+  const body = document.getElementById('preview-body');
+  const title = document.getElementById('preview-title');
+  const sub = document.getElementById('preview-sub');
+  panel.style.display = 'block';
+  title.textContent = `${cat} / ${tier}`;
+  sub.textContent = 'Running auto-select preview...';
+  body.innerHTML = '<div class="loading"><div class="spinner"></div>Scoring routes...</div>';
+
+  try {
+    const result = await apiPost('/api/bsl-matrix/auto-select-preview', { category: cat, tier });
+    renderCellPreview(cat, tier, result);
+  } catch (e) {
+    body.innerHTML = `<div class="warning-box">Error: ${e.message}</div>`;
+  }
+}
+
+function renderCellPreview(cat, tier, result) {
+  const body = document.getElementById('preview-body');
+  const sub = document.getElementById('preview-sub');
+  const slots = [
+    { label: 'Primary', data: result.primary, color: 'var(--accent)' },
+    { label: 'Fallback 1', data: result.fallback_1, color: 'var(--accent2)' },
+    { label: 'Fallback 2', data: result.fallback_2, color: 'var(--accent3)' },
+  ];
+
+  // Normalize bars against the highest score present so relative gaps stay
+  // visible (audit Bug 1: fixed *7 capped everything ≥14.3 at 100%).
+  const maxScore = Math.max(1, ...slots.filter(s => s.data).map(s => s.data.total_score));
+
+  let html = '';
+  for (const slot of slots) {
+    if (!slot.data) {
+      html += `<div class="score-row"><span class="label">${slot.label}</span><span class="value" style="color:var(--text-mute)">None available</span></div>`;
+      continue;
+    }
+    const pct = Math.max(4, (slot.data.total_score / maxScore) * 100);
+    html += `
+      <div class="score-row">
+        <div style="flex:1">
+          <div class="label" style="color:${slot.color};font-weight:600">${slot.label}</div>
+          <div class="value mono" style="font-size:14px;margin-top:2px">${slot.data.route_id}</div>
+          <div style="font-size:11px;color:var(--text-mute);margin-top:2px">${slot.data.reason}</div>
+          <div class="score-bar"><div class="score-fill" style="width:${pct}%;background:${slot.color}"></div></div>
+        </div>
+        <div style="text-align:right">
+          <div class="value mono" style="font-size:18px;color:${slot.color}">${slot.data.total_score}</div>
+          <div style="font-size:10px;color:var(--text-mute)">SCORE</div>
+        </div>
+      </div>
+    `;
+  }
+
+  html += `<div class="score-row"><span class="label">Global Last Fallback</span><span class="value mono">${result.global_last_fallback}</span></div>`;
+  html += `<div class="explanation-box">${result.explanation}</div>`;
+
+  if (result.warnings && result.warnings.length > 0) {
+    for (const w of result.warnings) {
+      html += `<div class="warning-box">⚠ ${w}</div>`;
+    }
+  }
+
+  body.innerHTML = html;
+  sub.textContent = `Score breakdown for ${cat}/${tier}`;
+}
+
+// ─── Auto-Select All ─────────────────────────────────────────────────────────
+document.getElementById('btn-auto-select-all').onclick = async () => {
+  toast('Running full matrix auto-select...', 'info');
+  try {
+    const result = await apiPost('/api/bsl-matrix/auto-select-preview', {});
+    const cellCount = Object.keys(result).length * 3;
+    toast(`Auto-select complete: ${cellCount} cells scored`, 'success');
+    // Update state with preview data for display
+    pendingChanges = result;
+    // Refresh matrix to show auto-selected values
+    renderAutoSelectPreview(result);
+  } catch (e) {
+    toast(`Auto-select failed: ${e.message}`, 'error');
+  }
+};
+
+function renderAutoSelectPreview(matrix) {
+  // Non-destructive: keep existing cell identity (tier badge, OVR badge) and
+  // only layer a preview hint. Preview is a suggestion, not the saved config.
+  document.querySelectorAll('.cell').forEach(cell => {
+    const cat = cell.dataset.category;
+    const tier = cell.dataset.tier;
+    if (!cat || !tier) return;
+    const cellData = matrix[cat] && matrix[cat][tier];
+    if (!cellData || !cellData.primary) return;
+    cell.classList.add('has-auto');
+    // Stash preview data for a later explicit apply step.
+    cell.dataset.previewRoute = cellData.primary.route_id;
+    cell.dataset.previewScore = cellData.primary.total_score;
+    // Show a subtle preview line without wiping existing content.
+    let hint = cell.querySelector('.auto-preview-hint');
+    if (!hint) {
+      hint = document.createElement('div');
+      hint.className = 'auto-preview-hint';
+      hint.style.cssText = 'font-size:10px;color:var(--accent2);margin-top:4px';
+      cell.appendChild(hint);
+    }
+    hint.textContent = `⚡ ${cellData.primary.route_id} (${cellData.primary.total_score}pts)`;
+  });
+}
+
+// ─── Auto-Select Single Cell ─────────────────────────────────────────────────
+document.getElementById('btn-auto-select-cell').onclick = async () => {
+  if (!selectedCell) return;
+  const { cat, tier } = selectedCell;
+  toast(`Auto-selecting ${cat}/${tier}...`, 'info');
+  // Already loaded in preview, just mark as pending
+  const cell = document.querySelector(`.cell[data-category="${cat}"][data-tier="${tier}"]`);
+  if (cell) cell.classList.add('has-auto');
+  toast(`Cell ${cat}/${tier} marked for auto-select. Save to apply.`, 'success');
+};
+
+// ─── Enable Toggle ───────────────────────────────────────────────────────────
+function updateEnableButton() {
+  const btn = document.getElementById('btn-enable-toggle');
+  const bsl = (stateData.bsl_models || {}).bsl_chat || {};
+  const isEnabled = bsl.enabled;
+  btn.textContent = isEnabled ? 'Disable BSL Routing' : 'Enable BSL Routing';
+  btn.className = isEnabled ? 'btn danger' : 'btn primary';
+}
+
+document.getElementById('btn-enable-toggle').onclick = async () => {
+  const bsl = (stateData.bsl_models || {}).bsl_chat || {};
+  const newEnabled = !bsl.enabled;
+  try {
+    const bslModels = { ...stateData.bsl_models };
+    if (!bslModels.bsl_chat) bslModels.bsl_chat = {};
+    bslModels.bsl_chat.enabled = newEnabled;
+    await apiPost('/api/bsl-matrix/apply', { bsl_models: bslModels });
+    stateData.bsl_models = bslModels;
+    updateEnableButton();
+    renderStats();
+    toast(`BSL Routing ${newEnabled ? 'enabled' : 'disabled'}`, 'success');
+  } catch (e) {
+    toast(`Toggle failed: ${e.message}`, 'error');
+  }
+};
+
+// ─── Save ───────────────────────────────────────────────────────────────────
+document.getElementById('btn-save').onclick = async () => {
+  try {
+    const editor = document.getElementById('config-editor');
+    const bslModels = JSON.parse(editor.value);
+    await apiPost('/api/bsl-matrix/apply', { bsl_models: bslModels });
+    stateData.bsl_models = bslModels;
+    renderStats();
+    renderMatrix();
+    toast('Configuration saved', 'success');
+  } catch (e) {
+    toast(`Save failed: ${e.message}`, 'error');
+  }
+};
+
+// ─── Settings Panel (Default Route + Global Last Fallback) ───────────────────
+function renderSettings() {
+  const bsl = (stateData.bsl_models || {}).bsl_chat || {};
+
+  // Default Route
+  const drToggle = document.getElementById('toggle-default-route');
+  const drInput = document.getElementById('input-default-route');
+  const drEnabled = bsl.default_route_enabled || false;
+  drToggle.classList.toggle('on', drEnabled);
+  drInput.value = bsl.default_route || '';
+
+  // Global Last Fallback
+  const gfToggle = document.getElementById('toggle-global-fallback');
+  const gfInput = document.getElementById('input-global-fallback');
+  const gfEnabled = bsl.global_last_fallback_enabled !== false; // default True
+  gfToggle.classList.toggle('on', gfEnabled);
+  gfInput.value = bsl.global_last_fallback || '';
+}
+
+async function applySettings(changes) {
+  try {
+    const bslModels = { ...stateData.bsl_models };
+    if (!bslModels.bsl_chat) bslModels.bsl_chat = {};
+    Object.assign(bslModels.bsl_chat, changes);
+    await apiPost('/api/bsl-matrix/apply', { bsl_models: bslModels });
+    stateData.bsl_models = bslModels;
+    renderStats();
+    renderConfigEditor();
+    toast('Settings applied', 'success');
+  } catch (e) {
+    toast(`Apply failed: ${e.message}`, 'error');
+  }
+}
+
+// Default Route toggle
+document.getElementById('toggle-default-route').onclick = async (e) => {
+  const bsl = (stateData.bsl_models || {}).bsl_chat || {};
+  const newVal = !bsl.default_route_enabled;
+  e.target.classList.toggle('on', newVal);
+  await applySettings({ default_route_enabled: newVal });
+};
+
+// Default Route input
+document.getElementById('input-default-route').onchange = async (e) => {
+  await applySettings({ default_route: e.target.value.trim() });
+};
+
+// Global Last Fallback toggle
+document.getElementById('toggle-global-fallback').onclick = async (e) => {
+  const bsl = (stateData.bsl_models || {}).bsl_chat || {};
+  const newVal = !(bsl.global_last_fallback_enabled !== false);
+  e.target.classList.toggle('on', newVal);
+  await applySettings({ global_last_fallback_enabled: newVal });
+};
+
+// Global Last Fallback input
+document.getElementById('input-global-fallback').onchange = async (e) => {
+  await applySettings({ global_last_fallback: e.target.value.trim() });
+};
+
+// ─── Config Editor ──────────────────────────────────────────────────────────
+function renderConfigEditor() {
+  const editor = document.getElementById('config-editor');
+  editor.value = JSON.stringify(stateData.bsl_models || {}, null, 2);
+}
+
+// ─── View Switcher ───────────────────────────────────────────────────────────
+document.querySelectorAll('.toolbar-btn[data-view]').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('.toolbar-btn[data-view]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const view = btn.dataset.view;
+    document.getElementById('view-matrix').style.display = view === 'matrix' ? 'block' : 'none';
+    document.getElementById('view-config').style.display = view === 'config' ? 'block' : 'none';
+  };
+});
+
+// ─── Boot ───────────────────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,64 @@
+# ── Python ──
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ── Node (scratch tooling only) ──
+node_modules/
+scratch/node_modules/
+scratch/package-lock.json
+
+# ── Logs & runtime artifacts ──
+*.log
+.brain/*.log
+srv-out.log
+srv-err.log
+router.log
+# Runtime-written telemetry — server regenerates these; do not track.
+data/console_logs.jsonl
+data/usage_stats.jsonl
+# Forensic outbound/inbound dumps — multi-hundred-MB runtime JSONL written on
+# the async request path (now gated behind debug). Never track.
+.brain/logs/*.jsonl
+# Error reports written by observability.py. These capture request context and
+# stack traces, which can embed prompts, headers, and provider responses.
+artifacts/error_reports/
+
+# ── Secrets / local state ──
+# config.yaml holds live API keys — NEVER track in a public repo.
+config.yaml
+# Catch-all for every backup variant. Specific patterns were missed as new
+# backup names appeared (e.g. config.yaml.pre-consult-cleanup.*.bak).
+config.yaml.*
+config.*.yaml
+# ...but the shipped template MUST stay tracked. Without this negation,
+# config.*.yaml above silently swallows it and new clones lose their starting
+# point. Negation must come after the pattern it overrides.
+!config.example.yaml
+# Encryption key files — machine-bound, must never be committed.
+.bsl_key
+.bsl_key.dpapi
+.brain/session.json
+.brain/active-task.json
+.brain/.bridge-claims/
+.brain/scratch/
+
+# ── OS ──
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ── Scratch HTML/PNG dumps ──
+scratch/*.html
+scratch/*.png
+9router-dom.html
+
+scratch/
+
+# --- Timestamped provider-migration backups --------------------------------
+# Auto-generated when a provider is added/removed (e.g.
+# config.yaml.opencode_zen.20260805-000746.bak). These accumulate over time and
+# contain live API keys, so they must never be committed.
+*.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].bak

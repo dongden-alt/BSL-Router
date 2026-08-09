@@ -1,0 +1,21 @@
+---
+name: Feature Request
+about: Suggest a feature for BSL Router
+title: "[FEATURE] "
+labels: enhancement
+---
+
+## Feature Description
+A clear description of the feature you'd like to see.
+
+## Problem
+What problem does this feature solve? (e.g., "I can't route to provider X because...")
+
+## Proposed Solution
+How you'd like this to work.
+
+## Alternatives Considered
+Any alternative solutions you've considered.
+
+## Additional Context
+Any other context, screenshots, or references.

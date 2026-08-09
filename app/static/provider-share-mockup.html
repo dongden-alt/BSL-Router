@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Provider Share Pie Chart Mockups — BSL Router</title>
+  <meta name="description" content="Interactive mockups for Provider Share chart designs in the BSL Router dashboard." />
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;650;750;850;950&display=swap');
+
+    :root {
+      --bg: #f6f7fb;
+      --panel: rgba(255,255,255,.82);
+      --panel-solid: #ffffff;
+      --ink: #111827;
+      --muted: #667085;
+      --line: rgba(15,23,42,.10);
+      --shadow: 0 24px 70px rgba(15,23,42,.10);
+      --orange: #ff6a12;
+      --orange2: #ff9d16;
+      --blue: #2f80ed;
+      --cyan: #17b8a6;
+      --purple: #a855f7;
+      --pink: #ec4899;
+      --lime: #84cc16;
+      --navy: #17415f;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 10%, rgba(255,106,18,.18), transparent 28%),
+        radial-gradient(circle at 88% 4%, rgba(47,128,237,.16), transparent 30%),
+        linear-gradient(135deg, #fbfbff 0%, var(--bg) 48%, #f2f6ff 100%);
+      min-height: 100vh;
+      padding: 34px;
+    }
+
+    header {
+      max-width: 1280px;
+      margin: 0 auto 24px;
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    h1 { margin: 0; font-size: clamp(28px, 4vw, 48px); letter-spacing: -.05em; line-height: .96; }
+    .subtitle { margin-top: 12px; color: var(--muted); font-size: 14px; max-width: 760px; line-height: 1.55; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 8px;
+      border: 1px solid rgba(255,106,18,.22);
+      background: rgba(255,255,255,.72);
+      color: #bf4f00;
+      padding: 10px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 850;
+      box-shadow: 0 10px 30px rgba(255,106,18,.10);
+      white-space: nowrap;
+    }
+
+    .grid {
+      max-width: 1280px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 22px;
+    }
+
+    .card {
+      position: relative;
+      overflow: hidden;
+      min-height: 430px;
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+      padding: 22px;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: -1px;
+      background: radial-gradient(circle at 78% 12%, rgba(255,106,18,.13), transparent 25%);
+      pointer-events: none;
+    }
+
+    .card-head { position: relative; z-index: 1; display: flex; justify-content: space-between; gap: 14px; align-items: start; margin-bottom: 18px; }
+    h2 { margin: 0; font-size: 17px; letter-spacing: -.03em; }
+    .tag { font-size: 10px; font-weight: 950; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+    .note { color: var(--muted); font-size: 12px; line-height: 1.45; margin-top: 6px; }
+
+    .chart-wrap { position: relative; z-index: 1; display: grid; grid-template-columns: 1fr 190px; gap: 20px; align-items: center; }
+    .legend { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .legend-row { display: flex; align-items: center; gap: 10px; min-width: 0; cursor: help; }
+    .dot { width: 10px; height: 10px; border-radius: 999px; flex: 0 0 10px; box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 18%, transparent); }
+    .legend-name { font-size: 12px; font-weight: 850; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tooltip-hint { position:absolute; bottom: 18px; right: 22px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+
+    .pie-shell { display: flex; align-items: center; justify-content: center; min-height: 300px; }
+    .center-text { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; pointer-events:none; }
+    .center-text strong { font-size: 33px; letter-spacing: -.06em; }
+    .center-text span { margin-top: 4px; font-size: 10px; color: var(--muted); font-weight: 950; letter-spacing: .12em; text-transform: uppercase; }
+
+    .pie { --pie: conic-gradient(var(--orange) 0 62%, var(--blue) 62% 76%, var(--cyan) 76% 86%, var(--purple) 86% 94%, var(--pink) 94% 100%); background: var(--pie); }
+
+    .glass-donut {
+      width: 246px; height: 246px; border-radius: 50%; position: relative;
+      box-shadow: 0 28px 65px rgba(15,23,42,.18), inset 0 0 0 10px rgba(255,255,255,.78);
+      filter: saturate(1.05);
+    }
+    .glass-donut::after {
+      content:''; position:absolute; inset: 56px; border-radius:50%; background: linear-gradient(145deg,#fff,#f6f7fb);
+      box-shadow: inset 0 7px 18px rgba(15,23,42,.08), 0 0 0 1px rgba(15,23,42,.04);
+    }
+
+    .solid-pie {
+      width: 252px; height: 252px; border-radius:50%; position:relative;
+      border: 7px solid #fff;
+      box-shadow: 0 26px 70px rgba(15,23,42,.18), inset 0 0 0 1px rgba(255,255,255,.42);
+    }
+    .solid-pie::after { content:''; position:absolute; inset:50%; width:10px; height:10px; margin:-5px; border-radius:50%; background:#fff; box-shadow:0 0 0 5px rgba(17,24,39,.20); }
+
+    .exploded { width: 280px; height: 280px; position: relative; filter: drop-shadow(0 26px 46px rgba(15,23,42,.18)); }
+    .slice { position:absolute; inset:0; border-radius:50%; clip-path: polygon(50% 50%, 50% 0, 100% 0, 100% 100%, 50% 100%); transform-origin: 50% 50%; opacity:.98; transition: transform .25s ease, filter .25s ease; }
+    .slice:hover { transform: scale(1.04) translateY(-4px); filter: brightness(1.07); }
+    .s1 { background: conic-gradient(var(--orange) 0 62%, transparent 62% 100%); }
+    .s2 { background: conic-gradient(transparent 0 62%, var(--blue) 62% 76%, transparent 76% 100%); }
+    .s3 { background: conic-gradient(transparent 0 76%, var(--cyan) 76% 86%, transparent 86% 100%); }
+    .s4 { background: conic-gradient(transparent 0 86%, var(--purple) 86% 94%, transparent 94% 100%); }
+    .s5 { background: conic-gradient(transparent 0 94%, var(--pink) 94% 100%); }
+    .exploded::after { content:''; position:absolute; inset:64px; border-radius:50%; background:#fff; box-shadow:inset 0 9px 22px rgba(15,23,42,.08); }
+
+    .gauge { width: 290px; height: 160px; position: relative; overflow: hidden; }
+    .gauge-pie { width: 290px; height: 290px; border-radius:50%; background: conic-gradient(from 270deg, var(--orange) 0 111.6deg, var(--blue) 111.6deg 136.8deg, var(--cyan) 136.8deg 154.8deg, var(--purple) 154.8deg 169.2deg, var(--pink) 169.2deg 180deg, transparent 180deg 360deg); box-shadow:0 24px 50px rgba(15,23,42,.16); }
+    .gauge::after { content:''; position:absolute; left:42px; top:42px; width:206px; height:206px; border-radius:50%; background:#fff; box-shadow: inset 0 8px 18px rgba(15,23,42,.08); }
+
+    .rose { width: 278px; height: 278px; position:relative; border-radius:50%; background: radial-gradient(circle,#fff 0 18%, transparent 19%), repeating-conic-gradient(from -90deg, transparent 0 71deg, rgba(15,23,42,.08) 71deg 72deg); filter: drop-shadow(0 22px 44px rgba(15,23,42,.14)); }
+    .petal { position:absolute; left:50%; top:50%; width:72px; height:128px; transform-origin: 0 0; border-radius: 38px 38px 8px 8px; opacity:.92; mix-blend-mode:multiply; }
+    .p1 { background:linear-gradient(var(--orange2),var(--orange)); transform: rotate(-20deg) translate(-50%, -100%) scaleY(1); }
+    .p2 { background:linear-gradient(#57a3ff,var(--blue)); transform: rotate(52deg) translate(-50%, -100%) scaleY(.58); }
+    .p3 { background:linear-gradient(#55dfd1,var(--cyan)); transform: rotate(124deg) translate(-50%, -100%) scaleY(.42); }
+    .p4 { background:linear-gradient(#c084fc,var(--purple)); transform: rotate(196deg) translate(-50%, -100%) scaleY(.34); }
+    .p5 { background:linear-gradient(#f472b6,var(--pink)); transform: rotate(268deg) translate(-50%, -100%) scaleY(.28); }
+
+    .callout-wrap { position:relative; width: 100%; min-height: 310px; }
+    .callout-pie { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:218px; height:218px; border-radius:50%; border:7px solid #fff; box-shadow:0 25px 55px rgba(15,23,42,.16); }
+    .callout { position:absolute; font-size:11px; font-weight:900; color:var(--ink); display:flex; align-items:center; gap:8px; }
+    .callout::before { content:''; width:42px; height:1px; background:currentColor; opacity:.55; }
+    .c1 { left:12px; top:46px; color:var(--orange); } .c2 { right:18px; top:62px; color:var(--blue); flex-direction:row-reverse; }
+    .c3 { left:28px; bottom:76px; color:var(--cyan); } .c4 { right:8px; bottom:88px; color:var(--purple); flex-direction:row-reverse; }
+    .c5 { left:46%; bottom:10px; color:var(--pink); }
+
+    .dark { background: linear-gradient(145deg, rgba(15,23,42,.96), rgba(30,41,59,.92)); color:#f8fafc; border-color:rgba(255,255,255,.12); }
+    .dark .note, .dark .tag, .dark .legend-name, .dark .tooltip-hint { color: rgba(248,250,252,.68); }
+    .dark .center-text span { color: rgba(248,250,252,.65); }
+    .dark .glass-donut::after, .dark .exploded::after, .dark .gauge::after { background:#111827; }
+
+    .featured {
+      grid-column: 1 / -1;
+      min-height: 510px;
+      background: linear-gradient(145deg, rgba(255,255,255,.96), rgba(255,255,255,.82));
+      border-color: rgba(255,106,18,.20);
+    }
+    .featured::before {
+      background:
+        radial-gradient(circle at 16% 12%, rgba(255,106,18,.14), transparent 24%),
+        radial-gradient(circle at 88% 18%, rgba(47,128,237,.12), transparent 22%);
+    }
+    .featured-layout {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: minmax(380px, 1fr) minmax(250px, 330px);
+      gap: 26px;
+      align-items: center;
+    }
+    .white-donut-stage {
+      position: relative;
+      min-height: 380px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 26px;
+      background:
+        radial-gradient(circle at 50% 50%, rgba(255,255,255,.95), rgba(248,250,252,.72) 58%, rgba(255,255,255,.35) 100%);
+      box-shadow: inset 0 0 0 1px rgba(15,23,42,.05);
+    }
+    .white-donut-svg { width: min(360px, 100%); height: auto; overflow: visible; filter: drop-shadow(0 24px 38px rgba(15,23,42,.16)); }
+    .donut-seg { fill: none; stroke-width: 32; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 180px 180px; transition: stroke-width .22s ease, filter .22s ease, opacity .22s ease; cursor: help; }
+    .donut-seg:hover { stroke-width: 38; filter: brightness(1.08) saturate(1.08); opacity: 1; }
+    .donut-hole { fill: url(#whiteHole); filter: drop-shadow(0 8px 16px rgba(15,23,42,.10)); }
+    .donut-center-big { font-size: 42px; font-weight: 950; letter-spacing: -.07em; fill: var(--ink); }
+    .donut-center-small { font-size: 11px; font-weight: 950; letter-spacing: .13em; text-transform: uppercase; fill: var(--muted); }
+    .pct-chip {
+      position: absolute;
+      min-width: 42px;
+      padding: 7px 9px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.92);
+      border: 1px solid rgba(15,23,42,.08);
+      box-shadow: 0 12px 24px rgba(15,23,42,.12);
+      font-size: 12px;
+      font-weight: 950;
+      text-align: center;
+      cursor: help;
+    }
+    .pct-chip.major { font-size: 15px; padding: 8px 12px; }
+    .featured-legend {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 11px 12px;
+      align-content: center;
+    }
+    .featured-legend .legend-row {
+      padding: 10px 11px;
+      border: 1px solid rgba(15,23,42,.08);
+      border-radius: 14px;
+      background: rgba(255,255,255,.72);
+      box-shadow: 0 10px 22px rgba(15,23,42,.045);
+    }
+    .recommended-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 10px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(255,106,18,.10);
+      color: #c2410c;
+      font-size: 11px;
+      font-weight: 950;
+    }
+
+    .wire-card {
+      grid-column: 1 / -1;
+      min-height: 560px;
+      background:
+        radial-gradient(circle at 50% 45%, rgba(255,255,255,.98), rgba(245,248,252,.94) 58%, rgba(234,240,248,.86) 100%);
+      border-color: rgba(15,23,42,.08);
+    }
+    .wire-card::before {
+      background:
+        radial-gradient(circle at 28% 24%, rgba(255,106,18,.12), transparent 22%),
+        radial-gradient(circle at 75% 20%, rgba(47,128,237,.13), transparent 22%);
+    }
+    .wire-stage {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 455px;
+      overflow: hidden;
+      border-radius: 28px;
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.54), rgba(255,255,255,.16)),
+        radial-gradient(circle at center, rgba(255,255,255,.96), rgba(241,245,249,.52) 60%, rgba(226,232,240,.38));
+      box-shadow: inset 0 0 0 1px rgba(15,23,42,.045);
+    }
+    .wire-stage::before {
+      content: '';
+      position: absolute;
+      width: 520px;
+      height: 520px;
+      border-radius: 50%;
+      border: 1px solid rgba(15,23,42,.08);
+      box-shadow:
+        0 0 0 24px rgba(15,23,42,.018),
+        0 0 0 56px rgba(15,23,42,.014),
+        0 0 0 92px rgba(15,23,42,.010);
+    }
+    .wire-svg {
+      position: relative;
+      z-index: 2;
+      width: min(760px, 100%);
+      height: auto;
+      overflow: visible;
+      filter: drop-shadow(0 28px 45px rgba(15,23,42,.16));
+    }
+    .wire-seg {
+      fill: none;
+      stroke-width: 76;
+      stroke-linecap: butt;
+      transform: rotate(-90deg);
+      transform-origin: 380px 255px;
+      cursor: help;
+      transition: stroke-width .22s ease, filter .22s ease, opacity .22s ease;
+    }
+    .wire-seg:hover { stroke-width: 84; filter: brightness(1.08) saturate(1.08); }
+    .wire-center-ring { fill: #fff; filter: drop-shadow(0 12px 20px rgba(15,23,42,.16)); }
+    .wire-center-inner { fill: url(#wireCenter); stroke: rgba(15,23,42,.08); stroke-width: 1; }
+    .wire-line { fill: none; stroke: rgba(51,65,85,.70); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .wire-dot { fill: #fff; stroke: rgba(15,23,42,.55); stroke-width: 2.3; }
+    .wire-percent {
+      font-size: 34px;
+      font-weight: 950;
+      letter-spacing: -.07em;
+      fill: #fff;
+      paint-order: stroke;
+      stroke: rgba(15,23,42,.13);
+      stroke-width: 3px;
+      stroke-linejoin: round;
+    }
+    .wire-percent.outside {
+      fill: var(--ink);
+      stroke: rgba(255,255,255,.92);
+      stroke-width: 7px;
+      font-size: 25px;
+    }
+    .wire-percent.small { font-size: 20px; }
+    .wire-label-dot { fill: currentColor; }
+    .wire-caption {
+      position: absolute;
+      left: 24px;
+      bottom: 18px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    @media (max-width: 980px) {
+      body { padding: 22px; }
+      header { align-items: start; flex-direction: column; }
+      .grid { grid-template-columns: 1fr; }
+      .chart-wrap { grid-template-columns: 1fr; }
+      .legend { flex-direction: row; flex-wrap: wrap; }
+      .featured-layout { grid-template-columns: 1fr; }
+      .featured-legend { grid-template-columns: 1fr 1fr; }
+      .white-donut-stage { min-height: 340px; }
+      .card { min-height: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Provider Share<br/>Chart Concepts</h1>
+      <div class="subtitle">All options use the same sample distribution. Legend is provider-name only; hover the chart or provider name to inspect exact share, tokens, and request count.</div>
+    </div>
+    <div class="pill">Recommended: Wired Percent Graphic</div>
+  </header>
+
+  <main class="grid">
+    <section class="card wire-card">
+      <div class="card-head">
+        <div>
+          <div class="tag">Recommended</div>
+          <h2>Wired Percentage Pie — Graphic Only</h2>
+          <div class="note">No legend, no numeric table: only the chart graphic, percentage figures, and thin wired links. Hover segments or figures for provider details.</div>
+        </div>
+      </div>
+      <div class="wire-stage" title="Graphic-only provider share concept">
+        <svg class="wire-svg" viewBox="0 0 760 510" aria-label="Provider share pie chart with wired percentage labels">
+          <defs>
+            <linearGradient id="wireOrange" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ffbd2e"/><stop offset="100%" stop-color="#ff6a12"/></linearGradient>
+            <linearGradient id="wireBlue" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#2dd4ff"/><stop offset="100%" stop-color="#0b77b8"/></linearGradient>
+            <linearGradient id="wireRose" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#fb5f89"/><stop offset="100%" stop-color="#c0266b"/></linearGradient>
+            <linearGradient id="wireTeal" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#5eead4"/><stop offset="100%" stop-color="#159b91"/></linearGradient>
+            <linearGradient id="wireLime" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#bef264"/><stop offset="100%" stop-color="#65a30d"/></linearGradient>
+            <linearGradient id="wirePurple" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c084fc"/><stop offset="100%" stop-color="#7e22ce"/></linearGradient>
+            <linearGradient id="wireSlate" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#94a3b8"/><stop offset="100%" stop-color="#475569"/></linearGradient>
+            <radialGradient id="wireCenter"><stop offset="0%" stop-color="#ffffff"/><stop offset="62%" stop-color="#f8fafc"/><stop offset="100%" stop-color="#e2e8f0"/></radialGradient>
+          </defs>
+
+          <circle cx="380" cy="255" r="148" fill="none" stroke="rgba(15,23,42,.055)" stroke-width="84"/>
+          <circle class="wire-seg" pathLength="100" cx="380" cy="255" r="148" stroke="url(#wireBlue)" stroke-dasharray="42 58" stroke-dashoffset="0"><title>VSLLM-Claude — 42.00% — 4.21M tokens — 64 requests</title></circle>
+          <circle class="wire-seg" pathLength="100" cx="380" cy="255" r="148" stroke="url(#wireRose)" stroke-dasharray="18 82" stroke-dashoffset="-43"><title>VietAPI-O — 18.00% — 1.80M tokens — 28 requests</title></circle>
+          <circle class="wire-seg" pathLength="100" cx="380" cy="255" r="148" stroke="url(#wireOrange)" stroke-dasharray="12 88" stroke-dashoffset="-62"><title>Banana API — 12.00% — 1.20M tokens — 17 requests</title></circle>
+          <circle class="wire-seg" pathLength="100" cx="380" cy="255" r="148" stroke="url(#wireTeal)" stroke-dasharray="9 91" stroke-dashoffset="-75"><title>52mx.net — 9.00% — 901K tokens — 12 requests</title></circle>
+          <circle class="wire-seg" pathLength="100" cx="380" cy="255" r="148" stroke="url(#wireLime)" stroke-dasharray="7 93" stroke-dashoffset="-85"><title>opencode_zen — 7.00% — 702K tokens — 9 requests</title></circle>
+          <circle class="wire-seg" pathLength="100" cx="380" cy="255" r="148" stroke="url(#wirePurple)" stroke-dasharray="5 95" stroke-dashoffset="-93"><title>CKey.vn — 5.00% — 501K tokens — 7 requests</title></circle>
+          <circle class="wire-seg" pathLength="100" cx="380" cy="255" r="148" stroke="url(#wireSlate)" stroke-dasharray="4 96" stroke-dashoffset="-99"><title>NanoGPT — 4.00% — 401K tokens — 5 requests</title></circle>
+          <circle class="wire-seg" pathLength="100" cx="380" cy="255" r="148" stroke="#cbd5e1" stroke-dasharray="3 97" stroke-dashoffset="-104"><title>Other — 3.00% — 301K tokens — 4 requests</title></circle>
+
+          <circle class="wire-center-ring" cx="380" cy="255" r="84"/>
+          <circle class="wire-center-inner" cx="380" cy="255" r="58"/>
+          <path d="M350 266 L368 250 L384 260 L409 230" fill="none" stroke="rgba(15,23,42,.28)" stroke-width="2"/>
+          <circle cx="350" cy="266" r="3" fill="rgba(15,23,42,.28)"/><circle cx="368" cy="250" r="3" fill="rgba(15,23,42,.28)"/><circle cx="384" cy="260" r="3" fill="rgba(15,23,42,.28)"/><circle cx="409" cy="230" r="3" fill="rgba(15,23,42,.28)"/>
+
+          <text class="wire-percent" x="468" y="232" title="VSLLM-Claude — 42.00% — 4.21M tokens — 64 requests">42%</text>
+          <text class="wire-percent" x="282" y="191" title="VietAPI-O — 18.00% — 1.80M tokens — 28 requests">18%</text>
+          <text class="wire-percent" x="244" y="301" title="Banana API — 12.00% — 1.20M tokens — 17 requests">12%</text>
+          <text class="wire-percent small" x="342" y="407" title="52mx.net — 9.00% — 901K tokens — 12 requests">9%</text>
+
+          <path class="wire-line" d="M555 164 L647 102 L705 102"/><circle class="wire-dot" cx="555" cy="164" r="5"/>
+          <text class="wire-percent outside" x="710" y="111" title="VSLLM-Claude — 42.00% — 4.21M tokens — 64 requests">42%</text>
+          <path class="wire-line" d="M259 148 L154 82 L83 82"/><circle class="wire-dot" cx="259" cy="148" r="5"/>
+          <text class="wire-percent outside" x="24" y="91" title="VietAPI-O — 18.00% — 1.80M tokens — 28 requests">18%</text>
+          <path class="wire-line" d="M231 316 L117 356 L53 356"/><circle class="wire-dot" cx="231" cy="316" r="5"/>
+          <text class="wire-percent outside" x="20" y="365" title="Banana API — 12.00% — 1.20M tokens — 17 requests">12%</text>
+          <path class="wire-line" d="M407 431 L430 478 L490 478"/><circle class="wire-dot" cx="407" cy="431" r="5"/>
+          <text class="wire-percent outside" x="497" y="487" title="52mx.net — 9.00% — 901K tokens — 12 requests">9%</text>
+          <path class="wire-line" d="M502 382 L612 425 L668 425"/><circle class="wire-dot" cx="502" cy="382" r="5"/>
+          <text class="wire-percent outside small" x="676" y="432" title="opencode_zen — 7.00% — 702K tokens — 9 requests">7%</text>
+          <path class="wire-line" d="M540 315 L656 340 L707 340"/><circle class="wire-dot" cx="540" cy="315" r="5"/>
+          <text class="wire-percent outside small" x="715" y="347" title="CKey.vn — 5.00% — 501K tokens — 7 requests">5%</text>
+          <path class="wire-line" d="M520 118 L580 54 L628 54"/><circle class="wire-dot" cx="520" cy="118" r="5"/>
+          <text class="wire-percent outside small" x="636" y="61" title="NanoGPT — 4.00% — 401K tokens — 5 requests">4%</text>
+          <path class="wire-line" d="M383 65 L383 28 L432 28"/><circle class="wire-dot" cx="383" cy="65" r="5"/>
+          <text class="wire-percent outside small" x="441" y="35" title="Other — 3.00% — 301K tokens — 4 requests">3%</text>
+        </svg>
+        <div class="wire-caption">graphic + percent figures only</div>
+      </div>
+    </section>
+
+    <section class="card featured">
+      <div class="card-head">
+        <div>
+          <div class="tag">Recommended</div>
+          <h2>Exploded Glass Donut — Concise White Dashboard</h2>
+          <div class="note">More realistic provider spread, visible percentages, provider-name-only legend. Hover any slice, percentage chip, or provider name for exact tokens and request count.</div>
+          <div class="recommended-badge">Best fit for BSL Router Usage card</div>
+        </div>
+      </div>
+      <div class="featured-layout">
+        <div class="white-donut-stage" title="Provider share by tokens. Hover individual items for exact numbers.">
+          <svg class="white-donut-svg" viewBox="0 0 360 360" aria-label="Concise white exploded donut provider share chart">
+            <defs>
+              <linearGradient id="segOrange" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ffb020"/><stop offset="100%" stop-color="#ff5a12"/></linearGradient>
+              <linearGradient id="segBlue" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#60a5fa"/><stop offset="100%" stop-color="#2563eb"/></linearGradient>
+              <linearGradient id="segCyan" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#5eead4"/><stop offset="100%" stop-color="#0f9f8f"/></linearGradient>
+              <linearGradient id="segPurple" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c084fc"/><stop offset="100%" stop-color="#9333ea"/></linearGradient>
+              <linearGradient id="segPink" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#fb7185"/><stop offset="100%" stop-color="#db2777"/></linearGradient>
+              <linearGradient id="segLime" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#bef264"/><stop offset="100%" stop-color="#65a30d"/></linearGradient>
+              <linearGradient id="segNavy" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#38bdf8"/><stop offset="100%" stop-color="#17415f"/></linearGradient>
+              <linearGradient id="whiteHole" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="#f3f6fb"/></linearGradient>
+            </defs>
+            <circle cx="180" cy="180" r="126" fill="none" stroke="rgba(15,23,42,.055)" stroke-width="34"/>
+            <circle class="donut-seg" pathLength="100" cx="180" cy="180" r="126" stroke="url(#segOrange)" stroke-dasharray="42 58" stroke-dashoffset="0"><title>VSLLM-Claude — 42.00% — 4.21M tokens — 64 requests</title></circle>
+            <circle class="donut-seg" pathLength="100" cx="180" cy="180" r="126" stroke="url(#segBlue)" stroke-dasharray="18 82" stroke-dashoffset="-43"><title>VietAPI-O — 18.00% — 1.80M tokens — 28 requests</title></circle>
+            <circle class="donut-seg" pathLength="100" cx="180" cy="180" r="126" stroke="url(#segCyan)" stroke-dasharray="12 88" stroke-dashoffset="-62"><title>Banana API — 12.00% — 1.20M tokens — 17 requests</title></circle>
+            <circle class="donut-seg" pathLength="100" cx="180" cy="180" r="126" stroke="url(#segPurple)" stroke-dasharray="9 91" stroke-dashoffset="-75"><title>52mx.net — 9.00% — 901K tokens — 12 requests</title></circle>
+            <circle class="donut-seg" pathLength="100" cx="180" cy="180" r="126" stroke="url(#segPink)" stroke-dasharray="7 93" stroke-dashoffset="-85"><title>opencode_zen — 7.00% — 702K tokens — 9 requests</title></circle>
+            <circle class="donut-seg" pathLength="100" cx="180" cy="180" r="126" stroke="url(#segLime)" stroke-dasharray="5 95" stroke-dashoffset="-93"><title>CKey.vn — 5.00% — 501K tokens — 7 requests</title></circle>
+            <circle class="donut-seg" pathLength="100" cx="180" cy="180" r="126" stroke="url(#segNavy)" stroke-dasharray="4 96" stroke-dashoffset="-99"><title>NanoGPT — 4.00% — 401K tokens — 5 requests</title></circle>
+            <circle class="donut-seg" pathLength="100" cx="180" cy="180" r="126" stroke="#94a3b8" stroke-dasharray="3 97" stroke-dashoffset="-104"><title>Other — 3.00% — 301K tokens — 4 requests</title></circle>
+            <circle class="donut-hole" cx="180" cy="180" r="82"/>
+            <text class="donut-center-big" x="180" y="177" text-anchor="middle">42%</text>
+            <text class="donut-center-small" x="180" y="199" text-anchor="middle">Top provider</text>
+          </svg>
+          <div class="pct-chip major" style="left:53%;top:15%;color:#ff5a12;" title="VSLLM-Claude — 42.00% — 4.21M tokens — 64 requests">42%</div>
+          <div class="pct-chip" style="right:13%;top:35%;color:#2563eb;" title="VietAPI-O — 18.00% — 1.80M tokens — 28 requests">18%</div>
+          <div class="pct-chip" style="right:27%;bottom:17%;color:#0f9f8f;" title="Banana API — 12.00% — 1.20M tokens — 17 requests">12%</div>
+          <div class="pct-chip" style="left:34%;bottom:14%;color:#9333ea;" title="52mx.net — 9.00% — 901K tokens — 12 requests">9%</div>
+          <div class="pct-chip" style="left:15%;bottom:31%;color:#db2777;" title="opencode_zen — 7.00% — 702K tokens — 9 requests">7%</div>
+          <div class="pct-chip" style="left:13%;top:35%;color:#65a30d;" title="CKey.vn — 5.00% — 501K tokens — 7 requests">5%</div>
+          <div class="pct-chip" style="left:25%;top:18%;color:#17415f;" title="NanoGPT — 4.00% — 401K tokens — 5 requests">4%</div>
+          <div class="pct-chip" style="left:43%;top:8%;color:#64748b;" title="Other — 3.00% — 301K tokens — 4 requests">3%</div>
+        </div>
+        <div class="featured-legend">
+          <div class="legend-row" title="VSLLM-Claude — 42.00% — 4.21M tokens — 64 requests"><span class="dot" style="background:var(--orange);color:var(--orange)"></span><span class="legend-name">VSLLM-Claude</span></div>
+          <div class="legend-row" title="VietAPI-O — 18.00% — 1.80M tokens — 28 requests"><span class="dot" style="background:var(--blue);color:var(--blue)"></span><span class="legend-name">VietAPI-O</span></div>
+          <div class="legend-row" title="Banana API — 12.00% — 1.20M tokens — 17 requests"><span class="dot" style="background:var(--cyan);color:var(--cyan)"></span><span class="legend-name">Banana API</span></div>
+          <div class="legend-row" title="52mx.net — 9.00% — 901K tokens — 12 requests"><span class="dot" style="background:var(--purple);color:var(--purple)"></span><span class="legend-name">52mx.net</span></div>
+          <div class="legend-row" title="opencode_zen — 7.00% — 702K tokens — 9 requests"><span class="dot" style="background:var(--pink);color:var(--pink)"></span><span class="legend-name">opencode_zen</span></div>
+          <div class="legend-row" title="CKey.vn — 5.00% — 501K tokens — 7 requests"><span class="dot" style="background:var(--lime);color:var(--lime)"></span><span class="legend-name">CKey.vn</span></div>
+          <div class="legend-row" title="NanoGPT — 4.00% — 401K tokens — 5 requests"><span class="dot" style="background:var(--navy);color:var(--navy)"></span><span class="legend-name">NanoGPT</span></div>
+          <div class="legend-row" title="Other — 3.00% — 301K tokens — 4 requests"><span class="dot" style="background:#94a3b8;color:#94a3b8"></span><span class="legend-name">Other</span></div>
+        </div>
+      </div>
+      <div class="tooltip-hint">percent visible · values on hover</div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><div><div class="tag">Option A</div><h2>Glass Donut — Clean Dashboard Default</h2><div class="note">Best balance: premium, readable, compact, not noisy.</div></div></div>
+      <div class="chart-wrap">
+        <div class="pie-shell" title="VSLLM-Claude: 62.00% — 5.07M tokens\nVietAPI-O: 14.00% — 1.14M tokens\nBanana API: 10.00% — 820K tokens\n52mx.net: 8.00% — 656K tokens\nopencode_zen: 6.00% — 492K tokens"><div class="glass-donut pie"><div class="center-text"><strong>62%</strong><span>Top Share</span></div></div></div>
+        <div class="legend">
+          <div class="legend-row" title="VSLLM-Claude — 62.00% — 5.07M tokens — 58 requests"><span class="dot" style="background:var(--orange);color:var(--orange)"></span><span class="legend-name">VSLLM-Claude</span></div>
+          <div class="legend-row" title="VietAPI-O — 14.00% — 1.14M tokens — 21 requests"><span class="dot" style="background:var(--blue);color:var(--blue)"></span><span class="legend-name">VietAPI-O</span></div>
+          <div class="legend-row" title="Banana API — 10.00% — 820K tokens — 9 requests"><span class="dot" style="background:var(--cyan);color:var(--cyan)"></span><span class="legend-name">Banana API</span></div>
+          <div class="legend-row" title="52mx.net — 8.00% — 656K tokens — 6 requests"><span class="dot" style="background:var(--purple);color:var(--purple)"></span><span class="legend-name">52mx.net</span></div>
+          <div class="legend-row" title="opencode_zen — 6.00% — 492K tokens — 4 requests"><span class="dot" style="background:var(--pink);color:var(--pink)"></span><span class="legend-name">opencode_zen</span></div>
+        </div>
+      </div><div class="tooltip-hint">hover for values</div>
+    </section>
+
+    <section class="card dark">
+      <div class="card-head"><div><div class="tag">Option B</div><h2>Exploded Glass Donut — Most Premium</h2><div class="note">Hoverable slices feel alive. Best if you want the dashboard to feel high-end.</div></div></div>
+      <div class="chart-wrap">
+        <div class="pie-shell"><div class="exploded" title="Each slice can be made hover-highlighted in production"><div class="slice s1"></div><div class="slice s2"></div><div class="slice s3"></div><div class="slice s4"></div><div class="slice s5"></div><div class="center-text"><strong>5</strong><span>Providers</span></div></div></div>
+        <div class="legend">
+          <div class="legend-row" title="VSLLM-Claude — 62.00% — 5.07M tokens"><span class="dot" style="background:var(--orange);color:var(--orange)"></span><span class="legend-name">VSLLM-Claude</span></div>
+          <div class="legend-row" title="VietAPI-O — 14.00% — 1.14M tokens"><span class="dot" style="background:var(--blue);color:var(--blue)"></span><span class="legend-name">VietAPI-O</span></div>
+          <div class="legend-row" title="Banana API — 10.00% — 820K tokens"><span class="dot" style="background:var(--cyan);color:var(--cyan)"></span><span class="legend-name">Banana API</span></div>
+          <div class="legend-row" title="52mx.net — 8.00% — 656K tokens"><span class="dot" style="background:var(--purple);color:var(--purple)"></span><span class="legend-name">52mx.net</span></div>
+          <div class="legend-row" title="opencode_zen — 6.00% — 492K tokens"><span class="dot" style="background:var(--pink);color:var(--pink)"></span><span class="legend-name">opencode_zen</span></div>
+        </div>
+      </div><div class="tooltip-hint">my pick</div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><div><div class="tag">Option C</div><h2>Solid Pie — Classic Share Chart</h2><div class="note">Most literal pie chart. Works well when you don’t need a center label.</div></div></div>
+      <div class="chart-wrap">
+        <div class="pie-shell"><div class="solid-pie pie" title="Classic solid pie. If one provider is 100%, it becomes a solid circle."></div></div>
+        <div class="legend">
+          <div class="legend-row" title="VSLLM-Claude — 62.00%"><span class="dot" style="background:var(--orange);color:var(--orange)"></span><span class="legend-name">VSLLM-Claude</span></div>
+          <div class="legend-row" title="VietAPI-O — 14.00%"><span class="dot" style="background:var(--blue);color:var(--blue)"></span><span class="legend-name">VietAPI-O</span></div>
+          <div class="legend-row" title="Banana API — 10.00%"><span class="dot" style="background:var(--cyan);color:var(--cyan)"></span><span class="legend-name">Banana API</span></div>
+          <div class="legend-row" title="52mx.net — 8.00%"><span class="dot" style="background:var(--purple);color:var(--purple)"></span><span class="legend-name">52mx.net</span></div>
+          <div class="legend-row" title="opencode_zen — 6.00%"><span class="dot" style="background:var(--pink);color:var(--pink)"></span><span class="legend-name">opencode_zen</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><div><div class="tag">Option D</div><h2>Semi-Ring Gauge — Compact Summary</h2><div class="note">Good for a wide card, but less obviously “pie” than a donut.</div></div></div>
+      <div class="chart-wrap">
+        <div class="pie-shell"><div class="gauge" title="Semi-ring share. Nice for compact horizontal dashboards."><div class="gauge-pie"></div><div class="center-text" style="top:28px"><strong>62%</strong><span>Leader</span></div></div></div>
+        <div class="legend">
+          <div class="legend-row" title="VSLLM-Claude — 62.00%"><span class="dot" style="background:var(--orange);color:var(--orange)"></span><span class="legend-name">VSLLM-Claude</span></div>
+          <div class="legend-row" title="VietAPI-O — 14.00%"><span class="dot" style="background:var(--blue);color:var(--blue)"></span><span class="legend-name">VietAPI-O</span></div>
+          <div class="legend-row" title="Banana API — 10.00%"><span class="dot" style="background:var(--cyan);color:var(--cyan)"></span><span class="legend-name">Banana API</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><div><div class="tag">Option E</div><h2>Rose / Polar Area — Analytical Look</h2><div class="note">Beautiful and distinctive, but less intuitive for exact share than donut/pie.</div></div></div>
+      <div class="chart-wrap">
+        <div class="pie-shell"><div class="rose" title="Polar area: equal angles, different radius."><div class="petal p1"></div><div class="petal p2"></div><div class="petal p3"></div><div class="petal p4"></div><div class="petal p5"></div></div></div>
+        <div class="legend">
+          <div class="legend-row" title="VSLLM-Claude — 62.00%"><span class="dot" style="background:var(--orange);color:var(--orange)"></span><span class="legend-name">VSLLM-Claude</span></div>
+          <div class="legend-row" title="VietAPI-O — 14.00%"><span class="dot" style="background:var(--blue);color:var(--blue)"></span><span class="legend-name">VietAPI-O</span></div>
+          <div class="legend-row" title="Banana API — 10.00%"><span class="dot" style="background:var(--cyan);color:var(--cyan)"></span><span class="legend-name">Banana API</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><div><div class="tag">Option F</div><h2>Infographic Callout Pie — Presentation Style</h2><div class="note">Looks flashy, but I would not use it in the compact dashboard card.</div></div></div>
+      <div class="callout-wrap">
+        <div class="callout-pie pie" title="Callout pie. Pretty, but too noisy for admin UI."></div>
+        <div class="callout c1">VSLLM-Claude</div><div class="callout c2">VietAPI-O</div><div class="callout c3">Banana API</div><div class="callout c4">52mx.net</div><div class="callout c5">opencode_zen</div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
