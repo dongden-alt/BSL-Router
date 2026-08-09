@@ -10,22 +10,25 @@
 
 ## The Big Picture
 
-BSL Router does **three things**:
+BSL Router does **four things**:
 
 1. **Receives** a request from your AI client
-2. **Translates** it into the right format for the target provider
-3. **Sends** it upstream and streams the response back
+2. **Classifies** it to determine the best routing tier
+3. **Translates** it into the right format for the target provider
+4. **Sends** it upstream and streams the response back
 
 If the provider fails, it automatically tries the next one in your fallback chain.
 
 ```
   Your App                BSL Router               AI Providers
   ────────    request    ──────────    translate    ──────────
-  Claude   ──────────▶  Route +    ──────────────▶  OpenAI
-  Code                   Translate                   Anthropic
-           ◀──────────  Normalize  ◀──────────────   Google
-             response    stream       response       DeepSeek
-                                                     ...etc
+  Claude   ──────────▶  Classify +  ──────────────▶  OpenAI
+  Code                   Route +      ◀─────────────  Anthropic
+  Cursor                 Translate                   Google
+  Any IDE  ◀──────────  Normalize  ◀──────────────   DeepSeek
+            response    stream       response       GLM
+                                                      Kimi
+                                                      ...etc
 ```
 
 ---
@@ -41,16 +44,18 @@ Your client sends a `POST /v1/chat/completions` (or `/v1/messages` for Anthropic
 If admin auth is enabled, BSL Router verifies the session. API requests use the BSL key from your config.
 
 ### Step 3: Request Classification
-BSL Router looks at your request and classifies it:
-- **Simple chat** → lightweight routing
-- **Code generation** → routes to coding-optimized models
-- **Agent/tool use** → routes to models that handle tool calls well
+BSL Router looks at your request and classifies it through multiple layers:
+- **Request intent**: Is this simple chat, code generation, or agentic tool use?
+- **Category**: 13 categories (general, technical, creative, scout, power_coder, vision, etc.)
+- **Coding category**: 8 sub-categories for coding-specific routing (fast_coder, architect, reviewer, etc.)
+- **Task complexity**: Estimated complexity determines the effort tier (fast/standard/strong)
 
 ### Step 4: Provider Selection
 Based on the classification, BSL Router picks the best provider:
-- If you specified a model directly → uses that model's provider
-- If you specified a **combo** (fallback chain) → starts with the first provider in the chain
-- If auto-select is enabled → picks based on capability + cost
+- If you specified a **Blacksand model** (e.g. `blacksand-chat`) -> routes through the 5-tier matrix
+- If you specified a **combo** (fallback chain) -> starts with the first provider in the chain
+- If you specified a model directly -> uses that model's provider
+- If auto-select is enabled -> picks based on capability + cost
 
 ### Step 5: Protocol Translation
 Your client speaks OpenAI format, but the provider uses Anthropic? BSL Router translates:
@@ -58,41 +63,143 @@ Your client speaks OpenAI format, but the provider uses Anthropic? BSL Router tr
 - Tool call ID mapping
 - Thinking/reasoning parameter injection
 - Streaming protocol normalization
+- GLM tool translation (GLM has a unique tool call format)
 
 ### Step 6: Upstream Request
 BSL Router sends the translated request to the provider with:
 - Connection pooling (reuses TCP connections for speed)
-- Timeout management
+- Timeout management (chain deadline + per-stream deadline)
 - OAuth token auto-refresh (if the provider uses OAuth)
+- Circuit breaker (skips unhealthy providers)
 
 ### Step 7: Response Streaming
 The provider streams back chunks. BSL Router:
 - Normalizes the stream format back to what your client expects
-- Validates stream integrity (catches malformed chunks)
+- Validates stream integrity (catches malformed chunks via Stream Guard)
 - Handles thinking/reasoning blocks per provider rules
+- Applies quality gates (truncation detection + retry)
 
 ### Step 8: Fallback (if needed)
 If the provider returns an error:
 1. BSL Router checks if there's a next provider in the combo chain
-2. If yes → repeats Steps 5-7 with the next provider
-3. If no more providers → returns the error to your client
-4. A deadline timer prevents infinite retries
+2. If yes -> repeats Steps 5-7 with the next provider
+3. If no more providers -> returns the error to your client
+4. A **chain deadline timer** prevents infinite retries across all hops
 
 ---
 
-## The Five Routing Tiers
+## Blacksand Model Routing
 
-BSL Router has five routing tiers, from simplest to most complex:
+BSL Router's signature feature is the **5-tier Blacksand routing system**. Instead of picking a specific model, you point your client at a virtual model name and BSL Router handles the rest.
 
-| Tier | Name | When it's used |
+### The 5 Routing Tiers
+
+| Tier | Model Name | When it's used | Matrix |
+|---|---|---|---|
+| 1 | `blacksand-chat` | General chat, Q&A, mixed tasks | 13 categories × 3 effort tiers |
+| 2 | `blacksand-lite` | Coding-agent single-task routing | 10 coding agents × 3 effort tiers |
+| 3 | `blacksand-agentic` | Fast-tier agentic coding (depth=fast) | Multi-agent dispatch |
+| 4 | `blacksand-agentic-ultra` | Balanced coding with consult (depth=balanced) | Agent + consultant |
+| 5 | `blacksand-agentic-max` | Multi-domain fusion (depth=balanced) | Cross-domain orchestration |
+
+### Combo Alias System
+
+Each matrix slot accepts a **combo alias** that maps to your configured providers:
+
+| Alias | Tier | Typical use |
 |---|---|---|
-| 1 | **Chat** | Simple conversations, Q&A |
-| 2 | **Lite** | Quick tasks, short responses |
-| 3 | **Agentic** | Tool-using requests, function calls |
-| 4 | **Ultra** | Complex multi-step agent workflows |
-| 5 | **Max** | Maximum capability — orchestrated multi-model tasks |
+| `coder-1` | Fast | Quick completions, simple tasks, scout routing |
+| `coder-2` | Standard | General coding, balanced quality/speed |
+| `coder-3` | Strongest | Complex reasoning, architecture, multi-step planning |
 
-> You don't choose the tier manually. BSL Router classifies your request and picks the right tier automatically.
+You define what `coder-1/2/3` mean in your `combos` config. Each alias can have a fallback chain.
+
+### Category Classification Pipeline
+
+```
+Request → Request Intent → Category (13-way) → Coding Category (8-way)
+         ↓                    ↓                      ↓
+         chat/code/agent      general/technical      fast_coder/architect/
+                              creative/scout/...     reviewer/...
+                                                      ↓
+                              Effort Tier: fast / standard / strong
+```
+
+The 13 categories for `blacksand-chat`:
+`general`, `technical`, `creative`, `scout`, `power_coder`, `vision`, `fast_coder`, `architect`, `reviewer`, `debugger`, `refactorer`, `documenter`, `tester`
+
+The 10 coding agents for `blacksand-lite`:
+`scout`, `fast_coder`, `power_coder`, `architect`, `reviewer`, `debugger`, `refactorer`, `documenter`, `tester`, `vision`
+
+### Matrix Configuration
+
+The matrix is configured in `config.yaml` under `bsl_models`:
+
+```yaml
+bsl_models:
+  bsl_chat:
+    enabled: true
+    category_overrides:
+      general:
+        fast: "coder-1"           # Use combo alias
+        standard: "coder-2"
+        strong: "coder-3"
+      technical:
+        fast: "coder-1"
+        standard: "coder-2"
+        strong: "coder-3"
+    default_route_enabled: true
+    default_route: "coder-2"      # Fallback for unconfigured categories
+    global_last_fallback: "coder-1"  # Safety net (always active)
+
+  bsl_lite:
+    enabled: true
+    category_overrides:
+      scout:
+        standard: "coder-1"
+      power_coder:
+        standard: "coder-2"
+    default_route_enabled: true
+    default_route: "coder-2"
+    global_last_fallback: "coder-1"
+
+  bsl_agentic:
+    enabled: true
+    agent_routes:
+      scout: "coder-1"
+      planner: "coder-3"
+    default_route_enabled: true
+    default_route: "coder-2"
+    global_last_fallback: "coder-1"
+
+  bsl_agentic_ultra:
+    enabled: true
+    agent_routes: {}
+    consult_routes: {}
+    default_route_enabled: true
+    default_route: "coder-2"
+    global_last_fallback: "coder-1"
+
+  bsl_agentic_max:
+    enabled: true
+    agent_routes: {}
+    chat_routes: {}
+    default_route_enabled: true
+    default_route: "coder-2"
+    global_last_fallback: "coder-1"
+```
+
+> You don't need to fill every slot. **Auto-Select** fills empty slots from a recommended route table. Unconfigured categories fall through to `default_route`, then `global_last_fallback`.
+
+### Agentic Orchestration (Tiers 3-5)
+
+Tiers 3-5 use an **orchestrator engine** that:
+1. Classifies the request into an agent role (planner, coder, reviewer, etc.)
+2. Routes to the model configured for that role
+3. Tier 4 (Ultra) adds a **consult** step - a second model reviews the primary output
+4. Tier 5 (Max) fuses multiple domains (coding + analysis + creative) for complex workflows
+
+The orchestrator uses **gates** to decide whether to escalate from fast -> balanced depth.
 
 ---
 
@@ -109,80 +216,197 @@ BSL Router supports three protocol families:
 | **Anthropic format** | Anthropic, GLM |
 | **Gemini format** | Google Gemini, Google Cloud Code |
 
-Each provider family has its own quirks (different tool call formats, thinking parameters, stream chunk shapes). BSL Router handles all of them through **family adapters** — one per provider family.
+Each provider family has its own **family adapter** (12 adapters total):
+
+| Adapter | Quirks handled |
+|---|---|
+| `openai.py` | Standard OpenAI format, cache-key routing |
+| `anthropic.py` | Thinking blocks, cache_control, prompt_tokens_details |
+| `gemini.py` | Gemini envelope format, streamGenerateContent |
+| `deepseek.py` | Reasoning effort mapping |
+| `glm.py` | Tool call format translation (via `glm_tools.py`) |
+| `kimi.py` | Key-bound prompt caching |
+| `minimax.py` | Reasoning effort mapping |
+| `qwen.py` | Complex - 11KB adapter for Qwen's unique format quirks |
+| `grok.py` | Standard OpenAI-compatible |
+| `openrouter.py` | Multi-model routing |
+
+Infrastructure adapters: `_base.py` (shared base), `_effort.py` (reasoning effort ladder), `_legacy_reference.py`.
 
 ### 🔗 Combo/Chain Fallback
 **What it does**: Tries multiple providers in order until one works.
 
-You define chains in your config:
-```yaml
-combos:
-  - alias: my-chain
-    chain:
-      - provider: openai
-        model: gpt-4o          # Try first
-      - provider: deepseek
-        model: deepseek-v4     # Fallback
-    strategy: fallback
-```
+You define chains in your config. The system uses a **chain deadline timer** to prevent infinite retries. If all providers in the chain fail within the deadline, the error is returned to your client.
 
-The system uses a **deadline timer** to prevent infinite retries. If all providers in the chain fail within the deadline, the error is returned to your client.
+### 🛡️ Anti-Freeze System
+**What it does**: Prevents frozen IDEs and infinite hangs.
+
+| Component | Protection |
+|---|---|
+| **Stream Hard Deadline** | 10-minute cap per stream. Catches stuck streams while allowing legitimate long reasoning chains. |
+| **Chain Deadline** | Total budget across all fallback hops. Prevents cascading timeouts (4 hops × 120s = 480s without it, capped to ~150s with it). |
+| **Circuit Breaker** | Health-aware endpoint rotation. Unhealthy providers are automatically skipped. Tracks 429/401/403 and TPM co-occurrence. |
+| **Stream Guard** | SSE stream integrity validation. Catches malformed chunks, missing `message_stop` events, and stall-silence freezes. |
+| **Thinking Fallback** | Reasoning parameter fallback. If a provider rejects thinking parameters, retries without them. |
+
+### 🧰 Tools & Intelligence Layer
+**What it does**: Pre-processes content before routing.
+
+#### Document Intelligence
+- Parses PDF, DOCX, XLSX, PPTX attachments
+- Summarizes documents above the skip threshold (default: 8000 tokens)
+- Uses a configurable summarization model (defaults to cheapest active connection)
+- Documents below threshold pass through verbatim
+
+#### Vision Bridge
+- Intercepts image URLs sent to text-only models
+- Replaces them with detailed text descriptions using a vision model
+- Configurable token budget (512/1024/2048/4096)
+- UI/UX design context override mode (forces 4096 tokens + exhaustive prompts)
+
+#### Token Budget
+- Hard `max_tokens` ceiling (1024–65535 range)
+- When disabled: 65535-token floor applied (anti-truncation)
+- When enabled: requests declaring higher max_tokens are rejected with HTTP 400
+- Also caps quality-gate truncation retries
+
+#### Prompt Caching & Compaction
+Four provider-specific caching strategies:
+
+| Strategy | Provider | How it works |
+|---|---|---|
+| **Anthropic Explicit** | Anthropic | Injects `cache_control: ephemeral` on system prompt blocks |
+| **Kimi Key-Bound** | Kimi/Moonshot | Injects hashed `prompt_cache_key` on system blocks |
+| **OpenAI Cache-Key** | OpenAI (GPT-5.6) | Hashed `prompt_cache_key` for static system prefixes ≥1024 chars |
+| **Static-First Sorting** | DeepSeek, Gemini, OpenAI | Reorders messages to anchor system blocks at top for implicit caching |
+
+Plus an optional 24h cache retention flag for OpenAI (experimental).
 
 ### 🔐 Credential Management
-**What it does**: Keeps your API keys encrypted and OAuth tokens fresh.
-
-- **API keys**: Stored encrypted with [Fernet](https://cryptography.io/en/latest/fernet/) symmetric encryption in `config.yaml`
-- **OAuth tokens**: Automatically refreshed before expiry — you never see "token expired" errors
-- **Key scanner**: On-demand security audit of your provider settings (see below)
+- **API keys**: Stored encrypted with Fernet symmetric encryption
+- **OAuth tokens**: Automatically refreshed before expiry
+- **Key scanner**: On-demand security audit
 
 > [!IMPORTANT]
-> The encryption key is **machine-bound**. Copying `config.yaml` to another computer will not carry the credentials over — you'll need to re-enter your API keys there.
+> The encryption key is **machine-bound**. Copying `config.yaml` to another computer will not carry the credentials over.
 
 ### 🛡️ Security Scanner
-**What it does**: Audits your provider configuration for risky settings.
-
-Run it on demand from the admin UI, or call `GET /api/scan-keys`. It checks for:
-
-| Check | What it catches |
-|---|---|
-| Exfil URL | `base_url` pointing at webhook/paste/tunnel services |
-| Key injection | Shell, SQL, or HTML injection patterns inside an API key |
-| URL spoofing | Lookalike domains, e.g. `api.openai.com.evil.com` |
-| Credential harvesting | Credentials passed as URL query parameters |
-| Local network exfil | Cloud provider pointed at a private IP |
-| Insecure transport | Plain `http://` which sends keys in cleartext |
-| Token tampering | OAuth tokens that don't match the expected format |
-| Duplicate keys | The same key reused across multiple providers |
+Audits your provider configuration for risky settings. Checks for: exfil URLs, key injection, URL spoofing, credential harvesting, local network exfil, insecure transport, token tampering, and duplicate keys.
 
 Findings are graded **block** (must fix), **warn** (review), or **info**.
 
 ### 🕵️ MITM Proxy (Optional)
-**What it does**: Intercepts traffic for apps that don't let you change the API URL.
-
-How it works:
-1. Adds entries to your hosts file (e.g., `127.0.0.1 api.openai.com`)
+Intercepts traffic for apps that don't let you change the API URL:
+1. Adds entries to your hosts file
 2. Runs a transparent proxy on port 443
-3. Intercepts requests that your app thinks are going to OpenAI
-4. Routes them through BSL Router instead
-5. A watchdog process monitors the proxy and restarts it if it crashes
-
-> This is only needed for apps with hardcoded API URLs. Most apps let you set a custom base URL — in that case, just point it at `http://localhost:6969`.
+3. Watchdog process monitors and restarts if it crashes
+4. Tree-kill + verify+retry loop ensures clean port cleanup
 
 ### 📊 Observability
-**What it does**: Logs everything so you can debug issues and track usage.
-
-- Every request/response is logged in JSONL format
-- Usage stats available via the admin dashboard
+- Every request/response logged in JSONL format
+- Usage stats per model with cost tracking
 - Error tracking with per-provider breakdown
+- Live log streaming in the admin dashboard
 
 ### 🔍 Scouts (Optional)
-**What they do**: Pre-process specific content types before routing.
+Pre-process specific content types before routing:
 
 | Scout | Purpose |
 |---|---|
-| **Vision** | Analyzes images in your request, polyfills vision for providers that don't support it |
-| **Docs Parser** | Extracts text from documents for RAG (retrieval-augmented generation) |
+| **Vision** | Analyzes images, polyfills vision for providers that don't support it |
+| **Docs Parser** | Extracts text from documents for RAG |
 | **Canvas** | Analyzes UI/canvas elements |
+
+---
+
+## Middleware Pipeline
+
+The routing pipeline consists of 26 middleware modules. Here's the full inventory:
+
+### Classification Layer
+| Module | Purpose |
+|---|---|
+| `request_intent.py` | Classifies request as chat, code, or agent |
+| `category_classifier.py` | 13-way category classification |
+| `coding_category_classifier.py` | 8-way coding-specific classification |
+| `task_complexity.py` | Estimates task complexity for effort tier selection |
+
+### Routing Layer
+| Module | Purpose |
+|---|---|
+| `route_registry.py` | Centralized route definitions |
+| `bsl_chat_router.py` | Tier 1: Chat routing (blacksand-chat) |
+| `bsl_lite_router.py` | Tier 2: Lite coding routing (blacksand-lite) |
+| `bsl_agentic_router.py` | Tier 3: Agentic routing (blacksand-agentic) |
+| `bsl_agentic_ultra_router.py` | Tier 4: Ultra routing with consult |
+| `bsl_agentic_max_router.py` | Tier 5: Max multi-domain fusion |
+| `bsl_auto_select.py` | Automatic model selection + preset management |
+| `bsl_router_utils.py` | Shared routing utilities |
+
+### Orchestration Layer
+| Module | Purpose |
+|---|---|
+| `bsl_orchestrator.py` | Multi-agent orchestration engine |
+| `bsl_orchestrator_engine.py` | Core orchestration execution |
+| `bsl_orchestrator_gates.py` | Depth escalation gates (fast -> balanced) |
+
+### Quality & Efficiency Layer
+| Module | Purpose |
+|---|---|
+| `quality.py` | Response quality gates (truncation detection + retry) |
+| `efficiency.py` | Opus efficiency optimization (token budget management) |
+| `compaction.py` | Context window management (compaction before overflow) |
+| `thinking_fallback.py` | Reasoning parameter fallback |
+| `response_format_guard.py` | Response format validation |
+
+### Stream Protection Layer
+| Module | Purpose |
+|---|---|
+| `stream_guard.py` | SSE stream integrity validation |
+| `caching.py` | Prompt caching injection (4 strategies) |
+| `glm_tools.py` | GLM tool call translation |
+
+### Benchmark Sheets
+| Module | Purpose |
+|---|---|
+| `bsl_benchmark_sheet.py` | Chat tier benchmark data |
+| `bsl_lite_benchmark_sheet.py` | Lite tier benchmark data |
+| `bsl_agentic_benchmark_sheet.py` | Agentic tier benchmark data |
+
+---
+
+## Admin Dashboard Architecture
+
+The admin dashboard is a single-page app (`app/static/`) with 8 tabs:
+
+| Tab | HTML ID | Purpose |
+|---|---|---|
+| **Endpoint** | `endpoint` | Local endpoints, Cloudflare Tunnel, Tailscale, API keys, Antigravity integration |
+| **Providers** | `providers` | Provider CRUD, connection verification, model management |
+| **Combos** | `combos` | Combo alias definition and fallback chain editor |
+| **BSL Models** | `bsl-models` | Matrix editor for all 5 Blacksand models, auto-select, read-only cross-references |
+| **MITM** | `mitm` | MITM proxy control, hosts file management, watchdog status |
+| **Tools** | `tools` | Document Intelligence, Vision Bridge, Token Budget, Prompt Caching |
+| **Usage** | `usage` | Per-model usage table with filtering and cost tracking |
+| **Logs** | `logs` | Live request/response log streaming |
+| **Settings** | `settings` | Admin password, shutdown, logout |
+
+### Antigravity Integration (Endpoint Tab)
+Direct-inference overlay for Antigravity IDE 2.1.1:
+- Maps Antigravity's model slots to BSL Router providers/combos
+- No MITM proxy, CA cert, or hosts file needed
+- Unmapped slots use native Google Cloud Code
+- Diagnostics panel shows real-time integration status
+
+---
+
+## Remote Access
+
+| Method | How it works |
+|---|---|
+| **Cloudflare Tunnel** | Runs `cloudflared` to create a secure public URL. Managed from the Endpoint tab. |
+| **Tailscale** | Detects Tailscale IP for mesh network sharing. One-click URL retrieval. |
+| **API Keys** | Generate scoped keys for other applications. Keys are stored in config under `keys: []`. |
 
 ---
 
@@ -198,29 +422,42 @@ bsl-router/
 │   ├── oauth.py                 # OAuth 2.0 flows + token refresh
 │   ├── normalizer.py            # Response normalization
 │   ├── observability.py         # Request/response logging
+│   ├── antifreeze.py            # Stream deadline + kill registry
 │   ├── mitm.py                  # MITM proxy management
 │   ├── compat/                  # Protocol translation
-│   │   ├── families/            # Per-provider adapters (12 families)
+│   │   ├── families/            # 12 provider family adapters
 │   │   ├── stream_normalizer.py # Stream format normalization
 │   │   ├── tool_ledger.py       # Tool call ID tracking
 │   │   └── reasoning_policy.py  # Thinking parameter rules
-│   ├── middleware/              # Routing pipeline
+│   ├── middleware/              # 26 routing pipeline modules
 │   │   ├── bsl_chat_router.py   # Tier 1: Chat
 │   │   ├── bsl_lite_router.py   # Tier 2: Lite
 │   │   ├── bsl_agentic_router.py       # Tier 3: Agentic
 │   │   ├── bsl_agentic_ultra_router.py # Tier 4: Ultra
 │   │   ├── bsl_agentic_max_router.py   # Tier 5: Max
-│   │   ├── bsl_auto_select.py   # Automatic model selection
-│   │   ├── task_complexity.py   # Request complexity estimation
-│   │   └── ...                  # Stream guards, caching, etc.
+│   │   ├── bsl_orchestrator.py         # Multi-agent orchestration
+│   │   ├── bsl_auto_select.py          # Auto model selection
+│   │   ├── category_classifier.py      # 13-way classification
+│   │   ├── coding_category_classifier.py # 8-way coding classification
+│   │   ├── task_complexity.py          # Complexity estimation
+│   │   ├── route_registry.py           # Central route definitions
+│   │   ├── stream_guard.py             # SSE integrity validation
+│   │   ├── caching.py                  # Prompt caching (4 strategies)
+│   │   ├── quality.py                  # Quality gates
+│   │   ├── efficiency.py              # Opus efficiency
+│   │   ├── compaction.py              # Context management
+│   │   ├── thinking_fallback.py       # Reasoning fallback
+│   │   ├── glm_tools.py               # GLM tool translation
+│   │   └── ...                        # + 7 more modules
 │   ├── routing/
 │   │   └── combo_resolver.py    # Combo chain resolution + fallback
 │   ├── scouts/                  # Vision, docs, canvas analysis
 │   ├── security/                # Key scanning
 │   ├── static/                  # Admin dashboard (HTML/JS/CSS)
-│   └── tests/                   # 64 test files
-├── scripts/                     # Management scripts
-├── tests/                       # Integration tests
+│   └── tests/                   # 64+ test files
+├── scripts/
+│   ├── bslrouter.ps1            # Unified launcher (port-kill retry)
+│   └── update_bsl_router.py     # GitHub auto-update script
 ├── config.example.yaml          # Config template
 └── requirements.txt             # Python dependencies
 ```
@@ -229,34 +466,79 @@ bsl-router/
 
 ## Configuration Reference
 
-BSL Router uses a single `config.yaml` file. Here's the structure:
+BSL Router uses a single `config.yaml` file. Key sections:
 
 ```yaml
-# Define your AI providers
+# AI Providers
 providers:
-  my-openai:                           # Your name for this provider
-    type: custom                       # "custom" for user-defined
-    format: openai                     # Protocol: openai | anthropic | gemini
+  my-openai:
+    type: custom                 # custom | image_custom
+    format: openai               # openai | anthropic | gemini
     connections:
-      - api_key: enc:YOUR_KEY_HERE     # Encrypted API key
+      - api_key: enc:YOUR_KEY    # Encrypted API key
         base_url: https://api.openai.com/v1
     models:
-      - id: gpt-4o                     # Model ID
+      - id: gpt-4o
         enabled: true
-        thinking: auto                 # Thinking mode: auto | max | off
+        thinking: auto           # auto | max | off
 
-# Define fallback chains
+# Combo aliases (referenced by Blacksand matrix)
 combos:
-  - alias: my-fallback-chain
+  - alias: coder-1               # Fast/cheap tier
     chain:
       - provider: my-openai
-        model: gpt-4o
-    strategy: fallback                 # Strategy: fallback
+        model: gpt-4o-mini
+    strategy: fallback
 
-# Admin dashboard settings
+  - alias: coder-3               # Strongest tier
+    chain:
+      - provider: my-anthropic
+        model: claude-sonnet-4
+    strategy: fallback
+
+# Blacksand routing matrices
+bsl_models:
+  bsl_chat:
+    enabled: true
+    category_overrides:
+      general:
+        fast: "coder-1"
+        standard: "coder-2"
+        strong: "coder-3"
+    default_route: "coder-2"
+    global_last_fallback: "coder-1"
+  bsl_lite:
+    enabled: true
+    # ... similar structure
+
+# Tools & Intelligence
+tools:
+  docs_parser_enabled: false
+  docs_skip_threshold: 8000
+  docs_summary_model: "gpt-4o-mini"
+  vision_bridge_enabled: false
+  vision_bridge_model: "gpt-4o-mini"
+  vision_max_tokens: 1024
+  max_tokens_budget_enabled: false
+  max_tokens_budget: 65535
+  caching_anthropic_explicit: false
+  caching_kimi_key_bound: false
+  caching_static_sort: false
+  caching_openai_key_bound: true
+
+# Antigravity IDE integration
+antigravity_integration:
+  enabled: false
+  mappings:
+    slot_key: "combo-alias-or-provider/model"
+
+# Admin
 admin:
   password_enabled: false
-  password: enc:YOUR_ADMIN_PASS_HERE
+  password: enc:YOUR_ADMIN_PASS
+
+# API keys for external access
+keys: []
 ```
 
 See [config.example.yaml](../config.example.yaml) for a complete working template.
@@ -271,7 +553,7 @@ See [config.example.yaml](../config.example.yaml) for a complete working templat
 |---|---|
 | `POST /v1/chat/completions` | Chat completions (OpenAI format) |
 | `POST /v1/messages` | Messages (Anthropic format) |
-| `GET /v1/models` | List all available models |
+| `GET /v1/models` | List all available models (includes Blacksand virtual models) |
 | `GET /health` | Health check |
 
 ### For the Admin Dashboard
@@ -283,6 +565,8 @@ See [config.example.yaml](../config.example.yaml) for a complete working templat
 | `GET/POST /api/mitm/*` | Control MITM proxy |
 | `GET /api/observability/usage` | View usage statistics |
 | `POST /api/tunnel/cloudflare/*` | Manage Cloudflare tunnels |
+| `GET/POST /api/bsl-matrix/*` | Read/apply Blacksand matrix config |
+| `GET/POST /api/antigravity/*` | Antigravity integration control |
 | `POST /api/auth/login` | Admin login |
 
 ---
@@ -307,23 +591,14 @@ See [config.example.yaml](../config.example.yaml) for a complete working templat
 
 ## Tổng Quan
 
-BSL Router làm **ba việc**:
+BSL Router làm **bốn việc**:
 
 1. **Nhận** request từ app AI của bạn
-2. **Dịch** nó sang đúng format của provider đích
-3. **Gửi** lên provider và stream response về
+2. **Phân loại** để xác định tầng định tuyến tốt nhất
+3. **Dịch** nó sang đúng format của provider đích
+4. **Gửi** lên provider và stream response về
 
 Nếu provider lỗi, nó tự động thử provider tiếp theo trong chuỗi dự phòng.
-
-```
-  App của bạn             BSL Router               AI Providers
-  ───────────   request   ──────────    dịch        ──────────
-  Claude    ──────────▶  Định tuyến ──────────────▶  OpenAI
-  Code                    + Dịch                     Anthropic
-            ◀──────────  Chuẩn hóa  ◀──────────────  Google
-              response     stream      response      DeepSeek
-                                                     ...v.v.
-```
 
 ---
 
@@ -332,207 +607,140 @@ Nếu provider lỗi, nó tự động thử provider tiếp theo trong chuỗi 
 Hành trình đầy đủ của một request chat, từng bước:
 
 ### Bước 1: Request Đến
-App của bạn gửi `POST /v1/chat/completions` (hoặc `/v1/messages` cho format Anthropic).
+App gửi `POST /v1/chat/completions` (hoặc `/v1/messages` cho format Anthropic).
 
 ### Bước 2: Kiểm Tra Xác Thực
-Nếu bật admin auth, BSL Router xác minh session. Request API dùng BSL key trong config.
+Nếu bật admin auth, BSL Router xác minh session. Request API dùng BSL key.
 
 ### Bước 3: Phân Loại Request
-BSL Router xem request và phân loại:
-- **Chat đơn giản** → định tuyến nhẹ
-- **Sinh code** → chuyển tới model tối ưu cho code
-- **Dùng tool/agent** → chuyển tới model xử lý tool tốt
+BSL Router phân loại qua nhiều lớp:
+- **Intent**: chat đơn giản, sinh code, hay agentic tool use?
+- **Danh mục**: 13 danh mục (general, technical, creative, scout, power_coder, vision, v.v.)
+- **Coding category**: 8 sub-category cho coding (fast_coder, architect, reviewer, v.v.)
+- **Complexity**: ước lượng độ phức tạp để chọn effort tier (fast/standard/strong)
 
 ### Bước 4: Chọn Provider
-Dựa trên phân loại, BSL Router chọn provider tốt nhất:
-- Nếu bạn chỉ định model cụ thể → dùng provider của model đó
-- Nếu bạn chỉ định **combo** (chuỗi dự phòng) → bắt đầu từ provider đầu chuỗi
-- Nếu bật auto-select → chọn theo năng lực + chi phí
+- Nếu chỉ định **Blacksand model** -> định tuyến qua ma trận 5 tầng
+- Nếu chỉ định **combo** -> bắt đầu từ provider đầu chuỗi
+- Nếu chỉ định model cụ thể -> dùng provider của model đó
+- Nếu bật auto-select -> chọn theo năng lực + chi phí
 
 ### Bước 5: Dịch Giao Thức
-App nói format OpenAI, provider dùng format Anthropic? BSL Router dịch:
-- Chuyển đổi format tin nhắn
-- Map ID của tool call
-- Chèn tham số thinking/reasoning
-- Chuẩn hóa giao thức streaming
+BSL Router dịch: format tin nhắn, tool call ID, tham số thinking, streaming protocol, GLM tool translation.
 
 ### Bước 6: Gửi Lên Provider
-BSL Router gửi request đã dịch kèm:
-- Connection pooling (tái dùng kết nối TCP cho nhanh)
-- Quản lý timeout
-- Tự làm mới OAuth token (nếu provider dùng OAuth)
+Kèm: connection pooling, timeout management, OAuth refresh, circuit breaker.
 
 ### Bước 7: Stream Response
-Provider stream về từng chunk. BSL Router:
-- Chuẩn hóa format stream về đúng cái app mong đợi
-- Kiểm tra tính toàn vẹn stream (bắt chunk lỗi)
-- Xử lý khối thinking/reasoning theo quy tắc từng provider
+Chuẩn hóa format stream, kiểm tra tính toàn vẹn (Stream Guard), xử lý thinking blocks, áp dụng quality gates.
 
 ### Bước 8: Dự Phòng (nếu cần)
-Nếu provider trả lỗi:
-1. BSL Router kiểm tra còn provider tiếp theo trong combo không
-2. Nếu có → lặp lại Bước 5-7 với provider kế tiếp
-3. Nếu hết provider → trả lỗi về cho app
-4. Bộ đếm deadline ngăn thử lại vô hạn
+Nếu provider lỗi -> thử provider kế tiếp. Bộ đếm **chain deadline** ngăn thử lại vô hạn.
 
 ---
 
-## Năm Tầng Định Tuyến
+## Blacksand Model Routing
 
-BSL Router có năm tầng, từ đơn giản đến phức tạp nhất:
+Hệ thống định tuyến 5 tầng - tính năng signature của BSL Router. Thay vì chọn model cụ thể, bạn trỏ client vào tên model ảo.
 
-| Tầng | Tên | Dùng khi nào |
+### 5 Tầng Định Tuyến
+
+| Tầng | Model | Mục đích | Ma trận |
+|---|---|---|---|
+| 1 | `blacksand-chat` | Chat chung, hỏi đáp | 13 danh mục × 3 tầng |
+| 2 | `blacksand-lite` | Coding-agent tác vụ đơn | 10 coding agent × 3 tầng |
+| 3 | `blacksand-agentic` | Agentic coding tầng nhanh | Dispatch đa agent |
+| 4 | `blacksand-agentic-ultra` | Coding cân bằng + consult | Agent + consultant |
+| 5 | `blacksand-agentic-max` | Fusion đa domain | Điều phối cross-domain |
+
+### Combo Alias
+
+| Alias | Tầng | Dùng cho |
 |---|---|---|
-| 1 | **Chat** | Hội thoại đơn giản, hỏi đáp |
-| 2 | **Lite** | Việc nhanh, response ngắn |
-| 3 | **Agentic** | Request dùng tool, function call |
-| 4 | **Ultra** | Luồng agent nhiều bước phức tạp |
-| 5 | **Max** | Năng lực tối đa — điều phối nhiều model |
+| `coder-1` | Nhanh | Hoàn thành nhanh, tác vụ đơn giản |
+| `coder-2` | Tiêu chuẩn | Coding chung, cân bằng |
+| `coder-3` | Mạnh nhất | Reasoning phức tạp, kiến trúc |
 
-> Bạn không cần chọn tầng thủ công. BSL Router tự phân loại và chọn tầng phù hợp.
+### Ma Trận Cấu Hình
+
+Ma trận cấu hình trong `config.yaml` dưới `bsl_models`. Mỗi slot chấp nhận combo alias hoặc provider/model trực tiếp. **Auto-Select** tự điền slot trống. Slot chưa cấu hình -> `default_route` -> `global_last_fallback`.
 
 ---
 
 ## Thành Phần Chính
 
 ### 🔄 Tầng Dịch Giao Thức
-**Chức năng**: Chuyển đổi giữa các format API để app nào cũng dùng được provider nào.
+12 family adapter: openai, anthropic, gemini, deepseek, glm, kimi, minimax, qwen, grok, openrouter + infrastructure adapters.
 
-BSL Router hỗ trợ ba họ giao thức:
+### 🔗 Combo/Chain Dự Phòng
+Thử lần lượt provider. Chain deadline ngăn timeout cascading.
 
-| Giao thức | Ai dùng |
+### 🛡️ Anti-Freeze
+| Thành phần | Bảo vệ |
 |---|---|
-| **Format OpenAI** | OpenAI, DeepSeek, Kimi, Qwen, Grok, MiniMax, OpenRouter |
-| **Format Anthropic** | Anthropic, GLM |
-| **Format Gemini** | Google Gemini, Google Cloud Code |
+| Stream Hard Deadline | Cap 10 phút mỗi stream |
+| Chain Deadline | Tổng budget tất cả hop |
+| Circuit Breaker | Tự xoay provider lỗi |
+| Stream Guard | Bắt chunk SSE lỗi |
+| Thinking Fallback | Fallback tham số reasoning |
 
-Mỗi họ provider có đặc thù riêng (format tool call, tham số thinking, hình dạng chunk stream khác nhau). BSL Router xử lý tất cả qua **family adapter** — mỗi họ một adapter.
-
-### 🔗 Chuỗi Dự Phòng (Combo)
-**Chức năng**: Thử lần lượt nhiều provider cho tới khi có cái chạy được.
-
-Định nghĩa chuỗi trong config:
-```yaml
-combos:
-  - alias: chuoi-cua-toi
-    chain:
-      - provider: openai
-        model: gpt-4o          # Thử trước
-      - provider: deepseek
-        model: deepseek-v4     # Dự phòng
-    strategy: fallback
-```
-
-Hệ thống dùng **bộ đếm deadline** để ngăn thử lại vô hạn. Nếu tất cả provider trong chuỗi đều lỗi trong thời hạn, lỗi được trả về app.
+### 🧰 Tools & Intelligence
+- **Document Intelligence**: parse PDF/DOCX/XLSX/PPTX + tóm tắt
+- **Vision Bridge**: polyfill vision cho model không hỗ trợ
+- **Token Budget**: trần max_tokens cứng
+- **Prompt Caching**: 4 chiến lược (Anthropic, Kimi, OpenAI, static-first)
 
 ### 🔐 Quản Lý Thông Tin Đăng Nhập
-**Chức năng**: Giữ API key được mã hóa và OAuth token luôn mới.
-
-- **API key**: Lưu mã hóa bằng [Fernet](https://cryptography.io/en/latest/fernet/) trong `config.yaml`
-- **OAuth token**: Tự động làm mới trước khi hết hạn — bạn không bao giờ gặp lỗi "token expired"
-- **Key scanner**: Kiểm tra bảo mật cấu hình provider theo yêu cầu (xem dưới)
-
-> [!IMPORTANT]
-> Khóa mã hóa **gắn với máy**. Copy `config.yaml` sang máy khác sẽ KHÔNG mang theo được thông tin đăng nhập — bạn phải nhập lại API key ở máy đó.
+API key mã hóa Fernet, OAuth tự refresh, key scanner.
 
 ### 🛡️ Bộ Quét Bảo Mật
-**Chức năng**: Kiểm tra cấu hình provider để tìm thiết lập rủi ro.
-
-Chạy theo yêu cầu từ trang quản trị, hoặc gọi `GET /api/scan-keys`. Nó kiểm tra:
-
-| Kiểm tra | Phát hiện gì |
-|---|---|
-| Exfil URL | `base_url` trỏ tới dịch vụ webhook/paste/tunnel |
-| Key injection | Mẫu tấn công shell, SQL, HTML nằm trong API key |
-| URL spoofing | Domain giả mạo, ví dụ `api.openai.com.evil.com` |
-| Credential harvesting | Thông tin đăng nhập truyền qua query parameter |
-| Local network exfil | Provider cloud lại trỏ vào IP nội bộ |
-| Insecure transport | Dùng `http://` khiến key truyền dạng thô |
-| Token tampering | OAuth token không đúng định dạng mong đợi |
-| Duplicate keys | Cùng một key dùng lại ở nhiều provider |
-
-Kết quả phân loại **block** (phải sửa), **warn** (nên xem lại), hoặc **info**.
+Kiểm tra: exfil URL, key injection, URL spoofing, credential harvesting, local network exfil, insecure transport, token tampering, duplicate keys.
 
 ### 🕵️ MITM Proxy (Tùy chọn)
-**Chức năng**: Chặn traffic cho những app không cho đổi API URL.
-
-Cách hoạt động:
-1. Thêm dòng vào file hosts (ví dụ `127.0.0.1 api.openai.com`)
-2. Chạy proxy trong suốt trên cổng 443
-3. Chặn request mà app tưởng đang gửi tới OpenAI
-4. Chuyển chúng qua BSL Router
-5. Watchdog theo dõi proxy và tự khởi động lại nếu sập
-
-> Chỉ cần cho app có API URL cố định. Phần lớn app cho phép đặt base URL riêng — khi đó chỉ cần trỏ vào `http://localhost:6969`.
+Chặn traffic cho app có URL cố định. Watchdog tự restart. Tree-kill + verify+retry.
 
 ### 📊 Quan Sát & Ghi Log
-**Chức năng**: Ghi lại mọi thứ để bạn debug và theo dõi mức dùng.
-
-- Mọi request/response ghi dạng JSONL
-- Thống kê sử dụng xem được trên trang quản trị
-- Theo dõi lỗi chi tiết theo từng provider
+JSONL logging, usage stats, error tracking, live log streaming.
 
 ### 🔍 Scouts (Tùy chọn)
-**Chức năng**: Tiền xử lý các loại nội dung đặc biệt trước khi định tuyến.
+Vision (phân tích ảnh), Docs Parser (trích text), Canvas (UI/canvas).
 
-| Scout | Mục đích |
-|---|---|
-| **Vision** | Phân tích ảnh trong request, bù năng lực vision cho provider không hỗ trợ |
-| **Docs Parser** | Trích xuất text từ tài liệu cho RAG |
-| **Canvas** | Phân tích phần tử UI/canvas |
+---
+
+## Middleware Pipeline
+
+26 module middleware:
+
+**Classification**: request_intent, category_classifier, coding_category_classifier, task_complexity
+
+**Routing**: route_registry, bsl_chat_router, bsl_lite_router, bsl_agentic_router, bsl_agentic_ultra_router, bsl_agentic_max_router, bsl_auto_select, bsl_router_utils
+
+**Orchestration**: bsl_orchestrator, bsl_orchestrator_engine, bsl_orchestrator_gates
+
+**Quality & Efficiency**: quality, efficiency, compaction, thinking_fallback, response_format_guard
+
+**Stream Protection**: stream_guard, caching, glm_tools
+
+**Benchmark**: bsl_benchmark_sheet, bsl_lite_benchmark_sheet, bsl_agentic_benchmark_sheet
 
 ---
 
 ## Cấu Trúc Dự Án
 
-Xem [phần English](#project-structure) — cấu trúc thư mục giống nhau, chú thích bằng tiếng Anh trong code.
-
-Các file quan trọng nhất:
-
-| File | Vai trò |
-|---|---|
-| `app/main.py` | Điểm khởi động server + toàn bộ route HTTP |
-| `app/config_state.py` | Nạp config và hot-reload |
-| `app/crypto.py` | Mã hóa/giải mã Fernet |
-| `app/oauth.py` | Luồng OAuth 2.0 + làm mới token |
-| `app/compat/` | Dịch giao thức giữa các provider |
-| `app/middleware/` | Pipeline định tuyến 5 tầng |
-| `app/routing/combo_resolver.py` | Giải chuỗi combo + dự phòng |
-| `app/security/key_scanner.py` | Quét bảo mật cấu hình |
-| `app/static/` | Trang quản trị (HTML/JS/CSS) |
+Xem [phần English](#project-structure) - cấu trúc thư mục giống nhau.
 
 ---
 
 ## Tham Chiếu Cấu Hình
 
-BSL Router dùng duy nhất một file `config.yaml`:
-
 ```yaml
-# Khai báo provider AI
-providers:
-  my-openai:                           # Tên bạn tự đặt
-    type: custom                       # "custom" cho provider tự định nghĩa
-    format: openai                     # Giao thức: openai | anthropic | gemini
-    connections:
-      - api_key: enc:YOUR_KEY_HERE     # API key đã mã hóa
-        base_url: https://api.openai.com/v1
-    models:
-      - id: gpt-4o                     # ID model
-        enabled: true
-        thinking: auto                 # Chế độ thinking: auto | max | off
-
-# Khai báo chuỗi dự phòng
-combos:
-  - alias: chuoi-du-phong
-    chain:
-      - provider: my-openai
-        model: gpt-4o
-    strategy: fallback
-
-# Thiết lập trang quản trị
-admin:
-  password_enabled: false
-  password: enc:YOUR_ADMIN_PASS_HERE
+providers:        # Provider AI
+combos:           # Combo alias (coder-1/2/3)
+bsl_models:       # Ma trận 5 Blacksand model
+tools:            # Document Intelligence, Vision, Token Budget, Caching
+antigravity_integration:  # Antigravity IDE overlay
+admin:            # Mật khẩu quản trị
+keys: []          # API key cho external access
 ```
 
 Xem [config.example.yaml](../config.example.yaml) để có template hoàn chỉnh.
@@ -541,24 +749,26 @@ Xem [config.example.yaml](../config.example.yaml) để có template hoàn chỉ
 
 ## Tham Chiếu API
 
-### Cho App AI (thay thế trực tiếp)
+### Cho App AI
 
 | Endpoint | Chức năng |
 |---|---|
-| `POST /v1/chat/completions` | Chat completion (format OpenAI) |
+| `POST /v1/chat/completions` | Chat (format OpenAI) |
 | `POST /v1/messages` | Messages (format Anthropic) |
-| `GET /v1/models` | Liệt kê toàn bộ model |
+| `GET /v1/models` | Liệt kê model (bao gồm Blacksand virtual models) |
 | `GET /health` | Kiểm tra sức khỏe |
 
 ### Cho Trang Quản Trị
 
 | Endpoint | Chức năng |
 |---|---|
-| `GET/POST /api/config` | Đọc hoặc cập nhật cấu hình |
-| `GET/POST /api/scan-keys` | Chạy bộ quét bảo mật |
-| `GET/POST /api/mitm/*` | Điều khiển MITM proxy |
-| `GET /api/observability/usage` | Xem thống kê sử dụng |
-| `POST /api/tunnel/cloudflare/*` | Quản lý Cloudflare tunnel |
+| `GET/POST /api/config` | Đọc/cập nhật cấu hình |
+| `GET/POST /api/scan-keys` | Quét bảo mật |
+| `GET/POST /api/mitm/*` | Điều khiển MITM |
+| `GET /api/observability/usage` | Thống kê sử dụng |
+| `POST /api/tunnel/cloudflare/*` | Cloudflare tunnel |
+| `GET/POST /api/bsl-matrix/*` | Ma trận Blacksand |
+| `GET/POST /api/antigravity/*` | Antigravity integration |
 | `POST /api/auth/login` | Đăng nhập quản trị |
 
 ---
@@ -567,9 +777,9 @@ Xem [config.example.yaml](../config.example.yaml) để có template hoàn chỉ
 
 | Package | Vì sao cần |
 |---|---|
-| **FastAPI** | Web framework cho API server |
-| **httpx** | HTTP client async gọi provider |
-| **mitmproxy** | Proxy trong suốt (tùy chọn, cho chế độ MITM) |
-| **cryptography** | Mã hóa Fernet cho API key |
+| **FastAPI** | Web framework |
+| **httpx** | HTTP client async |
+| **mitmproxy** | Proxy trong suốt (tùy chọn) |
+| **cryptography** | Mã hóa Fernet |
 | **PyYAML** | Đọc file config |
-| **pydantic** | Kiểm tra dữ liệu request/response |
+| **pydantic** | Kiểm tra dữ liệu |
