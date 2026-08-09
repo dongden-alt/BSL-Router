@@ -41,7 +41,13 @@ _stream_counter = 0
 # are required together -- zeroing this constant WITHOUT that guard would make
 # `remaining <= 0` true on the first iteration and force-close every stream
 # immediately.
-STREAM_HARD_DEADLINE_SECONDS = 0.0
+#
+# 2026-08-09: Re-enabled at 600s (10 minutes). Long agentic reasoning chains
+# (DeepSeek V4, MiniMax M3 with extended thinking) can legitimately run 5-8
+# minutes. The 10-minute cap catches truly stuck streams while preserving
+# legitimate long-running tool-use turns. If a stream hits this deadline,
+# the client receives a synthetic error frame instead of hanging forever.
+STREAM_HARD_DEADLINE_SECONDS = 600.0
 
 
 def next_stream_id() -> str:
