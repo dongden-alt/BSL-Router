@@ -5377,10 +5377,25 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         # non-Gemini single-model stream path (raw_upstream) that has no other
         # per-connection deadline. Body/reasoning latency after headers is NOT
         # bounded here â€” that stays owned by the stall watchdog.
-        _resp = await asyncio.wait_for(
-            client.send(_active_req, stream=True),
-            timeout=max(1.0, min(HEADER_WAIT_TIMEOUT, _chain_budget_remaining())),
-        )
+        _hw_timeout = max(1.0, min(HEADER_WAIT_TIMEOUT, _chain_budget_remaining()))
+        try:
+            _resp = await asyncio.wait_for(
+                client.send(_active_req, stream=True),
+                timeout=_hw_timeout,
+            )
+        except asyncio.TimeoutError:
+            # LABEL FIX (2026-08-11): str(asyncio.TimeoutError()) is EMPTY, so
+            # the bare exception surfaced in the Gemini terminal frame as the
+            # useless "[BSL Router] upstream error 504: TimeoutError". The
+            # upstream never sent a 504 — the ROUTER gave up waiting for
+            # headers and aborted the connection (which is why the provider
+            # side logs a 499). Re-raise self-describing so every egress path
+            # reports the real cause instead of an empty-string exception name.
+            _left = max(0.0, _chain_budget_remaining())
+            raise TimeoutError(
+                f"upstream_header_timeout (waited {_hw_timeout:.0f}s for headers, "
+                f"{_left:.0f}s chain budget left)"
+            ) from None
         # ── OAuth 401-Retry: force-refresh token and retry once ────────────
         # If the upstream rejects with 401, the token may have expired between
         # our pre-check and the actual send. Force-refresh and retry ONCE.
