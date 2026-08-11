@@ -671,6 +671,35 @@ def _persist_config_snapshot(updated_config: dict) -> None:
             )
             return
 
+    # --- Protection 2b: refuse massive provider-count regression -----------
+    # The zero-providers check above only catches TOTAL wipes. A 1-provider
+    # snapshot (from a corrupted in-memory config) passes that gate and
+    # atomically destroys a 119-provider file. Refuses any write where the
+    # new provider count is less than 50% of the existing on-disk count,
+    # with a floor of 10 so small legitimate configs are never blocked.
+    # This is the 2026-08-10 wipe signature.
+    if providers:
+        try:
+            if os.path.exists(target):
+                import yaml as _yaml_guard
+                with open(target, 'r', encoding='utf-8') as _f:
+                    _existing = _yaml_guard.safe_load(_f) or {}
+                _existing_provs = _existing.get('providers') or {}
+                _existing_count = len(_existing_provs)
+                _new_count = len(providers)
+                if _existing_count >= 10 and _new_count < _existing_count * 0.5:
+                    print(
+                        '[CONFIG-GUARD] refused to persist a snapshot with '
+                        f'{_new_count} providers over an existing '
+                        f'{_existing_count}-provider config.yaml - '
+                        'this is the 2026-08-10 wipe signature '
+                        '(in-memory config regression)',
+                        flush=True,
+                    )
+                    return
+        except Exception:
+            pass  # Best-effort gate; never block writes on a read failure.
+
     # --- Protection 1: atomic write ----------------------------------------
     directory = os.path.dirname(os.path.abspath(target)) or "."
     tmp_path = None

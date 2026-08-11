@@ -337,7 +337,7 @@ class StreamNormalizer:
                     input_tokens = u.get("prompt_tokens", input_tokens)
                     output_tokens = u.get("completion_tokens", output_tokens)
 
-                choices = data.get("choices", [])
+                choices = data.get("choices") or []
                 if not choices:
                     continue
 
@@ -372,7 +372,7 @@ class StreamNormalizer:
                         })
 
                 # Tool call delta (modern tool_calls or legacy function_call)
-                tool_calls = delta.get("tool_calls", [])
+                tool_calls = delta.get("tool_calls") or []
                 legacy_call = delta.get("function_call")
                 if not tool_calls and isinstance(legacy_call, dict) and (
                     legacy_call.get("name") or "arguments" in legacy_call

@@ -37,6 +37,32 @@ def _persist_config_yaml(config: Dict[str, Any]) -> None:
                 return
         except OSError:
             pass
+
+    # --- Protection 2b: refuse massive provider-count regression -----------
+    # Mirrors the 2026-08-10 fix in main._persist_config_snapshot. A
+    # corrupted in-memory config with 1 provider must not overwrite a
+    # 119-provider on-disk config. Refuse writes where new count < 50% of
+    # existing, with a floor of 10 so small legitimate configs are safe.
+    if providers:
+        try:
+            if os.path.exists("config.yaml"):
+                with open("config.yaml", "r", encoding="utf-8") as _f:
+                    _existing = yaml.safe_load(_f) or {}
+                _existing_provs = _existing.get("providers") or {}
+                _existing_count = len(_existing_provs)
+                _new_count = len(providers)
+                if _existing_count >= 10 and _new_count < _existing_count * 0.5:
+                    print(
+                        "[ErrorPrevention] Refusing to overwrite a "
+                        f"{_existing_count}-provider config.yaml with only "
+                        f"{_new_count} providers - write suppressed "
+                        "(2026-08-10 wipe signature).",
+                        flush=True,
+                    )
+                    return
+        except Exception:
+            pass  # Best-effort gate; never block writes on a read failure.
+
     tmp_fd, tmp_path = tempfile.mkstemp(prefix="config.yaml.", suffix=".tmp", dir=".")
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
