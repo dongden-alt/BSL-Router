@@ -61,6 +61,14 @@ CLIENT_ERROR_MARKERS = (
 
 AUTH_MARKERS = (
     "401", "403", "unauthorized", "forbidden", "authentication",
+    # Billing/account issues — the account is dead, not the request.
+    # Without these, a 400 Arrearage falls through to client_error
+    # (non-penalizing) and the same dead connection is retried on every
+    # request, wasting 60-86s per stream attempt before failing.
+    "arrearage", "access denied", "account is in good standing",
+    "insufficient balance", "insufficient_balance", "out of credit",
+    "payment required", "billing", "unpaid", "account suspended",
+    "account_disabled", "no credit",
 )
 
 SERVER_ERROR_MARKERS = (
@@ -372,8 +380,11 @@ class CircuitBreaker:
                 # transition above already handles recovery.
                 return
 
-            # Rate limit: immediate OPEN (like ErrorPrevention's cooldown).
-            if classification == "rate_limit":
+            # Rate limit OR auth: immediate OPEN (account is dead/unusable).
+            # Auth errors (401/403/Arrearage/billing) are deterministic — the
+            # same account will reject every retry. Immediate OPEN prevents
+            # threshold-1 wasted requests waiting 60-86s on a dead account.
+            if classification in ("rate_limit", "auth"):
                 entry["consecutive_failures"] += 1
                 entry["total_failures"] += 1
                 entry["last_failure_time"] = now
@@ -382,7 +393,7 @@ class CircuitBreaker:
                 entry["opened_at"] = now
                 entry["open_until"] = now + self.recovery_timeout
                 print(
-                    f"[CircuitBreaker] OPEN (rate_limit) {key} for "
+                    f"[CircuitBreaker] OPEN ({classification}) {key} for "
                     f"{self.recovery_timeout}s",
                     flush=True,
                 )
