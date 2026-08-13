@@ -101,7 +101,13 @@ class ErrorPreventionManager:
     
     ERROR_TYPES = {
         'timeout': ['timeout', 'timed out', 'time out'],
-        'auth': ['401', '403', 'unauthorized', 'forbidden', 'authentication'],
+        'auth': ['401', '403', 'unauthorized', 'forbidden', 'authentication',
+                  # Billing/account issues — treat like auth: the account
+                  # is dead. Immediate softban prevents 60-86s retries.
+                  'arrearage', 'access denied', 'good standing',
+                  'insufficient balance', 'insufficient_balance',
+                  'out of credit', 'payment required', 'unpaid',
+                  'account suspended', 'account_disabled', 'no credit'],
         # Upstream aggregators (especially VSLLM) mask quota exhaustion as nested
         # 400/500 bodies.  9Router surfaces these same incidents as real 429s.
         # Patterns cover: English, Chinese (速率限制/请求频率), VSLLM code 1302,
@@ -259,7 +265,23 @@ class ErrorPreventionManager:
         # Client payload failures and client disconnects do not describe leaf
         # health. Ignore them before creating or mutating any streak state so
         # repeated identical requests cannot escalate a healthy model.
-        if status_code in (400, 422, 499):
+        #
+        # EXCEPTION: a 400 carrying auth/billing markers (Arrearage, access
+        # denied, insufficient balance) is an account-health issue, not a
+        # payload issue. Without this exception, a dead upstream account
+        # returning 400 Arrearage is never banned and every request retries
+        # it, wasting 60-86s per stream attempt.
+        _msg_lower = (error_msg or '').lower()
+        _is_billing_error = any(
+            marker in _msg_lower
+            for marker in (
+                'arrearage', 'access denied', 'good standing',
+                'insufficient balance', 'insufficient_balance',
+                'out of credit', 'payment required', 'unpaid',
+                'account suspended', 'account_disabled', 'no credit',
+            )
+        )
+        if status_code in (400, 422, 499) and not _is_billing_error:
             return None
         
         # Initialize or update state

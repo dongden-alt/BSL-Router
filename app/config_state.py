@@ -12,6 +12,7 @@ from __future__ import annotations
 import yaml
 
 _config: dict = {}
+_decrypted_cache: dict | None = None
 
 
 def get_config() -> dict:
@@ -19,14 +20,24 @@ def get_config() -> dict:
 
     All existing code that reads api_key/password gets plaintext.
     The internal _config stores encrypted values.
+
+    PERFORMANCE: The decrypted result is cached in _decrypted_cache.
+    Invalidation happens in replace_config() and init_config().
+    With 50+ providers and 100+ connections, re-decrypting on every
+    request (50+ call sites in main.py) adds significant latency.
     """
+    global _decrypted_cache
+    if _decrypted_cache is not None:
+        return _decrypted_cache
     from app.crypto import decrypt_config_secrets
-    return decrypt_config_secrets(_config)
+    _decrypted_cache = decrypt_config_secrets(_config)
+    return _decrypted_cache
 
 
 def replace_config(new_config: dict) -> None:
     """Replace the entire config dict. Secrets are ENCRYPTED before storage."""
-    global _config
+    global _config, _decrypted_cache
+    _decrypted_cache = None  # Invalidate cache — next get_config() re-decrypts.
     from app.crypto import encrypt_config_secrets
     _config = encrypt_config_secrets(new_config)
 
@@ -126,4 +137,6 @@ def init_config(path: str = "config.yaml") -> None:
 
     # Store encrypted internally
     from app.crypto import encrypt_config_secrets
+    global _decrypted_cache
+    _decrypted_cache = None  # Invalidate cache after config reload.
     _config = encrypt_config_secrets(raw)
