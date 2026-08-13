@@ -1263,10 +1263,15 @@ def _tcp_keepalive_options():
     return options
 
 
-def _build_hardened_client(proxy_url: Optional[str] = None) -> httpx.AsyncClient:
+def _build_hardened_client(proxy_url: Optional[str] = None, verify: bool = True) -> httpx.AsyncClient:
     """Construct an AsyncClient whose transport recycles stale sockets and retries
-    connection-level faults. Limits/proxy/retries MUST live on the transport â€”
-    when a custom transport is supplied, client-level limits/proxy are ignored."""
+    connection-level faults. Limits/proxy/retries MUST live on the transport —
+    when a custom transport is supplied, client-level limits/proxy are ignored.
+
+    When verify=False, TLS certificate validation is disabled. This is ONLY
+    for providers with self-signed certs (configured via ssl_verify: false
+    in config.yaml). The default remains verify=True (certifi).
+    """
     limits = httpx.Limits(
         max_keepalive_connections=100,
         max_connections=200,
@@ -1282,6 +1287,7 @@ def _build_hardened_client(proxy_url: Optional[str] = None) -> httpx.AsyncClient
         timeout=_UPSTREAM_TIMEOUT,
         transport=transport,
         event_hooks={"response": [_conn_trace_hook]},
+        verify=verify,
     )
 
 
@@ -1331,6 +1337,24 @@ def _get_client_for_proxy(proxy_url: Optional[str] = None) -> httpx.AsyncClient:
     if proxy_url not in _proxy_clients:
         _proxy_clients[proxy_url] = _build_hardened_client(proxy_url)
     return _proxy_clients[proxy_url]
+
+
+# Cache of clients with TLS verification disabled (for self-signed providers).
+# Keyed by proxy_url (or "" for no proxy) so the cache stays small.
+_ssl_disabled_clients: Dict[str, httpx.AsyncClient] = {}
+
+
+def _get_ssl_disabled_client(proxy_url: Optional[str] = None) -> httpx.AsyncClient:
+    """Return a cached httpx client with TLS verification disabled.
+
+    ONLY for providers with ssl_verify: false in config.yaml.
+    """
+    _key = proxy_url or ""
+    if _key not in _ssl_disabled_clients:
+        _ssl_disabled_clients[_key] = _build_hardened_client(
+            proxy_url=proxy_url, verify=False
+        )
+    return _ssl_disabled_clients[_key]
 
 async def _mitm_watchdog_loop():
     """Background task: restart BSL's OWN mitmdump if it dies.
@@ -5254,6 +5278,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     _upstream_host = httpx.URL(_upstream_url).host if _upstream_url else ""
     if provider_name == "antigravity" or _upstream_host in _ANTIGRAVITY_NATIVE_HOSTS:
         client = _get_antigravity_egress_client()
+    elif provider_config.get("ssl_verify", True) is False:
+        # Provider uses a self-signed cert (e.g. api.iamhc.cn, api.hcnsec.cn).
+        # Disable TLS verification for this provider only.
+        client = _get_ssl_disabled_client(active_conn.get("proxy_url"))
     else:
         client = _get_client_for_proxy(active_conn.get("proxy_url"))
 
