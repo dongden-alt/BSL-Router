@@ -11,6 +11,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.1] - 2026-08-14
+
+### Fixed
+- **Vision Scout 502 timeout loop** — the vision polyfill could exhaust its
+  total wall-clock budget before every fallback candidate got a turn
+  (`Vision unavailable: vision description exceeded the 120.0s budget`).
+  Root cause: a 60s per-attempt timeout meant only 2 of 4 candidates fit in
+  the 120s budget. Lowered the per-attempt timeout to 15s and the total
+  budget to 65s so all 4 candidates get a full attempt (4 × 15s = 60s plus
+  margin) while still bounding how long the IDE can stall.
+- **Self-signed certificate upstreams** — added per-provider `ssl_verify:
+  false` support so connections to upstreams with self-signed certificates
+  no longer fail with `SSL: CERTIFICATE_VERIFY_FAILED`.
+- **Auth pipeline latency** — decrypted config is now cached in
+  `config_state` instead of being re-decrypted on every request.
+- **Circuit breaker accuracy** — billing and authentication errors are now
+  marked distinctly so the breaker does not misclassify them as provider
+  outages.
+
+### Security
+- Purged sensitive config snapshots from Git history and gitignored
+  `.brain/` state directories and config backups to prevent key leakage.
+- Hardened `export-public.ps1` against exporting `config.backup.*` files
+  and root-level scratch scripts.
+
+---
+
 ## [1.0.0] - 2026-08-09
 
 ### Added

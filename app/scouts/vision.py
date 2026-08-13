@@ -49,9 +49,9 @@ DEFAULT_VISION_TIMEOUT_S = 15.0
 # Hard ceiling on wall-clock time for the ENTIRE polyfill, across all images
 # and all fallback attempts. This is the last line of defence against an IDE
 # freeze: whatever happens upstream, the client's request resumes by now.
-# Default lowered from 120→45s (2026-08-14): 4 candidates × 15s = 60s worst
-# case for ONE image; 45s gives 3 full attempts before giving up.
-DEFAULT_VISION_TOTAL_BUDGET_S = 45.0
+# Default 120→65s (2026-08-14): at 15s/attempt all 4 candidates fit
+# (4 × 15s = 60s + 5s margin) while still bounding total IDE stall.
+DEFAULT_VISION_TOTAL_BUDGET_S = 65.0
 
 # Hard ceiling on how many chain leaves we will try for a single image.
 # Deliberately lower than a typical combo chain length: this scout runs INLINE
