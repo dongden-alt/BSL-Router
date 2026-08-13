@@ -42,12 +42,16 @@ def clear_vision_cache():
 # Per-attempt upstream timeout. Deliberately short: the Vision Scout runs
 # INLINE inside the client's request, so a long wait here stalls the IDE.
 # A dead leaf must be abandoned fast so the next candidate gets a turn.
-DEFAULT_VISION_TIMEOUT_S = 60.0
+# Default lowered from 60→15s (2026-08-14): with 4 candidates at 60s each,
+# only 2 fit the 120s budget. At 15s each, all 4 get tried in 60s.
+DEFAULT_VISION_TIMEOUT_S = 15.0
 
 # Hard ceiling on wall-clock time for the ENTIRE polyfill, across all images
 # and all fallback attempts. This is the last line of defence against an IDE
 # freeze: whatever happens upstream, the client's request resumes by now.
-DEFAULT_VISION_TOTAL_BUDGET_S = 120.0
+# Default lowered from 120→45s (2026-08-14): 4 candidates × 15s = 60s worst
+# case for ONE image; 45s gives 3 full attempts before giving up.
+DEFAULT_VISION_TOTAL_BUDGET_S = 45.0
 
 # Hard ceiling on how many chain leaves we will try for a single image.
 # Deliberately lower than a typical combo chain length: this scout runs INLINE
