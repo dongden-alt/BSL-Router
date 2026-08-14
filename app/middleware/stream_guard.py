@@ -41,6 +41,12 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 
+# Cap for the retained sample of first-emitted bytes (diagnostics only).
+# 256B is enough to recognise a frame shape (message_start / reasoning_content
+# delta / text delta) without growing per-request memory meaningfully.
+_DIAG_CAP = 256
+
+
 @dataclass
 class StreamEmissionState:
     """Tracks whether any byte has reached the client for one response.
@@ -54,6 +60,13 @@ class StreamEmissionState:
     emitted: bool = False
     # Bytes emitted, for diagnostics.
     byte_count: int = 0
+    # Capped sample of the FIRST bytes marked as emitted, for forensics.
+    # The GPT-5.6-SOL case (2026-08-13): a transport death after 11204B was
+    # refused fallback while out=0 -- judging whether that veto was correct
+    # requires SEEING what those bytes were (reasoning scaffolding vs real
+    # content). This sample answers that from the refusal log alone. It does
+    # NOT influence the veto decision itself.
+    first_emitted: Optional[bytes] = None
     # Fallback attempts refused because emission had already begun. A non-zero
     # value here is the signal that a leaf died mid-stream, which is exactly the
     # scenario that used to freeze the IDE.
@@ -70,6 +83,20 @@ class StreamEmissionState:
         self.emitted = True
         if chunk:
             self.byte_count += len(chunk)
+            # Retain a capped sample of the first emitted bytes for forensics.
+            if len(self.first_emitted or b"") < _DIAG_CAP:
+                _have = self.first_emitted or b""
+                self.first_emitted = _have + chunk[: _DIAG_CAP - len(_have)]
+
+    def first_emitted_preview(self, limit: int = 300) -> str:
+        """Human-readable repr of the retained first-bytes sample.
+
+        Empty when nothing was captured (e.g. mark_emitted() was called with
+        no payload). Used by refusal_log() only; never gates the veto.
+        """
+        if not self.first_emitted:
+            return ""
+        return repr(self.first_emitted)[:limit]
 
     def mark_emitted_if_content(self, chunk: Optional[bytes]) -> bool:
         """Mark emission only if `chunk` carries RENDERABLE content.
@@ -126,10 +153,12 @@ class StreamEmissionState:
             return ""
         label = f"{provider}/{model}" if (provider or model) else "upstream"
         reasons = ", ".join(self.refusal_reasons[-3:]) or "unspecified"
+        preview = self.first_emitted_preview()
+        tail = f" | first-bytes: {preview}" if preview else ""
         return (
             f"[STREAM-GUARD] {label}: refused {self.refused_fallbacks} "
             f"post-emission fallback(s) after {self.byte_count}B "
-            f"[{reasons}] — emitting terminal frame instead of a second stream"
+            f"[{reasons}] — emitting terminal frame instead of a second stream{tail}"
         )
 
 
