@@ -214,6 +214,11 @@ def _strip_bsl_identity_headers(headers: dict) -> dict:
 # These explicit budgets remain active when the general circuit breaker is off.
 # Tests monkeypatch them down to avoid production-length sleeps.
 GEMINI_EGRESS_KEEPALIVE_INTERVAL = 2.0
+# BUG N (2026-08-13): max bytes of pre-content reasoning held by the Gemini
+# egress pre-render buffer. Past this cap the buffer flushes and commits the
+# stream (a reasoning pane that large is no longer safe to replay silently
+# after a failover). 256 KiB is far above any observed thought burst.
+GEMINI_THOUGHT_BUFFER_CAP_BYTES = 256 * 1024
 GEMINI_EGRESS_CONNECT_KEEPALIVE_INTERVAL = 2.0
 # RC4 fail-fast: the connect budget covers only the pre-header wait (TCP/TLS +
 # response status line + headers). A healthy leaf returns headers in <5s; 90s
@@ -6562,6 +6567,15 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     "is_antigravity": bool(request and "antigravity" in request.headers.get("user-agent", "").lower())
                 }
                 emitted_model_data = False
+                # BUG N (2026-08-13): PRE-RENDER BUFFER. Thought-only frames
+                # arriving before the first visible body content are held here
+                # (not yielded, not committed) so a transport death / stall can
+                # still fail over to the next combo entry. Flushed in order on
+                # the first body-content frame; discarded if the leaf dies or
+                # completes with zero body output. See the per-frame comment in
+                # the drain loop below.
+                _thought_buf: list = []
+                _thought_buf_bytes = 0
                 # FREEZE FIX: this generator was already correct (the flag below
                 # is set immediately before the client-facing yield). Unified
                 # onto the shared guard so all four stream paths report refusals
@@ -6842,6 +6856,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                         from app.compat.adapters.gemini import (
                                             sse_data as _g_sse_data,
                                             gemini_frame_has_content as _gemini_frame_has_content,
+                                            gemini_frame_is_thought_only as _gemini_frame_is_thought_only,
                                         )
                                         # BUG L (2026-08-04) - THE `after 0B` FREEZE.
                                         # Evidence: "[STREAM-GUARD] refused 1
@@ -6869,8 +6884,92 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                         # emission only for RENDERABLE content, and
                                         # pass the frame so byte_count stays
                                         # consistent with `emitted`.
+                                        #
+                                        # BUG N (2026-08-13) - THE GPT-5.6-SOL 502.
+                                        # Evidence: "[502] stream:true GPT-5.6-SOL
+                                        # > qwencoder/gpt-5.6-sol | 78816ms (TTFT
+                                        # 47368) | In: 0 | Out: 0 | ERROR:
+                                        # midstream_transport: peer closed
+                                        # connection ... incomplete chunked read".
+                                        #
+                                        # The stream produced ONLY reasoning
+                                        # (`thought:true`) frames - which the IDE
+                                        # renders in the reasoning pane, not the
+                                        # transcript body - and then the leaf died
+                                        # mid-transport. The BUG L gate counts a
+                                        # thought frame as content (correct: it is
+                                        # renderable somewhere), so emission was
+                                        # marked, fallback was refused, and the
+                                        # user got a dead stream while healthy
+                                        # chain entries went untried.
+                                        #
+                                        # Fix: PRE-RENDER BUFFER. While the stream
+                                        # has yielded only thought-only frames (and
+                                        # scaffolding), hold them here instead of
+                                        # yielding, and keep `emitted` False so a
+                                        # transport death / stall can still fail
+                                        # over: the client has seen nothing into the
+                                        # transcript body, so splicing a fresh
+                                        # stream is invisible. The FIRST visible
+                                        # text / tool frame commits the transcript:
+                                        # flush the held thoughts, then mark
+                                        # emission - from that instant fallback is
+                                        # forbidden, exactly as before.
+                                        #
+                                        # Failure path: if the leaf dies pre-commit,
+                                        # the buffered thoughts are simply dropped
+                                        # with the generator; the combo chain
+                                        # advances and the retry re-issues them.
+                                        # Holding forever is impossible: the buffer
+                                        # is bounded (cap) and only live while the
+                                        # request is in flight.
                                         _frame = g if "response" in g else {"response": g}
                                         _payload = _g_sse_data(_frame)
+                                        # BUG N (2026-08-13): a frame is BODY
+                                        # content only if it is renderable AND not
+                                        # a pure thought frame (thoughts render in
+                                        # the reasoning pane, not the transcript
+                                        # body). gemini_frame_has_content returns
+                                        # True for non-empty thought text too, so
+                                        # the thought-only check must subtract.
+                                        _is_body_content = (
+                                            _gemini_frame_has_content(_frame)
+                                            and not _gemini_frame_is_thought_only(_frame)
+                                        )
+                                        if not emitted_model_data and not _is_body_content:
+                                            if _gemini_frame_is_thought_only(_frame):
+                                                # Pre-content reasoning: hold, do not
+                                                # commit. Bound retained bytes so a
+                                                # runaway thought stream cannot grow
+                                                # memory without limit.
+                                                if _thought_buf_bytes + len(_payload) <= GEMINI_THOUGHT_BUFFER_CAP_BYTES:
+                                                    _thought_buf.append(_payload)
+                                                    _thought_buf_bytes += len(_payload)
+                                                    continue
+                                                # Cap exceeded: a reasoning pane this
+                                                # large is no longer safe to replay
+                                                # silently after a failover. Commit
+                                                # now - flush held thoughts, mark
+                                                # emission, continue unbuffered.
+                                                for _held in _thought_buf:
+                                                    yield _held
+                                                _thought_buf.clear()
+                                                emitted_model_data = True
+                                                _emit.mark_emitted(_payload)
+                                                yield _payload
+                                                continue
+                                            # Usage-only / finish-only / empty frame
+                                            # pre-commit: invisible scaffolding. Pass
+                                            # through WITHOUT committing so a later
+                                            # transport death can still fail over.
+                                            yield _payload
+                                            continue
+                                        if _thought_buf:
+                                            # First body content: flush held reasoning
+                                            # in order, then commit on this frame.
+                                            for _held in _thought_buf:
+                                                yield _held
+                                            _thought_buf.clear()
                                         if _gemini_frame_has_content(_frame):
                                             emitted_model_data = True
                                             _emit.mark_emitted(_payload)
@@ -6982,6 +7081,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         except Exception:
                             pass
                         return
+                    # BUG N: normal completion with thoughts still buffered
+                    # (e.g. a thought-only stream whose usage reported tokens).
+                    # Surface the held reasoning before [DONE] - the stream is
+                    # over, so there is no fallback decision left to protect.
+                    if _thought_buf:
+                        for _held in _thought_buf:
+                            yield _held
+                        _thought_buf.clear()
                     from app.compat.adapters.gemini import SSE_DONE as _G_SSE_DONE
                     yield _G_SSE_DONE
                 except (GeneratorExit, asyncio.CancelledError):

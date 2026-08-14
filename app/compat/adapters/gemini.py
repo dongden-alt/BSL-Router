@@ -722,6 +722,53 @@ def gemini_frame_has_content(frame: Dict[str, Any]) -> bool:
     return False
 
 
+def gemini_frame_is_thought_only(frame: Dict[str, Any]) -> bool:
+    """True only if EVERY part of the frame is a thought (reasoning) part.
+
+    BUG N (2026-08-13). Pairs with `gemini_frame_has_content` at the Gemini
+    egress pre-render buffer (main.py). A thought-only frame renders in the
+    IDE's reasoning pane but nothing into the transcript body. While the
+    stream has produced ONLY such frames (plus scaffolding), abandoning the
+    leaf and failing over leaves the client with an incomplete reasoning pane
+    and no body text — recoverable. The moment a visible-text or tool frame
+    exists, the transcript is committed and fallback is forbidden.
+
+    Classification is conservative in the SAFE direction: anything that is not
+    provably a thought part (text, functionCall, inlineData, usage metadata,
+    finish frames, malformed shapes) returns False so the buffer flushes and
+    commits. A misclassified thought frame merely commits one fallback earlier
+    than optimal; a misclassified visible frame would permit the transcript
+    corruption this module exists to prevent.
+
+    Frames with no content at all (usage-only, finish-with-empty-parts) return
+    False: they are not thoughts, and the buffer only ever holds thought frames
+    — they pass straight through unbuffered and uncommitted.
+    """
+    if not isinstance(frame, dict):
+        return False
+    inner = frame.get("response") if "response" in frame else frame
+    if not isinstance(inner, dict):
+        return False
+    found = False
+    for cand in inner.get("candidates") or []:
+        if not isinstance(cand, dict):
+            return False
+        content = cand.get("content")
+        if not isinstance(content, dict):
+            return False
+        for part in content.get("parts") or []:
+            if not isinstance(part, dict):
+                return False
+            found = True
+            if part.get("thought") is not True:
+                return False
+            if not isinstance(part.get("text"), str) or part["text"] == "":
+                return False
+            if part.get("functionCall") or part.get("inlineData") or part.get("fileData"):
+                return False
+    return found
+
+
 def _base_gemini_response(state: Dict[str, Any], parts: list, finish_reason: Optional[str]) -> Dict[str, Any]:
     """Build the inner Gemini chunk object (§4a). Caller wraps as {"response": obj}."""
     candidate: Dict[str, Any] = {
