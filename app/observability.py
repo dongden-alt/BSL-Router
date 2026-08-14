@@ -490,16 +490,70 @@ def log_request(
         _persist_entry(_USAGE_LOG_PATH, usage_entry)
 
 
-def recompute_usage_costs(config: dict):
+# ── Recompute cache ──────────────────────────────────────────────────────────
+# /api/observability/usage used to call recompute_usage_costs(config) on EVERY
+# request, which re-reads config.yaml + the pricing registry from disk and
+# fuzzy-matches every model for all ~10k entries synchronously in the event
+# loop. Throttle: at most one full recompute per _RECOMPUTE_TTL_S seconds, and
+# force a fresh recompute if the pricing registry file mtime changed. We never
+# deep-hash config.yaml here (249 KB) — the TTL + registry mtime is the cache
+# key. Entries appended after the last recompute already get their cost
+# computed incrementally at log_request time, so skipping the loop is safe.
+_RECOMPUTE_TTL_S = 60.0
+_recompute_last_ts: float = 0.0
+_recompute_last_len: int = -1
+_recompute_registry_key = None  # (mtime, size) of data/model_pricing_registry.json
+
+
+def _pricing_registry_signature():
+    """Cheap (mtime, size) signature for the canonical pricing registry file.
+
+    Fail-open: any error (missing file, permission) returns None, which forces
+    a recompute the next time the cache key is compared (since it differs from
+    the stored key). Never reads or parses the file contents.
+    """
+    try:
+        registry_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "data",
+            "model_pricing_registry.json",
+        )
+        if not os.path.exists(registry_path):
+            return None
+        st = os.stat(registry_path)
+        return (st.st_mtime, st.st_size)
+    except Exception:
+        return None
+
+
+def recompute_usage_costs(config: dict, force: bool = False):
     """Retroactively recalculate cost/savings for ALL historical usage entries
     using the current pricing registry. Fixes entries logged with cost=0 when
     the pricing registry was not yet loaded or was incomplete at request time.
 
     Mutates usage_stats entries in-place so the API returns corrected values.
+
+    Throttled: at most one full recompute per _RECOMPUTE_TTL_S seconds, unless
+    `force=True` or the pricing registry file mtime/size changed. Safe because
+    entries appended after the last recompute already had their cost computed
+    at log_request time. Fail-open like the rest of the observability layer.
     """
+    global _recompute_last_ts, _recompute_last_len, _recompute_registry_key
     try:
+        reg_key = _pricing_registry_signature()
+        now = time.time()
+        ttl_fresh = (now - _recompute_last_ts) < _RECOMPUTE_TTL_S
+        len_unchanged = _recompute_last_len == len(usage_stats)
+        if not force and ttl_fresh and len_unchanged and reg_key == _recompute_registry_key:
+            return  # cache hit — nothing to recompute
+
         rates_map = _load_model_costs(config)
         if not rates_map:
+            # Still advance the cache markers so we don't re-attempt every
+            # request within the TTL window when the registry is simply empty.
+            _recompute_last_ts = now
+            _recompute_last_len = len(usage_stats)
+            _recompute_registry_key = reg_key
             return
         for entry in usage_stats:
             model = entry.get("model", "")
@@ -519,8 +573,24 @@ def recompute_usage_costs(config: dict):
             entry["savings"] = round(
                 (cached / 1_000_000) * (m_rates["in"] - m_rates["cache"]), 6
             ) if cached else 0.0
+        _recompute_last_ts = now
+        _recompute_last_len = len(usage_stats)
+        _recompute_registry_key = reg_key
     except Exception as _e:
         print(f"[Observability] recompute_usage_costs failed (non-blocking): {_e}", flush=True)
+
+
+def invalidate_recompute_cache():
+    """Force the next recompute_usage_costs() call to run the full loop.
+
+    Used by tests and by code paths that know the pricing registry changed
+    out-of-band (e.g. /api/pricing/detect rewrote the file) and want the next
+    /usage read to reflect it immediately rather than waiting for the TTL.
+    """
+    global _recompute_last_ts, _recompute_last_len, _recompute_registry_key
+    _recompute_last_ts = 0.0
+    _recompute_last_len = -1
+    _recompute_registry_key = None
 
 async def run_error_analysis(http_client: httpx.AsyncClient, config: dict):
     """

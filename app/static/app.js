@@ -5798,6 +5798,29 @@ let usageColsState = [
 
 // Global (free-text) search across all columns.
 let usageFilterState = '';
+// Cap on how many rows renderUsageTable() paints into the DOM at once. The
+// usage endpoint returns up to 500 entries per page and the full filtered set
+// can be large; rendering all of them in one innerHTML is the 2-minute tab
+// load. Reset to 500 whenever filters/search/timeframe change; incremented by
+// 500 per "Load 500 more" click.
+let usageRenderLimit = 500;
+
+// Minimal debounce — avoids importing a lib. Used by the global search input
+// so we don't re-render the whole table on every keystroke.
+function _debounce(fn, ms) {
+    let t = null;
+    return function(...args) {
+        if (t) clearTimeout(t);
+        t = setTimeout(() => { t = null; fn.apply(this, args); }, ms);
+    };
+}
+// Debounced global search handler (300ms). Sets filter state then re-renders,
+// resetting the render limit so the top matches show first.
+const _usageSearchDebounced = _debounce(function() { usageRenderLimit = 500; renderUsageTable(); }, 300);
+function _usageSearchInput(value) {
+    usageFilterState = value;
+    _usageSearchDebounced();
+}
 // Optional custom date-time bounds applied in addition to the quick timeframe buttons.
 let usageDateStartFilter = '';
 let usageDateEndFilter = '';
@@ -6034,6 +6057,11 @@ function _fmtCompact(n) {
 let logsDataState = [];
 let logsFilterState = '';
 let logsArtifactsState = [];
+// Cap on how many console-log rows renderLogsView() paints into the DOM at
+// once. Reset to 500 only when new data arrives that changes the signature
+// (see _logsSignature guard in refreshLogsLive) — so the user's expanded view
+// survives live polling between data changes.
+let logsRenderLimit = 500;
 
 // ── Timeframe ───────────────────────────────────────────────────────────────
 const USAGE_TIMEFRAMES = ['today', '1D', '7D', '1M', '3M', '6M'];
@@ -6076,12 +6104,14 @@ function setUsageDateFilter(which, value) {
     if (which === 'start') usageDateStartFilter = value;
     if (which === 'end') usageDateEndFilter = value;
     usageOpenFilterCol = null;
+    usageRenderLimit = 500;
     renderUsageTable();
 }
 
 function clearUsageDateFilter() {
     usageDateStartFilter = '';
     usageDateEndFilter = '';
+    usageRenderLimit = 500;
     renderUsageTable();
 }
 
@@ -6190,12 +6220,14 @@ function _usageMetricValue(row) {
 function setUsageViewMode(mode) {
     usageViewMode = mode;
     usageOpenFilterCol = null;
+    usageRenderLimit = 500;
     renderUsageTable();
 }
 
 function setUsageTimeframe(key) {
     usageTimeframe = key;
     usageOpenFilterCol = null;
+    usageRenderLimit = 500;
     renderUsageTable();
 }
 
@@ -6603,9 +6635,15 @@ function renderPricingPage() {
 
 async function loadUsageData() {
     try {
-        const res = await fetch('/api/observability/usage');
+        const res = await fetch('/api/observability/usage?limit=2000&offset=0');
         const data = await res.json();
-        usageDataState = data.slice().reverse();
+        // Endpoint now returns {total, entries, has_more}. The Usage analytics
+        // page (stats cards, charts, table) operates on the filtered set, so we
+        // pull a large page (2000) to cover typical windowed timeframes without
+        // needing server-side aggregation. Fall back to bare array for safety.
+        const entries = Array.isArray(data) ? data : (data && data.entries ? data.entries : []);
+        usageDataState = entries.slice().reverse();
+        usageRenderLimit = 500;
         renderUsageTable();
     } catch (e) {
         const container = document.getElementById('usage-container');
@@ -6613,8 +6651,15 @@ async function loadUsageData() {
     }
 }
 
+// "Load 500 more" handler for the usage table — grows usageRenderLimit by 500.
+function loadMoreUsageRows() {
+    usageRenderLimit += 500;
+    renderUsageTable();
+}
+
 function toggleUsageCol(idx) {
     usageColsState[idx].visible = !usageColsState[idx].visible;
+    usageRenderLimit = 500;
     renderUsageTable();
 }
 
@@ -6650,6 +6695,7 @@ function toggleUsageColumnValue(colId, value) {
     if (selected.has(value)) selected.delete(value); else selected.add(value);
     if (selected.size === universe.length) delete usageColFilters[colId];
     else usageColFilters[colId] = selected;
+    usageRenderLimit = 500;
     renderUsageTable();
 }
 
@@ -6718,7 +6764,7 @@ function renderUsageTable() {
                 <input type="datetime-local" class="input" value="${_usageEscapeHtml(_usageDateInputValue(effectiveEnd))}" onchange="setUsageDateFilter('end', this.value)" style="width:185px;font-size:12px;padding:6px 8px;">
                 <button class="btn btn-outline" onclick="clearUsageDateFilter()" style="padding:5px 9px;font-size:11px;">Clear dates</button>
             </div>
-            <input type="text" class="input" placeholder="Global search" value="${_usageEscapeHtml(usageFilterState)}" oninput="usageFilterState=this.value;renderUsageTable();" style="width:240px;font-size:12px;">
+            <input type="text" class="input" placeholder="Global search" value="${_usageEscapeHtml(usageFilterState)}" oninput="_usageSearchInput(this.value)" style="width:240px;font-size:12px;">
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px;min-height:22px;">
             ${usageColsState.map((col, idx) => !col.visible ? `<button class="btn btn-outline" onclick="toggleUsageCol(${idx})" style="padding:3px 8px;font-size:11px;border-style:dashed;">+ ${_usageEscapeHtml(col.name)}</button>` : '').join('')}
@@ -6734,7 +6780,10 @@ function renderUsageTable() {
     if (filteredData.length === 0) {
         html += `<tr><td colspan="${usageColsState.filter(c => c.visible).length}" style="padding:18px;text-align:center;color:var(--text-muted);">No matching usage records for current filters.</td></tr>`;
     } else {
-        filteredData.forEach(row => {
+        // Cap DOM rows so a 10k-row filtered set doesn't freeze the tab. Stats
+        // cards + charts above still aggregate over the FULL filteredData.
+        const visibleCount = Math.min(usageRenderLimit, filteredData.length);
+        filteredData.slice(0, visibleCount).forEach(row => {
             html += `<tr style="border-bottom:1px solid var(--border-color);">`;
             usageColsState.forEach(col => {
                 if (!col.visible) return;
@@ -6744,6 +6793,12 @@ function renderUsageTable() {
             });
             html += `</tr>`;
         });
+        if (filteredData.length > visibleCount) {
+            html += `<tr><td colspan="${usageColsState.filter(c => c.visible).length}" style="padding:14px;text-align:center;">
+                <span style="font-size:12px;color:var(--text-muted);">Showing ${visibleCount.toLocaleString()} of ${filteredData.length.toLocaleString()} records · </span>
+                <button class="btn btn-outline" style="padding:5px 12px;font-size:12px;font-weight:800;" onclick="loadMoreUsageRows()">Load 500 more</button>
+            </td></tr>`;
+        }
     }
     html += `</tbody></table></div></div>`;
     container.innerHTML = html;
@@ -6752,21 +6807,31 @@ function renderUsageTable() {
 async function loadLogsData() {
     try {
         const [logsRes, artRes] = await Promise.all([
-            fetch('/api/observability/logs'),
+            fetch('/api/observability/logs?limit=2000&offset=0'),
             fetch('/api/observability/artifacts')
         ]);
-        const logs = await logsRes.json();
+        const logsBody = await logsRes.json();
         const artifacts = await artRes.json();
-        
+        // Endpoint now returns {total, entries, has_more}. Fall back to bare
+        // array for safety. Frontend reverses to oldest-first (newest at bottom).
+        const logs = Array.isArray(logsBody) ? logsBody : (logsBody && logsBody.entries ? logsBody.entries : []);
+
         logsDataState = logs.slice().reverse();
         logsArtifactsState = artifacts.slice().reverse();
+        logsRenderLimit = 500;
         _logsSignature = _computeLogsSignature();
         renderLogsView();
-        
+
     } catch (e) {
         const container = document.getElementById('logs-container');
         if (container) container.innerHTML = `<div class="empty-state" style="color:var(--danger-color)">Error loading logs: ${e.message}</div>`;
     }
+}
+
+// "Load 500 more" handler for the console-log view — grows logsRenderLimit.
+function loadMoreLogsRows() {
+    logsRenderLimit += 500;
+    renderLogsView();
 }
 
 // ── Live log streaming ─────────────────────────────────────────────────
@@ -6791,17 +6856,32 @@ async function refreshLogsLive() {
     }
     try {
         const [logsRes, artRes] = await Promise.all([
-            fetch('/api/observability/logs'),
+            fetch('/api/observability/logs?limit=2000&offset=0'),
             fetch('/api/observability/artifacts')
         ]);
         if (!logsRes.ok) return;
-        const logs = await logsRes.json();
+        // D-lite: if the total count is unchanged AND the existing signature
+        // already reflects that count, the body is identical — skip parsing.
+        const headerTotal = logsRes.headers.get('x-total-count');
+        if (headerTotal !== null) {
+            const [_nPart] = _logsSignature.split(':');
+            if (String(headerTotal) === String(_nPart) && _nPart !== '') {
+                // Same length as last render — nothing new. Skip body parse.
+                // (A same-length set with a different newest timestamp would be
+                // a rotation, which is rare; the full poll retries in 2s.)
+                return;
+            }
+        }
+        const logsBody = await logsRes.json();
         const artifacts = await artRes.json();
+        const logs = Array.isArray(logsBody) ? logsBody : (logsBody && logsBody.entries ? logsBody.entries : []);
         logsDataState = logs.slice().reverse();
         logsArtifactsState = artifacts.slice().reverse();
         const sig = _computeLogsSignature();
         if (sig !== _logsSignature) {
             _logsSignature = sig;
+            // Keep the user's current logsRenderLimit (expanded view survives),
+            // but re-apply the cap to the newest rows by re-rendering.
             renderLogsView();
         }
     } catch (e) { /* transient — next tick retries */ }
@@ -6834,6 +6914,7 @@ function setupAutoClearInterval() {
                 if (res.ok) {
                     logsDataState = [];
                     logsArtifactsState = [];
+                    logsRenderLimit = 500;
                     if (document.getElementById('logs-container')) renderLogsView();
                 }
             } catch (e) {
@@ -7044,7 +7125,18 @@ function renderLogsView() {
     // sit at the BOTTOM — matching the autoscroll-to-bottom behavior below.
     const chronological = [...filteredData];
     const chronologicalErrors = [...errorLogs];
-    const consoleLogLines = chronological.map(formatLogLine).join('');
+    // Cap rendered console rows so a large log set doesn't freeze the tab.
+    // The newest entries sit at the bottom, so when capping we keep the tail
+    // (most recent) and offer a "Load 500 more" button to grow the window.
+    const _visibleLogCount = Math.min(logsRenderLimit, chronological.length);
+    const visibleChronological = chronological.slice(Math.max(0, chronological.length - _visibleLogCount));
+    const consoleLogLines = visibleChronological.map(formatLogLine).join('')
+        + (chronological.length > _visibleLogCount
+            ? `<div id="logs-load-more-row" style="padding:8px;text-align:center;border-top:1px solid #333;color:#9ca3af;font-size:11px;">
+                 Showing ${_visibleLogCount.toLocaleString()} of ${chronological.length.toLocaleString()} entries ·
+                 <button class="btn btn-outline" style="padding:4px 10px;font-size:11px;font-weight:800;" onclick="loadMoreLogsRows()">Load 500 more</button>
+               </div>`
+            : '');
     const errorLogLines = chronologicalErrors.map(formatLogLine).join('');
     
     const autoClearInterval = globalConfig.tools?.auto_clear_logs_interval || 0;
@@ -7331,6 +7423,7 @@ function renderLogsView() {
 // never full scaffold, so the input element retains focus across keystrokes.
 window._logsFilterUpdate = function(val) {
     logsFilterState = val;
+    logsRenderLimit = 500;
     // Only patch the content boxes (fast path) — no full rebuild needed
     const consoleBox = document.getElementById('console-log-box');
     const errorBox   = document.getElementById('error-log-box');
