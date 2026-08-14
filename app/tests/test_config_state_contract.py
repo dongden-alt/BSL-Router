@@ -88,7 +88,7 @@ def test_model_enable_mutation_reaches_live_master():
         mut = cs.get_mutable_config()
         mut["providers"]["prov-x"]["models"][0]["enabled"] = False
         
-        with patch('builtins.open', create=True):
+        with patch('app.main._persist_config_snapshot', return_value=None):
             main._replace_runtime_config(mut)
             
         # A fresh READ snapshot must reflect the mutation (master, not a stale clone).
@@ -103,7 +103,7 @@ def test_model_enable_mutation_reaches_live_master():
         probe["providers"]["prov-x"]["models"][0]["enabled"] = True
         assert cs.get_config()["providers"]["prov-x"]["models"][0]["enabled"] is False
     finally:
-        with patch('builtins.open', create=True):
+        with patch('app.main._persist_config_snapshot', return_value=None):
             main._replace_runtime_config(saved)
 
 
