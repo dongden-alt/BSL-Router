@@ -9275,7 +9275,18 @@ if __name__ == "__main__":
     _reload_kwargs = {}
     if reload_enabled:
         _reload_kwargs["reload_excludes"] = [".brain/*", "scratch/*", "*.log", "*.jsonl"]
-    # Note: uvloop is automatically used by uvicorn if installed (on non-Windows)
-    uvicorn.run("app.main:app", host=host, port=port, reload=reload_enabled, **_reload_kwargs)
+    # Anti-freeze watchdog (2026-08-14): if config.watchdog.auto_restart is True,
+    # launch the router as a child process supervised by app.watchdog. The watchdog
+    # polls /api/antifreeze/status every 5s; 3 consecutive failures (15s of total
+    # silence) → kill + restart the child. Only triggers on event-loop freeze,
+    # NOT on model errors or stream stalls. When disabled (default), uvicorn runs
+    # directly with zero overhead.
+    _watchdog_cfg = config.get("watchdog", {})
+    if _watchdog_cfg.get("auto_restart", False):
+        from app.watchdog import run_supervised
+        run_supervised(host=host, port=port, reload=reload_enabled, **_reload_kwargs)
+    else:
+        # Note: uvloop is automatically used by uvicorn if installed (on non-Windows)
+        uvicorn.run("app.main:app", host=host, port=port, reload=reload_enabled, **_reload_kwargs)
 
 

@@ -499,6 +499,56 @@ async function handleShutdown() {
     }
 }
 
+// ── Anti-Freeze: live stream count polling ──
+let _afzPollTimer = null;
+
+async function pollActiveStreams() {
+    try {
+        const res = await fetch('/api/antifreeze/status');
+        if (res.ok) {
+            const data = await res.json();
+            const el = document.getElementById('afz-active-count');
+            if (el) {
+                const count = data.active_streams || 0;
+                el.textContent = count;
+                el.style.color = count > 10 ? 'var(--danger)' : (count > 3 ? '#f59e0b' : 'var(--text-main)');
+            }
+        }
+    } catch (e) {
+        const el = document.getElementById('afz-active-count');
+        if (el) { el.textContent = '⚠'; el.style.color = 'var(--danger)'; }
+    }
+}
+
+function startAfzPolling() {
+    if (_afzPollTimer) clearInterval(_afzPollTimer);
+    pollActiveStreams();
+    _afzPollTimer = setInterval(pollActiveStreams, 5000);
+}
+
+function stopAfzPolling() {
+    if (_afzPollTimer) { clearInterval(_afzPollTimer); _afzPollTimer = null; }
+}
+
+async function handleForceStopStreams() {
+    if (!confirm('Force-stop all active streams?\n\nEach cancelled stream will receive an error + [DONE] frame so the client unblocks. This does NOT restart the router.')) return;
+    try {
+        const res = await fetch('/api/antifreeze/force-stop', { method: 'POST' });
+        const data = await res.json();
+        showToast(`Cancelled ${data.cancelled || 0} active stream(s).`, false);
+        pollActiveStreams();
+    } catch (e) {
+        showToast('Force-stop failed — router may be unresponsive', true);
+    }
+}
+
+function toggleAutoRestart(enabled) {
+    if (!globalConfig.watchdog) globalConfig.watchdog = {};
+    globalConfig.watchdog.auto_restart = enabled;
+    scheduleAutoSave();
+    showToast(enabled ? 'Auto-restart enabled — restart router to activate watchdog' : 'Auto-restart disabled');
+}
+
 // Enter key support for login password field
 document.addEventListener('DOMContentLoaded', () => {
     // BSL matrix auto-marked select styling — injected here because style.css
@@ -3622,11 +3672,13 @@ function renderActiveTab() {
             <span>Settings</span>
             <div class="topbar-subtitle">Admin security and system controls</div>`;
         content.innerHTML = renderSettingsTab();
+        startAfzPolling(); // begin live stream-count polling
 
         if (visibilityEditBtn) visibilityEditBtn.style.display = 'none';
         if (visibilitySaveBtn) visibilitySaveBtn.style.display = 'none';
         if (saveBtn) saveBtn.style.display = 'none';
     } else {
+        stopAfzPolling(); // stop polling when leaving settings tab
         if (visibilityEditBtn) visibilityEditBtn.style.display = 'none';
         if (visibilitySaveBtn) visibilitySaveBtn.style.display = 'none';
         if (saveBtn) saveBtn.style.display = 'inline-flex';
@@ -5313,6 +5365,8 @@ function renderSettingsTab() {
     const admin = globalConfig.admin || {};
     const passwordEnabled = admin.password_enabled === true;
     const currentPassword = admin.password || '123456';
+    const watchdog = globalConfig.watchdog || {};
+    const watchdogEnabled = watchdog.auto_restart === true;
 
     return `
         <div class="settings-section">
@@ -5361,6 +5415,35 @@ function renderSettingsTab() {
                     <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
                     Logout
                 </button>
+            </div>
+        </div>
+
+        <div class="settings-section">
+            <h2 class="section-title">🛡️ Anti-Freeze & Stream Recovery</h2>
+
+            <div class="setting-row">
+                <div class="setting-info">
+                    <div class="setting-title">Active Streams</div>
+                    <div class="setting-desc">Live count of in-flight SSE stream tasks. If this climbs and requests hang, a stuck stream may be blocking the pipeline.</div>
+                </div>
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <span id="afz-active-count" class="badge" style="font-size:14px; font-weight:700; padding:4px 12px; background:var(--bg-surface); border:1px solid var(--border-color); border-radius:8px;">—</span>
+                    <button class="btn-shutdown" id="afz-force-stop-btn" onclick="handleForceStopStreams()">
+                        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+                        Force-Stop All Streams
+                    </button>
+                </div>
+            </div>
+
+            <div class="setting-row">
+                <div class="setting-info">
+                    <div class="setting-title">Auto-Restart on Freeze</div>
+                    <div class="setting-desc">When enabled, a background watchdog polls the router health endpoint every 5 seconds. If it fails 3 times in a row (15s of total unresponsiveness), the router process is automatically killed and restarted. This only triggers when the event loop itself is frozen — model errors, stream stalls, and high load do NOT trigger a restart. In-flight calls during restart are lost (not retried). Requires router restart to take effect.</div>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="afz-auto-restart-toggle" onchange="toggleAutoRestart(this.checked)" ${watchdogEnabled ? 'checked' : ''}>
+                    <span class="slider"></span>
+                </label>
             </div>
         </div>
     `;
