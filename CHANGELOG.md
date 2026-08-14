@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself is unchanged — this is forensics, not a policy change.
 
 ### Fixed
+- **GPT-5.6-SOL midstream 502 (reasoning-only streams)** — when a vision/reasoning
+  model (DeepSeek V4, MiniMax M3 via `qwencoder/gpt-5.6-sol`) produced ONLY
+  `thought:true` frames before the leaf died mid-transport, the emission gate
+  treated reasoning-pane text as committed content, vetoed combo fallback, and
+  the IDE froze on a dead stream. The Gemini egress now holds pre-content
+  thought frames in a capped buffer (256 KiB) without marking emission, so a
+  transport death/stall can still fail over to the next combo entry. The first
+  visible body-content frame flushes the buffer in order and commits, exactly
+  as before. Usage-only/finish-only scaffolding passes through uncommitted.
+  New classifier `gemini_frame_is_thought_only` in `app/compat/adapters/gemini.py`;
+  regression suite `app/tests/test_thought_buffer_prender.py` (19 tests).
 - **Vision Scout 502 timeout loop** — the vision polyfill could exhaust its
   total wall-clock budget before every fallback candidate got a turn
   (`Vision unavailable: vision description exceeded the 120.0s budget`).
