@@ -2208,17 +2208,56 @@ async def antifreeze_status():
     })
 
 
+def _obs_pagination_params(limit, offset):
+    """Clamp observability pagination params to safe defaults (fail-open).
+
+    Returns (limit, offset) with limit in 1..2000 (default 500) and
+    offset >= 0 (default 0). Non-numeric / negative values fall back to
+    defaults rather than raising — these are read-only GET endpoints.
+    """
+    try:
+        _limit = int(limit) if limit is not None else 500
+    except (TypeError, ValueError):
+        _limit = 500
+    try:
+        _offset = int(offset) if offset is not None else 0
+    except (TypeError, ValueError):
+        _offset = 0
+    if _limit < 1:
+        _limit = 500
+    if _limit > 2000:
+        _limit = 2000
+    if _offset < 0:
+        _offset = 0
+    return _limit, _offset
+
+
 @app.get("/api/observability/usage")
-async def get_usage():
+async def get_usage(limit: int = 500, offset: int = 0):
     # Retroactively recalculate costs using the current pricing registry
-    # so historical entries logged with cost=0 get correct values.
+    # so historical entries logged with cost=0 get correct values. Throttled
+    # internally to at most one full recompute per 60s (see obs.recompute).
     config = cs_get_config()
     obs.recompute_usage_costs(config)
-    return JSONResponse(obs.usage_stats)
+    _limit, _offset = _obs_pagination_params(limit, offset)
+    total = len(obs.usage_stats)
+    entries = obs.usage_stats[_offset:_offset + _limit]
+    return JSONResponse({
+        "total": total,
+        "entries": entries,
+        "has_more": (_offset + _limit) < total,
+    })
 
 @app.get("/api/observability/logs")
-async def get_logs():
-    return JSONResponse(obs.console_logs)
+async def get_logs(limit: int = 500, offset: int = 0):
+    _limit, _offset = _obs_pagination_params(limit, offset)
+    total = len(obs.console_logs)
+    entries = obs.console_logs[_offset:_offset + _limit]
+    # X-Total-Count lets the live-poller skip body parsing when nothing changed.
+    return JSONResponse(
+        {"total": total, "entries": entries, "has_more": (_offset + _limit) < total},
+        headers={"X-Total-Count": str(total)},
+    )
 
 @app.get("/api/observability/artifacts")
 async def get_artifacts():
