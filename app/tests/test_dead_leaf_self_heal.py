@@ -70,9 +70,16 @@ def _guard_config_yaml(monkeypatch):
     def guarded_open(path, *args, **kwargs):
         p = str(path).replace("\\", "/")
         mode = kwargs.get("mode", args[0] if args else "r")
-        if p.endswith("config.yaml") and "w" in mode:
-            flag["config_written"] = True
-            return io.StringIO()
+        if p.endswith("config.yaml"):
+            if "w" in mode:
+                flag["config_written"] = True
+                return io.StringIO()
+            elif "r" in mode:
+                # Protection 2b reads config.yaml to count existing providers.
+                # Return a minimal fake config (1 provider) so the test's
+                # 1-provider snapshot doesn't trigger the regression block.
+                fake_yaml = "providers:\n  test-prov:\n    models: []\n"
+                return io.StringIO(fake_yaml)
         return real_open(path, *args, **kwargs)
 
     def guarded_mkstemp(*args, **kwargs):

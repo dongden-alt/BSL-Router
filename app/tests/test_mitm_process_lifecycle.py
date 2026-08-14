@@ -122,6 +122,8 @@ def _kill_port_listeners(port):
         "(pip install -r requirements.txt) to run the real-process MITM harness"
     ),
 )
+@pytest.mark.slow
+@pytest.mark.timeout(60)  # Real subprocess lifecycle with 35s internal wait
 def test_nonproduction_listener_tree_is_replaced_and_verified_exclusive():
     port = _free_port()
     foreign = None
@@ -155,6 +157,15 @@ def test_nonproduction_listener_tree_is_replaced_and_verified_exclusive():
         shutil.rmtree(SCRATCH, ignore_errors=True)
 
 
+@pytest.mark.skipif(
+    _MISSING_MITMDUMP,
+    reason=(
+        "mitmdump not found in .venv/Scripts - install dependencies "
+        "(pip install -r requirements.txt) to run the real-process MITM harness"
+    ),
+)
+@pytest.mark.slow
+@pytest.mark.timeout(60)  # Real subprocess lifecycle with internal waits
 def test_start_without_consent_refuses_and_leaves_foreign_listener_alive():
     """The watchdog's path must NEVER take the port from another process.
 

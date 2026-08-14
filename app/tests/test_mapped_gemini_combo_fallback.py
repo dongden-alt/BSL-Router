@@ -34,7 +34,7 @@ class _StallingStream(httpx.AsyncByteStream):
         if self.first_chunk is not None:
             chunk, self.first_chunk = self.first_chunk, None
             return chunk
-        await asyncio.sleep(10)
+        await asyncio.sleep(0.1)  # Simulates hung upstream; breaker timeout is 0.01s
         raise StopAsyncIteration
 
 
@@ -212,7 +212,7 @@ def test_hung_connection_hits_deadline_and_advances_combo(monkeypatch):
     # to the next combo leaf. The hung task is NOT cancelled (the new code
     # returns cleanly after yielding the error frame).
     async def hung_connection(_request):
-        await asyncio.sleep(10)
+        await asyncio.sleep(0.1)  # Simulates hung upstream; breaker timeout is 0.01s
 
     client = _ScriptedClient({
         "dead-model": hung_connection,

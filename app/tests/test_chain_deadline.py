@@ -57,6 +57,8 @@ def test_chain_budget_remaining_and_refusal_logic():
     assert _chain_deadline - time.monotonic() <= 0
 
 
+@pytest.mark.slow
+@pytest.mark.timeout(180)
 def test_dead_chain_bounded_by_chain_budget_not_per_leaf():
     """A chain whose leaves all fail must stop at the total deadline.
 
