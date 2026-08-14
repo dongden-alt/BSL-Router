@@ -509,13 +509,19 @@ async def polyfill_vision(
             f"vision description exceeded the {total_budget_s}s budget"
         )
 
-    # SEQUENCING CONTRACT: the target model is only worth invoking if the
-    # Scout actually produced sight. If every image failed, abort here rather
-    # than spend a full generation reasoning about an error string.
+    # FAIL-OPEN: If every image failed, substitute a placeholder and let the
+    # request continue to the target model. The previous behavior raised
+    # VisionPolyfillFailed and returned a 502, which blocked ALL responses
+    # (even for requests where the image was ancillary, not essential). The
+    # target model can still answer "I couldn't see the image" — that's far
+    # better than a hard 502 that prevents any response at all.
     if descriptions and all(d is None for d in descriptions.values()):
-        raise VisionPolyfillFailed(
-            f"all {len(descriptions)} image(s) failed across "
-            f"{min(len(candidates), MAX_VISION_ATTEMPTS)} vision candidate(s)"
+        failed_count = len(descriptions)
+        candidate_count = min(len(candidates), MAX_VISION_ATTEMPTS)
+        print(
+            f"[Vision Scout] All {failed_count} image(s) failed across "
+            f"{candidate_count} candidate(s) — failing open with placeholder.",
+            flush=True,
         )
 
     # Rewrite message content, replacing image_url parts with text descriptions

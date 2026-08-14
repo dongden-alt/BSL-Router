@@ -4898,19 +4898,18 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # Scout.vision â€” polyfill vision capability for text-only models
     try:
         internal_request = await polyfill_vision(internal_request, http_client, config)
+
     except VisionPolyfillFailed as e:
-        # Every candidate failed for every image. This is a deliberate hard
-        # abort, not a soft error: dispatching now would spend a full (paid)
-        # generation asking the target model to reason about an error string
-        # standing in for the image. The generic handler below used to swallow
-        # this, so the documented contract never actually ran.
-        print(f"Vision Scout FAILED (aborting request): {e}", flush=True)
+        # Only the total-budget timeout still raises this (see vision.py).
+        # The all-images-failed case now fails open with a placeholder.
+        print(f"Vision Scout TIMEOUT (aborting request): {e}", flush=True)
         return JSONResponse(
             {"error": {"message": f"Vision unavailable: {e}", "type": "vision_polyfill_failed"}},
-            status_code=502,
+            status_code=504,
         )
     except Exception as e:
         print(f"Vision Scout error (non-blocking): {e}")
+
 
     # Middleware.compaction â€” Context Budget Guard (skip: anthropic/openai/gemini)
     # GAP-2c: Compaction is a BSL addition NOT in 9Router. Its model URL is also

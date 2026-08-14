@@ -21,7 +21,6 @@ from app.scouts.vision import (
     clear_vision_cache,
     polyfill_vision,
     PLACEHOLDER_UNREADABLE,
-    VisionPolyfillFailed,
 )
 
 
@@ -303,19 +302,20 @@ def _ok_resp(text="A red square."):
 
 def test_total_vision_failure_aborts_before_target_model():
     """
-    Sequencing contract: if the Scout produced no sight at all, the target
-    model must NOT be invoked. Raising lets the caller return an error
-    instead of burning a generation on an error string.
+    Fail-open contract: if the Scout produced no sight at all, the request
+    still continues with a placeholder. The target model gets a text saying
+    the image couldn't be read, which is better than a hard 502 that blocks
+    all responses.
     """
     clear_vision_cache()
     err = httpx.ConnectError("refused")
     client = _mock_client(err)
-    try:
-        asyncio.run(polyfill_vision(_image_request(), client, _PIPE_CONFIG))
-    except VisionPolyfillFailed:
-        print("Total-failure abort test PASS")
-        return
-    raise AssertionError("Expected VisionPolyfillFailed on total vision failure")
+    out = asyncio.run(polyfill_vision(_image_request(), client, _PIPE_CONFIG))
+
+    blob = json.dumps([p if isinstance(p, dict) else p.model_dump()
+                       for p in out.messages[0].content])
+    assert PLACEHOLDER_UNREADABLE in blob, f"Placeholder missing on fail-open: {blob}"
+    print("Total-failure fail-open test PASS")
 
 
 def test_partial_vision_failure_still_proceeds():
