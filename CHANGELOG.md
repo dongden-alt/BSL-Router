@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.1] - 2026-08-14
 
+### Changed
+- **STREAM-GUARD first-bytes diagnostics** — when the guard refuses a
+  post-emission fallback (e.g. the `GPT-5.6-SOL` midstream transport death
+  that returned 502 after 11204B with `out: 0`), the refusal log now includes
+  a capped 256B sample of the FIRST bytes that were emitted. This answers
+  whether the veto was justified (reasoning scaffolding vs user-visible
+  content) without weakening the no-second-stream invariant. Veto behavior
+  itself is unchanged — this is forensics, not a policy change.
+
 ### Fixed
 - **Vision Scout 502 timeout loop** — the vision polyfill could exhaust its
   total wall-clock budget before every fallback candidate got a turn

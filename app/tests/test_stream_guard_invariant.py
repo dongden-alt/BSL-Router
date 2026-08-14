@@ -224,3 +224,64 @@ def test_all_four_generator_shapes_share_one_rule():
         assert s.may_fallback("pre") is True, _shape
         s.mark_emitted(b"first byte")
         assert s.may_fallback("post") is False, _shape
+
+
+class TestFirstBytesDiagnostics:
+    """Diagnostic sample added 2026-08-13 for the GPT-5.6-SOL midstream case.
+
+    The guard refused fallback there after 11204B with out=0; deciding whether
+    that veto was right requires SEEING what was emitted. These tests lock the
+    capture semantics: capped accumulation of first bytes, empty-safe paths,
+    and — critically — the sample NEVER influences the veto decision itself.
+    """
+
+    def test_capture_accumulates_in_order(self):
+        s = StreamEmissionState()
+        s.mark_emitted(b"data: {\"type\":\"message_start\"}")
+        s.mark_emitted(b"more bytes")
+        assert s.first_emitted == b"data: {\"type\":\"message_start\"}more bytes"
+
+    def test_capture_respects_cap(self):
+        s = StreamEmissionState()
+        s.mark_emitted(b"x" * 1000)
+        s.mark_emitted(b"y" * 1000)  # already at cap; nothing more kept
+        assert len(s.first_emitted) <= 256
+        assert s.byte_count == 2000  # byte_count stays accurate regardless
+
+    def test_no_payload_is_capture_safe(self):
+        s = StreamEmissionState()
+        s.mark_emitted()  # raw transport path may not pass payload
+        assert s.emitted is True
+        assert s.first_emitted is None
+        assert s.first_emitted_preview() == ""
+
+    def test_preview_appears_in_refusal_log(self):
+        s = StreamEmissionState()
+        s.mark_emitted(b"data: {\"delta\":{\"reasoning_content\":...}}")
+        s.may_fallback("upstream died")
+        log = s.refusal_log(model="gpt-5.6-sol", provider="qwencoder")
+        assert "first-bytes:" in log
+        assert "reasoning_content" in log
+
+    def test_refusal_log_omits_preview_when_nothing_captured(self):
+        s = StreamEmissionState()
+        s.mark_emitted()
+        s.may_fallback("upstream died")
+        log = s.refusal_log(model="m", provider="p")
+        assert "first-bytes" not in log
+        assert "refused 1" in log
+
+    def test_sample_never_gates_the_veto(self):
+        """The invariant is untouched: veto depends only on `emitted`.
+
+        Identical veto answers whether or not diagnostic bytes exist — a
+        zero-byte stream and a 1MB stream must refuse identically once
+        emitted=True. This is what makes the diagnostics safe to add.
+        """
+        for payload in (b"reasoning scaffolding", b"\x00\x01\x02", None):
+            s = StreamEmissionState()
+            s.mark_emitted(payload)
+            assert s.may_fallback("probe") is False, payload
+            assert s.refused_fallbacks == 1, payload
+        s2 = StreamEmissionState()
+        assert s2.may_fallback("probe") is True  # nothing emitted -> still free
