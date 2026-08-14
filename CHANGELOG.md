@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as before. Usage-only/finish-only scaffolding passes through uncommitted.
   New classifier `gemini_frame_is_thought_only` in `app/compat/adapters/gemini.py`;
   regression suite `app/tests/test_thought_buffer_prender.py` (19 tests).
+- **Logs & Usage tabs loading in 2-3 minutes** — the Usage endpoint re-read
+  `config.yaml` + the pricing registry from disk and recomputed costs for all
+  ~10k entries on every tab load; both endpoints serialized the full 10k-entry
+  lists synchronously; and the frontend rendered every row in one DOM write
+  with per-keystroke search re-renders. Fix: `?limit=&offset=` pagination
+  (default 500, clamp 1..2000) returning `{total, entries, has_more}`; cost
+  recompute throttled to a 60s TTL + registry-mtime guard; frontend caps DOM
+  rows at 500 with a "Load 500 more" button and debounces the search input
+  (300ms); `X-Total-Count` header lets the 2s live-poller skip body parsing
+  when nothing changed. 15 new tests in `test_observability_perf.py`.
 - **Vision Scout 502 timeout loop** — the vision polyfill could exhaust its
   total wall-clock budget before every fallback candidate got a turn
   (`Vision unavailable: vision description exceeded the 120.0s budget`).
