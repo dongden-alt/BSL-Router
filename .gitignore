@@ -60,9 +60,16 @@ scratch/*.png
 
 scratch/
 
+# --- Internal dev task files (contain debugging context, never commit ---
+.brain/cc_tasks/
+
 # --- Timestamped provider-migration backups --------------------------------
 # Auto-generated when a provider is added/removed (e.g.
 # config.yaml.opencode_zen.20260805-000746.bak). These accumulate over time and
 # contain live API keys, so they must never be committed.
 *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].bak
 .brain/CHANGELOG.md
+
+# --- Local test assets & runtime data (never commit) ---
+test-assets/
+data/

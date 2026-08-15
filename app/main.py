@@ -307,19 +307,52 @@ def _normalize_blacksand_model_id(model: str) -> str:
 
 
 def _response_has_model_output(data: dict, out_tokens: int = 0) -> bool:
-    """True when an OpenAI-compatible response contains usable model output."""
-    if out_tokens > 0:
-        return True
-    for choice in data.get("choices") or []:
-        message = choice.get("message") or {}
-        for key in ("content", "reasoning_content", "reasoning"):
-            value = message.get(key)
+    """True when an OpenAI or Anthropic-compatible response contains usable model output.
+
+    Checks actual content fields first. A response with out_tokens > 0 but empty
+    content (e.g. reasoning-only models that produce thinking tokens but no visible
+    output) is NOT considered to have model output and should trigger combo fallback.
+    The out_tokens fallback only kicks in when the response has no recognizable
+    choices/content structure at all (truly non-standard format).
+    """
+    has_choices = False
+    # OpenAI format: choices[].message.content
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        has_choices = True
+        for choice in choices:
+            message = choice.get("message") or {}
+            # NOTE: Only "content" counts as visible user output.
+            # reasoning_content / reasoning are thinking tokens — a response
+            # with only reasoning but no visible content is a zombie from
+            # the user's perspective and MUST trigger combo fallback.
+            value = message.get("content")
             if isinstance(value, str) and value.strip():
                 return True
             if isinstance(value, list) and value:
                 return True
-        if message.get("tool_calls") or message.get("function_call"):
-            return True
+            if message.get("tool_calls") or message.get("function_call"):
+                return True
+        # Choices existed but all content fields were empty — zombie response
+        return False
+    # Anthropic format: content[].text at top level (not inside choices)
+    anthropic_content = data.get("content")
+    has_anthropic_content = anthropic_content is not None
+    if isinstance(anthropic_content, list) and anthropic_content:
+        for block in anthropic_content:
+            if isinstance(block, dict):
+                if block.get("type") == "text" and (block.get("text") or "").strip():
+                    return True
+                if block.get("type") == "tool_use":
+                    return True
+        # Non-empty content list but all blocks empty — zombie response
+        return False
+    elif isinstance(anthropic_content, str) and anthropic_content.strip():
+        return True
+    # Last-resort fallback ONLY when the response has no recognizable
+    # choices/content structure at all (truly non-standard format we can't parse).
+    if out_tokens > 0 and not has_choices and not has_anthropic_content:
+        return True
     return False
 
 
@@ -2252,7 +2285,12 @@ async def get_usage(limit: int = 500, offset: int = 0):
 async def get_logs(limit: int = 500, offset: int = 0):
     _limit, _offset = _obs_pagination_params(limit, offset)
     total = len(obs.console_logs)
-    entries = obs.console_logs[_offset:_offset + _limit]
+    # Return newest-first: slice from the end so offset=0 returns the most
+    # recent log entries (live tail behavior users expect from a console).
+    _start = max(0, total - _offset - _limit)
+    _end = max(0, total - _offset)
+    entries = obs.console_logs[_start:_end]
+    entries = list(reversed(entries))
     # X-Total-Count lets the live-poller skip body parsing when nothing changed.
     return JSONResponse(
         {"total": total, "entries": entries, "has_more": (_offset + _limit) < total},
@@ -2558,6 +2596,10 @@ async def pricing_detect():
     try:
         detector = _load_pricing_detector()
         payload = detector.run_detection("config.yaml", _PRICING_DETECTED_PATH)
+        # Invalidate the recompute cache so the next /usage read picks up
+        # the new pricing data immediately instead of waiting for the TTL.
+        from app.observability import invalidate_recompute_cache
+        invalidate_recompute_cache()
         merged = _merge_pricing_payload()
         merged["generated_at"] = payload.get("generated_at")
         merged["detected_count"] = len(payload.get("canonical_models", {}))
@@ -5166,11 +5208,6 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         upstream_payload = kiro_adapter.openai_to_kiro(upstream_payload)
         headers["x-amz-target"] = "CodeWhisperer.GenerateAssistantResponse"
         headers["Content-Type"] = "application/x-amz-json-1.0"
-        # DEBUG: log exact payload being sent to Kiro
-        try:
-            print(f"[Kiro Debug] Outbound payload:\n{json.dumps(upstream_payload, indent=2, ensure_ascii=False)[:2000]}", flush=True)
-        except Exception:
-            pass
             
     # ── Reasoning resolution: SINGLE WRITER ──────────────────────────
     # Every thinking/reasoning field is written here and nowhere else.
@@ -7984,7 +8021,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     _response_json = resp.json() if hasattr(resp, 'json') else {}
                 except Exception:
                     _response_json = {}
-                if not _response_has_model_output(_response_json, out_tokens):
+
+                _zombie_check = _response_has_model_output(_response_json, out_tokens)
+                
+                if not _zombie_check:
                     error_msg = (
                         f"zombie_empty_response (out_tokens=0, ttft={ttft:.1f}s)"
                     )
@@ -8224,7 +8264,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             # Reverse egress: OpenAI client (/v1/chat/completions) but upstream is
             # Anthropic-compatible (GLM/Kimi/MiniMax). Convert Anthropic JSON â†’ OpenAI JSON.
             if (not client_wants_anthropic and not client_wants_gemini
-                    and _is_anthropic_fmt and resp.status_code == 200):
+                    and _is_anthropic_fmt and resp.status_code == 200
+                    and not isinstance(resp, _SyntheticResponse)):
                 try:
                     anthropic_json = _normalized_json if _normalized_json is not None else resp.json()
                     openai_json = UniversalNormalizer.anthropic_response_to_openai(anthropic_json, model=target_model)
@@ -8251,7 +8292,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     _passthrough_json = _normalized_json if _normalized_json is not None else resp.json()
                     if _passthrough_json.get("model") != target_model:
                         _passthrough_json["model"] = target_model
-                    return JSONResponse(_passthrough_json, status_code=200)
+                    _dbg_zombie = str(_zombie_check) if '_zombie_check' in locals() else 'not-reached'
+                    _dbg_headers = {
+                        "X-BSL-Debug-Zombie-Check": _dbg_zombie,
+                        "X-BSL-Debug-Out-Tokens": str(out_tokens),
+                        "X-BSL-Debug-Target": f"{provider_name}/{target_model}",
+                    }
+                    return JSONResponse(_passthrough_json, status_code=200, headers=_dbg_headers)
                 except Exception:
                     pass  # Fall through to raw bytes passthrough
             return Response(

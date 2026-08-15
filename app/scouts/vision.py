@@ -60,11 +60,11 @@ DEFAULT_VISION_TOTAL_BUDGET_S = 65.0
 # with its most reliable providers first.
 MAX_VISION_ATTEMPTS = 4
 
-# Wire formats this scout can speak. _build_vision_payload emits an OpenAI
-# multimodal body and _describe_image_once sends Bearer auth, so candidates on
-# any other format are filtered out at resolution time rather than dialed with
-# the wrong protocol.
-_VISION_SUPPORTED_FORMATS = frozenset({"openai", "openai-responses"})
+# Wire formats this scout can speak. Both OpenAI and Anthropic multimodal
+# formats are supported: _build_vision_payload / _build_vision_payload_anthropic
+# emit the appropriate body, and _describe_image_once selects the correct
+# auth header, endpoint, and response parser based on the provider's format.
+_VISION_SUPPORTED_FORMATS = frozenset({"openai", "openai-responses", "anthropic"})
 
 # Guard against cyclic nested-combo definitions.
 _MAX_COMBO_DEPTH = 5
@@ -168,16 +168,15 @@ def _resolve_vision_candidates(
         conn = _choose_connection_for_model(prov, model_id)
         if not conn or not conn.get("base_url"):
             return []
-        # This scout speaks OpenAI multimodal only (_build_vision_payload emits
-        # an OpenAI body and _describe_image_once sends Bearer auth). Drop
-        # leaves on any other wire format rather than dialing them wrongly —
-        # silently mismatched formats are far harder to diagnose than a gap in
-        # the chain. `format` is injected by model_resolver.
+        # This scout speaks both OpenAI and Anthropic multimodal formats.
+        # _describe_image_once detects the provider's format and selects the
+        # correct payload builder, auth header, endpoint, and response parser.
+        # `format` is injected by model_resolver.
         fmt = str(conn.get("format") or "openai").lower()
         if fmt not in _VISION_SUPPORTED_FORMATS:
             print(
                 f"[Vision Scout] skipping {prov_name}/{model_id}: "
-                f"provider format '{fmt}' is not OpenAI-compatible",
+                f"provider format '{fmt}' is not supported",
                 flush=True,
             )
             return []
@@ -250,6 +249,51 @@ def _build_vision_payload(url: str, prompt: str, model: str, max_tokens: int) ->
     }
 
 
+def _build_vision_payload_anthropic(url: str, prompt: str, model: str, max_tokens: int) -> dict:
+    """Build an Anthropic-compatible vision request body.
+
+    Anthropic uses type=image with source={type, media_type, data} instead of
+    OpenAI's type=image_url with image_url={url}. The image data must be
+    extracted from the data URL and split into media_type + raw base64.
+    """
+    # Parse the data URL: data:<media_type>;base64,<data>
+    media_type = "image/png"
+    image_data = ""
+    if url.startswith("data:"):
+        header, _, data_part = url.partition(",")
+        # header = "data:image/png;base64"
+        if ";" in header:
+            media_type = header.split(":")[1].split(";")[0]
+        image_data = data_part
+    else:
+        # Non-data URL (http(s)://) — Anthropic doesn't support URL-based
+        # image sources directly. Fall back to OpenAI format which some
+        # Anthropic-compatible proxies (e.g. ltn-ai) may accept.
+        return _build_vision_payload(url, prompt, model, max_tokens)
+
+    return {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_data,
+                        },
+                    },
+                ],
+            }
+        ],
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+
+
 def _parse_vision_response(raw_text: str, label: str) -> str:
     """
     Extract the description text from an upstream response body.
@@ -308,7 +352,20 @@ def _parse_vision_response(raw_text: str, label: str) -> str:
             return ""
 
     if data is not None:
-        description = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+        # OpenAI format: choices[0].message.content
+        if "choices" in data:
+            description = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+        # Anthropic format: content[].text (list of content blocks)
+        elif "content" in data:
+            content_blocks = data.get("content", [])
+            if isinstance(content_blocks, list):
+                parts = []
+                for block in content_blocks:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(block.get("text", ""))
+                description = "".join(parts)
+            elif isinstance(content_blocks, str):
+                description = content_blocks
 
     return description
 
@@ -332,15 +389,28 @@ async def _describe_image_once(
     base_url = (conn.get("base_url") or "").rstrip("/")
     label = f"{provider}/{model}"
 
-    headers = {
-        "Authorization": f"Bearer {conn.get('api_key', '')}",
-        "Content-Type": "application/json",
-    }
+    # Detect the provider's wire format and select the correct payload,
+    # auth header, and endpoint. Anthropic-compatible providers (e.g. ltn-ai,
+    # a6api) use x-api-key auth and /v1/messages endpoint, while OpenAI-format
+    # providers use Bearer auth and /v1/chat/completions.
+    fmt = str(conn.get("format") or "openai").lower()
+    is_anthropic = fmt == "anthropic"
 
-    # Endpoint construction is delegated to the same builder main.py uses, so
-    # this scout cannot drift from the primary routing path.
-    endpoint = build_custom_text_upstream_url(base_url, "openai")
-    payload = _build_vision_payload(url, prompt, model, max_tokens)
+    if is_anthropic:
+        headers = {
+            "x-api-key": conn.get("api_key", ""),
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+        }
+        endpoint = build_custom_text_upstream_url(base_url, "anthropic")
+        payload = _build_vision_payload_anthropic(url, prompt, model, max_tokens)
+    else:
+        headers = {
+            "Authorization": f"Bearer {conn.get('api_key', '')}",
+            "Content-Type": "application/json",
+        }
+        endpoint = build_custom_text_upstream_url(base_url, "openai")
+        payload = _build_vision_payload(url, prompt, model, max_tokens)
 
     resp = await http_client.post(
         endpoint, json=payload, headers=headers, timeout=timeout_s

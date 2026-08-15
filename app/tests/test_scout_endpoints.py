@@ -86,17 +86,20 @@ def test_double_suffix_normalization_in_canonical_builder():
     assert build_custom_text_upstream_url("https://example.com/v1/chat/completions", "openai") == "https://example.com/v1/chat/completions"
     assert build_custom_text_upstream_url("https://example.com/chat/completions", "openai") == "https://example.com/v1/chat/completions"
     assert build_custom_text_upstream_url("https://example.com/v1beta/api", "openai") == "https://example.com/v1beta/api/v1/chat/completions"
-
-
 def test_vision_candidate_filtering():
     config = _make_config()
-    # When resolving vision candidates, only format: openai/openai-responses are kept.
-    # prov-anthropic should be skipped.
-    
+    # The scout now supports both OpenAI and Anthropic formats.
+    # Both model-anthropic and model-openai should be resolved.
     candidates = _resolve_vision_candidates(config, "combo-mix")
-    # chain has [model-anthropic (skipped), model-openai (kept)]
-    assert len(candidates) == 1
-    conn, model_id, prov_name = candidates[0]
-    assert prov_name == "prov-openai"
-    assert model_id == "model-openai"
-    assert conn.get("format") == "openai"
+    # chain has [model-anthropic (kept), model-openai (kept)]
+    assert len(candidates) == 2
+    # First candidate: Anthropic format
+    conn0, model0, prov0 = candidates[0]
+    assert prov0 == "prov-anthropic"
+    assert model0 == "model-anthropic"
+    assert conn0.get("format") == "anthropic"
+    # Second candidate: OpenAI format
+    conn1, model1, prov1 = candidates[1]
+    assert prov1 == "prov-openai"
+    assert model1 == "model-openai"
+    assert conn1.get("format") == "openai"
