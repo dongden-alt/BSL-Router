@@ -136,6 +136,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.2] - 2026-08-15
+
+### Sửa Lỗi
+
+- **TOOL-META: Lỗi xác thực tool của Antigravity IDE** — Các model ngược dòng (DeepSeek, Qwen, GLM, Kimi) không tạo ra trường `toolSummary`/`toolAction` mà Antigravity IDE yêu cầu. Hàm `_inject_tool_metadata()` mới trong `app/compat/adapters/gemini.py` tự động điền giá trị mặc định qua `setdefault` tại cả hai điểm phát functionCall. Đã kiểm chứng trực tiếp trên cả 6969 và 6970.
+
+- **ZOMBIE: Phản hồi chỉ-reasoning chặn combo fallback** — Hàm `_response_has_model_output()` trong `app/main.py` coi trường `reasoning_content`/`reasoning` là output hợp lệ. Khi model reasoning chỉ tạo thinking tokens mà `content` rỗng, combo fallback bị bỏ qua và user nhận phản hồi trống. Đã sửa: chỉ tính `content` là output hiển thị. Thêm hỗ trợ format Anthropic (`content[].text` / `content[].type == "tool_use"`).
+
+- **VISION-FAILOPEN: Vision scout lỗi chặn toàn bộ phản hồi** — Khi tất cả ứng viên vision đều thất bại cho một ảnh, `VisionPolyfillFailed` được raise và `main.py` trả 502, chặn TOÀN BỘ phản hồi. `vision.py` giờ thay thế bằng `PLACEHOLDER_UNREADABLE` và cho request tiếp tục. Handler `VisionPolyfillFailed` chỉ giữ lại cho trường hợp timeout hết ngân sách (504).
+
+- **VISION-ANTHROPIC: Vision scout hỗ trợ provider format Anthropic** — Vision scout trước đây chỉ hiểu format multimodal OpenAI. Các provider format Anthropic (ltn-ai, a6api) bị bỏ qua âm thầm. Đã thêm `"anthropic"` vào `_VISION_SUPPORTED_FORMATS`, builder `_build_vision_payload_anthropic()` mới, và tự động nhận diện format trong `_describe_image_once()`.
+
+- **OBS-PRICING: Gộp registry giá observability + sắp xếp log** — `_load_pricing_registry()` chỉ tải registry chính thức được seed, bỏ qua file giá đã phát hiện. Endpoint logs trả về cũ-trước thay vì mới-trước. Đã sửa: gộp cả hai nguồn registry với điền null-price, thêm `invalidate_recompute_cache()` sau khi phát hiện giá, endpoint logs giờ trả mới-trước.
+
+- **OAUTH: Thiếu client_id gây lỗi 400 "invalid_request" trên tất cả OAuth provider** — Endpoint `authorize` cho phép `client_id` rỗng/không đặt truyền thẳng đến provider, gây lỗi 400 từ phía provider. Đã sửa: (1) Thêm helper `_missing_client_id_hint()` với thông báo lỗi theo từng provider. (2) Tổng quát hóa validation `authorize()` cho tất cả flow `authorization_code`. (3) Thêm validation `clientId` cho endpoint `device_code()` với provider có static client ID (bỏ qua `kiro` qua flag `dynamicClientId`). (4) Sửa nhất quán `_prepare_provider_config()` trong `device_code()` và `poll()` — cả hai giờ dùng prepared config thay vì `entry["config"]` thô. (5) Xóa debug print trong `app/oauth.py`.
+
+- **Dọn dẹp debug print** — Xóa các print `[ZOMBIE-DEBUG]`, `[DEBUG:{_label}]`, và `[Kiro Debug]` khỏi `app/main.py` — các log forensic chi tiết từng request sẽ spam output production.
+
+---
+
+## [1.0.1] - 2026-08-14
+
+### Thay Đổi
+- **STREAM-GUARD chẩn đoán first-bytes** — khi guard từ chối fallback post-emission, log từ chối giờ kèm mẫu 256B đầu tiên được emit, giúp xác định veto có hợp lý không (reasoning scaffolding vs user-visible content) mà không suy yếu bất biến no-second-stream.
+
+### Sửa Lỗi
+- **GPT-5.6-SOL midstream 502 (stream chỉ-reasoning)** — khi model vision/reasoning (DeepSeek V4, MiniMax M3 qua `qwencoder/gpt-5.6-sol`) chỉ tạo `thought:true` frames trước khi leaf chết giữa vận chuyển, emission gate coi reasoning-pane text là content đã commit, phủ nhận combo fallback, và IDE đóng băng trên stream chết. Gemini egress giờ giữ thought frames pre-content trong buffer giới hạn (256 KiB) mà không đánh dấu emission, nên transport death/stall vẫn có thể failover. Body-content frame đầu tiên flush buffer theo thứ tự và commit như cũ. Bộ phân loại mới `gemini_frame_is_thought_only` trong `app/compat/adapters/gemini.py`; bộ test hồi quy `app/tests/test_thought_buffer_prender.py` (19 test).
+- **Tab Logs & Usage tải 2-3 phút** — endpoint Usage đọc lại `config.yaml` + registry giá từ đĩa và tính lại chi phí cho ~10k entry mỗi lần mở tab; cả hai endpoint tuần tự hóa danh sách 10k entry đồng bộ; frontend render mỗi hàng trong một DOM write với re-render theo keystroke. Sửa: phân trang `?limit=&offset=` (mặc định 500, kẹp 1..2000) trả `{total, entries, has_more}`; tính lại chi phí throttle TTL 60s + guard registry-mtime; frontend giới hạn DOM hàng ở 500 với nút "Load 500 more" và debounce search (300ms); header `X-Total-Count` cho live-poller 2s bỏ qua parse body khi không đổi. 15 test mới trong `test_observability_perf.py`.
+- **Vision Scout 502 timeout loop** — vision polyfill có thể hết ngân sách wall-clock trước khi mọi ứng viên fallback được chạy. Nguyên nhân: timeout 60s mỗi lần thử chỉ đủ 2/4 ứng viên trong ngân sách 120s. Giảm timeout mỗi lần xuống 15s và tổng ngân sách xuống 65s để cả 4 ứng viên có đủ lượt thử (4 × 15s = 60s + margin) vẫn giới hạn thời gian IDE stall.
+- **Upstream chứng chỉ self-signed** — thêm hỗ trợ `ssl_verify: false` từng provider để kết nối tới upstream có chứng chỉ self-signed không còn lỗi `SSL: CERTIFICATE_VERIFY_FAILED`.
+- **Độ trễ auth pipeline** — config đã giải mã giờ được cache trong `config_state` thay vì giải mã lại mỗi request.
+- **Độ chính xác circuit breaker** — lỗi billing và auth giờ được đánh dấu riêng để breaker không phân loại sai thành provider outage.
+
+### Bảo Mật
+- Xóa snapshot config nhạy cảm khỏi Git history và gitignore thư mục `.brain/` và config backup để chống leak key.
+- Cứng hóa `export-public.ps1` chống xuất `config.backup.*` và scratch script ở root.
+
+---
+
 ## [1.0.0] - 2026-08-09
 
 ### Thêm Mới
