@@ -140,6 +140,21 @@ class _LazyCredentialConfig(dict):
             return True
         return super().__contains__(key)
 
+
+def _missing_client_id_hint(provider: str) -> str:
+    """Return a provider-specific hint when clientId is missing."""
+    if provider == "antigravity":
+        return (
+            "Set the environment variable BSL_ANTIGRAVITY_CLIENT_ID, or add an "
+            "'antigravity_oauth.client_id' section to config.yaml."
+        )
+    return (
+        "This provider uses a static client_id defined in the OAUTH_PROVIDERS "
+        "registry in app/oauth.py. Verify the registry entry has a non-empty "
+        "'clientId' value."
+    )
+
+
 import collections
 _loopback_sessions: dict[str, dict[str, Any]] = collections.defaultdict(dict)
 _loopback_servers: dict[str, Any] = collections.defaultdict(lambda: None)
@@ -309,10 +324,7 @@ def _build_codex_auth_url(config: dict[str, Any], redirect_uri: str, state: str,
         **config["extraParams"],
         "state": state,
     }
-    # OpenAI's hydra server requires proper percent-encoding of all parameter values.
-    # Using quote_via=quote (instead of quote_plus) encodes spaces as %20, which hydra expects.
     url = _url_with_params(config["authorizeUrl"], params, quote_spaces=True)
-    print(f"[OAuth] Codex auth URL: {url[:200]}...", flush=True)
     return url
 
 
@@ -644,7 +656,6 @@ async def _request_qwen_device_code(config: dict[str, Any], code_challenge: str 
         "code_challenge": code_challenge,
         "code_challenge_method": config["codeChallengeMethod"],
     }, "Qwen device authorization")
-    print(f"[OAuth] Qwen device-code raw response keys: {list(raw.keys()) if isinstance(raw, dict) else type(raw)}", flush=True)
     return raw
 
 
@@ -796,7 +807,7 @@ OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
     },
     "kiro": {
         "config": {"startUrl": "https://view.awsapps.com/start", "clientName": "AWS Toolkit for VS Code", "clientType": "public", "scopes": ["codewhisperer:completions", "codewhisperer:analysis", "codewhisperer:conversations"], "grantTypes": ["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"], "issuerUrl": "https://identitycenter.amazonaws.com/ssoins-722374e8c3c8e6c6"},
-        "flowType": "device_code", "requestDeviceCode": _request_kiro_device_code, "pollToken": _poll_kiro, "mapTokens": _map_kiro,
+        "flowType": "device_code", "dynamicClientId": True, "requestDeviceCode": _request_kiro_device_code, "pollToken": _poll_kiro, "mapTokens": _map_kiro,
     },
     "grok-cli": {
         "config": {"clientId": "b1a00492-073a-47ea-816f-4c329264a828", "deviceCodeUrl": "https://auth.x.ai/oauth2/device/code", "tokenUrl": "https://auth.x.ai/oauth2/token", "scope": "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write", "referrer": "grok-build", "userUrl": "https://cli-chat-proxy.grok.com/v1/user?include=subscription"},
@@ -1201,6 +1212,20 @@ async def authorize(provider: str, redirect_uri: str = "http://localhost:6969/ca
     if entry["flowType"] in {"device_code", "import_token"}:
         raise HTTPException(status_code=400, detail="This provider does not use authorization-code OAuth")
     config = await _prepare_provider_config(entry)
+    # Validate that authorization-code providers have a non-empty clientId.
+    # Without this check, an empty client_id is silently passed to Google's
+    # OAuth endpoint, producing a confusing "Missing required parameter:
+    # client_id" error on the Google sign-in page instead of a clear message.
+    if entry["flowType"].startswith("authorization_code"):
+        client_id = config.get("clientId") or ""
+        if not isinstance(client_id, str) or not client_id.strip():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"OAuth client_id is not configured for provider '{provider}'. "
+                    f"{_missing_client_id_hint(provider)}"
+                ),
+            )
     fixed_port = entry.get("fixedPort")
     if fixed_port:
         callback_path = entry.get("callbackPath", "/callback")
@@ -1461,15 +1486,27 @@ async def device_code(provider: str, region: str | None = None, start_url: str |
     provider, entry = _provider_or_404(provider)
     if entry["flowType"] != "device_code":
         raise HTTPException(status_code=400, detail="This provider does not use device code")
+    config = await _prepare_provider_config(entry)
+    # Validate clientId for device-code providers that use a static client_id.
+    # Kiro self-registers clientId at runtime (marked via dynamicClientId), so skip it.
+    if not entry.get("dynamicClientId"):
+        client_id = config.get("clientId") or ""
+        if not isinstance(client_id, str) or not client_id.strip():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"OAuth client_id is not configured for provider '{provider}'. "
+                    f"{_missing_client_id_hint(provider)}"
+                ),
+            )
     pkce = generate_pkce() if provider == "qwen" else None
     options = {key: value for key, value in {"region": region, "startUrl": start_url, "authMethod": auth_method}.items() if value}
-    raw = await entry["requestDeviceCode"](entry["config"], pkce["codeChallenge"] if pkce else None, options)
+    raw = await entry["requestDeviceCode"](config, pkce["codeChallenge"] if pkce else None, options)
     device_value = _token_value(raw, "device_code", "deviceCode")
     if not device_value:
         # Some providers (e.g. Qwen) may return the device code under alternative field names.
         device_value = raw.get("code") or raw.get("deviceId") or raw.get("device_id")
     if not isinstance(device_value, str) or not device_value:
-        print(f"[OAuth] {provider} device-code response (full): {raw}", flush=True)
         raise HTTPException(status_code=502, detail=f"{provider} did not return a device code")
     extra_data = {key: value for key, value in raw.items() if key.startswith("_")}
     return {
@@ -1494,7 +1531,8 @@ async def poll(provider: str, request: Request):
         raise HTTPException(status_code=400, detail="codeVerifier must be a string")
     if not isinstance(extra_data, dict):
         raise HTTPException(status_code=400, detail="extraData must be an object")
-    ok, raw_tokens = await entry["pollToken"](entry["config"], device_code_value, code_verifier, extra_data)
+    config = await _prepare_provider_config(entry)
+    ok, raw_tokens = await entry["pollToken"](config, device_code_value, code_verifier, extra_data)
     error = raw_tokens.get("error") if isinstance(raw_tokens, dict) else "invalid_response"
     if error in {"authorization_pending", "slow_down"}:
         return {"pending": True}

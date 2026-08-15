@@ -6635,13 +6635,17 @@ function renderPricingPage() {
 
 async function loadUsageData() {
     try {
-        const res = await fetch('/api/observability/usage?limit=2000&offset=0');
+        // Probe total count, then fetch the newest 2000 entries.
+        // API returns oldest-first (append-only list), so we offset from
+        // the end and reverse to get newest-first for the UI.
+        const probeRes = await fetch('/api/observability/usage?limit=1&offset=0');
+        const probeData = await probeRes.json();
+        const total = (probeData && probeData.total) ? probeData.total : 0;
+        const fetchOffset = Math.max(0, total - 2000);
+        const res = await fetch(`/api/observability/usage?limit=2000&offset=${fetchOffset}`);
         const data = await res.json();
-        // Endpoint now returns {total, entries, has_more}. The Usage analytics
-        // page (stats cards, charts, table) operates on the filtered set, so we
-        // pull a large page (2000) to cover typical windowed timeframes without
-        // needing server-side aggregation. Fall back to bare array for safety.
         const entries = Array.isArray(data) ? data : (data && data.entries ? data.entries : []);
+        // Reverse oldest-first → newest-first for display.
         usageDataState = entries.slice().reverse();
         usageRenderLimit = 500;
         renderUsageTable();
@@ -6780,8 +6784,6 @@ function renderUsageTable() {
     if (filteredData.length === 0) {
         html += `<tr><td colspan="${usageColsState.filter(c => c.visible).length}" style="padding:18px;text-align:center;color:var(--text-muted);">No matching usage records for current filters.</td></tr>`;
     } else {
-        // Cap DOM rows so a 10k-row filtered set doesn't freeze the tab. Stats
-        // cards + charts above still aggregate over the FULL filteredData.
         const visibleCount = Math.min(usageRenderLimit, filteredData.length);
         filteredData.slice(0, visibleCount).forEach(row => {
             html += `<tr style="border-bottom:1px solid var(--border-color);">`;
@@ -6806,16 +6808,17 @@ function renderUsageTable() {
 
 async function loadLogsData() {
     try {
+        const probeRes = await fetch('/api/observability/logs?limit=1&offset=0');
+        const probeBody = await probeRes.json();
+        const total = (probeBody && probeBody.total) ? probeBody.total : 0;
+        const fetchOffset = Math.max(0, total - 2000);
         const [logsRes, artRes] = await Promise.all([
-            fetch('/api/observability/logs?limit=2000&offset=0'),
+            fetch(`/api/observability/logs?limit=2000&offset=${fetchOffset}`),
             fetch('/api/observability/artifacts')
         ]);
         const logsBody = await logsRes.json();
         const artifacts = await artRes.json();
-        // Endpoint now returns {total, entries, has_more}. Fall back to bare
-        // array for safety. Frontend reverses to oldest-first (newest at bottom).
         const logs = Array.isArray(logsBody) ? logsBody : (logsBody && logsBody.entries ? logsBody.entries : []);
-
         logsDataState = logs.slice().reverse();
         logsArtifactsState = artifacts.slice().reverse();
         logsRenderLimit = 500;
@@ -6855,26 +6858,21 @@ async function refreshLogsLive() {
         return;  // defer — user is editing a control inside the logs view
     }
     try {
+        // Fetch newest 2000 logs by offsetting from the end.
+        // API returns oldest-first, so we probe total then calculate offset.
+        const probeRes = await fetch('/api/observability/logs?limit=1&offset=0');
+        const probeBody = await probeRes.json();
+        const total = (probeBody && probeBody.total) ? probeBody.total : 0;
+        const fetchOffset = Math.max(0, total - 2000);
         const [logsRes, artRes] = await Promise.all([
-            fetch('/api/observability/logs?limit=2000&offset=0'),
+            fetch(`/api/observability/logs?limit=2000&offset=${fetchOffset}`),
             fetch('/api/observability/artifacts')
         ]);
         if (!logsRes.ok) return;
-        // D-lite: if the total count is unchanged AND the existing signature
-        // already reflects that count, the body is identical — skip parsing.
-        const headerTotal = logsRes.headers.get('x-total-count');
-        if (headerTotal !== null) {
-            const [_nPart] = _logsSignature.split(':');
-            if (String(headerTotal) === String(_nPart) && _nPart !== '') {
-                // Same length as last render — nothing new. Skip body parse.
-                // (A same-length set with a different newest timestamp would be
-                // a rotation, which is rare; the full poll retries in 2s.)
-                return;
-            }
-        }
         const logsBody = await logsRes.json();
         const artifacts = await artRes.json();
         const logs = Array.isArray(logsBody) ? logsBody : (logsBody && logsBody.entries ? logsBody.entries : []);
+        // Reverse oldest-first → newest-first for display.
         logsDataState = logs.slice().reverse();
         logsArtifactsState = artifacts.slice().reverse();
         const sig = _computeLogsSignature();

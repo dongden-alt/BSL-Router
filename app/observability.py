@@ -187,15 +187,53 @@ def _load_model_costs(config: dict) -> dict:
 
 
 def _load_pricing_registry() -> dict:
-    """Load canonical pricing registry from disk (fail-open)."""
-    registry_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "data", "model_pricing_registry.json"
-    )
-    if not os.path.exists(registry_path):
-        return {}
-    with open(registry_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return data.get("canonical_models", {})
+    """Load canonical pricing registry from disk (fail-open).
+
+    Merges two sources:
+    1. data/model_pricing_registry.json — seeded official registry (may not exist)
+    2. data/model_pricing_detected.json — offline-detected config variants
+
+    This mirrors the _merge_pricing_payload() logic in main.py so that the
+    cost-calculation layer sees the same pricing data as the admin UI.
+    """
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+    merged = {}
+
+    # Source 1: Seeded official registry
+    registry_path = os.path.join(data_dir, "model_pricing_registry.json")
+    if os.path.exists(registry_path):
+        try:
+            with open(registry_path, "r", encoding="utf-8") as f:
+                reg_data = json.load(f)
+            for key, entry in (reg_data or {}).get("canonical_models", {}).items():
+                merged[key] = dict(entry)
+        except Exception:
+            pass
+
+    # Source 2: Detected config variants (this is the file that actually
+    # exists on disk after the user clicks "Re-detect" in the pricing page)
+    detected_path = os.path.join(data_dir, "model_pricing_detected.json")
+    if os.path.exists(detected_path):
+        try:
+            with open(detected_path, "r", encoding="utf-8") as f:
+                det_data = json.load(f)
+            for key, entry in (det_data or {}).get("canonical_models", {}).items():
+                cur = dict(entry)
+                reg_entry = merged.get(key)
+                if reg_entry:
+                    # Fill in any null prices from the official registry
+                    if cur.get("input_per_1m") is None and reg_entry.get("input_per_1m") is not None:
+                        for fld in ("input_per_1m", "output_per_1m", "cache_hit_per_1m",
+                                     "cache_write_per_1m", "source_url"):
+                            if cur.get(fld) is None:
+                                cur[fld] = reg_entry.get(fld)
+                    if reg_entry.get("source_status") == "official" and cur.get("source_status") != "official":
+                        cur["source_status"] = "official"
+                merged[key] = cur
+        except Exception:
+            pass
+
+    return merged
 
 def _short_request_id() -> str:
     """Generate a compact trace id for correlating START/END console lines."""
