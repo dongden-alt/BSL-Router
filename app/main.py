@@ -5708,7 +5708,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 yield _chunk
         except asyncio.CancelledError:
             raise
-        except (httpx.RemoteProtocolError, httpx.TransportError) as _mid_err:
+        except (httpx.RemoteProtocolError, httpx.TransportError, httpx.TimeoutException, TimeoutError, asyncio.TimeoutError) as _mid_err:
             _midstream_transport_fallback(
                 stats, _emit, status_code, f"midstream_transport: {_mid_err}"
             )
@@ -6948,6 +6948,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         try:
                             async for _c in _openai_source_chain():
                                 await _q.put(_c)
+                        except _ComboFallbackNeeded as _cf:
+                            _drain_err = _cf
                         except Exception as _de:
                             _drain_err = _de
                         finally:
@@ -7188,8 +7190,17 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         yield _G_SSE_DONE
                         return
                     if _drain_err is not None:
-                        if isinstance(_drain_err, (httpx.TimeoutException, httpx.TransportError)):
-                            stats["status"] = 504 if isinstance(_drain_err, httpx.TimeoutException) else 502
+                        if isinstance(_drain_err, _ComboFallbackNeeded):
+                            # If bytes have reached the client, do NOT raise and
+                            # cascade into combo-advance. Fall through to emit the
+                            # terminal error+DONE frame that follows this block.
+                            if emitted_model_data:
+                                stats["status"] = _drain_err.args[0] if _drain_err.args else 502
+                                stats["error"] = str(_drain_err) or type(_drain_err).__name__
+                            else:
+                                raise _drain_err
+                        if isinstance(_drain_err, (httpx.TimeoutException, httpx.TransportError, TimeoutError, asyncio.TimeoutError)):
+                            stats["status"] = 504 if isinstance(_drain_err, (httpx.TimeoutException, TimeoutError, asyncio.TimeoutError)) else 502
                             stats["error"] = str(_drain_err) or type(_drain_err).__name__
                             if not emitted_model_data:
                                 _raise_gemini_combo_fallback(stats["status"], stats["error"], _emit)

@@ -769,3 +769,50 @@ def test_builtin_timeout_error_post_content_emits_terminal_error_frame(monkeypat
     assert output.count(b"data: [DONE]") == 1
     # Fallback content must NOT appear — the IDE was already parsing.
     assert b"fallback-ok" not in output
+
+
+class _DyingStream(httpx.AsyncByteStream):
+    def __init__(self, *chunks: bytes):
+        self.chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+        raise httpx.RemoteProtocolError(
+            "peer closed connection without sending complete message body"
+        )
+
+
+def test_midstream_peer_close_pre_content_advances_combo(monkeypatch):
+    client = _ScriptedClient({
+        "dead-model": _DyingStream(),
+        "healthy-model": _success_stream("healthy-model"),
+    })
+    _install(monkeypatch, client)
+    output = b"".join(asyncio.run(_collect()))
+    assert client.models == ["dead-model", "healthy-model"], \
+        f"midstream RemoteProtocolError (pre-content) must advance combo; models={client.models}"
+    assert b"fallback-ok" in output
+    assert output.rstrip().endswith(b"data: [DONE]")
+    assert output.count(b"data: [DONE]") == 1
+    assert b'data: {"error":' not in output
+
+
+def test_midstream_peer_close_post_content_emits_terminal_not_combo(monkeypatch):
+    client = _ScriptedClient({
+        "dead-model": _DyingStream(_openai_chunk("dead-model", "partial-during-close")),
+        "healthy-model": _success_stream("healthy-model"),
+    })
+    _install(monkeypatch, client)
+    chunks = asyncio.run(_collect())
+    output = b"".join(chunks)
+    data_frames = [c for c in chunks if c.startswith(b"data:")]
+    assert client.models == ["dead-model"], \
+        f"post-content peer close must NOT combo-fallback; models={client.models}"
+    assert b"partial-during-close" in output
+    assert b"fallback-ok" not in output
+    _terminal = [f for f in data_frames if b'"finishReason"' in f]
+    assert len(_terminal) == 1
+    assert not [f for f in data_frames if f.startswith(b'data: {"error":')]
+    assert output.rstrip().endswith(b"data: [DONE]")
+    assert output.count(b"data: [DONE]") == 1
