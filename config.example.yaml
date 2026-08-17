@@ -61,11 +61,23 @@ antigravity_oauth:
 # Shared Pool App Tier-2 inbound auth (Ed25519).
 # Default OFF — zero behavior change for existing callers.
 # Enable when this router is advertised as a pool peer's router_address.
+#
+# Signing contract (4 lines):
+#   {METHOD} {path}\n{unix_ts}\n{router_address}\n{sha256(raw_body)}
+# Headers on every signed Tier-2 POST:
+#   X-BSL-Pool-From, X-BSL-Pool-Pubkey, X-BSL-Pool-Ts,
+#   X-BSL-Pool-Sig, X-BSL-Pool-Body-Sha256
+#
+# mode=required REQUIRES:
+#   - non-empty allowlist (pubkey hex of trusted Pool nodes)
+#   - non-empty router_address (must match what Pool signs against)
+# Config errors in required mode → 503 (fail-closed, never pass-through).
 pool_auth:
   enabled: false
   mode: optional          # optional | required
   replay_window_secs: 300
-  # Must match the address peers advertise. Empty = reconstruct from request.
+  # Must match the address peers sign against. Required when mode=required.
   router_address: ""
-  # Empty allowlist = accept any valid Ed25519 pubkey. Non-empty = pubkey hex must match.
+  # Pubkey hex allowlist. Required non-empty when mode=required.
+  # Empty in optional mode = accept any valid signature.
   allowlist: []
