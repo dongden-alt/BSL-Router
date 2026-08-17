@@ -327,3 +327,50 @@ def test_k3_coerces_medium_to_max(f_val):
     )
     # 'medium' must NEVER survive in the payload.
     assert out["reasoning_effort"] != "medium"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DIVERGENCE 5 — Doubao/Hunyuan/Muse explicit disable for auto/off/none.
+#
+# WHY LEGACY WAS WRONG:
+#   The legacy cascade (line 81) returned the payload UNCHANGED for
+#   thinking_suffix in ("auto", "none", "off", "") — i.e., it did NOT emit
+#   any reasoning/thinking field.  This left the model's default behavior
+#   in effect, which may or may not be what the user intended.
+#   The new contracts use always_applies=True and map OFF_VALUES to
+#   explicit "disable" tokens (Doubao: minimal, Hunyuan: no_think, Muse:
+#   minimal) so reasoning is EXPLICITLY disabled, not left to the model's
+#   default.  This is the same pattern as Gemini: transport-dependent,
+#   explicit intent > implicit default.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _payload():
+    return {"model": "x", "messages": [], "max_tokens": 8192}
+
+
+@pytest.mark.parametrize("effort", ["auto", "none", "off", ""])
+@pytest.mark.parametrize("f_val", [
+    "vsllm-a/doubao-seed-2-0-pro",
+    "vsllm-gpt/doubao-seed-2-0-pro",
+    "iamhc/hy3",
+    "ltn-ai/tencent/hy3",
+    "a6api/hy3",
+    "ltn-ai/meta/muse-spark-1.1",
+    "ltn-ai/meta/muse-spark-1.2",
+    "ltn-ai/meta/muse-spark-1.2-contributor",
+])
+def test_doubao_hunyuan_muse_auto_explicit_disable(f_val, effort):
+    """auto/off/none/'' -> explicit disable (minimal/no_think), not legacy no-op."""
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+
+    if "doubao" in f_val:
+        assert out.get("reasoning_effort") == "minimal", f"{f_val} effort={effort!r}: expected minimal"
+    elif "hy3" in f_val or "hunyuan" in f_val:
+        # Hunyuan uses chat_template_kwargs.reasoning_effort
+        chat_kwargs = out.get("chat_template_kwargs", {})
+        assert chat_kwargs.get("reasoning_effort") == "no_think", f"{f_val} effort={effort!r}: expected no_think"
+    elif "muse" in f_val:
+        assert out.get("reasoning_effort") == "minimal", f"{f_val} effort={effort!r}: expected minimal"
+
+    # Provenance recorded
+    assert prov.records, f"{f_val} effort={effort!r}: no provenance for explicit disable"

@@ -46,6 +46,7 @@ THINKING_PAYLOAD_KEYS = (
     "enable_thinking",    # Kimi K2 / MiMo boolean
     "generationConfig",   # Gemini native: thinkingConfig container (2.5 + 3.x)
     "includeThoughts",    # Gemini 3.x multi-turn thought-signature flag
+    "chat_template_kwargs",  # Hunyuan Hy3 nested reasoning_effort (vLLM/SGLang)
 )
 
 # Values that mean "the operator did not pick a thinking level".

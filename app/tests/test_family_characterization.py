@@ -144,6 +144,17 @@ def test_registry_matches_legacy_for_all_config_models(effort):
         if "qwencoder/" in f_val:
             continue
 
+        # Doubao/Hunyuan/Muse with effort='auto' (and off/none) is a DELIBERATE divergence:
+        # legacy cascade does NOTHING for auto/off/none (returns payload unchanged).
+        # New contracts use always_applies=True + OFF_VALUES -> explicit disable values:
+        #   Doubao: minimal, Hunyuan: no_think, Muse: minimal
+        # This ensures reasoning is explicitly disabled, not left to model default.
+        # See test_family_divergences.py::test_doubao_hunyuan_muse_auto_explicit_disable.
+        if effort in ("auto", "none", "off", "") and any(
+            kw in f_val for kw in ("doubao", "hy3", "hunyuan", "muse-spark", "muse_spark")
+        ):
+            continue
+
         # Qwen is a DELIBERATE divergence: the legacy cascade injected
         # reasoning_effort (coercing anything unknown to 'max') for EVERY
         # Qwen model. Per official docs, 3.7 and older are boolean-only

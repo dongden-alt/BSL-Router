@@ -44,6 +44,12 @@ from app.compat.families import (
     qwen as _qwen,
     glm as _glm,
     minimax as _minimax,
+    # New: 4 additional family modules
+    # Mới: 4 module gia đình bổ sung
+    hunyuan as _hunyuan,
+    doubao as _doubao,
+    kat_coder as _kat_coder,
+    muse as _muse,
 )
 
 # Registry assembly. Order here is irrelevant — resolution is by the
@@ -60,6 +66,11 @@ _FAMILY_MODULES = [
     _qwen,
     _glm,
     _minimax,
+    # New registrations / Đăng ký mới
+    _hunyuan,
+    _doubao,
+    _kat_coder,
+    _muse,
 ]
 
 CONTRACTS: List[Contract] = []

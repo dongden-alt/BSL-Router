@@ -4,10 +4,10 @@ GLM (Zhipu) family contract.
 Effort vocabulary differs BY VERSION within the family, which is the
 churn this refactor is designed for:
 
-  5.2      -> accepts graded effort words (low/medium/high/max) alongside
-              thinking {type: enabled}.
+  5.2/5.3  -> accepts graded effort words (low/high/max) alongside
+               thinking {type: enabled}. NO "medium" — coerced to "high".
   5.1/5.x  -> "enable" / "adaptive" switch words; anything else degrades
-              to enabled + output_config.effort.
+               to enabled + output_config.effort.
 
 Kept as ONE contract with an internal branch rather than two, because
 GLM-5.2 with a switch word ("enable") must still fall through to the
@@ -29,8 +29,30 @@ from app.compat.families._effort import coerce_effort
 SOURCE = "families/glm.py"
 
 # Versions that accept graded effort words rather than switch words.
-_GRADED_EFFORT_VERSIONS = r"glm-5\.2"
-_GRADED_EFFORT_WORDS = ("low", "medium", "high", "max")
+_GRADED_EFFORT_VERSIONS = r"glm-5\.[23]"
+# GLM-5.2/5.3 accepts low/high/max. NO "medium" — will be coerced to "high".
+_GRADED_EFFORT_WORDS = ("low", "high", "max")
+
+
+def _coerce_glm_effort(ctx: ThinkingContext) -> str:
+    """Coerce invalid effort values for GLM graded versions.
+    / Chuyển đổi các giá trị effort không hợp lệ cho phiên bản GLM graded.
+
+    GLM-5.2 has a "7-value compatibility mapping" (effective levels: max/high).
+    GLM-5.3 narrows to three native levels: low/high/max.
+    Mapping (per Pi issue #5770 + AIHubMix GLM-5.3 guide):
+      medium  -> high   (default effective level for 5.2)
+      xhigh   -> max    (per Pi issue #5770)
+      others  -> high   (safe fallback)
+    """
+    e = ctx.effort
+    if e in _GRADED_EFFORT_WORDS:
+        return e
+    # xhigh -> max (per Pi GitHub issue #5770 mapping: "xhigh: max").
+    if e == "xhigh":
+        return "max"
+    # medium or anything unknown -> high.
+    return "high"
 
 
 def _apply(
