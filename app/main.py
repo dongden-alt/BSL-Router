@@ -5554,10 +5554,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             # headers and aborted the connection (which is why the provider
             # side logs a 499). Re-raise self-describing so every egress path
             # reports the real cause instead of an empty-string exception name.
-            _left = max(0.0, _chain_budget_remaining())
             raise TimeoutError(
-                f"upstream_header_timeout (waited {_hw_timeout:.0f}s for headers, "
-                f"{_left:.0f}s chain budget left)"
+                f"upstream_header_timeout (waited {_hw_timeout:.0f}s for headers)"
             ) from None
         # ── OAuth 401-Retry: force-refresh token and retry once ────────────
         # If the upstream rejects with 401, the token may have expired between
@@ -5618,10 +5616,12 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         return _resp
 
     start_time = time.time()
-    # Chain total deadline: seeded on the FIRST entry, propagated verbatim
-    # through every recursive _retry_state hop. Without it each recursive call
-    # restarts its own budget and a dead chain holds the client for N x 120s.
-    _chain_deadline = (_retry_state or {}).get('deadline') or (time.monotonic() + CHAIN_TOTAL_BUDGET)
+    # Chain total deadline: PER-ENTRY RESET (BUG K).
+    # Each combo entry gets a FRESH CHAIN_TOTAL_BUDGET window so that a prior
+    # entry's header-wait + stream time does not starve fallback entries. The
+    # 'deadline' key in _retry_state dicts is kept but becomes display-only for
+    # the [AFZ-DEADLINE] elapsed-compute sites — it is no longer used to prune.
+    _chain_deadline = time.monotonic() + CHAIN_TOTAL_BUDGET
 
     def _chain_budget_remaining() -> float:
         return _chain_deadline - time.monotonic()
