@@ -414,6 +414,7 @@ from app.compat.families._effort import (  # noqa: E402
 
 
 from app.config_state import get_config as cs_get_config, replace_config, init_config, get_mutable_config  # noqa: E402
+from app.security.pool_auth import make_pool_auth_middleware  # noqa: E402
 from app.routing.combo_resolver import (  # noqa: E402
     resolve_combo_alias_redirect,
     resolve_combo,
@@ -1679,6 +1680,14 @@ async def admin_auth_middleware(request: Request, call_next):
     
     return await call_next(request)
 
+
+# ---------------------------------------------------------------------------
+# Shared Pool App Tier-2 inbound Ed25519 verifier (middleware)
+# Only gates /v1/chat/completions POST; config-gated, default OFF.
+# Implementation lives in app.security.pool_auth (single source of truth).
+# ---------------------------------------------------------------------------
+
+app.middleware("http")(make_pool_auth_middleware(cs_get_config))
 
 
 @app.get("/favicon.ico", include_in_schema=False)

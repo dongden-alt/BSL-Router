@@ -57,3 +57,15 @@ antigravity_integration:
 antigravity_oauth:
   client_id: ''
   client_secret: ''
+
+# Shared Pool App Tier-2 inbound auth (Ed25519).
+# Default OFF — zero behavior change for existing callers.
+# Enable when this router is advertised as a pool peer's router_address.
+pool_auth:
+  enabled: false
+  mode: optional          # optional | required
+  replay_window_secs: 300
+  # Must match the address peers advertise. Empty = reconstruct from request.
+  router_address: ""
+  # Empty allowlist = accept any valid Ed25519 pubkey. Non-empty = pubkey hex must match.
+  allowlist: []
