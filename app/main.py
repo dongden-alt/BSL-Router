@@ -161,7 +161,7 @@ _STEALTH_USER_AGENTS: dict[str, str] = {
 }
 
 
-def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dict) -> None:
+def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dict, provider_config: dict | None = None) -> None:
     """Inject provider-specific headers for upstream requests.
 
     Called at three sites:
@@ -197,6 +197,45 @@ def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dic
                 headers["ChatGPT-Account-ID"] = str(_acct_id)
         headers["OpenAI-Beta"] = "codex-1"
         headers["originator"] = "codex"
+
+    # ── Header Profile System (user-configurable, extends the blocks above) ──
+    # Providers with strict client-identity requirements (Codex CLI, Claude Code
+    # CLI, custom gateways) get their required headers from the provider's
+    # header_profile setting instead of relying on hardcoded provider_name
+    # matches. This lets CUSTOM providers point at strict upstreams correctly.
+    _prof_cfg = provider_config or {}
+    profile = str(_prof_cfg.get("header_profile") or "default").lower()
+    if profile == "codex":
+        # Codex CLI client identity. Without originator/OpenAI-Beta and (for
+        # chatgpt.com backends) ChatGPT-Account-ID, upstream returns an HTML
+        # login page instead of JSON. Mirrors the hardcoded codex block above
+        # so custom providers pointed at Codex-compatible upstreams also work.
+        headers["originator"] = "codex"
+        headers["OpenAI-Beta"] = "codex-1"
+        headers["User-Agent"] = "codex_cli_rs/0.61.0 (Windows NT 10.0; Win64; x64)"
+        _psd = active_conn.get("provider_data") or {}
+        if isinstance(_psd, dict):
+            _acct_id = _psd.get("chatgptAccountId") or _psd.get("accountId") or _psd.get("workspaceId")
+            if _acct_id:
+                headers["ChatGPT-Account-ID"] = str(_acct_id)
+    elif profile == "claude_code":
+        # Claude Code CLI client identity. First-party Anthropic and Anthropic-
+        # compatible proxies gate on these. oauth-2025-04-20 enables OAuth token
+        # acceptance; interleaved-thinking-2025-05-14 is the standard thinking
+        # beta the CLI sends.
+        headers["User-Agent"] = "claude-cli/2.0.1 (cli; node:v22.16.0)"
+        headers["anthropic-version"] = "2023-06-01"
+        headers["anthropic-beta"] = "oauth-2025-04-20,interleaved-thinking-2025-05-14"
+        headers["x-app"] = "cli"
+    elif profile == "custom":
+        # Arbitrary user-defined headers from header_custom (dict[str,str]).
+        # Applied AFTER Authorization is set by the caller, so custom profiles
+        # can also override the auth scheme for token-based gateways.
+        _custom = _prof_cfg.get("header_custom") or {}
+        if isinstance(_custom, dict):
+            for _ck, _cv in _custom.items():
+                if _ck and isinstance(_ck, str) and _cv is not None:
+                    headers[_ck] = str(_cv)
 
 
 def _strip_bsl_identity_headers(headers: dict) -> dict:
@@ -5043,7 +5082,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # Extracted to _inject_provider_headers so 401-retry paths can re-inject
     # after token refresh. Without this, Codex loses ChatGPT-Account-ID and
     # Grok loses version headers on retry, causing silent fallback failures.
-    _inject_provider_headers(headers, provider_name, active_conn)
+    _inject_provider_headers(headers, provider_name, active_conn, provider_config)
     
     # â”€â”€ Phase 2: Provider Profile Registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Resolve provider profile from the registry â€” replaces hardcoded
@@ -5057,7 +5096,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         if _profile.allows_anthropic_beta:
             upstream_payload = PromptCachingAdapter.apply_provider_caching(upstream_payload, provider_name, target_model, tools_config=config.get("tools", {}), obs=obs)
             headers["anthropic-version"] = "2023-06-01"
-            headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+            # Merge, don't clobber: a claude_code header_profile may already carry
+            # oauth/interleaved-thinking betas that the upstream gate requires.
+            _existing_beta = headers.get("anthropic-beta", "")
+            _cache_beta = "prompt-caching-2024-07-31"
+            if _existing_beta and _cache_beta not in _existing_beta:
+                headers["anthropic-beta"] = f"{_existing_beta},{_cache_beta}"
+            else:
+                headers["anthropic-beta"] = _cache_beta
         else:
             # Anthropic-compatible providers (GLM-anthropic, etc):
             # Re-inject cache_control breakpoints extracted from the original
@@ -5520,7 +5566,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 )
 
                 headers["Authorization"] = f"Bearer {_forced_token}"
-                _inject_provider_headers(headers, provider_name, active_conn)
+                _inject_provider_headers(headers, provider_name, active_conn, provider_config)
                 _active_req = _build_req(_active_payload)
                 print(
                     f"[OAuth-401Retry] {provider_name}/{target_model} "
@@ -7940,7 +7986,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         provider_name, active_conn, provider_config, force=True
                     )
                     headers["Authorization"] = f"Bearer {_forced_token}"
-                    _inject_provider_headers(headers, provider_name, active_conn)
+                    _inject_provider_headers(headers, provider_name, active_conn, provider_config)
                     print(
                         f"[OAuth-401Retry] {provider_name}/{target_model} "
                         f"force-refreshed token, retrying non-stream",
