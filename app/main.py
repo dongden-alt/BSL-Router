@@ -6358,7 +6358,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     if resp.status_code != 200:
                         try:
                             raw_err = await asyncio.wait_for(resp.aread(), timeout=5.0)
-                        except asyncio.TimeoutError:
+                        except (asyncio.TimeoutError, TimeoutError):
                             raw_err = b"(error body read timed out)"
                         try:
                             err_text = raw_err.decode("utf-8")
@@ -6777,7 +6777,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             stats["error"] = stats["error"] or "client_disconnected"
                             stats["status"] = 499
                             raise
-                        except (httpx.TimeoutException, httpx.TransportError, asyncio.TimeoutError) as _transport_err:
+                        except (httpx.TimeoutException, httpx.TransportError, asyncio.TimeoutError, TimeoutError) as _transport_err:
                             await _cancel_connection_task()
                             stats["status"] = 502 if isinstance(_transport_err, httpx.TransportError) else 504
                             stats["error"] = str(_transport_err) or type(_transport_err).__name__
@@ -6805,7 +6805,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     if resp.status_code != 200:
                         try:
                             raw_err = await asyncio.wait_for(resp.aread(), timeout=5.0)
-                        except asyncio.TimeoutError:
+                        except (asyncio.TimeoutError, TimeoutError):
                             raw_err = b"(error body read timed out)"
                         try:
                             err_text = raw_err.decode("utf-8")
@@ -7383,7 +7383,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     if resp.status_code != 200:
                         try:
                             raw_err = await asyncio.wait_for(resp.aread(), timeout=5.0)
-                        except asyncio.TimeoutError:
+                        except (asyncio.TimeoutError, TimeoutError):
                             raw_err = b"(error body read timed out)"
                         try:
                             err_text = raw_err.decode("utf-8")
@@ -7734,7 +7734,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     else:
                         try:
                             _bs_err_body = await asyncio.wait_for(_bs_resp.aread(), timeout=5.0)
-                        except asyncio.TimeoutError:
+                        except (asyncio.TimeoutError, TimeoutError):
                             _bs_err_body = b"(error body read timed out)"
                         await _bs_resp.aclose()
                         _bs_err_text = _bs_err_body.decode("utf-8", errors="replace")
@@ -7846,7 +7846,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     resp = await asyncio.wait_for(
                         client.send(req), timeout=max(1.0, min(NONSTREAM_TOTAL_BUDGET, _chain_budget_remaining()))
                     )
-                except asyncio.TimeoutError:
+                except (asyncio.TimeoutError, TimeoutError):
                     _budget_elapsed = time.time() - start_time
                     _budget_err = (
                         f"generation_budget_exceeded ({_budget_elapsed:.1f}s > "

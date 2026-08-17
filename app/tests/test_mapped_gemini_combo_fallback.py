@@ -502,3 +502,270 @@ def test_all_leaves_429_respects_chain_deadline(monkeypatch):
     assert len(_terminal) == 1, f"expected exactly one terminal frame under deadline, got {len(_terminal)}"
     _bare_err = [f for f in data_frames if f.startswith(b'data: {"error":')]
     assert not _bare_err, f"bare top-level error frame under deadline (poison): {_bare_err}"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PYTHON 3.10 BUILTIN TimeoutError COMBO-FALLBACK REGRESSION
+# On CPython 3.10.11 builtins.TimeoutError is OSError, NOT asyncio.TimeoutError.
+# Before the ~line-6780 patch the narrow catch caught only
+#   (httpx.TimeoutException, httpx.TransportError, asyncio.TimeoutError)
+# A builtin TimeoutError raised during the header-wait escaped the narrow catch,
+# fell into the generic except Exception, emitted a terminal 500 frame and NEVER
+# advanced the combo chain.  After the patch the same exception triggers
+# _raise_gemini_combo_fallback — the chain falls through to the next leaf.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_builtin_timeout_error_pre_content_triggers_combo_fallback(monkeypatch):
+    """builtins.TimeoutError during connect-header wait → combo-fallback to next leaf.
+
+    Reproduces the Python 3.10 defect: builtins.TimeoutError is OSError, NOT
+    asyncio.TimeoutError on CPython 3.10.11.  Prior to the fix this exception
+    was invisible to the narrow catch block at ~line 6780 and escaped as a raw
+    500.  The fix adds bare TimeoutError to the tuple so the combo-chain
+    advances.
+    """
+    providers = {}
+    for provider, model in (("p_timeout", "m_timeout"), ("p_ok", "m_ok")):
+        providers[provider] = {
+            "type": "custom",
+            "format": "openai",
+            "connections": [{"enabled": True, "api_key": "t", "base_url": f"https://{provider}.invalid"}],
+            "models": [{"id": model, "enabled": True, "thinking": "off"}],
+        }
+    cfg = {
+        "tools": {"output_thinking_squeeze": False},
+        "providers": providers,
+        "combos": [{
+            "alias": "BT_ERR",
+            "strategy": "fallback",
+            "chain": [
+                {"provider": "p_timeout", "model": "m_timeout"},
+                {"provider": "p_ok", "model": "m_ok"},
+            ],
+        }],
+        "aliases": {},
+    }
+
+    # Track build-request payload so we can intercept per-model.
+    class _TimeoutTrackingClient:
+        def __init__(self, ok_response, target_model="m_timeout"):
+            self.ok_response = ok_response
+            self.target_model = target_model
+            self.models = []
+
+        def build_request(self, method, url, **kwargs):
+            req = httpx.Request(method, url, **kwargs)
+            payload = json.loads(req.content)
+            model = payload.get("model")
+            if model:
+                self.models.append(model)
+            return req
+
+        async def send(self, request, stream=False):
+            payload = json.loads(request.content)
+            model = payload.get("model")
+            if model == self.target_model:
+                # Raise builtins.TimeoutError — on Python 3.10 this is OSError,
+                # NOT asyncio.TimeoutError. The fix ensures this is caught by the
+                # transport-handling block.
+                raise builtins.TimeoutError(
+                    "builtin timeout during header wait (Python 3.10)"
+                )
+            return httpx.Response(200, request=request, stream=self.ok_response)
+
+    ok_client = _TimeoutTrackingClient(_success_stream("m_ok", "fallback-ok"))
+    ok_client.models  # accessed via closure reference below
+
+    real_open = builtins.open
+
+    def open_without_forensics(path, *args, **kwargs):
+        if str(path).replace("\\", "/").endswith(".brain/logs/outbound_upstream.jsonl"):
+            return io.StringIO()
+        return real_open(path, *args, **kwargs)
+
+    starts = []
+    ends = []
+
+    monkeypatch.setattr(builtins, "open", open_without_forensics)
+    cs.replace_config(cfg)
+    monkeypatch.setattr(main, "_get_client_for_proxy", lambda *_args: ok_client)
+    monkeypatch.setattr(main, "get_breaker", lambda: _Breaker())
+    monkeypatch.setattr(main.obs, "log_request_start", lambda **kwargs: starts.append(kwargs) or "req")
+    monkeypatch.setattr(main.obs, "log_request", lambda **kwargs: ends.append(kwargs))
+    monkeypatch.setattr(main, "GEMINI_EGRESS_KEEPALIVE_INTERVAL", 0.005)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_CONNECT_KEEPALIVE_INTERVAL", 0.005)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_CONNECT_TIMEOUT", 0.03)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_BODY_STALL_TIMEOUT", 0.01)
+
+    # Record process invocations to prove combo-retry fired.
+    process_call_count = [0]
+    real_process = main._process_chat_completion
+
+    async def recording_process(body, client_wants_anthropic=False, client_wants_gemini=False, _retry_state=None, request=None):
+        process_call_count[0] += 1
+        return await real_process(
+            body,
+            client_wants_anthropic,
+            client_wants_gemini,
+            _retry_state=_retry_state,
+            request=request,
+        )
+
+    monkeypatch.setattr(main, "_process_chat_completion", recording_process)
+
+    async def _run():
+        response = await main._process_chat_completion(
+            {
+                "model": "BT_ERR",
+                "_bsl_original_model": "gemini-pro-agent",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+            client_wants_gemini=True,
+        )
+        return b"".join([chunk async for chunk in response.body_iterator])
+
+    output = asyncio.run(_run())
+
+    # Combo fallback fired: builtins.TimeoutError triggered PRE-CONTENT path
+    # → advance to retry entry. Two process calls: primary + retry.
+    assert process_call_count[0] == 2, \
+        f"builtin TimeoutError must trigger combo retry, but _process_chat_completion was called {process_call_count[0]} time(s)"
+    # Both leaves were dialed in order (first the failed one, then the ok one).
+    assert ok_client.models == ["m_timeout", "m_ok"], \
+        f"builtin TimeoutError combo fallback: expected both models, got {ok_client.models}"
+    # Fallback content arrived from the second leaf.
+    assert b"fallback-ok" in output
+    assert output.rstrip().endswith(b"data: [DONE]")
+
+
+def test_builtin_timeout_error_post_content_emits_terminal_error_frame(monkeypatch):
+    """builtins.TimeoutError AFTER model-data has been emitted → terminal error frame (no combo).
+
+    Once the IDE is mid-parse (emitted_model_data is true), even a transport
+    timeout must NOT splice a second stream. Instead emit a parser-valid
+    terminal_error_frame + [DONE]. This guards against regressing the
+    POST-CONTENT safety path when the builtin TimeoutError fix lands.
+
+    Strategy: the first combo leaf receives an httpx.Response whose stream emits
+    partial SSE content then raises builtins.TimeoutError. Because
+    emitted_model_data is now True, the code takes the POST-CONTENT branch:
+    single terminal_error_frame + DONE, NO combo advance.  The second leaf is
+    never dialed.
+    """
+    providers = {}
+    for provider, model in (("p_partial", "m_partial"), ("p_ok", "m_ok")):
+        providers[provider] = {
+            "type": "custom",
+            "format": "openai",
+            "connections": [{"enabled": True, "api_key": "t", "base_url": f"https://{provider}.invalid"}],
+            "models": [{"id": model, "enabled": True, "thinking": "off"}],
+        }
+    cfg = {
+        "tools": {"output_thinking_squeeze": False},
+        "providers": providers,
+        "combos": [{
+            "alias": "BT_POST",
+            "strategy": "fallback",
+            "chain": [
+                {"provider": "p_partial", "model": "m_partial"},
+                {"provider": "p_ok", "model": "m_ok"},
+            ],
+        }],
+        "aliases": {},
+    }
+
+    class _PostContentTimeoutStream(httpx.AsyncByteStream):
+        """Yields partial SSE content, then raises builtins.TimeoutError."""
+        def __init__(self):
+            self.chunks = [_openai_chunk("m_partial", "partial-during-timeout")]
+            self.sent = False
+
+        async def __aiter__(self):
+            for chunk in self.chunks:
+                yield chunk
+            # Now we've emitted model data — the IDE is mid-parse.
+            # Raise builtins.TimeoutError (OSError on Py3.10) to exercise the
+            # POST-CONTENT terminal-error path.
+            raise builtins.TimeoutError("builtin TimeoutError after partial content")
+
+    class _PostContentTrackingClient:
+        def __init__(self, partial_stream, ok_stream):
+            self.partial_stream = partial_stream
+            self.ok_stream = ok_stream
+            self.models = []
+
+        def build_request(self, method, url, **kwargs):
+            req = httpx.Request(method, url, **kwargs)
+            payload = json.loads(req.content)
+            model = payload.get("model")
+            if model:
+                self.models.append(model)
+            return req
+
+        async def send(self, request, stream=False):
+            payload = json.loads(request.content)
+            model = payload.get("model")
+            if model == "m_partial":
+                return httpx.Response(200, request=request, stream=self.partial_stream)
+            # Second leaf would be dialed on combo-fallback; shouldn't happen.
+            return httpx.Response(200, request=request, stream=self.ok_stream)
+
+    tracking_client = _PostContentTrackingClient(
+        _PostContentTimeoutStream(),
+        _success_stream("m_ok", "fallback-ok"),
+    )
+
+    real_open = builtins.open
+
+    def open_without_forensics(path, *args, **kwargs):
+        if str(path).replace("\\", "/").endswith(".brain/logs/outbound_upstream.jsonl"):
+            return io.StringIO()
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", open_without_forensics)
+    cs.replace_config(cfg)
+    monkeypatch.setattr(main, "_get_client_for_proxy", lambda *_args: tracking_client)
+    monkeypatch.setattr(main, "get_breaker", lambda: _Breaker())
+    monkeypatch.setattr(main.obs, "log_request_start", lambda **kwargs: "req")
+    monkeypatch.setattr(main.obs, "log_request", lambda **kwargs: None)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_KEEPALIVE_INTERVAL", 0.005)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_CONNECT_KEEPALIVE_INTERVAL", 0.005)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_CONNECT_TIMEOUT", 0.03)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_BODY_STALL_TIMEOUT", 0.01)
+
+    async def _run():
+        response = await main._process_chat_completion(
+            {
+                "model": "BT_POST",
+                "_bsl_original_model": "gemini-pro-agent",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+            client_wants_gemini=True,
+        )
+        chunks = [chunk async for chunk in response.body_iterator]
+        return b"".join(chunks), chunks, tracking_client
+
+    output, chunks, tracking_client = asyncio.run(_run())
+    data_frames = [c for c in chunks if c.startswith(b"data:")]
+
+    # POST-CONTENT invariant: no spliced fallback. Only the partial leaf is
+    # dialed; once emitted_model_data became True the chain stops retrying.
+    assert tracking_client.models == ["m_partial"], \
+        f"post-content builtin TimeoutError must NOT combo-fallback, but models={tracking_client.models}"
+    # Partial content did arrive before the timeout.
+    assert b"partial-during-timeout" in output
+    # A single finishReason-bearing terminal frame exists (parser-safe).
+    _terminal = [f for f in data_frames if b'"finishReason"' in f]
+    assert _terminal, "must emit a finishReason terminal frame after post-content timeout"
+    assert len(_terminal) == 1
+    # No bare error object (the poison).
+    _bare_err = [f for f in data_frames if f.startswith(b'data: {"error":')]
+    assert not _bare_err, f"bare top-level error frame (poison): {_bare_err}"
+    # Cleanly terminated.
+    assert output.rstrip().endswith(b"data: [DONE]")
+    assert output.count(b"data: [DONE]") == 1
+    # Fallback content must NOT appear — the IDE was already parsing.
+    assert b"fallback-ok" not in output
