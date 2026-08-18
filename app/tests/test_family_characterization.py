@@ -144,15 +144,14 @@ def test_registry_matches_legacy_for_all_config_models(effort):
         if "qwencoder/" in f_val:
             continue
 
-        # Doubao/Hunyuan/Muse with effort='auto' (and off/none) is a DELIBERATE divergence:
-        # legacy cascade does NOTHING for auto/off/none (returns payload unchanged).
-        # New contracts use always_applies=True + OFF_VALUES -> explicit disable values:
-        #   Doubao: minimal, Hunyuan: no_think, Muse: minimal
-        # This ensures reasoning is explicitly disabled, not left to model default.
-        # See test_family_divergences.py::test_doubao_hunyuan_muse_auto_explicit_disable.
-        if effort in ("auto", "none", "off", "") and any(
-            kw in f_val for kw in ("doubao", "hy3", "hunyuan", "muse-spark", "muse_spark")
-        ):
+        # Four new families (Doubao/Hunyuan/Kat-coder/Muse): the legacy cascade had
+        # ZERO branches for them, so EVERY emission is a deliberate divergence locked
+        # in test_family_divergences.py (Divergence 5). Skip all efforts, not just OFF.
+        if any(kw in f_val for kw in (
+            "doubao", "hy3", "hunyuan",
+            "muse-spark", "muse_spark",
+            "kat-coder", "kwaipilot",
+        )):
             continue
 
         # Qwen is a DELIBERATE divergence: the legacy cascade injected
@@ -162,6 +161,20 @@ def test_registry_matches_legacy_for_all_config_models(effort):
         # legacy's 'max'/'high' are 400s there. The new contract is
         # version-aware; see test_qwen_thinking_levels.py.
         if re.search(r"qwen(?!coder)", f_val):
+            continue
+
+        # GLM-5.2/5.3 graded path is deliberate (Divergence 6): new code coerces
+        # medium->high / xhigh->max and emits reasoning_effort instead of the legacy
+        # output_config.effort for graded versions. Budget forms (16k/32k/...) are
+        # also routed through _coerce_glm_effort -> high.
+        if re.search(r"glm-5\.[23]", f_val) and effort not in (
+            "auto", "none", "off", "", "enable", "adaptive",
+        ):
+            continue
+
+        # Grok xhigh version-gating is deliberate (Divergence 7): 4.6+ keeps xhigh,
+        # older coerces to high. Legacy passed the effort through unchanged.
+        if re.search(r"grok|xai", f_val) and effort == "xhigh":
             continue
 
         legacy_payload = legacy_apply_thinking(_base_payload(), f_val, effort)
@@ -210,6 +223,17 @@ def test_registry_matches_legacy_for_all_config_models(effort):
     ],
 )
 def test_registry_matches_legacy_spot_checks(f_val, effort):
+    # GLM-5.2/5.3 graded path is deliberate (Divergence 6): omit effort forms
+    # that diverge from legacy (medium/xhigh/budget -> reasoning_effort).
+    if re.search(r"glm-5\.[23]", f_val) and effort not in (
+        "auto", "none", "off", "", "enable", "adaptive", "max", "high", "low",
+    ):
+        return
+
+    # Grok xhigh version-gating is deliberate (Divergence 7).
+    if re.search(r"grok|xai", f_val) and effort == "xhigh":
+        return
+
     legacy_payload = legacy_apply_thinking(_base_payload(), f_val, effort)
     new_payload, _prov = resolve_thinking(_base_payload(), f_val, effort)
     assert new_payload == legacy_payload, (

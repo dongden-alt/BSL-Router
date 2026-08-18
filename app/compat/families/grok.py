@@ -28,8 +28,17 @@ from app.compat.families._base import Contract, Provenance, ThinkingContext
 SOURCE = "families/grok.py"
 
 # Grok 4.6+ supports xhigh; 4.5 and earlier do NOT.
-_GROK_XHIGH_OK = r"grok.*4[.-][6-9]|grok.*[5-9]"
 _GROK_BASE_EFFORTS = ("low", "medium", "high")
+
+
+def _supports_xhigh(f_val: str) -> bool:
+    """Return True if *f_val* denotes a Grok version that accepts xhigh."""
+    m = re.search(r"grok[-_. ]*(\d+)(?:[.-](\d+))?", f_val, re.IGNORECASE)
+    if not m:
+        return False
+    major = int(m.group(1))
+    minor = int(m.group(2) or 0)
+    return (major, minor) >= (4, 6)
 
 
 def _coerce_grok_effort(ctx: ThinkingContext) -> str:
@@ -39,7 +48,7 @@ def _coerce_grok_effort(ctx: ThinkingContext) -> str:
     e = ctx.effort
     if e == "xhigh":
         # 4.6+ keeps xhigh; 4.5 and earlier coerce to high.
-        if bool(re.search(_GROK_XHIGH_OK, ctx.f_val, re.IGNORECASE)):
+        if _supports_xhigh(ctx.f_val):
             return e
         return "high"
     if e in _GROK_BASE_EFFORTS:

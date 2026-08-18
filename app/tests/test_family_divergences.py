@@ -344,9 +344,6 @@ def test_k3_coerces_medium_to_max(f_val):
 #   explicit intent > implicit default.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _payload():
-    return {"model": "x", "messages": [], "max_tokens": 8192}
-
 
 @pytest.mark.parametrize("effort", ["auto", "none", "off", ""])
 @pytest.mark.parametrize("f_val", [
@@ -374,3 +371,110 @@ def test_doubao_hunyuan_muse_auto_explicit_disable(f_val, effort):
 
     # Provenance recorded
     assert prov.records, f"{f_val} effort={effort!r}: no provenance for explicit disable"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DIVERGENCE 5 (continued) — Explicit effort coercion for new families.
+#
+# WHY LEGACY WAS WRONG:
+#   The legacy cascade had ZERO branches for Doubao/Hunyuan/Kat-coder/Muse,
+#   so any explicit non-OFF effort was a silent no-op (payload returned
+#   unchanged).  New contracts now coerce each family's native vocabulary.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize("f_val,effort,expected", [
+    ("vsllm-a/doubao-seed-2-0-pro", "high", "high"),
+    ("vsllm-a/doubao-seed-2-0-pro", "max", "high"),
+    ("vsllm-a/doubao-seed-2-0-pro", "enable", "high"),
+    ("vsllm-a/doubao-seed-2-0-pro", "low", "low"),
+])
+def test_doubao_explicit_effort_coerces(f_val, effort, expected):
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    assert out.get("reasoning_effort") == expected
+    assert prov.records
+
+
+@pytest.mark.parametrize("f_val,effort,expected", [
+    ("iamhc/hy3", "low", "low"),
+    ("iamhc/hy3", "medium", "high"),
+    ("iamhc/hy3", "max", "high"),
+    ("ltn-ai/tencent/hy3", "high", "high"),
+])
+def test_hunyuan_explicit_effort_coerces(f_val, effort, expected):
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    assert out["chat_template_kwargs"]["reasoning_effort"] == expected
+    assert prov.records
+
+
+@pytest.mark.parametrize("f_val,effort,expected", [
+    ("ltn-ai/meta/muse-spark-1.1", "high", "high"),
+    ("ltn-ai/meta/muse-spark-1.1", "max", "xhigh"),
+    ("ltn-ai/meta/muse-spark-1.1", "enable", "xhigh"),
+    ("ltn-ai/meta/muse-spark-1.1", "xhigh", "xhigh"),
+])
+def test_muse_explicit_effort_coerces(f_val, effort, expected):
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    assert out.get("reasoning_effort") == expected
+    assert prov.records
+
+
+@pytest.mark.parametrize("f_val", [
+    "iamhc/kat-coder-pro-v2.5",
+    "ltn-ai/kwaipilot/kat-coder-pro-v2.5",
+])
+@pytest.mark.parametrize("effort", ["enable", "high", "32k"])
+def test_kat_coder_passthrough(f_val, effort):
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    assert out.get("reasoning_effort") == effort
+    assert prov.records
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DIVERGENCE 6 — GLM-5.2/5.3 graded path uses _coerce_glm_effort().
+#
+# WHY LEGACY WAS WRONG:
+#   The legacy cascade did NOT branch on GLM-5.2 vs 5.1: it emitted
+#   output_config.effort=<raw effort> for every GLM model.  So
+#   medium/xhigh reached upstream unchanged — both are rejected with a
+#   400 by GLM-5.2/5.3.  The new contract detects graded versions
+#   (glm-5.[23]) and always runs _coerce_glm_effort (medium->high, xhigh->max),
+#   emits reasoning_effort instead of output_config.effort, and sets
+#   thinking.type=enabled even when only an effort word was requested.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize("f_val", ["iamhc/glm-5.2", "iamhc/glm-5.3", "hcnsec-vip/glm-5.3-anthropic"])
+@pytest.mark.parametrize("effort,expected", [
+    ("low", "low"), ("medium", "high"), ("high", "high"),
+    ("max", "max"), ("xhigh", "max"),
+])
+def test_glm_graded_coerces_and_uses_reasoning_effort(f_val, effort, expected):
+    """Graded GLM models coerce invalid efforts and use reasoning_effort."""
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    assert out["thinking"] == {"type": "enabled"}
+    assert out["reasoning_effort"] == expected
+    assert "output_config" not in out
+
+
+# ─────────────────────────────────────────────────────────────────────
+# DIVERGENCE 7 — Grok xhigh is version-gated (4.6+ only).
+#
+# WHY LEGACY WAS WRONG:
+#   The legacy cascade passed the effort through for Grok, so xhigh
+#   reached grok-4.5 which does not support it (per xAI docs, xhigh
+#   is available on grok-4.6 and later only).  The new code parses
+#   the version and keeps xhigh only for (major,minor) >= (4,6).
+# ─────────────────────────────────────────────────────────────────────
+
+def test_grok45_xhigh_coerces_to_high():
+    out, _ = resolve_thinking(_payload(), "xai/grok-4.5", "xhigh")
+    assert out["reasoning_effort"] == "high"
+
+
+def test_grok46_xhigh_kept():
+    out, _ = resolve_thinking(_payload(), "xai/grok-4.6", "xhigh")
+    assert out["reasoning_effort"] == "xhigh"
+
+
+def test_grok420_xhigh_kept():
+    out, _ = resolve_thinking(_payload(), "xai/grok-4.20", "xhigh")
+    assert out["reasoning_effort"] == "xhigh"

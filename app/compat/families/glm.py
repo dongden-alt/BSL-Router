@@ -63,12 +63,15 @@ def _apply(
 ) -> Dict[str, Any]:
     graded = bool(re.search(_GRADED_EFFORT_VERSIONS, ctx.f_val, re.IGNORECASE))
 
-    if graded and ctx.effort in _GRADED_EFFORT_WORDS:
+    if graded and ctx.effort not in ("enable", "adaptive"):
         return prov.apply(
             payload,
             contract,
             "graded_effort",
-            {"thinking": {"type": "enabled"}, "reasoning_effort": ctx.effort},
+            {
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": _coerce_glm_effort(ctx),
+            },
         )
 
     if ctx.effort == "enable":
@@ -81,6 +84,9 @@ def _apply(
             payload, contract, "switch_adaptive", {"thinking": {"type": "adaptive"}}
         )
 
+    # For graded versions: let everything else fall through to generic
+    # enabled+output_config (legacy compat).  Non-graded GLM always uses
+    # this path.
     oc = payload.get("output_config", {})
     if not isinstance(oc, dict):
         oc = {}
