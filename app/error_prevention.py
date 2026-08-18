@@ -107,7 +107,8 @@ class ErrorPreventionManager:
                   'arrearage', 'access denied', 'good standing',
                   'insufficient balance', 'insufficient_balance',
                   'out of credit', 'payment required', 'unpaid',
-                  'account suspended', 'account_disabled', 'no credit'],
+                  'account suspended', 'account_disabled', 'no credit',
+                  'insufficient_user_quota'],
         # Upstream aggregators (especially VSLLM) mask quota exhaustion as nested
         # 400/500 bodies.  9Router surfaces these same incidents as real 429s.
         # Patterns cover: English, Chinese (速率限制/请求频率), VSLLM code 1302,
