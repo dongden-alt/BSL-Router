@@ -242,6 +242,131 @@ def test_sidecar_reload_on_startup(tmp_path, monkeypatch):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Toggle gate — disabled path must not ban, persist, restore, notify, or expose
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _seeded_ban_state(provider="prov", model="model", error_type="timeout", remaining=120.0):
+    """Build a still-live softban entry for disabled-path projection tests."""
+    key = f"{provider}/{model}/{error_type}"
+    entry = {
+        "streak": 0,
+        "ban_state": "softban",
+        "ban_until": time.time() + remaining,
+        "ban_escalation_count": 1,
+        "error_type": error_type,
+        "provider": provider,
+        "model": model,
+        "last_error_time": time.time(),
+    }
+    return key, entry
+
+
+@pytest.mark.parametrize(
+    "status_code,error_msg",
+    [
+        (429, "rate limit exceeded"),
+        (504, "Read timed out"),
+        (500, "internal server error"),
+    ],
+    ids=["rate_limit", "timeout", "server_error"],
+)
+def test_disabled_record_outcome_no_side_effects(tmp_path, monkeypatch, status_code, error_msg):
+    """When error_prevention.enabled is false, outcomes must not mutate or notify."""
+    sidecar = tmp_path / "aep_runtime.json"
+    monkeypatch.setattr(ep, "_AEP_SIDECAR_PATH", str(sidecar))
+    flag = _guard_config_yaml(monkeypatch)
+
+    cfg = _aep_config(enabled=False)
+    notif_before = list(ep.notifications)
+
+    ep.record_outcome(cfg, "vsllm-a", "MiniMax-M3", status_code, error_msg)
+
+    assert cfg["error_prevention_state"] == {}
+    assert not sidecar.exists(), "disabled path must not create the sidecar"
+    assert flag["config_written"] is False, "disabled path must not persist config.yaml"
+    assert ep.notifications == notif_before, "disabled path must not emit notifications"
+    banned, _, _ = ep.check_ban(cfg, "vsllm-a", "MiniMax-M3")
+    assert banned is False
+
+
+def test_disabled_load_runtime_bans_leaves_sidecar_untouched(tmp_path, monkeypatch):
+    """Disabled startup restore must not merge state or rewrite the sidecar."""
+    sidecar = tmp_path / "aep_runtime.json"
+    monkeypatch.setattr(ep, "_AEP_SIDECAR_PATH", str(sidecar))
+
+    now = time.time()
+    live_key = "prov/live-model/timeout"
+    payload = {
+        live_key: {
+            "streak": 0,
+            "ban_state": "softban",
+            "ban_until": now + 100,
+            "ban_escalation_count": 1,
+            "error_type": "timeout",
+            "provider": "prov",
+            "model": "live-model",
+        }
+    }
+    raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+    sidecar.write_text(raw, encoding="utf-8")
+
+    cfg = _aep_config(enabled=False)
+    restored = ep.load_runtime_bans(cfg)
+
+    assert restored == 0
+    assert cfg["error_prevention_state"] == {}
+    assert sidecar.read_text(encoding="utf-8") == raw
+
+
+def test_disabled_get_active_bans_and_check_ban_empty():
+    """Disabled projection hides seeded bans; check_ban stays false."""
+    cfg = _aep_config(enabled=False)
+    key, entry = _seeded_ban_state()
+    cfg["error_prevention_state"][key] = entry
+
+    mgr = ErrorPreventionManager(cfg)
+    assert mgr.get_active_bans() == []
+    banned, ban_type, remaining = mgr.is_banned("prov", "model")
+    assert banned is False
+    assert ban_type is None
+    assert remaining is None
+    banned2, _, _ = ep.check_ban(cfg, "prov", "model")
+    assert banned2 is False
+    # Seeded in-memory state must remain intact for a later re-enable.
+    assert key in cfg["error_prevention_state"]
+    assert cfg["error_prevention_state"][key]["ban_state"] == "softban"
+
+
+def test_disabled_handle_action_no_notify_or_disable(monkeypatch):
+    """Defensive _handle_action guard: no notifications or live config mutation."""
+    cfg = _aep_config(enabled=False)
+    cfg["providers"] = {"prov": {"models": [{"id": "model", "enabled": True}]}}
+    notif_before = list(ep.notifications)
+    swaps = {"count": 0}
+
+    def _fake_swap(_config):
+        swaps["count"] += 1
+
+    monkeypatch.setattr(main, "_replace_runtime_config", _fake_swap, raising=False)
+
+    ep._handle_action(
+        {
+            "action": "disabled",
+            "model": "model",
+            "provider": "prov",
+            "error_type": "server_error",
+            "duration_minutes": None,
+            "notify": True,
+        },
+        cfg,
+    )
+
+    assert ep.notifications == notif_before
+    assert swaps["count"] == 0
+    assert cfg["providers"]["prov"]["models"][0]["enabled"] is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Part 1 / 4 — integration harness (scripted upstream client)
 # Mirrors app/tests/test_mapped_gemini_combo_fallback.py.
 # ─────────────────────────────────────────────────────────────────────────────

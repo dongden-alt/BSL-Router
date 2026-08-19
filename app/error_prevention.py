@@ -521,9 +521,11 @@ class ErrorPreventionManager:
     
     def get_active_bans(self) -> list:
         """Get list of all currently banned models with details."""
+        if not self.enabled:
+            return []
         now = time.time()
         bans = []
-        
+
         for key, entry in self.state.items():
             ban_state = entry.get('ban_state')
             if not ban_state:
@@ -580,6 +582,10 @@ def add_notification(level: str, title: str, message: str, push: bool = False) -
 def _handle_action(action: Optional[Dict[str, Any]], config: Dict[str, Any]):
     """Translate a ban action into a dashboard notification + disable-on-config side effect."""
     if not action:
+        return
+    # Defensive: automatic notifications / live config mutation are opt-in only.
+    # Do not instantiate a manager here — read the flag straight from config.
+    if not config.get('error_prevention', {}).get('enabled', False):
         return
     model = action['model']
     provider = action['provider']
@@ -691,6 +697,10 @@ def load_runtime_bans(config: Dict[str, Any]) -> int:
     ban_until has already passed are dropped. Returns the number of live
     entries merged. Safe to call when the sidecar is absent.
     """
+    # Opt-in gate: when disabled, do not restore, self-prune, or rewrite the
+    # sidecar so a later re-enable can still recover still-live entries.
+    if not config.get('error_prevention', {}).get('enabled', False):
+        return 0
     if not os.path.exists(_AEP_SIDECAR_PATH):
         return 0
     try:
