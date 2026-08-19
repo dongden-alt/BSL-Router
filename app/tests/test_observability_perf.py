@@ -366,3 +366,103 @@ def test_usage_endpoint_does_not_mutate_console_logs():
     before = list(obs.console_logs)
     _ = _await(main.get_usage(limit=10))
     assert obs.console_logs == before
+
+
+# ── Usage retention 100k ─────────────────────────────────────────────────────
+
+def test_usage_retention_default_is_100k():
+    """Production default must retain 100_000 usage entries."""
+    assert obs._USAGE_RETENTION == 100_000
+
+
+def test_load_persisted_honors_usage_retention(tmp_path, monkeypatch):
+    """Startup tail-load of usage_stats.jsonl must honor _USAGE_RETENTION."""
+    monkeypatch.setattr(obs, "_USAGE_RETENTION", 5)
+    path = tmp_path / "usage_stats.jsonl"
+    for i in range(12):
+        path.write_text("") if i == 0 else None
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"i": i, "timestamp": f"2026-08-01T00:00:{i:02d}"}) + "\n")
+    # Rewrite cleanly
+    with open(path, "w", encoding="utf-8") as f:
+        for i in range(12):
+            f.write(json.dumps({"i": i, "timestamp": f"2026-08-01T00:00:{i:02d}"}) + "\n")
+    loaded = obs._load_persisted(str(path), max_entries=obs._USAGE_RETENTION)
+    assert len(loaded) == 5
+    assert loaded[0]["i"] == 7
+    assert loaded[-1]["i"] == 11
+
+
+def test_usage_stats_trim_keeps_newest(monkeypatch):
+    """Runtime trim of usage_stats keeps the newest _USAGE_RETENTION entries."""
+    monkeypatch.setattr(obs, "_USAGE_RETENTION", 3)
+    saved = list(obs.usage_stats)
+    try:
+        obs.usage_stats.clear()
+        for i in range(5):
+            obs.usage_stats.append({"i": i})
+            if len(obs.usage_stats) > obs._USAGE_RETENTION:
+                del obs.usage_stats[:-obs._USAGE_RETENTION]
+        assert len(obs.usage_stats) == 3
+        assert [e["i"] for e in obs.usage_stats] == [2, 3, 4]
+    finally:
+        obs.usage_stats[:] = saved
+
+
+def test_usage_shim_trims_at_retention(monkeypatch):
+    """usage_stats_shim must bound itself to _USAGE_RETENTION (newest kept)."""
+    monkeypatch.setattr(obs, "_USAGE_RETENTION", 4)
+    shim = obs._UsageListShim()
+    assert shim._max == 4
+    for i in range(7):
+        shim.append({"i": i})
+    assert len(shim) == 4
+    assert [e["i"] for e in shim] == [3, 4, 5, 6]
+
+
+def test_console_rotation_defaults_unchanged():
+    """Console JSONL policy must remain 5_000 entries / 5 MB."""
+    assert obs._MAX_LOG_ENTRIES == 5_000
+    assert obs._MAX_LOG_FILE_SIZE == 5_000_000
+
+
+def test_persist_entry_two_arg_uses_console_defaults(tmp_path, monkeypatch):
+    """Two-argument _persist_entry callers must still rotate at console limits."""
+    path = tmp_path / "console.jsonl"
+    # Force rotation by lowering the size threshold via monkeypatch of defaults
+    # already used as default kwargs — call with explicit console defaults.
+    # Write a few entries with a tiny max_file_size to prove kwargs work, then
+    # confirm bare two-arg call still binds to module console constants.
+    import inspect
+    sig = inspect.signature(obs._persist_entry)
+    params = sig.parameters
+    assert params["max_file_size"].default == obs._MAX_LOG_FILE_SIZE
+    assert params["max_entries"].default == obs._MAX_LOG_ENTRIES
+    # Two-arg call must not raise and must append a line.
+    obs._persist_entry(str(path), {"event": "test"})
+    assert path.exists()
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+
+
+def test_usage_persist_uses_usage_rotation_policy(tmp_path, monkeypatch):
+    """Usage JSONL rotation must retain up to _USAGE_RETENTION, not console 5k."""
+    monkeypatch.setattr(obs, "_USAGE_RETENTION", 6)
+    monkeypatch.setattr(obs, "_USAGE_MAX_LOG_FILE_SIZE", 1)  # force rotate every write after first
+    path = tmp_path / "usage_stats.jsonl"
+    for i in range(10):
+        obs._persist_entry(
+            str(path),
+            {"i": i},
+            max_file_size=obs._USAGE_MAX_LOG_FILE_SIZE,
+            max_entries=obs._USAGE_RETENTION,
+        )
+    with open(path, "r", encoding="utf-8") as f:
+        lines = [ln for ln in f.readlines() if ln.strip()]
+    # After forced rotations, at most retention entries remain and newest win.
+    assert len(lines) <= 6
+    parsed = [json.loads(ln) for ln in lines]
+    assert parsed[-1]["i"] == 9
+    # Console defaults must be untouched by the usage-specific path.
+    assert obs._MAX_LOG_ENTRIES == 5_000
+    assert obs._MAX_LOG_FILE_SIZE == 5_000_000

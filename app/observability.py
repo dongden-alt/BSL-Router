@@ -18,7 +18,12 @@ _CONSOLE_LOG_PATH = "data/console_logs.jsonl"
 # Prevents unbounded JSONL growth. When a log file exceeds _MAX_LOG_FILE_SIZE,
 # it is rewritten with only the most recent _MAX_LOG_ENTRIES entries.
 _MAX_LOG_FILE_SIZE = 5_000_000  # 5 MB
-_MAX_LOG_ENTRIES = 5_000        # Keep last 5k entries after rotation
+_MAX_LOG_ENTRIES = 5_000        # Keep last 5k entries after rotation (console)
+
+# Usage history retention (in-memory list + JSONL archive). Separate from the
+# console-log 5k/5 MB policy so rotation cannot silently collapse usage history.
+_USAGE_RETENTION = 100_000
+_USAGE_MAX_LOG_FILE_SIZE = 50_000_000  # 50 MB — room for ~100k compact JSONL rows
 
 
 def _rotate_log_file(path, max_entries=_MAX_LOG_ENTRIES):
@@ -38,19 +43,21 @@ def _rotate_log_file(path, max_entries=_MAX_LOG_ENTRIES):
         print(f"[Observability] rotate failed (non-blocking): {_err}", flush=True)
 
 
-def _persist_entry(path, entry):
+def _persist_entry(path, entry, max_file_size=_MAX_LOG_FILE_SIZE, max_entries=_MAX_LOG_ENTRIES):
     """Append a single entry as one JSON line to a JSONL file. Fail-open.
 
-    Includes automatic log rotation: if the file exceeds _MAX_LOG_FILE_SIZE
-    after appending, it is rewritten with only the most recent entries.
+    Includes automatic log rotation: if the file exceeds `max_file_size`
+    after appending, it is rewritten with only the most recent `max_entries`.
+    Optional kwargs preserve the console 5k/5 MB defaults for two-arg callers
+    while allowing usage JSONL to retain up to _USAGE_RETENTION entries.
     """
     try:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
         # Check if rotation is needed after append
         try:
-            if os.path.getsize(path) > _MAX_LOG_FILE_SIZE:
-                _rotate_log_file(path)
+            if os.path.getsize(path) > max_file_size:
+                _rotate_log_file(path, max_entries=max_entries)
         except OSError:
             pass
     except Exception as _err:
@@ -666,9 +673,9 @@ def _build_buckets_for_sql(timeframe, where_clause, where_params, conn):
 class _UsageListShim(list):
     """Bounded detail array for non-API callers only. Not durable history."""
 
-    def __init__(self, max_size=10000):
+    def __init__(self, max_size=None):
         super().__init__()
-        self._max = max_size
+        self._max = _USAGE_RETENTION if max_size is None else max_size
 
     def append(self, item):
         super().append(item)
@@ -677,7 +684,7 @@ class _UsageListShim(list):
 
 
 usage_stats_shim: _UsageListShim = _UsageListShim()
-usage_stats = _load_persisted(_USAGE_LOG_PATH)
+usage_stats = _load_persisted(_USAGE_LOG_PATH, max_entries=_USAGE_RETENTION)
 console_logs = _load_persisted(_CONSOLE_LOG_PATH)
 
 # Cleanup stale 'start' events from previous runs that never got an 'end' event.
@@ -1111,13 +1118,21 @@ def log_request(
         }
         # Write to SQLite — the only durable usage source of truth.
         append_usage_event(usage_entry)
-        # Keep a small in-memory shim for non-API callers; no rotation cap.
+        # Keep a bounded in-memory shim for non-API callers.
         usage_stats_shim.append(usage_entry)
-        # Legacy compat list still updated but without hard cap.
+        # Legacy compat list: retain newest _USAGE_RETENTION entries.
         usage_stats.append(usage_entry)
+        if len(usage_stats) > _USAGE_RETENTION:
+            del usage_stats[:-_USAGE_RETENTION]
         # Optional JSONL archive append (kept for backward-compat; reads come from SQLite).
+        # Usage-specific rotation policy — do not inherit console 5k/5 MB limits.
         try:
-            _persist_entry(_USAGE_LOG_PATH, usage_entry)
+            _persist_entry(
+                _USAGE_LOG_PATH,
+                usage_entry,
+                max_file_size=_USAGE_MAX_LOG_FILE_SIZE,
+                max_entries=_USAGE_RETENTION,
+            )
         except Exception:
             pass  # archive write must never fail
 
