@@ -816,3 +816,93 @@ def test_midstream_peer_close_post_content_emits_terminal_not_combo(monkeypatch)
     assert not [f for f in data_frames if f.startswith(b'data: {"error":')]
     assert output.rstrip().endswith(b"data: [DONE]")
     assert output.count(b"data: [DONE]") == 1
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Named regressions for the UPSTREAM_TRANSPORT_ERRORS shared-tuple fix.
+# builtin TimeoutError (Py3.10 OSError) and httpx.ConnectError must both
+# advance the Gemini combo chain pre-content.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_gemini_builtin_timeout_triggers_fallback(monkeypatch):
+    """builtin TimeoutError during Gemini send path → combo advances to next leaf.
+
+    Message mirrors production header-wait failure from
+    _send_stream_with_thinking_fallback so the transport catch + generic
+    except UPSTREAM_TRANSPORT_ERRORS rail both stay covered.
+    """
+    async def builtin_timeout(request):
+        raise builtins.TimeoutError(
+            "upstream_header_timeout (waited 90s for headers, 60s chain budget left)"
+        )
+
+    client = _ScriptedClient({
+        "dead-model": builtin_timeout,
+        "healthy-model": _success_stream("healthy-model"),
+    })
+    starts, _ends = _install(monkeypatch, client)
+    real_process = main._process_chat_completion
+    retry_states = []
+
+    async def recording_process(body, client_wants_anthropic=False, client_wants_gemini=False, _retry_state=None, request=None):
+        if _retry_state is not None:
+            retry_states.append(_retry_state.copy())
+        return await real_process(
+            body,
+            client_wants_anthropic,
+            client_wants_gemini,
+            _retry_state=_retry_state,
+            request=request,
+        )
+
+    monkeypatch.setattr(main, "_process_chat_completion", recording_process)
+    output = b"".join(asyncio.run(_collect()))
+
+    assert client.models == ["dead-model", "healthy-model"], \
+        f"builtin TimeoutError must advance Gemini combo; models={client.models}"
+    assert b"fallback-ok" in output
+    assert output.rstrip().endswith(b"data: [DONE]")
+    assert len(starts) == 1
+    assert starts[0]["combo"] == "GLM-5.2"
+    assert retry_states, "combo retry_state must be recorded"
+    assert retry_states[0]["idx"] == 1
+    assert retry_states[0]["original_model"] == "gemini-pro-agent"
+
+
+def test_gemini_transport_502_triggers_fallback(monkeypatch):
+    """httpx.ConnectError (transport 502) during Gemini send path → combo advances."""
+    async def connect_error(request):
+        raise httpx.ConnectError("simulated transport death", request=request)
+
+    client = _ScriptedClient({
+        "dead-model": connect_error,
+        "healthy-model": _success_stream("healthy-model"),
+    })
+    starts, _ends = _install(monkeypatch, client)
+    real_process = main._process_chat_completion
+    retry_states = []
+
+    async def recording_process(body, client_wants_anthropic=False, client_wants_gemini=False, _retry_state=None, request=None):
+        if _retry_state is not None:
+            retry_states.append(_retry_state.copy())
+        return await real_process(
+            body,
+            client_wants_anthropic,
+            client_wants_gemini,
+            _retry_state=_retry_state,
+            request=request,
+        )
+
+    monkeypatch.setattr(main, "_process_chat_completion", recording_process)
+    output = b"".join(asyncio.run(_collect()))
+
+    assert client.models == ["dead-model", "healthy-model"], \
+        f"ConnectError transport 502 must advance Gemini combo; models={client.models}"
+    assert b"fallback-ok" in output
+    assert output.rstrip().endswith(b"data: [DONE]")
+    assert len(starts) == 1
+    assert starts[0]["combo"] == "GLM-5.2"
+    assert retry_states, "combo retry_state must be recorded"
+    assert retry_states[0]["idx"] == 1
+    assert retry_states[0]["original_model"] == "gemini-pro-agent"

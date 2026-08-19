@@ -324,6 +324,15 @@ CHAIN_TOTAL_BUDGET = 150.0
 # Attempt N (0-indexed) uses LADDER[min(N, len-1)]: 600 → 300 → 600, then hard-stop.
 STREAM_DEADLINE_LADDER = (600.0, 300.0, 600.0)
 
+# On Python < 3.11 builtin TimeoutError (raised by _send_stream_with_thinking_fallback
+# header wait, and by socket-level transport deaths) is NOT asyncio.TimeoutError.
+# Every transport catch must list both, plus the httpx transport family.
+UPSTREAM_TRANSPORT_ERRORS = (
+    asyncio.TimeoutError, TimeoutError,
+    httpx.TimeoutException, httpx.TransportError,
+    ConnectionError, httpx.HTTPError,
+)
+
 
 def _ladder_deadline(attempt: int) -> float:
     """Return the wall-clock deadline (seconds) for a 0-indexed ladder attempt."""
@@ -6570,6 +6579,35 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 raise
             except _DeadlineRetryNeeded:
                 raise
+            except UPSTREAM_TRANSPORT_ERRORS as _te:
+                # TRANSPORT FALLBACK FIX (2026-08-17): builtin TimeoutError /
+                # transport death that escaped narrower catches must advance the
+                # combo chain pre-content, same as the non-200 status handler.
+                stats["error"] = str(_te) or type(_te).__name__
+                stats["status"] = 502 if isinstance(_te, httpx.TransportError) else 504
+                bench_leaf(config, provider_name, target_model, stats["status"], stats["error"], stats.get("out", 0))
+                _next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
+                if active_chain and _next_idx < len(active_chain):
+                    _fb_retry_state = {
+                        "chain": active_chain,
+                        "idx": _next_idx,
+                        "cache_bp": _cache_breakpoints,
+                        "original_model": original_model,
+                        "deadline": _chain_deadline,
+                    }
+                    print(
+                        f"[Combo Fallback] '{model}' raw upstream transport_{stats['status']} "
+                        f"for {target_model}/{provider_name} — advancing to entry {_next_idx}",
+                        flush=True,
+                    )
+                    if _chain_budget_remaining() <= 0:
+                        print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
+                    elif _emit.may_fallback(f"transport_{stats['status']}"):
+                        raise _ComboFallbackNeeded(stats["status"], stats["error"], _fb_retry_state)
+                # Fallback refused / exhausted: fall through to terminal error+DONE.
+                err_payload = f"data: {json.dumps({'error': stats['error']})}\n\n"
+                yield err_payload.encode('utf-8')
+                yield b"data: [DONE]\n\n"
             except Exception as e:
                 stats["error"] = str(e)
                 err_payload = f"data: {json.dumps({'error': stats['error']})}\n\n"
@@ -6912,6 +6950,37 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     raise
                 except (_ComboFallbackNeeded, _DeadlineRetryNeeded):
                     raise
+                except UPSTREAM_TRANSPORT_ERRORS as _te:
+                    # TRANSPORT FALLBACK FIX (2026-08-17): route transport death
+                    # onto the combo-fallback rail (pre-content only).
+                    stats["error"] = str(_te) or type(_te).__name__
+                    stats["status"] = 502 if isinstance(_te, httpx.TransportError) else 504
+                    bench_leaf(config, provider_name, target_model, stats["status"], stats["error"], stats.get("out", 0))
+                    _next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
+                    if active_chain and _next_idx < len(active_chain):
+                        _fb_retry_state = {
+                            "chain": active_chain,
+                            "idx": _next_idx,
+                            "cache_bp": _cache_breakpoints,
+                            "original_model": original_model,
+                            "deadline": _chain_deadline,
+                        }
+                        print(
+                            f"[Combo Fallback] '{model}' Anthropic egress transport_{stats['status']} "
+                            f"for {target_model}/{provider_name} — advancing to entry {_next_idx}",
+                            flush=True,
+                        )
+                        if _chain_budget_remaining() <= 0:
+                            print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
+                        elif _emit.may_fallback(f"transport_{stats['status']}"):
+                            raise _ComboFallbackNeeded(stats["status"], stats["error"], _fb_retry_state)
+                    # Fallback refused / exhausted: fall through to terminal frames.
+                    err_event = {
+                        "type": "error",
+                        "error": {"type": "proxy_error", "message": stats["error"]},
+                    }
+                    yield f"event: error\ndata: {json.dumps(err_event)}\n\n".encode("utf-8")
+                    yield b"event: message_stop\ndata: {\"type\": \"message_stop\"}\n\n"
                 except Exception as e:
                     stats["error"] = str(e)
                     err_event = {
@@ -7175,7 +7244,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             stats["error"] = stats["error"] or "client_disconnected"
                             stats["status"] = 499
                             raise
-                        except (httpx.TimeoutException, httpx.TransportError, asyncio.TimeoutError, TimeoutError) as _transport_err:
+                        except UPSTREAM_TRANSPORT_ERRORS as _transport_err:
                             await _cancel_connection_task()
                             stats["status"] = 502 if isinstance(_transport_err, httpx.TransportError) else 504
                             stats["error"] = str(_transport_err) or type(_transport_err).__name__
@@ -7596,8 +7665,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                 raise _drain_err
                             stats["status"] = 504
                             stats["error"] = getattr(_drain_err, "err", None) or str(_drain_err)
-                        if isinstance(_drain_err, (httpx.TimeoutException, httpx.TransportError, TimeoutError, asyncio.TimeoutError)):
-                            stats["status"] = 504 if isinstance(_drain_err, (httpx.TimeoutException, TimeoutError, asyncio.TimeoutError)) else 502
+                        if isinstance(_drain_err, UPSTREAM_TRANSPORT_ERRORS):
+                            stats["status"] = 502 if isinstance(_drain_err, httpx.TransportError) else 504
                             stats["error"] = str(_drain_err) or type(_drain_err).__name__
                             if not emitted_model_data:
                                 _raise_gemini_combo_fallback(stats["status"], stats["error"], _emit)
@@ -7638,6 +7707,21 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     raise
                 except _DeadlineRetryNeeded:
                     raise
+                except UPSTREAM_TRANSPORT_ERRORS as _te:
+                    # TRANSPORT FALLBACK FIX (2026-08-17): builtin TimeoutError on
+                    # Python < 3.11 escaped the narrow catches above and landed here,
+                    # ending the chain with budget left. Route transport death to
+                    # the combo-fallback rail like every other recoverable failure.
+                    stats["error"] = stats["error"] or (str(_te) or type(_te).__name__)
+                    stats["status"] = 502 if isinstance(_te, httpx.TransportError) else 504
+                    bench_leaf(config, provider_name, target_model, stats["status"], stats["error"], stats.get("out", 0))
+                    _raise_gemini_combo_fallback(stats["status"], stats["error"], _emit)
+                    # Fallback refused (post-emission or chain exhausted):
+                    # emit the SOLE terminal contract, never re-raise.
+                    from app.compat.adapters.gemini import sse_data as _g_sse_data, SSE_DONE as _G_SSE_DONE, terminal_error_frame as _g_term
+                    yield _g_sse_data(_g_term(stats["status"], stats["error"], target_model))
+                    yield _G_SSE_DONE
+                    return
                 except Exception as e:
                     stats["error"] = stats["error"] or str(e)
                     error_code = stats["status"] if isinstance(stats["status"], int) and stats["status"] >= 400 else 500
@@ -8022,6 +8106,34 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             pass
                 except (_ComboFallbackNeeded, _DeadlineRetryNeeded):
                     raise
+                except UPSTREAM_TRANSPORT_ERRORS as _te:
+                    # TRANSPORT FALLBACK FIX (2026-08-17): route transport death
+                    # onto the combo-fallback rail (pre-content only).
+                    stats["error"] = str(_te) or type(_te).__name__
+                    stats["status"] = 502 if isinstance(_te, httpx.TransportError) else 504
+                    bench_leaf(config, provider_name, target_model, stats["status"], stats["error"], stats.get("out", 0))
+                    _next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
+                    if active_chain and _next_idx < len(active_chain):
+                        _fb_retry_state = {
+                            "chain": active_chain,
+                            "idx": _next_idx,
+                            "cache_bp": _cache_breakpoints,
+                            "original_model": original_model,
+                            "deadline": _chain_deadline,
+                        }
+                        print(
+                            f"[Combo Fallback] '{model}' Anthropic→OpenAI egress transport_{stats['status']} "
+                            f"for {target_model}/{provider_name} — advancing to entry {_next_idx}",
+                            flush=True,
+                        )
+                        if _chain_budget_remaining() <= 0:
+                            print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
+                        elif _emit.may_fallback(f"transport_{stats['status']}"):
+                            raise _ComboFallbackNeeded(stats["status"], stats["error"], _fb_retry_state)
+                    # Fallback refused / exhausted: fall through to terminal frames.
+                    err_chunk = {"error": {"message": stats["error"], "type": "proxy_error"}}
+                    yield f"data: {json.dumps(err_chunk)}\n\n".encode("utf-8")
+                    yield b"data: [DONE]\n\n"
                 except Exception as e:
                     stats["error"] = str(e)
                     err_chunk = {"error": {"message": str(e), "type": "proxy_error"}}
