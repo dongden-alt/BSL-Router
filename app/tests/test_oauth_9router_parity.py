@@ -36,7 +36,9 @@ def test_codex_auth_url_includes_cli_simplified_parameters(oauth_module):
     assert query["originator"] == ["codex_cli_rs"]
 
 
-def test_antigravity_auth_url_matches_google_oauth_parameters(oauth_module):
+def test_antigravity_auth_url_matches_google_oauth_parameters(oauth_module, monkeypatch):
+    monkeypatch.setenv("BSL_ANTIGRAVITY_CLIENT_ID", "test-antigravity-client-id")
+    monkeypatch.setenv("BSL_ANTIGRAVITY_CLIENT_SECRET", "test-antigravity-client-secret")
     data = asyncio.run(oauth_module.authorize("antigravity", "http://localhost:6969/callback"))
 
     query = parse_qs(urlsplit(data["authUrl"]).query)
