@@ -320,6 +320,18 @@ NONSTREAM_TOTAL_BUDGET = 120.0            # Total generation budget for non-stre
 # 4-leaf dead chain holds the client connection for 4x120s = 8 minutes, which
 # exhausts the IDE's per-host connection pool and freezes every window.
 CHAIN_TOTAL_BUDGET = 150.0
+# Stream-deadline retry ladder (2026-08-14): attempt deadlines in seconds.
+# Attempt N (0-indexed) uses LADDER[min(N, len-1)]: 600 → 300 → 600, then hard-stop.
+STREAM_DEADLINE_LADDER = (600.0, 300.0, 600.0)
+
+
+def _ladder_deadline(attempt: int) -> float:
+    """Return the wall-clock deadline (seconds) for a 0-indexed ladder attempt."""
+    if attempt < 0:
+        attempt = 0
+    return STREAM_DEADLINE_LADDER[min(attempt, len(STREAM_DEADLINE_LADDER) - 1)]
+
+
 _RECOVERABLE = {403, 404, 408, 429, 500, 502, 503, 504, 524, 525, 526}  # HTTP status codes that trigger combo/chain advance
 
 _BLACKSAND_MODEL_ALIASES = {
@@ -4825,6 +4837,198 @@ class _ComboFallbackNeeded(Exception):
         super().__init__(err_text)
 
 
+class _DeadlineRetryNeeded(Exception):
+    """Wall-clock attempt deadline exhausted with zero bytes emitted.
+
+    Carries the attempt count; the guarded wrapper retries the SAME leaf
+    with the next ladder deadline. Must never escape to the client.
+    """
+    def __init__(self, attempt: int, err: str):
+        self.attempt = attempt
+        self.err = err
+        super().__init__(f"deadline_retry attempt={attempt}: {err}")
+
+
+async def _deadline_stall_pump(
+    raw_iter,
+    attempt: int,
+    deadline_s: float,
+    emit: "StreamEmissionState",
+    stats: dict,
+    *,
+    label: str = "",
+    active_chain=None,
+    retry_state=None,
+    cache_bp=None,
+    original_model=None,
+    chain_deadline=None,
+    chain_budget_remaining=None,
+    model: str = "",
+    target_model: str = "",
+    provider_name: str = "",
+    config=None,
+    bench_fn=None,
+):
+    """Forward upstream bytes under an attempt-level wall-clock deadline.
+
+    Pre-emission expiry:
+      - combo with remaining entry + budget → raise _ComboFallbackNeeded
+      - single leaf with rungs remaining → raise _DeadlineRetryNeeded
+      - ladder exhausted → return (caller emits terminal frames)
+    Post-emission expiry: set stats error and return (never retry/fallback).
+    CancelledError / GeneratorExit propagate untouched.
+    """
+    if deadline_s is None or deadline_s <= 0:
+        try:
+            async for chunk in raw_iter:
+                yield chunk
+        finally:
+            _ac = getattr(raw_iter, "aclose", None)
+            if callable(_ac):
+                try:
+                    await _ac()
+                except BaseException:
+                    pass
+        return
+
+    loop = asyncio.get_running_loop()
+    iterator = raw_iter.__aiter__()
+    deadline = loop.time() + float(deadline_s)
+    try:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                await _deadline_stall_fire(
+                    attempt=attempt,
+                    deadline_s=deadline_s,
+                    emit=emit,
+                    stats=stats,
+                    label=label,
+                    active_chain=active_chain,
+                    retry_state=retry_state,
+                    cache_bp=cache_bp,
+                    original_model=original_model,
+                    chain_deadline=chain_deadline,
+                    chain_budget_remaining=chain_budget_remaining,
+                    model=model,
+                    target_model=target_model,
+                    provider_name=provider_name,
+                    config=config,
+                    bench_fn=bench_fn,
+                )
+                return
+            try:
+                chunk = await asyncio.wait_for(iterator.__anext__(), timeout=remaining)
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError:
+                await _deadline_stall_fire(
+                    attempt=attempt,
+                    deadline_s=deadline_s,
+                    emit=emit,
+                    stats=stats,
+                    label=label,
+                    active_chain=active_chain,
+                    retry_state=retry_state,
+                    cache_bp=cache_bp,
+                    original_model=original_model,
+                    chain_deadline=chain_deadline,
+                    chain_budget_remaining=chain_budget_remaining,
+                    model=model,
+                    target_model=target_model,
+                    provider_name=provider_name,
+                    config=config,
+                    bench_fn=bench_fn,
+                )
+                return
+            except (asyncio.CancelledError, GeneratorExit):
+                raise
+            yield chunk
+    except (asyncio.CancelledError, GeneratorExit):
+        raise
+    finally:
+        _ac = getattr(raw_iter, "aclose", None)
+        if callable(_ac):
+            try:
+                await _ac()
+            except BaseException:
+                pass
+
+
+async def _deadline_stall_fire(
+    *,
+    attempt: int,
+    deadline_s: float,
+    emit: "StreamEmissionState",
+    stats: dict,
+    label: str = "",
+    active_chain=None,
+    retry_state=None,
+    cache_bp=None,
+    original_model=None,
+    chain_deadline=None,
+    chain_budget_remaining=None,
+    model: str = "",
+    target_model: str = "",
+    provider_name: str = "",
+    config=None,
+    bench_fn=None,
+) -> None:
+    """Handle wall-clock deadline expiry for one ladder attempt."""
+    # Post-emission: absolute veto — never retry or combo-advance.
+    if emit is not None and getattr(emit, "emitted", False):
+        stats["error"] = stats.get("error") or f"stream_deadline_{int(deadline_s)}s"
+        stats["status"] = stats.get("status") or 504
+        return
+
+    err = f"deadline_stall_attempt{attempt + 1}_{int(deadline_s)}s"
+    stats["error"] = err
+    stats["status"] = 504
+    if bench_fn is not None:
+        try:
+            bench_fn(config, provider_name, target_model, 504, err, stats.get("out", 0))
+        except Exception:
+            pass
+
+    _next_idx = (retry_state["idx"] + 1) if retry_state else 1
+    if active_chain and _next_idx < len(active_chain):
+        _budget_left = None
+        if callable(chain_budget_remaining):
+            try:
+                _budget_left = chain_budget_remaining()
+            except Exception:
+                _budget_left = None
+        if _budget_left is not None and _budget_left <= 0:
+            print(
+                f"[AFZ-DEADLINE] chain budget exhausted after "
+                f"{time.monotonic() - ((chain_deadline or time.monotonic()) - CHAIN_TOTAL_BUDGET):.1f}s, "
+                f"idx={_next_idx}, refusing further fallback",
+                flush=True,
+            )
+        elif emit is None or emit.may_fallback("deadline_stall"):
+            print(
+                f"[Combo Fallback] '{model}' deadline stall ({label or 'stream'}) for "
+                f"{target_model}/{provider_name} — advancing to entry {_next_idx}",
+                flush=True,
+            )
+            raise _ComboFallbackNeeded(
+                504,
+                err,
+                {
+                    "chain": active_chain,
+                    "idx": _next_idx,
+                    "cache_bp": cache_bp,
+                    "original_model": original_model,
+                    "deadline": chain_deadline,
+                },
+            )
+
+    if attempt < len(STREAM_DEADLINE_LADDER) - 1:
+        raise _DeadlineRetryNeeded(attempt, err)
+    # Ladder exhausted — return so existing terminal-frame handlers run.
+    return
+
+
 async def _process_chat_completion(body: dict, client_wants_anthropic: bool = False, client_wants_gemini: bool = False, _retry_state: dict = None, request: Request = None):
 
     config = cs_get_config()
@@ -6116,7 +6320,29 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             async for chunk in raw_iter:
                 yield chunk
 
-        async def raw_upstream():
+        def _pump(raw_iter, emit, attempt: int = 0, label: str = "openai"):
+            """Inner recoverable deadline ladder around a stall-watchdog passthrough."""
+            return _deadline_stall_pump(
+                _stall_watchdog(raw_iter),
+                attempt,
+                _ladder_deadline(attempt),
+                emit,
+                stats,
+                label=label,
+                active_chain=active_chain,
+                retry_state=_retry_state,
+                cache_bp=_cache_breakpoints,
+                original_model=original_model,
+                chain_deadline=_chain_deadline,
+                chain_budget_remaining=_chain_budget_remaining,
+                model=model,
+                target_model=target_model,
+                provider_name=provider_name,
+                config=config,
+                bench_fn=bench_leaf,
+            )
+
+        async def raw_upstream(_attempt: int = 0):
             resp = None
             buffer = ""
             # Tracks whether any byte of UPSTREAM MODEL OUTPUT reached the client.
@@ -6193,7 +6419,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     return
 
                 try:
-                    async for chunk in _stall_watchdog(resp.aiter_raw()):
+                    async for chunk in _pump(resp.aiter_raw(), _emit, _attempt, "openai"):
                         _detector.feed(chunk)
                         if await _client_disconnected():
                             stats["error"] = stats["error"] or "client_disconnected"
@@ -6267,7 +6493,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             )
                             _cont_resp.raise_for_status()
                             try:
-                                async for _cc in _stall_watchdog(_cont_resp.aiter_raw()):
+                                async for _cc in _pump(_cont_resp.aiter_raw(), _emit, _attempt, "openai-cont"):
                                     _emit.mark_emitted(_cc)
                                     yield _cc
                             finally:
@@ -6298,6 +6524,19 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             # A provider that omits usage data leaves out==0 even
                             # when real content streamed. Only advance pre-emission.
                             raise _ComboFallbackNeeded(504, "zero_output_tokens", _zero_retry_state)
+                # Deadline-ladder terminal: pump returned after post-emission
+                # expiry or after ladder exhaustion. Emit error+[DONE].
+                if isinstance(stats.get("error"), str) and (
+                    stats["error"].startswith("deadline_stall_")
+                    or stats["error"].startswith("stream_deadline_")
+                ):
+                    try:
+                        _dl_err = {"error": {"message": stats["error"], "type": "proxy_error"}}
+                        yield f"data: {json.dumps(_dl_err)}\n\n".encode("utf-8")
+                        yield b"data: [DONE]\n\n"
+                    except Exception:
+                        pass
+                    return
                 if stats.get("error") in ("ttft_stall", "stream_stall"):
                     _stall_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                     if not stats.get("ttft") and active_chain and _stall_next_idx < len(active_chain):
@@ -6328,6 +6567,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 stats["status"] = 499
                 raise
             except _ComboFallbackNeeded:
+                raise
+            except _DeadlineRetryNeeded:
                 raise
             except Exception as e:
                 stats["error"] = str(e)
@@ -6373,66 +6614,94 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
 
         async def raw_upstream_guarded():
-            _raw_source = raw_upstream()
-            try:
-                async for _c in _raw_source:
-                    yield _c
-            except _ComboFallbackNeeded as _cf_raw:
-                _raw_fallback = await _process_chat_completion(
-                    body, client_wants_anthropic, client_wants_gemini,
-                    _retry_state=_cf_raw.retry_state,
-                    request=request,
-                )
-                if hasattr(_raw_fallback, "body_iterator"):
-                    async for _fc in _raw_fallback.body_iterator:
-                        yield _fc
-                else:
-                    async for _fc in _raw_fallback:
-                        yield _fc
-            except (GeneratorExit, asyncio.CancelledError):
-                raise
-            except Exception as _raw_guarded_err:
-                # ANTI-FREEZE (2026-08-01): mid-stream exception = dead leaf;
-                # bench it so auto-heal bans it for the NEXT request.
-                bench_leaf(config, provider_name, target_model, stats.get("status", 502), stats.get("error") or str(_raw_guarded_err), stats.get("out", 0))
+            _attempt = 0
+            while True:
+                if _attempt >= len(STREAM_DEADLINE_LADDER):
+                    try:
+                        _cap_err = {"error": {"message": stats.get("error") or "deadline_ladder_exhausted", "type": "proxy_error"}}
+                        yield f"data: {json.dumps(_cap_err)}\n\n".encode("utf-8")
+                        yield b"data: [DONE]\n\n"
+                    except Exception:
+                        pass
+                    return
+                _raw_source = raw_upstream(_attempt)
+                _retry_again = False
                 try:
-                    obs.log_request(
-                        provider=provider_name, model=target_model,
-                        status=stats["status"], ttft=stats["ttft"],
-                        in_tokens=stats["in"], out_tokens=stats["out"],
-                        cached_tokens=stats["cached"], config=config,
-                        error_msg=stats["error"] or "stream_interrupted",
-                        total_time=time.time() - start_time,
-                        request_id=request_id, client=client_label, stream=True,
-                        upstream_url=_upstream_url, conn_index=_active_conn_index,
-                        thinking=thinking_info,
-                        cache_write_tokens=stats.get("cache_write", 0),
-                        combo=_combo_label,
+                    async for _c in _raw_source:
+                        yield _c
+                except _DeadlineRetryNeeded as _dr:
+                    print(
+                        f"[Deadline Ladder] '{model}' attempt {_dr.attempt + 1} stalled "
+                        f"({stats.get('error') or _dr.err}) — retrying same leaf "
+                        f"{target_model}/{provider_name} at "
+                        f"{_ladder_deadline(_dr.attempt + 1)}s",
+                        flush=True,
                     )
-                except Exception:
-                    pass
-                # FREEZE FIX (2026-08-01): never return an empty 200 stream.
-                # A bare return terminates the generator with zero frames and
-                # the IDE waits for [DONE] forever. Emit error + [DONE] so the
-                # client unblocks, matching every other egress path.
-                try:
-                    _raw_err_frame = {"error": {"message": stats.get("error") or str(_raw_guarded_err) or "stream_interrupted", "type": "proxy_error"}}
-                    yield f"data: {json.dumps(_raw_err_frame)}\n\n".encode("utf-8")
-                    yield b"data: [DONE]\n\n"
-                except Exception:
-                    pass
-                return
-            finally:
-                # LEAK FIX (2026-08-02): close the source generator so a client
-                # disconnect reaches its finally and closes the upstream
-                # response. `async for` alone does NOT do this.
-                try:
-                    await _raw_source.aclose()
-                except BaseException:
-                    pass
+                    _attempt = _dr.attempt + 1
+                    stats["ttft"] = 0.0
+                    stats["out"] = 0
+                    stats["status"] = 500
+                    stats["error"] = None
+                    _retry_again = True
+                except _ComboFallbackNeeded as _cf_raw:
+                    _raw_fallback = await _process_chat_completion(
+                        body, client_wants_anthropic, client_wants_gemini,
+                        _retry_state=_cf_raw.retry_state,
+                        request=request,
+                    )
+                    if hasattr(_raw_fallback, "body_iterator"):
+                        async for _fc in _raw_fallback.body_iterator:
+                            yield _fc
+                    else:
+                        async for _fc in _raw_fallback:
+                            yield _fc
+                    return
+                except (GeneratorExit, asyncio.CancelledError):
+                    raise
+                except Exception as _raw_guarded_err:
+                    # ANTI-FREEZE (2026-08-01): mid-stream exception = dead leaf;
+                    # bench it so auto-heal bans it for the NEXT request.
+                    bench_leaf(config, provider_name, target_model, stats.get("status", 502), stats.get("error") or str(_raw_guarded_err), stats.get("out", 0))
+                    try:
+                        obs.log_request(
+                            provider=provider_name, model=target_model,
+                            status=stats["status"], ttft=stats["ttft"],
+                            in_tokens=stats["in"], out_tokens=stats["out"],
+                            cached_tokens=stats["cached"], config=config,
+                            error_msg=stats["error"] or "stream_interrupted",
+                            total_time=time.time() - start_time,
+                            request_id=request_id, client=client_label, stream=True,
+                            upstream_url=_upstream_url, conn_index=_active_conn_index,
+                            thinking=thinking_info,
+                            cache_write_tokens=stats.get("cache_write", 0),
+                            combo=_combo_label,
+                        )
+                    except Exception:
+                        pass
+                    # FREEZE FIX (2026-08-01): never return an empty 200 stream.
+                    # A bare return terminates the generator with zero frames and
+                    # the IDE waits for [DONE] forever. Emit error + [DONE] so the
+                    # client unblocks, matching every other egress path.
+                    try:
+                        _raw_err_frame = {"error": {"message": stats.get("error") or str(_raw_guarded_err) or "stream_interrupted", "type": "proxy_error"}}
+                        yield f"data: {json.dumps(_raw_err_frame)}\n\n".encode("utf-8")
+                        yield b"data: [DONE]\n\n"
+                    except Exception:
+                        pass
+                    return
+                finally:
+                    # LEAK FIX (2026-08-02): close the source generator so a client
+                    # disconnect reaches its finally and closes the upstream
+                    # response. `async for` alone does NOT do this.
+                    try:
+                        await _raw_source.aclose()
+                    except BaseException:
+                        pass
+                if not _retry_again:
+                    return
 
         if convert_egress:
-            async def egress_stream():
+            async def egress_stream(_attempt: int = 0):
                 resp = None
                 buffer = ""
                 # FREEZE FIX: tracks whether any byte has reached the client.
@@ -6492,7 +6761,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
                     async def _raw_ok():
                         nonlocal buffer
-                        async for chunk in _transport_guarded(_stall_watchdog(resp.aiter_raw()), stats, _emit):
+                        async for chunk in _transport_guarded(_pump(resp.aiter_raw(), _emit, _attempt, "anthropic-egress"), stats, _emit):
                             _detector.feed(chunk)
                             if await _client_disconnected():
                                 stats["error"] = stats["error"] or "client_disconnected"
@@ -6621,7 +6890,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                     )
                                     _cont_resp.raise_for_status()
                                     try:
-                                        async for _cc in _transport_guarded(_stall_watchdog(_cont_resp.aiter_raw()), stats, _emit):
+                                        async for _cc in _transport_guarded(_pump(_cont_resp.aiter_raw(), _emit, _attempt, "anthropic-egress-cont"), stats, _emit):
                                             yield _cc
                                     finally:
                                         try:
@@ -6640,6 +6909,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 except (GeneratorExit, asyncio.CancelledError):
                     stats["error"] = stats["error"] or "client_disconnected"
                     stats["status"] = 499
+                    raise
+                except (_ComboFallbackNeeded, _DeadlineRetryNeeded):
                     raise
                 except Exception as e:
                     stats["error"] = str(e)
@@ -6680,51 +6951,85 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         print(f"[BSL Router] finally-log failed (non-blocking): {_log_err}", flush=True)
 
             async def egress_stream_guarded():
-                try:
-                    async for _c in egress_stream():
-                        yield _c
-                except _ComboFallbackNeeded as _cf_egr:
-                    _egr_fallback = await _process_chat_completion(
-                        body, client_wants_anthropic, client_wants_gemini,
-                        _retry_state=_cf_egr.retry_state,
-                        request=request,
-                    )
-                    if hasattr(_egr_fallback, "body_iterator"):
-                        async for _fc in _egr_fallback.body_iterator:
-                            yield _fc
-                    else:
-                        async for _fc in _egr_fallback:
-                            yield _fc
-                except (GeneratorExit, asyncio.CancelledError):
-                    raise
-                except Exception as _egr_guarded_err:
-                    # ANTI-FREEZE (2026-08-01): bench mid-stream exception leaf.
-                    bench_leaf(config, provider_name, target_model, stats.get("status", 502), stats.get("error") or str(_egr_guarded_err), stats.get("out", 0))
+                _attempt = 0
+                while True:
+                    if _attempt >= len(STREAM_DEADLINE_LADDER):
+                        try:
+                            _cap_err = {"error": {"message": stats.get("error") or "deadline_ladder_exhausted", "type": "proxy_error"}}
+                            yield f"data: {json.dumps(_cap_err)}\n\n".encode("utf-8")
+                            yield b"data: [DONE]\n\n"
+                        except Exception:
+                            pass
+                        return
+                    _src = egress_stream(_attempt)
+                    _retry_again = False
                     try:
-                        obs.log_request(
-                            provider=provider_name, model=target_model,
-                            status=stats["status"], ttft=stats["ttft"],
-                            in_tokens=stats["in"], out_tokens=stats["out"],
-                            cached_tokens=stats["cached"], config=config,
-                            error_msg=stats["error"] or "stream_interrupted",
-                            total_time=time.time() - start_time,
-                            request_id=request_id, client=client_label, stream=True,
-                            upstream_url=_upstream_url, conn_index=_active_conn_index,
-                            thinking=thinking_info,
-                            cache_write_tokens=stats.get("cache_write", 0),
-                            combo=_combo_label,
+                        async for _c in _src:
+                            yield _c
+                    except _DeadlineRetryNeeded as _dr:
+                        print(
+                            f"[Deadline Ladder] '{model}' attempt {_dr.attempt + 1} stalled "
+                            f"({stats.get('error') or _dr.err}) — retrying same leaf "
+                            f"{target_model}/{provider_name} at "
+                            f"{_ladder_deadline(_dr.attempt + 1)}s",
+                            flush=True,
                         )
-                    except Exception:
-                        pass
-                    # FREEZE FIX (2026-08-01): never return an empty 200 stream.
-                    # Emit terminal error + [DONE] so the client unblocks.
-                    try:
-                        _egr_err_frame = {"error": {"message": stats.get("error") or str(_egr_guarded_err) or "stream_interrupted", "type": "proxy_error"}}
-                        yield f"data: {json.dumps(_egr_err_frame)}\n\n".encode("utf-8")
-                        yield b"data: [DONE]\n\n"
-                    except Exception:
-                        pass
-                    return
+                        _attempt = _dr.attempt + 1
+                        stats["ttft"] = 0.0
+                        stats["out"] = 0
+                        stats["status"] = 500
+                        stats["error"] = None
+                        _retry_again = True
+                    except _ComboFallbackNeeded as _cf_egr:
+                        _egr_fallback = await _process_chat_completion(
+                            body, client_wants_anthropic, client_wants_gemini,
+                            _retry_state=_cf_egr.retry_state,
+                            request=request,
+                        )
+                        if hasattr(_egr_fallback, "body_iterator"):
+                            async for _fc in _egr_fallback.body_iterator:
+                                yield _fc
+                        else:
+                            async for _fc in _egr_fallback:
+                                yield _fc
+                        return
+                    except (GeneratorExit, asyncio.CancelledError):
+                        raise
+                    except Exception as _egr_guarded_err:
+                        # ANTI-FREEZE (2026-08-01): bench mid-stream exception leaf.
+                        bench_leaf(config, provider_name, target_model, stats.get("status", 502), stats.get("error") or str(_egr_guarded_err), stats.get("out", 0))
+                        try:
+                            obs.log_request(
+                                provider=provider_name, model=target_model,
+                                status=stats["status"], ttft=stats["ttft"],
+                                in_tokens=stats["in"], out_tokens=stats["out"],
+                                cached_tokens=stats["cached"], config=config,
+                                error_msg=stats["error"] or "stream_interrupted",
+                                total_time=time.time() - start_time,
+                                request_id=request_id, client=client_label, stream=True,
+                                upstream_url=_upstream_url, conn_index=_active_conn_index,
+                                thinking=thinking_info,
+                                cache_write_tokens=stats.get("cache_write", 0),
+                                combo=_combo_label,
+                            )
+                        except Exception:
+                            pass
+                        # FREEZE FIX (2026-08-01): never return an empty 200 stream.
+                        # Emit terminal error + [DONE] so the client unblocks.
+                        try:
+                            _egr_err_frame = {"error": {"message": stats.get("error") or str(_egr_guarded_err) or "stream_interrupted", "type": "proxy_error"}}
+                            yield f"data: {json.dumps(_egr_err_frame)}\n\n".encode("utf-8")
+                            yield b"data: [DONE]\n\n"
+                        except Exception:
+                            pass
+                        return
+                    finally:
+                        try:
+                            await _src.aclose()
+                        except BaseException:
+                            pass
+                    if not _retry_again:
+                        return
 
             _afz_sid = next_stream_id()
             return StreamingResponse(
@@ -6732,6 +7037,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     egress_stream_guarded(),
                     _afz_sid,
                     protocol="anthropic" if client_wants_anthropic else "openai",
+                    deadline_s=0,
                 ),
                 media_type="text/event-stream",
             )
@@ -6921,7 +7227,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
                     async def _raw_ok():
                         buffer = ""
-                        async for chunk in _transport_guarded(_stall_watchdog(resp.aiter_raw()), stats, _emit):
+                        async for chunk in _transport_guarded(_pump(resp.aiter_raw(), _emit, 0, "gemini"), stats, _emit):
                             _detector.feed(chunk)
                             if await _client_disconnected():
                                 stats["error"] = stats["error"] or "client_disconnected"
@@ -7006,7 +7312,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                     )
                                     _cont_resp.raise_for_status()
                                     try:
-                                        _cont_raw = _transport_guarded(_stall_watchdog(_cont_resp.aiter_raw()), stats, _emit)
+                                        _cont_raw = _transport_guarded(_pump(_cont_resp.aiter_raw(), _emit, 0, "gemini-cont"), stats, _emit)
                                         if _is_anthropic_fmt:
                                             _cont_src = _normalizer.convert_anthropic_to_openai(_cont_raw)
                                         else:
@@ -7033,6 +7339,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                 await _q.put(_c)
                         except _ComboFallbackNeeded as _cf:
                             _drain_err = _cf
+                        except _DeadlineRetryNeeded as _dr:
+                            _drain_err = _dr
                         except Exception as _de:
                             _drain_err = _de
                         finally:
@@ -7282,6 +7590,12 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                 stats["error"] = str(_drain_err) or type(_drain_err).__name__
                             else:
                                 raise _drain_err
+                        if isinstance(_drain_err, _DeadlineRetryNeeded):
+                            # Pre-emission same-leaf ladder retry — bubble to guarded.
+                            if not emitted_model_data and not _emit.emitted:
+                                raise _drain_err
+                            stats["status"] = 504
+                            stats["error"] = getattr(_drain_err, "err", None) or str(_drain_err)
                         if isinstance(_drain_err, (httpx.TimeoutException, httpx.TransportError, TimeoutError, asyncio.TimeoutError)):
                             stats["status"] = 504 if isinstance(_drain_err, (httpx.TimeoutException, TimeoutError, asyncio.TimeoutError)) else 502
                             stats["error"] = str(_drain_err) or type(_drain_err).__name__
@@ -7321,6 +7635,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     stats["status"] = 499
                     raise
                 except _ComboFallbackNeeded:
+                    raise
+                except _DeadlineRetryNeeded:
                     raise
                 except Exception as e:
                     stats["error"] = stats["error"] or str(e)
@@ -7369,10 +7685,36 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         print(f"[BSL Router] finally-log failed (non-blocking): {_log_err}", flush=True)
 
             async def gemini_egress_stream_guarded():
+                # Gemini's nested drain/queue structure does not cleanly re-enter
+                # the same leaf with a new attempt index, so same-leaf ladder
+                # retries are converted to terminal frames here after one raise.
+                # Combo fallback still advances via _ComboFallbackNeeded as usual.
                 _source = gemini_egress_stream()
                 try:
                     async for _c in _source:
                         yield _c
+                except _DeadlineRetryNeeded as _dr:
+                    # Defensive: never let the sentinel escape to the client.
+                    print(
+                        f"[Deadline Ladder] '{model}' gemini attempt {_dr.attempt + 1} stalled "
+                        f"({stats.get('error') or _dr.err}) — terminal (gemini structure)",
+                        flush=True,
+                    )
+                    try:
+                        from app.compat.adapters.gemini import (
+                            sse_data as _g_sse_guarded,
+                            SSE_DONE as _G_SSE_GUARDED,
+                            terminal_error_frame as _g_term_guarded,
+                        )
+                        yield _g_sse_guarded(_g_term_guarded(
+                            504,
+                            stats.get("error") or _dr.err or "deadline_stall",
+                            target_model,
+                        ))
+                        yield _G_SSE_GUARDED
+                    except Exception:
+                        pass
+                    return
                 except _ComboFallbackNeeded as _cf:
                     _fallback = await _process_chat_completion(
                         body, client_wants_anthropic, client_wants_gemini,
@@ -7447,23 +7789,24 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             # _g_err_frame below was Gemini-FLAVOURED but still had no
             # `candidates`, so the IDE could not treat it as a stream end and
             # froze when the deadline fired. Both branches now pass protocol.
+            # deadline_s=0: outer wall-clock is disabled so the inner ladder owns recovery.
             try:
                 from app.compat.adapters.gemini import SSE_DONE as _G_SSE_DEADLINE
                 return StreamingResponse(
-                    afz_guard(gemini_egress_stream_guarded(), _afz_sid, done_frame=_G_SSE_DEADLINE, protocol="gemini"),
+                    afz_guard(gemini_egress_stream_guarded(), _afz_sid, done_frame=_G_SSE_DEADLINE, protocol="gemini", deadline_s=0),
                     media_type="text/event-stream",
                     headers=gemini_response_headers(stream=True),
                 )
             except Exception:
                 return StreamingResponse(
-                    afz_guard(gemini_egress_stream_guarded(), _afz_sid, protocol="gemini"),
+                    afz_guard(gemini_egress_stream_guarded(), _afz_sid, protocol="gemini", deadline_s=0),
                     media_type="text/event-stream",
                     headers=gemini_response_headers(stream=True),
                 )
         if convert_anthropic_to_openai_egress:
             # Reverse egress: OpenAI client (/v1/chat/completions) but upstream is
             # Anthropic-compatible (GLM/Kimi/MiniMax). Convert Anthropic SSE → OpenAI SSE.
-            async def anthropic_to_openai_egress_stream():
+            async def anthropic_to_openai_egress_stream(_attempt: int = 0):
                 resp = None
                 buffer = ""
                 emitted_model_data = False  # Track if we've sent data to IDE (for pre-content check)
@@ -7530,7 +7873,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
                     async def _raw_anthropic_ok():
                         nonlocal buffer
-                        async for chunk in _transport_guarded(_stall_watchdog(resp.aiter_raw()), stats, _emit):
+                        async for chunk in _transport_guarded(_pump(resp.aiter_raw(), _emit, _attempt, "anthropic-to-openai"), stats, _emit):
                             if await _client_disconnected():
                                 stats["error"] = stats["error"] or "client_disconnected"
                                 stats["status"] = 499
@@ -7677,6 +8020,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             yield b"data: [DONE]\n\n"
                         except Exception:
                             pass
+                except (_ComboFallbackNeeded, _DeadlineRetryNeeded):
+                    raise
                 except Exception as e:
                     stats["error"] = str(e)
                     err_chunk = {"error": {"message": str(e), "type": "proxy_error"}}
@@ -7712,79 +8057,107 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         print(f"[BSL Router] finally-log failed (non-blocking): {_log_err}", flush=True)
 
             async def anthropic_to_openai_egress_stream_guarded():
-                _anthr_source = anthropic_to_openai_egress_stream()
-                try:
-                    async for _c in _anthr_source:
-                        yield _c
-                except _ComboFallbackNeeded as _cf_anthr:
-                    # Body-level upstream failure (e.g. 524 stall after headers) —
-                    # advance the combo chain instead of returning an error to the client.
-                    _anthr_fallback = await _process_chat_completion(
-                        body, client_wants_anthropic, client_wants_gemini,
-                        _retry_state=_cf_anthr.retry_state,
-                        request=request,
-                    )
-                    if hasattr(_anthr_fallback, "body_iterator"):
-                        async for _fc in _anthr_fallback.body_iterator:
-                            yield _fc
-                    else:
-                        async for _fc in _anthr_fallback:
-                            yield _fc
-                except (GeneratorExit, asyncio.CancelledError):
+                _attempt = 0
+                while True:
+                    if _attempt >= len(STREAM_DEADLINE_LADDER):
+                        try:
+                            _cap_err = {"error": {"message": stats.get("error") or "deadline_ladder_exhausted", "type": "proxy_error"}}
+                            yield f"data: {json.dumps(_cap_err)}\n\n".encode("utf-8")
+                            yield b"data: [DONE]\n\n"
+                        except Exception:
+                            pass
+                        return
+                    _anthr_source = anthropic_to_openai_egress_stream(_attempt)
+                    _retry_again = False
                     try:
-                        obs.log_request(
-                            provider=provider_name, model=target_model, status=499,
-                            ttft=stats["ttft"], in_tokens=stats["in"], out_tokens=stats["out"],
-                            cached_tokens=stats["cached"], config=config,
-                            error_msg="client_disconnected",
-                            total_time=time.time() - start_time,
-                            request_id=request_id, client=client_label, stream=True,
-                            upstream_url=_upstream_url, conn_index=_active_conn_index,
-                            thinking=thinking_info,
-                            cache_write_tokens=stats.get("cache_write", 0),
-                            combo=_combo_label,
+                        async for _c in _anthr_source:
+                            yield _c
+                    except _DeadlineRetryNeeded as _dr:
+                        print(
+                            f"[Deadline Ladder] '{model}' attempt {_dr.attempt + 1} stalled "
+                            f"({stats.get('error') or _dr.err}) — retrying same leaf "
+                            f"{target_model}/{provider_name} at "
+                            f"{_ladder_deadline(_dr.attempt + 1)}s",
+                            flush=True,
                         )
-                    except Exception:
-                        pass
-                    raise
-                except Exception:
-                    try:
-                        obs.log_request(
-                            provider=provider_name, model=target_model,
-                            status=stats["status"], ttft=stats["ttft"],
-                            in_tokens=stats["in"], out_tokens=stats["out"],
-                            cached_tokens=stats["cached"], config=config,
-                            error_msg=stats["error"] or "stream_interrupted",
-                            total_time=time.time() - start_time,
-                            request_id=request_id, client=client_label, stream=True,
-                            upstream_url=_upstream_url, conn_index=_active_conn_index,
-                            thinking=thinking_info,
-                            cache_write_tokens=stats.get("cache_write", 0),
-                            combo=_combo_label,
+                        _attempt = _dr.attempt + 1
+                        stats["ttft"] = 0.0
+                        stats["out"] = 0
+                        stats["status"] = 500
+                        stats["error"] = None
+                        _retry_again = True
+                    except _ComboFallbackNeeded as _cf_anthr:
+                        # Body-level upstream failure (e.g. 524 stall after headers) —
+                        # advance the combo chain instead of returning an error to the client.
+                        _anthr_fallback = await _process_chat_completion(
+                            body, client_wants_anthropic, client_wants_gemini,
+                            _retry_state=_cf_anthr.retry_state,
+                            request=request,
                         )
+                        if hasattr(_anthr_fallback, "body_iterator"):
+                            async for _fc in _anthr_fallback.body_iterator:
+                                yield _fc
+                        else:
+                            async for _fc in _anthr_fallback:
+                                yield _fc
+                        return
+                    except (GeneratorExit, asyncio.CancelledError):
+                        try:
+                            obs.log_request(
+                                provider=provider_name, model=target_model, status=499,
+                                ttft=stats["ttft"], in_tokens=stats["in"], out_tokens=stats["out"],
+                                cached_tokens=stats["cached"], config=config,
+                                error_msg="client_disconnected",
+                                total_time=time.time() - start_time,
+                                request_id=request_id, client=client_label, stream=True,
+                                upstream_url=_upstream_url, conn_index=_active_conn_index,
+                                thinking=thinking_info,
+                                cache_write_tokens=stats.get("cache_write", 0),
+                                combo=_combo_label,
+                            )
+                        except Exception:
+                            pass
+                        raise
                     except Exception:
-                        pass
-                    # ANTI-FREEZE (2026-08-01): bench mid-stream exception leaf.
-                    bench_leaf(config, provider_name, target_model, stats.get("status", 502), stats.get("error") or "stream_interrupted", stats.get("out", 0))
-                    # Emit a terminal OpenAI-format error frame so the IDE unblocks
-                    # instead of hanging forever when the Sonnet/Anthropic stream fails.
-                    try:
-                        _err_openai = {"error": {"message": stats.get("error") or "stream_interrupted", "type": "proxy_error"}}
-                        yield f"data: {json.dumps(_err_openai)}\n\n".encode("utf-8")
-                        yield b"data: [DONE]\n\n"
-                    except Exception:
-                        pass
-                    # Return cleanly so FastAPI flushes the error+[DONE] frames.
-                    # Re-raising here terminates the generator before bytes flush -> IDE hangs.
-                    return
-                finally:
-                    # LEAK FIX (2026-08-02): close the source generator so a
-                    # client disconnect reaches its finally and closes the
-                    # upstream response. `async for` alone does NOT do this.
-                    try:
-                        await _anthr_source.aclose()
-                    except BaseException:
-                        pass
+                        try:
+                            obs.log_request(
+                                provider=provider_name, model=target_model,
+                                status=stats["status"], ttft=stats["ttft"],
+                                in_tokens=stats["in"], out_tokens=stats["out"],
+                                cached_tokens=stats["cached"], config=config,
+                                error_msg=stats["error"] or "stream_interrupted",
+                                total_time=time.time() - start_time,
+                                request_id=request_id, client=client_label, stream=True,
+                                upstream_url=_upstream_url, conn_index=_active_conn_index,
+                                thinking=thinking_info,
+                                cache_write_tokens=stats.get("cache_write", 0),
+                                combo=_combo_label,
+                            )
+                        except Exception:
+                            pass
+                        # ANTI-FREEZE (2026-08-01): bench mid-stream exception leaf.
+                        bench_leaf(config, provider_name, target_model, stats.get("status", 502), stats.get("error") or "stream_interrupted", stats.get("out", 0))
+                        # Emit a terminal OpenAI-format error frame so the IDE unblocks
+                        # instead of hanging forever when the Sonnet/Anthropic stream fails.
+                        try:
+                            _err_openai = {"error": {"message": stats.get("error") or "stream_interrupted", "type": "proxy_error"}}
+                            yield f"data: {json.dumps(_err_openai)}\n\n".encode("utf-8")
+                            yield b"data: [DONE]\n\n"
+                        except Exception:
+                            pass
+                        # Return cleanly so FastAPI flushes the error+[DONE] frames.
+                        # Re-raising here terminates the generator before bytes flush -> IDE hangs.
+                        return
+                    finally:
+                        # LEAK FIX (2026-08-02): close the source generator so a
+                        # client disconnect reaches its finally and closes the
+                        # upstream response. `async for` alone does NOT do this.
+                        try:
+                            await _anthr_source.aclose()
+                        except BaseException:
+                            pass
+                    if not _retry_again:
+                        return
 
             _afz_sid = next_stream_id()
             return StreamingResponse(
@@ -7795,6 +8168,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     # so the client here speaks OpenAI unless it asked for
                     # Anthropic explicitly. Keyed off the client, never upstream.
                     protocol="anthropic" if client_wants_anthropic else "openai",
+                    deadline_s=0,
                 ),
                 media_type="text/event-stream",
             )
@@ -7802,11 +8176,11 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         if provider_name == 'kiro':
             _afz_sid = next_stream_id()
             return StreamingResponse(
-                afz_guard(kiro_adapter.kiro_raw_to_openai_sse(raw_upstream_guarded()), _afz_sid),
+                afz_guard(kiro_adapter.kiro_raw_to_openai_sse(raw_upstream_guarded()), _afz_sid, deadline_s=0),
                 media_type="text/event-stream",
             )
         _afz_sid = next_stream_id()
-        return StreamingResponse(afz_guard(raw_upstream_guarded(), _afz_sid), media_type="text/event-stream")
+        return StreamingResponse(afz_guard(raw_upstream_guarded(), _afz_sid, deadline_s=0), media_type="text/event-stream")
     else:
         try:
 
