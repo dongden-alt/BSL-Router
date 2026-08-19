@@ -304,9 +304,22 @@ Intercepts traffic for apps that don't let you change the API URL:
 
 ### 📊 Observability
 - Every request/response logged in JSONL format
-- Usage stats per model with cost tracking
+- Usage stats per model with cost tracking (see Usage Store below)
 - Error tracking with per-provider breakdown
 - Live log streaming in the admin dashboard
+
+#### Usage Store (SQLite)
+
+Usage history is stored in a lightweight `data/usage_stats.sqlite3` database. This replaces the previous in-memory list + JSONL rotation approach so the system can handle 6 M+ rows (a full six-month window).
+
+**Key design decisions:**
+- **Write path**: every successful (`status == 200`) request writes a row to SQLite via `append_usage_event()`. Cost and savings are computed at write time using the current pricing registry, so reads never need to reprice.
+- **Read path**: paginated keyset cursor `(ts_epoch DESC, id DESC)` — the API returns one page of up to 500 newest-first entries. The frontend loads additional pages by sending the `next_before_id` from the previous response.
+- **Summary endpoint**: `/api/observability/usage/summary` returns server-side aggregates (totals, top providers/models, timeframe-aligned buckets, DB size) without returning any raw rows.
+- **JSONL archive**: existing `data/usage_stats.jsonl` lines are migrated once into SQLite on startup (idempotent, fingerprint-guarded). Corrupt lines are skipped. The file is retained as an archive but no longer rotated or treated as source of truth.
+- **No silent deletion**: there is no hard row-count cap or size-based rotation for usage history. Rows accumulate indefinitely until a future age-based cleanup job is added.
+- **Column filters**: UI column-filter dropdowns remain local to the currently loaded page. Total counts come from the summary endpoint.
+- **Fail-open**: SQLite errors never break `log_request()` or proxy requests. If the database is unreachable the router continues logging to the console log path normally.
 
 ### 🔍 Scouts (Optional)
 Pre-process specific content types before routing:

@@ -2313,21 +2313,104 @@ def _obs_pagination_params(limit, offset):
     return _limit, _offset
 
 
+# Usage-store-specific param clamping: hard max 500 for usage queries.
+_USAGE_LIMIT_MAX = 500
+_USAGE_LIMIT_DEFAULT = 500
+
+
+def _usage_pagination_params(limit, before_id, before_ts):
+    """Clamp usage-paginated query params. Clamp limit to 1..500."""
+    try:
+        _limit = int(limit) if limit is not None else _USAGE_LIMIT_DEFAULT
+    except (TypeError, ValueError):
+        _limit = _USAGE_LIMIT_DEFAULT
+    if _limit < 1:
+        _limit = _USAGE_LIMIT_DEFAULT
+    if _limit > _USAGE_LIMIT_MAX:
+        _limit = _USAGE_LIMIT_MAX
+    if before_ts is not None:
+        try:
+            _ts = float(before_ts)
+        except (TypeError, ValueError):
+            _ts = None
+    else:
+        _ts = None
+    return _limit, str(before_id) if before_id is not None else None, _ts
+
+
 @app.get("/api/observability/usage")
-async def get_usage(limit: int = 500, offset: int = 0):
-    # Retroactively recalculate costs using the current pricing registry
-    # so historical entries logged with cost=0 get correct values. Throttled
-    # internally to at most one full recompute per 60s (see obs.recompute).
+async def get_usage(
+    start: str = None,
+    end: str = None,
+    provider: str = None,
+    model: str = None,
+    q: str = None,
+    limit: int = _USAGE_LIMIT_DEFAULT,
+    before_id: str = None,
+    before_ts: str = None,
+    offset: int = 0,
+):
+    """Usage-events page via SQLite keyset cursor. Newest-first.
+
+    Parameters:
+      start/end   ISO datetime bounds
+      provider    exact match; append '*' for prefix match
+      model       same as provider
+      q           case-insensitive substring on provider+model
+      limit       1..500 (clamped)
+      before_id   keyset cursor (id of last row from previous page)
+      before_ts   optional companion timestamp for stable ordering
+      offset      deprecated — tiny offsets ≤2000 still work
+
+    Always returns {entries, total, has_more, next_before_id, next_before_ts}.
+    Never triggers a full-history recompute.
+    """
     config = cs_get_config()
+    # TTL-gated shim-recompute only (bounded list).
     obs.recompute_usage_costs(config)
-    _limit, _offset = _obs_pagination_params(limit, offset)
-    total = len(obs.usage_stats)
-    entries = obs.usage_stats[_offset:_offset + _limit]
-    return JSONResponse({
-        "total": total,
-        "entries": entries,
-        "has_more": (_offset + _limit) < total,
-    })
+
+    _limit, bid, bts = _usage_pagination_params(limit, before_id, before_ts)
+
+    if before_id is None and before_ts is None and offset <= 2000:
+        # Offset-based lookup via SQL — no shim slicing.
+        result = obs.query_usage_events(
+            start=start, end=end, provider=provider, model=model, q=q,
+            limit=_limit, offset=offset,
+        )
+        return JSONResponse(result)
+    elif before_id is not None or before_ts is not None:
+        result = obs.query_usage_events(
+            start=start, end=end, provider=provider, model=model, q=q,
+            limit=_limit, before_id=bid, before_ts=bts,
+        )
+        return JSONResponse(result)
+    else:
+        # Large offset (>2000): clamp to limit and serve newest page.
+        result = obs.query_usage_events(
+            start=start, end=end, provider=provider, model=model, q=q,
+            limit=_limit,
+        )
+        return JSONResponse(result)
+
+    return JSONResponse(result)
+
+
+@app.get("/api/observability/usage/summary")
+async def get_usage_summary(
+    start: str = None,
+    end: str = None,
+    provider: str = None,
+    model: str = None,
+    q: str = None,
+    timeframe: str = "1D",
+):
+    """Server-side aggregate summary. No raw rows returned."""
+    _allowed_tf = {"today", "1D", "7D", "1M", "3M", "6M"}
+    tf = timeframe if timeframe in _allowed_tf else "1D"
+    result = obs.query_usage_summary(
+        start=start, end=end, provider=provider, model=model, q=q, timeframe=tf,
+    )
+    return JSONResponse(result)
 
 @app.get("/api/observability/logs")
 async def get_logs(limit: int = 500, offset: int = 0):

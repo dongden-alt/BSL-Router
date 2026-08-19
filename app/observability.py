@@ -1,8 +1,12 @@
 import time
 import json
 import os
+import sqlite3
+import hashlib
+import stat as _stat_module
 import httpx
 from datetime import datetime
+from contextlib import contextmanager
 
 # Append-only JSONL persistence paths (survive server restarts).
 # In-memory lists below remain the hot read path; every new entry is also
@@ -87,9 +91,592 @@ def _load_persisted(path, max_entries=10000):
     return entries
 
 
-# In-memory storage for Observability Layer (hot read path for the API).
-# Pre-populated from disk so usage/console history survives restarts.
-error_reports = []
+# ── SQLite Usage Store ───────────────────────────────────────────────────────
+# Scalable replacement for the in-memory / JSONL usage history.
+# Path overridable via `usage_db_path` module global (tests).
+
+_USAGE_DB_PATH = "data/usage_stats.sqlite3"
+usage_db_path: str = _USAGE_DB_PATH  # Overridable by tests
+
+_USABLE_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS usage_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    ts_epoch REAL NOT NULL,
+    provider TEXT,
+    model TEXT,
+    ttft_ms REAL,
+    total_time_ms REAL,
+    in_cached INTEGER,
+    cache_write_tokens INTEGER,
+    in_uncached INTEGER,
+    out INTEGER,
+    cost REAL,
+    savings REAL,
+    pricing_version TEXT DEFAULT 'v1'
+);
+CREATE TABLE IF NOT EXISTS usage_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_usage_ts_id ON usage_events(ts_epoch DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage_events(provider);
+CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_events(model);
+CREATE INDEX IF NOT EXISTS idx_usage_provider_model ON usage_events(provider, model);
+"""
+
+
+def _get_usage_db_path() -> str:
+    """Return the current SQLite path, falling back to defaults."""
+    p = usage_db_path or _USAGE_DB_PATH
+    if p:
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+    return p
+
+
+@contextmanager
+def _usage_conn():
+    """Yield an auto-commit SQLite connection configured for WAL mode."""
+    db = sqlite3.connect(_get_usage_db_path(), timeout=5.0)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA synchronous=NORMAL")
+    db.execute("PRAGMA foreign_keys=ON")
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def init_usage_store():
+    """Create usage_tables and perform one-shot JSONL migration. Idempotent."""
+    try:
+        with _usage_conn() as conn:
+            conn.executescript(_USABLE_SCHEMA)
+        _migrate_jsonl_once()
+    except Exception as _e:
+        print(f"[UsageStore] init failed (non-blocking): {_e}", flush=True)
+
+
+def _jsonl_fingerprint(path: str):
+    """Compute (mtime, size, md5_hex) fingerprint for a file."""
+    try:
+        s = os.stat(path)
+        h = hashlib.md5()
+        try:
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+        except OSError:
+            pass
+        return (s[_stat_module.ST_MTIME], s[_stat_module.ST_SIZE], h.hexdigest())
+    except Exception:
+        return None
+
+
+def _meta_get(conn, key, default=None):
+    try:
+        cur = conn.execute("SELECT value FROM usage_meta WHERE key=?", (key,))
+        row = cur.fetchone()
+        return row[0] if row else default
+    except Exception:
+        return default
+
+
+def _meta_put(conn, key, value):
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO usage_meta(key, value) VALUES (?, ?)",
+            (key, value),
+        )
+    except Exception:
+        pass
+
+
+def _migrate_jsonl_once():
+    """One-time import of surviving lines from the usage JSONL archive."""
+    src = _USAGE_LOG_PATH  # direct module-level ref (works inside this module)
+    fp = _jsonl_fingerprint(src)
+    if fp is None:
+        try:
+            with _usage_conn() as conn:
+                existing = _meta_get(conn, "jsonl_migrated")
+                if existing is None:
+                    _meta_put(conn, "jsonl_migrated", "none")
+        except Exception:
+            pass
+        return
+    try:
+        with _usage_conn() as conn:
+            existing = _meta_get(conn, "jsonl_migrated")
+            expected_marker = json.dumps({"path": src, "fingerprint": str(fp)})
+            if existing == expected_marker:
+                return  # Already migrated this exact file.
+            count = 0
+            with open(src, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue  # Skip corrupt
+                    try:
+                        ts_raw = entry.get("timestamp", "")
+                        if ts_raw:
+                            dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00").replace("+00:00", ""))
+                        else:
+                            dt = datetime.now()
+                        epoch = dt.timestamp()
+                        conn.execute(
+                            """INSERT INTO usage_events
+                               (ts, ts_epoch, provider, model, ttft_ms, total_time_ms,
+                                in_cached, cache_write_tokens, in_uncached, out, cost, savings)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                entry.get("timestamp", dt.isoformat()),
+                                epoch,
+                                entry.get("provider"),
+                                entry.get("model"),
+                                entry.get("ttft_ms"),
+                                entry.get("total_time_ms"),
+                                entry.get("in_cached"),
+                                entry.get("cache_write_tokens"),
+                                entry.get("in_uncached"),
+                                entry.get("out"),
+                                entry.get("cost"),
+                                entry.get("savings"),
+                            ),
+                        )
+                        count += 1
+                    except Exception:
+                        continue  # Skip per-row corrupt
+            _meta_put(conn, "jsonl_migrated", json.dumps({
+                "path": src,
+                "fingerprint": str(fp),
+                "count": count,
+            }))
+    except Exception as _e:
+        print(f"[UsageStore] JSONL migration failed (non-blocking): {_e}", flush=True)
+
+
+# Public API helpers -----------------------------------------------------------
+
+
+def append_usage_event(entry: dict) -> None:
+    """Insert a usage event into SQLite. Fail-open: never raises."""
+    try:
+        with _usage_conn() as conn:
+            conn.execute(
+                """INSERT INTO usage_events
+                   (ts, ts_epoch, provider, model, ttft_ms, total_time_ms,
+                    in_cached, cache_write_tokens, in_uncached, out, cost, savings)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    entry.get("timestamp", datetime.now().isoformat()),
+                    _safe_ts_epoch(entry.get("timestamp")),
+                    entry.get("provider"),
+                    entry.get("model"),
+                    entry.get("ttft_ms"),
+                    entry.get("total_time_ms"),
+                    entry.get("in_cached"),
+                    entry.get("cache_write_tokens"),
+                    entry.get("in_uncached"),
+                    entry.get("out"),
+                    entry.get("cost"),
+                    entry.get("savings"),
+                ),
+            )
+    except Exception as _e:
+        print(f"[UsageStore] append failed (non-blocking): {_e}", flush=True)
+
+
+def _safe_ts_epoch(ts_str):
+    """Convert an ISO timestamp string to a POSIX float epoch."""
+    if not ts_str:
+        return time.time()
+    try:
+        return datetime.fromisoformat(ts_str.replace("Z", "+00:00").replace("+00:00", "")).timestamp()
+    except (ValueError, TypeError):
+        return time.time()
+
+
+def query_usage_events(start=None, end=None, provider=None, model=None, q=None,
+                       limit=500, offset=None, before_id=None, before_ts=None):
+    """Paginated query over usage_events using keyset cursor (newest-first).
+
+    Returns {entries, total, has_more, next_before_id, next_before_ts}.
+    """
+    where_clauses = []
+    params = []
+
+    if start:
+        epoch = _safe_ts_epoch(start)
+        where_clauses.append("ts_epoch >= ?")
+        params.append(epoch)
+    if end:
+        epoch = _safe_ts_epoch(end)
+        where_clauses.append("ts_epoch <= ?")
+        params.append(epoch)
+
+    if provider:
+        if provider.endswith("*"):
+            prefix = provider[:-1]
+            where_clauses.append("provider LIKE ?")
+            params.append(prefix + "%")
+        else:
+            where_clauses.append("provider = ?")
+            params.append(provider)
+
+    if model:
+        if model.endswith("*"):
+            prefix = model[:-1]
+            where_clauses.append("model LIKE ?")
+            params.append(prefix + "%")
+        else:
+            where_clauses.append("model = ?")
+            params.append(model)
+
+    if q:
+        where_clauses.append("(LOWER(provider) LIKE ? OR LOWER(model) LIKE ?)")
+        like_q = "%" + q.lower() + "%"
+        params.extend([like_q, like_q])
+
+    # Keyset cursor: fetch rows BEFORE the given (ts_epoch, id) tuple.
+    # Falsy / invalid cursors ("0", "", None) mean "start from newest" — no cursor filter.
+    _bid_int = None
+    if before_id is not None and before_id != "":
+        try:
+            _bid_int = int(before_id)
+        except (TypeError, ValueError):
+            _bid_int = None
+    if _bid_int is not None and _bid_int > 0:
+        if before_ts is not None:
+            where_clauses.append("(ts_epoch, id) < (?, ?)")
+            params.extend([_safe_ts_epoch(before_ts), _bid_int])
+        else:
+            where_clauses.append("id < ?")
+            params.append(_bid_int)
+    elif before_id is not None and before_id != "" and before_id != "0":
+        # String was not a valid integer — ignore it; treat as no cursor.
+        pass
+
+    clause = " AND ".join(where_clauses) if where_clauses else "1=1"
+    order = "ORDER BY ts_epoch DESC, id DESC"
+
+    try:
+        with _usage_conn() as conn:
+            # Count total
+            count_cur = conn.execute(
+                f"SELECT COUNT(*) FROM usage_events WHERE {clause}", params
+            ).fetchone()
+            total = count_cur[0] if count_cur else 0
+
+            # Page query
+            page_limit = min(limit, 500)
+            sql = f"SELECT * FROM usage_events WHERE {clause} {order} LIMIT ?"
+            cur_params = [*params, page_limit]
+            if offset is not None and offset > 0 and _bid_int is None:
+                # Apply SQL OFFSET for legacy offset queries when no keyset cursor.
+                sql += " OFFSET ?"
+                cur_params.append(offset)
+            cur = conn.execute(sql, cur_params)
+            columns = [desc[0] for desc in cur.description]
+            rows = [dict(zip(columns, r)) for r in cur.fetchall()]
+
+            # Normalize: expose API-compatible 'timestamp' key alongside DB column 'ts'.
+            for row in rows:
+                if "ts" in row and "timestamp" not in row:
+                    row["timestamp"] = row["ts"]
+
+            has_more = len(rows) >= page_limit and (total > page_limit)
+            if has_more and rows:
+                last = rows[-1]
+                next_before_id = last.get("id")
+                next_before_ts = last.get("ts")
+            else:
+                if total > len(rows):
+                    has_more = True
+                    extra_cur = conn.execute(
+                        f"SELECT id, ts FROM usage_events WHERE {clause} {order} LIMIT 1 OFFSET ?",
+                        [*params, page_limit],
+                    )
+                    extra_row = extra_cur.fetchone()
+                    next_before_id = extra_row[0] if extra_row else None
+                    next_before_ts = extra_row[1] if extra_row else None
+                else:
+                    has_more = False
+                    next_before_id = None
+                    next_before_ts = None
+
+            return {
+                "entries": rows,
+                "total": total,
+                "has_more": has_more,
+                "next_before_id": next_before_id,
+                "next_before_ts": next_before_ts,
+            }
+    except Exception as _e:
+        print(f"[UsageStore] query failed (non-blocking): {_e}", flush=True)
+        return {"entries": [], "total": 0, "has_more": False,
+                "next_before_id": None, "next_before_ts": None}
+
+
+def query_usage_summary(start=None, end=None, provider=None, model=None, q=None,
+                        timeframe=None):
+    """Server-side aggregate summary for cards/charts/buckets. Never returns raw rows."""
+    where_clauses = []
+    params = []
+
+    if start:
+        epoch = _safe_ts_epoch(start)
+        where_clauses.append("ts_epoch >= ?")
+        params.append(epoch)
+    if end:
+        epoch = _safe_ts_epoch(end)
+        where_clauses.append("ts_epoch <= ?")
+        params.append(epoch)
+
+    if provider:
+        if provider.endswith("*"):
+            where_clauses.append("provider LIKE ?")
+            params.append(provider[:-1] + "%")
+        else:
+            where_clauses.append("provider = ?")
+            params.append(provider)
+
+    if model:
+        if model.endswith("*"):
+            where_clauses.append("model LIKE ?")
+            params.append(model[:-1] + "%")
+        else:
+            where_clauses.append("model = ?")
+            params.append(model)
+
+    if q:
+        where_clauses.append("(LOWER(provider) LIKE ? OR LOWER(model) LIKE ?)")
+        like_q = "%" + q.lower() + "%"
+        params.extend([like_q, like_q])
+
+    clause = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+    result = {
+        "totals": {},
+        "providers": [],
+        "models": [],
+        "buckets": [],
+        "row_count": 0,
+        "db_bytes": 0,
+    }
+
+    try:
+        with _usage_conn() as conn:
+            # Total counts/tokens/cost/savings
+            cnt = conn.execute(
+                f"SELECT COUNT(*), COALESCE(SUM(in_cached),0), COALESCE(SUM(cache_write_tokens),0), "
+                f"COALESCE(SUM(in_uncached),0), COALESCE(SUM(out),0), "
+                f"COALESCE(SUM(cost),0.0), COALESCE(SUM(savings),0.0) "
+                f"FROM usage_events WHERE {clause}", params
+            ).fetchone()
+            result["totals"] = {
+                "requests": cnt[0],
+                "in_cached": cnt[1],
+                "cache_write_tokens": cnt[2],
+                "in_uncached": cnt[3],
+                "out": cnt[4],
+                "cost": round(cnt[5], 6),
+                "savings": round(cnt[6], 6),
+            }
+            result["row_count"] = cnt[0]
+
+            # Provider aggregates (top 12 + other)
+            prov_rows = conn.execute(
+                f"SELECT provider, COUNT(*) AS cnt, "
+                f"COALESCE(SUM(in_cached),0), COALESCE(SUM(cache_write_tokens),0), "
+                f"COALESCE(SUM(in_uncached),0), COALESCE(SUM(out),0), "
+                f"COALESCE(SUM(cost),0.0), COALESCE(SUM(savings),0.0) "
+                f"FROM usage_events WHERE {clause} GROUP BY provider ORDER BY cnt DESC", params
+            ).fetchall()
+            top_n = 12
+            providers_agg = []
+            other_count = 0
+            other_cost = 0.0
+            other_savings = 0.0
+            for pr in prov_rows:
+                pname = pr[0] or "unknown"
+                if pname == "other":
+                    other_count = pr[1]
+                    other_cost += pr[6]
+                    other_savings += pr[7]
+                    continue
+                providers_agg.append({
+                    "provider": pname,
+                    "requests": pr[1],
+                    "cost": round(pr[6], 6),
+                    "savings": round(pr[7], 6),
+                })
+                if len(providers_agg) > top_n:
+                    removed = providers_agg.pop()
+                    other_count += removed["requests"]
+                    other_cost += removed["cost"]
+                    other_savings += removed["savings"]
+            if other_count > 0:
+                providers_agg.append({
+                    "provider": "other",
+                    "requests": other_count,
+                    "cost": round(other_cost, 6),
+                    "savings": round(other_savings, 6),
+                })
+            result["providers"] = providers_agg
+
+            # Model aggregates (top 8 + other)
+            mod_rows = conn.execute(
+                f"SELECT model, COUNT(*) AS cnt, "
+                f"COALESCE(SUM(in_cached),0), COALESCE(SUM(cache_write_tokens),0), "
+                f"COALESCE(SUM(in_uncached),0), COALESCE(SUM(out),0), "
+                f"COALESCE(SUM(cost),0.0), COALESCE(SUM(savings),0.0) "
+                f"FROM usage_events WHERE {clause} GROUP BY model ORDER BY cnt DESC", params
+            ).fetchall()
+            models_agg = []
+            other_count = 0
+            other_cost = 0.0
+            for mr in mod_rows:
+                mname = mr[0] or "unknown"
+                if mname == "other":
+                    other_count = mr[1]
+                    other_cost += mr[6]
+                    continue
+                models_agg.append({
+                    "model": mname,
+                    "requests": mr[1],
+                    "cost": round(mr[6], 6),
+                })
+                if len(models_agg) > 8:
+                    removed = models_agg.pop()
+                    other_count += removed["requests"]
+                    other_cost += removed["cost"]
+            if other_count > 0:
+                models_agg.append({
+                    "model": "other",
+                    "requests": other_count,
+                    "cost": round(other_cost, 6),
+                })
+            result["models"] = models_agg
+
+            # Time buckets based on timeframe
+            buckets = _build_buckets_for_sql(timeframe, clause, params, conn)
+            result["buckets"] = buckets
+
+            # DB visibility
+            db_path = _get_usage_db_path()
+            if db_path and os.path.exists(db_path):
+                try:
+                    result["db_bytes"] = os.path.getsize(db_path)
+                except OSError:
+                    pass
+    except Exception as _e:
+        print(f"[UsageStore] summary failed (non-blocking): {_e}", flush=True)
+
+    return result
+
+
+def _build_buckets_for_sql(timeframe, where_clause, where_params, conn):
+    """Build server-side time buckets aligned to frontend bucket policy."""
+    buckets = []
+    now = time.time()
+
+    # Default values — always set so 'else' or unknown timeframes don't blow up
+    day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    num = 7
+    bucket_dur = 86400  # daily default
+
+    if timeframe == "today":
+        # Hourly buckets from midnight
+        day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        num = 24
+        bucket_dur = 3600
+    elif timeframe == "1D":
+        hour_start = datetime.now().replace(minute=0, second=0, microsecond=0)
+        day_start = hour_start.replace(hour=0)
+        num = 24
+        bucket_dur = 3600
+    elif timeframe == "7D":
+        day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        num = 7
+        bucket_dur = 86400
+    elif timeframe == "1M":
+        day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        num = 30
+        bucket_dur = 86400
+    elif timeframe == "3M":
+        num = 13
+        bucket_dur = 604800  # weekly
+    elif timeframe == "6M":
+        num = 26
+        bucket_dur = 604800  # weekly
+
+    base_time = day_start.timestamp()
+    for i in range(num):
+        if timeframe in ("3M", "6M"):
+            b_end = (base_time + (num - 1 - i) * 7 * 86400) + 604800
+            b_start = b_end - 7 * 86400
+        else:
+            b_end = (base_time + (num - 1 - i) * bucket_dur)
+            b_start = b_end - bucket_dur
+
+        label_base = datetime.fromtimestamp(b_start)
+        if bucket_dur >= 86400:
+            label = f"{label_base.month}/{label_base.day}"
+        elif bucket_dur >= 3600:
+            label = f"{label_base.hour:02d}:00"
+        else:
+            label = str(i)
+
+        count_row = conn.execute(
+            f"SELECT COUNT(*) FROM usage_events WHERE {where_clause} AND ts_epoch >= ? AND ts_epoch < ?",
+            [*where_params, b_start, b_end],
+        ).fetchone()
+        cost_row = conn.execute(
+            f"SELECT COALESCE(SUM(cost),0.0) FROM usage_events WHERE {where_clause} AND ts_epoch >= ? AND ts_epoch < ?",
+            [*where_params, b_start, b_end],
+        ).fetchone()
+
+        buckets.append({
+            "key": f"{timeframe}_b{i}",
+            "label": label,
+            "start": b_start,
+            "end": b_end,
+            "requests": count_row[0],
+            "cost": round(cost_row[0], 6),
+        })
+    return buckets
+
+
+# Compatibility shim: in-memory list still kept (for non-API internals),
+# but NO rotation cap. Tests must use query_usage_events / SQLite as source
+# of truth for durable history.
+
+class _UsageListShim(list):
+    """Bounded detail array for non-API callers only. Not durable history."""
+
+    def __init__(self, max_size=10000):
+        super().__init__()
+        self._max = max_size
+
+    def append(self, item):
+        super().append(item)
+        while len(self) > self._max:
+            self.pop(0)
+
+
+usage_stats_shim: _UsageListShim = _UsageListShim()
 usage_stats = _load_persisted(_USAGE_LOG_PATH)
 console_logs = _load_persisted(_CONSOLE_LOG_PATH)
 
@@ -522,10 +1109,17 @@ def log_request(
             "cost": cost,
             "savings": cache_savings
         }
+        # Write to SQLite — the only durable usage source of truth.
+        append_usage_event(usage_entry)
+        # Keep a small in-memory shim for non-API callers; no rotation cap.
+        usage_stats_shim.append(usage_entry)
+        # Legacy compat list still updated but without hard cap.
         usage_stats.append(usage_entry)
-        if len(usage_stats) > 10000:
-            usage_stats.pop(0)
-        _persist_entry(_USAGE_LOG_PATH, usage_entry)
+        # Optional JSONL archive append (kept for backward-compat; reads come from SQLite).
+        try:
+            _persist_entry(_USAGE_LOG_PATH, usage_entry)
+        except Exception:
+            pass  # archive write must never fail
 
 
 # ── Recompute cache ──────────────────────────────────────────────────────────
@@ -565,35 +1159,34 @@ def _pricing_registry_signature():
 
 
 def recompute_usage_costs(config: dict, force: bool = False):
-    """Retroactively recalculate cost/savings for ALL historical usage entries
-    using the current pricing registry. Fixes entries logged with cost=0 when
-    the pricing registry was not yet loaded or was incomplete at request time.
+    """Recompute costs for the in-memory shim only (bounded detail list).
 
-    Mutates usage_stats entries in-place so the API returns corrected values.
+    MUST NOT full-scan all historical rows on every usage GET. Cost is
+    materialised at write time via append_usage_event(). This function now
+    operates on the bounded ``usage_stats_shim`` (default ≤10 000 entries)
+    so it can safely be called during TTL windows or when pricing data changes.
 
-    Throttled: at most one full recompute per _RECOMPUTE_TTL_S seconds, unless
-    `force=True` or the pricing registry file mtime/size changed. Safe because
-    entries appended after the last recompute already had their cost computed
-    at log_request time. Fail-open like the rest of the observability layer.
+    The SQLite API endpoint uses write-time costs directly — no recompute path.
+    For a global reprice of all history, a background task would scan SQLite
+    and update cost columns row-by-row; that is out of scope for v1.
     """
     global _recompute_last_ts, _recompute_last_len, _recompute_registry_key
     try:
         reg_key = _pricing_registry_signature()
         now = time.time()
         ttl_fresh = (now - _recompute_last_ts) < _RECOMPUTE_TTL_S
-        len_unchanged = _recompute_last_len == len(usage_stats)
+        len_unchanged = _recompute_last_len == len(usage_stats_shim)
         if not force and ttl_fresh and len_unchanged and reg_key == _recompute_registry_key:
             return  # cache hit — nothing to recompute
 
         rates_map = _load_model_costs(config)
         if not rates_map:
-            # Still advance the cache markers so we don't re-attempt every
-            # request within the TTL window when the registry is simply empty.
             _recompute_last_ts = now
-            _recompute_last_len = len(usage_stats)
+            _recompute_last_len = len(usage_stats_shim)
             _recompute_registry_key = reg_key
             return
-        for entry in usage_stats:
+
+        for entry in usage_stats_shim:
             model = entry.get("model", "")
             m_rates = rates_map.get(model)
             if not m_rates:
@@ -612,7 +1205,7 @@ def recompute_usage_costs(config: dict, force: bool = False):
                 (cached / 1_000_000) * (m_rates["in"] - m_rates["cache"]), 6
             ) if cached else 0.0
         _recompute_last_ts = now
-        _recompute_last_len = len(usage_stats)
+        _recompute_last_len = len(usage_stats_shim)
         _recompute_registry_key = reg_key
     except Exception as _e:
         print(f"[Observability] recompute_usage_costs failed (non-blocking): {_e}", flush=True)

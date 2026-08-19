@@ -5853,7 +5853,11 @@ function renderToolsTab() {
 
 // --- PHASE 3 Observability JS ---
 
+// ── Usage pagination state (SQLite-backed) ───────────────────────────────
 let usageDataState = [];
+let usagePaginationCursor = null; // {before_id, before_ts} for next page
+let usageTotalCount = 0;         // total matching requests from API
+let usageSummaryState = null;    // server-side summary (totals, buckets, charts)
 
 // Column model for the usage table. `value` is the per-row accessor used for
 // both cell rendering and the per-column filter dropdowns. `filterable` controls
@@ -5892,7 +5896,11 @@ function _debounce(fn, ms) {
 }
 // Debounced global search handler (300ms). Sets filter state then re-renders,
 // resetting the render limit so the top matches show first.
-const _usageSearchDebounced = _debounce(function() { usageRenderLimit = 500; renderUsageTable(); }, 300);
+const _usageSearchDebounced = _debounce(function() {
+    usageRenderLimit = 500;
+    _usageResetCursor();
+    loadUsageData();
+}, 300);
 function _usageSearchInput(value) {
     usageFilterState = value;
     _usageSearchDebounced();
@@ -6181,14 +6189,16 @@ function setUsageDateFilter(which, value) {
     if (which === 'end') usageDateEndFilter = value;
     usageOpenFilterCol = null;
     usageRenderLimit = 500;
-    renderUsageTable();
+    _usageResetCursor();
+    loadUsageData();
 }
 
 function clearUsageDateFilter() {
     usageDateStartFilter = '';
     usageDateEndFilter = '';
     usageRenderLimit = 500;
-    renderUsageTable();
+    _usageResetCursor();
+    loadUsageData();
 }
 
 // Build the x-axis bucket list for the consumption chart per timeframe.
@@ -6304,7 +6314,8 @@ function setUsageTimeframe(key) {
     usageTimeframe = key;
     usageOpenFilterCol = null;
     usageRenderLimit = 500;
-    renderUsageTable();
+    _usageResetCursor();
+    loadUsageData();
 }
 
 function _usageColumnValue(col, row) {
@@ -6638,6 +6649,44 @@ function renderConsumptionChart(data) {
         <div style="display:flex;flex-wrap:wrap;margin-top:6px;">${legend || '<span style="font-size:12px;color:var(--text-muted);">No model consumption in this timeframe.</span>'}</div>`;
 }
 
+// Render consumption chart from server-side bucket array (no raw rows needed).
+function renderConsumptionChartFromBuckets(buckets) {
+    if (!buckets || !buckets.length) {
+        return '<div style="color:var(--text-muted);text-align:center;padding:30px;">No data in this timeframe.</div>';
+    }
+    const w = 920, h = 310, pad = { top: 24, right: 22, bottom: 54, left: 62 };
+    const innerW = w - pad.left - pad.right, innerH = h - pad.top - pad.bottom;
+    const maxVal = Math.max(1, ...buckets.map(b => b.cost > 0 ? b.cost : (b.requests || 0)));
+    const barStep = innerW / Math.max(1, buckets.length);
+    const barW = Math.max(4, Math.min(24, barStep * 0.6));
+    let grid = '', bars = '', labels = '';
+    for (let i = 0; i <= 4; i++) {
+        const y = pad.top + innerH - (innerH * i / 4);
+        const val = maxVal * i / 4;
+        grid += `<line x1="${pad.left}" y1="${y}" x2="${w - pad.right}" y2="${y}" stroke="var(--border-color)" opacity="0.45"/>`;
+        grid += `<text x="${pad.left - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--text-muted)">${usageViewMode === 'cost' ? '$' + val.toFixed(val < 1 ? 2 : 0) : _fmtCompact(val)}</text>`;
+    }
+    buckets.forEach((bucket, bi) => {
+        const x = pad.left + bi * barStep + (barStep - barW) / 2;
+        const val = usageViewMode === 'cost' ? (bucket.cost || 0) : (bucket.requests || 0);
+        const bh = Math.max(1, (val / maxVal) * innerH);
+        bars += `<rect x="${x}" y="${pad.top + innerH - bh}" width="${barW}" height="${bh}" rx="${barW > 10 ? 4 : 2}" fill="${_usageColorFor(0)}" opacity="0.92"><title>${_usageEscapeHtml(bucket.label)} — ${usageViewMode === 'cost' ? '$' + bucket.cost.toFixed(6) : (bucket.requests || 0)}</title></rect>`;
+        const showLabel = buckets.length <= 30 || bi % Math.ceil(buckets.length / 14) === 0;
+        if (showLabel) labels += `<text x="${x + barW / 2}" y="${h - 28}" text-anchor="middle" font-size="9" fill="var(--text-muted)" transform="rotate(-35 ${x + barW / 2} ${h - 28})">${_usageEscapeHtml(bucket.label)}</text>`;
+    });
+    return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div style="font-size:12px;font-weight:800;color:var(--text-main);">Consumption over time (${_usageMetricUnit()})</div><div style="font-size:11px;color:var(--text-muted);">${USAGE_TIMEFRAME_LABELS[usageTimeframe]}</div></div>
+        <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;">${grid}${bars}${labels}</svg>`;
+}
+
+// Helper: return chart data source for the current filter state.
+function _getChartData() {
+    // If summary is loaded and no column filters are active, use summary buckets.
+    if (usageSummaryState && !Object.keys(usageColFilters).length) {
+        return usageSummaryState.buckets || [];
+    }
+    return null; // fall through to client aggregation
+}
+
 function renderPricingPage() {
     // Loading guard: if canonical data isn't fetched yet, show a placeholder and
     // kick off the load (it calls renderUsageTable again when done).
@@ -6709,20 +6758,59 @@ function renderPricingPage() {
     </div></div>`;
 }
 
+// Reset pagination cursor when timeframe/date/search changes.
+function _usageResetCursor() {
+    usagePaginationCursor = null;
+    usageDataState = [];
+    usageTotalCount = 0;
+    usageSummaryState = null;
+}
+
 async function loadUsageData() {
     try {
-        // Probe total count, then fetch the newest 2000 entries.
-        // API returns oldest-first (append-only list), so we offset from
-        // the end and reverse to get newest-first for the UI.
-        const probeRes = await fetch('/api/observability/usage?limit=1&offset=0');
-        const probeData = await probeRes.json();
-        const total = (probeData && probeData.total) ? probeData.total : 0;
-        const fetchOffset = Math.max(0, total - 2000);
-        const res = await fetch(`/api/observability/usage?limit=2000&offset=${fetchOffset}`);
-        const data = await res.json();
-        const entries = Array.isArray(data) ? data : (data && data.entries ? data.entries : []);
-        // Reverse oldest-first → newest-first for display.
-        usageDataState = entries.slice().reverse();
+        const [start, end] = _usageEffectiveRange();
+        const params = new URLSearchParams({
+            start: start.toISOString(),
+            end: end.toISOString(),
+            limit: String(500),
+        });
+        if (usageFilterState.trim()) params.set('q', usageFilterState.trim());
+
+        // If we have a cursor from previous page load
+        if (usagePaginationCursor) {
+            params.set('before_id', usagePaginationCursor.before_id);
+            if (usagePaginationCursor.before_ts) params.set('before_ts', usagePaginationCursor.before_ts);
+        }
+
+        // Fetch summary in parallel
+        const summaryParams = new URLSearchParams({
+            start: start.toISOString(),
+            end: end.toISOString(),
+            timeframe: usageTimeframe,
+        });
+        if (usageFilterState.trim()) summaryParams.set('q', usageFilterState.trim());
+        if (usageOpenFilterCol) {
+            // Column filters are local — no backend param needed
+        }
+
+        const [pageRes, summaryRes] = await Promise.all([
+            fetch('/api/observability/usage?' + params.toString()),
+            fetch('/api/observability/usage/summary?' + summaryParams.toString()),
+        ]);
+
+        const pageData = await pageRes.json();
+        const summaryData = await summaryRes.json();
+
+        const entries = Array.isArray(pageData) ? pageData : (pageData && pageData.entries ? pageData.entries : []);
+        usageTotalCount = pageData.total || 0;
+        usagePaginationCursor = pageData.next_before_id !== undefined
+            ? { before_id: pageData.next_before_id, before_ts: pageData.next_before_ts }
+            : null;
+
+        // Append new page entries to state (don't lose old page)
+        usageDataState = usageDataState.concat(entries);
+
+        usageSummaryState = summaryData || {};
         usageRenderLimit = 500;
         renderUsageTable();
     } catch (e) {
@@ -6731,10 +6819,9 @@ async function loadUsageData() {
     }
 }
 
-// "Load 500 more" handler for the usage table — grows usageRenderLimit by 500.
+// "Load 500 more" handler — fetches next keyset page and appends.
 function loadMoreUsageRows() {
-    usageRenderLimit += 500;
-    renderUsageTable();
+    loadUsageData();
 }
 
 function toggleUsageCol(idx) {
@@ -6801,14 +6888,38 @@ function renderUsageTable() {
     if (!container) return;
 
     const filteredData = _filterUsageData();
-    const totalRequests = filteredData.length;
-    const totalInput = filteredData.reduce((s, r) => s + _usageTokenIn(r), 0);
-    const totalOutput = filteredData.reduce((s, r) => s + (Number(r.out) || 0), 0);
-    const totalCost = filteredData.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+    // Server-side totals from summary (accurate beyond loaded page).
+    // Fall back to client aggregation for tiny datasets without summary.
+    const totals = usageSummaryState?.totals || {};
+    let sRequests = 0, sInput = 0, sOutput = 0, sCost = 0;
+    if (Object.keys(totals).length > 0) {
+        sRequests = totals.requests || 0;
+        sInput = (totals.in_cached || 0) + (totals.cache_write_tokens || 0) + (totals.in_uncached || 0);
+        sOutput = totals.out || 0;
+        sCost = totals.cost || 0;
+    } else {
+        sRequests = filteredData.length;
+        sInput = filteredData.reduce((s, r) => s + _usageTokenIn(r), 0);
+        sOutput = filteredData.reduce((s, r) => s + (Number(r.out) || 0), 0);
+        sCost = filteredData.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+    }
     const [effectiveStart, effectiveEnd] = _usageEffectiveRange();
+    const loadedCount = usageDataState.length;
 
     const modeButtons = ['token', 'cost', 'pricing'].map(mode => `<button class="btn ${usageViewMode === mode ? 'btn-primary' : 'btn-outline'}" style="padding:7px 14px;font-size:12px;font-weight:800;letter-spacing:.04em;" onclick="setUsageViewMode('${mode}')">${mode.toUpperCase()}</button>`).join('');
     const timeframeButtons = USAGE_TIMEFRAMES.map(key => `<button class="btn ${usageTimeframe === key ? 'btn-primary' : 'btn-outline'}" style="padding:7px 12px;font-size:12px;font-weight:800;" onclick="setUsageTimeframe('${key}')">${USAGE_TIMEFRAME_LABELS[key]}</button>`).join('');
+
+    // Build provider/model/bucket data from summary or loaded rows.
+    let providerGraphData, providerPieData, chartData;
+    if (usageSummaryState && !filteredData.length) {
+        providerGraphData = usageSummaryState.providers || [];
+        providerPieData = usageSummaryState.models || [];
+        chartData = usageSummaryState.buckets || [];
+    } else {
+        providerGraphData = _buildProviderGraphData(filteredData);
+        providerPieData = _buildProviderGraphData(filteredData);
+        chartData = _consumeBucketsForChart(filteredData);
+    }
 
     let html = `<div class="settings-section">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:16px;flex-wrap:wrap;">
@@ -6822,18 +6933,18 @@ function renderUsageTable() {
     }
 
     html += `<div style="display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:14px;margin-bottom:18px;">
-        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);"><div style="font-size:11px;font-weight:800;color:var(--text-muted);">TOTAL REQUESTS</div><div style="font-size:25px;font-weight:900;">${totalRequests.toLocaleString()}</div></div>
-        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);"><div style="font-size:11px;font-weight:800;color:var(--text-muted);">TOTAL INPUT TOKENS</div><div style="font-size:25px;font-weight:900;color:#f97316;">${totalInput.toLocaleString()}</div></div>
-        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);"><div style="font-size:11px;font-weight:800;color:var(--text-muted);">OUTPUT TOKENS</div><div style="font-size:25px;font-weight:900;color:#10b981;">${totalOutput.toLocaleString()}</div></div>
-        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);"><div style="font-size:11px;font-weight:800;color:var(--text-muted);">EST. COST</div><div style="font-size:25px;font-weight:900;color:#f59e0b;">${_fmtCost(totalCost)}</div></div>
+        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);"><div style="font-size:11px;font-weight:800;color:var(--text-muted);">TOTAL REQUESTS</div><div style="font-size:25px;font-weight:900;">${sRequests.toLocaleString()}</div></div>
+        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);"><div style="font-size:11px;font-weight:800;color:var(--text-muted);">TOTAL INPUT TOKENS</div><div style="font-size:25px;font-weight:900;color:#f97316;">${sInput.toLocaleString()}</div></div>
+        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);"><div style="font-size:11px;font-weight:800;color:var(--text-muted);">OUTPUT TOKENS</div><div style="font-size:25px;font-weight:900;color:#10b981;">${sOutput.toLocaleString()}</div></div>
+        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);"><div style="font-size:11px;font-weight:800;color:var(--text-muted);">EST. COST</div><div style="font-size:25px;font-weight:900;color:#f59e0b;">${_fmtCost(sCost)}</div></div>
     </div>
 
     <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;margin-bottom:18px;align-items:stretch;">
-        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:18px;padding:16px;box-shadow:0 16px 40px rgba(15,23,42,.06);height:430px;display:flex;flex-direction:column;min-width:0;"><div style="font-size:13px;font-weight:900;margin-bottom:10px;">Provider Graph</div><div style="flex:1;min-height:0;">${renderProviderGraphSVG(filteredData)}</div></div>
-        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:18px;padding:16px;box-shadow:0 16px 40px rgba(15,23,42,.06);height:430px;display:flex;flex-direction:column;min-width:0;"><div style="font-size:13px;font-weight:900;margin-bottom:10px;text-align:center;">Provider Share</div><div style="flex:1;min-height:0;display:flex;align-items:stretch;justify-content:center;">${renderProviderSharePie(filteredData)}</div></div>
+        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:18px;padding:16px;box-shadow:0 16px 40px rgba(15,23,42,.06);height:430px;display:flex;flex-direction:column;min-width:0;"><div style="font-size:13px;font-weight:900;margin-bottom:10px;">Provider Graph</div><div style="flex:1;min-height:0;">${usageSummaryState && !filteredData.length ? renderProviderGraphSVG(usageSummaryState.providers || []) : renderProviderGraphSVG(filteredData)}</div></div>
+        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:18px;padding:16px;box-shadow:0 16px 40px rgba(15,23,42,.06);height:430px;display:flex;flex-direction:column;min-width:0;"><div style="font-size:13px;font-weight:900;margin-bottom:10px;text-align:center;">Provider Share</div><div style="flex:1;min-height:0;display:flex;align-items:stretch;justify-content:center;">${usageSummaryState && !filteredData.length ? renderProviderSharePie(usageSummaryState.providers || []) : renderProviderSharePie(filteredData)}</div></div>
     </div>
 
-    <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:18px;padding:16px;box-shadow:0 16px 40px rgba(15,23,42,.06);margin-bottom:18px;">${renderConsumptionChart(filteredData)}</div>
+    <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:18px;padding:16px;box-shadow:0 16px 40px rgba(15,23,42,.06);margin-bottom:18px;">${usageSummaryState && !filteredData.length ? renderConsumptionChartFromBuckets(usageSummaryState.buckets || []) : renderConsumptionChart(filteredData)}</div>
 
     <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:18px;padding:16px;box-shadow:0 16px 40px rgba(15,23,42,.06);">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
@@ -6878,7 +6989,12 @@ function renderUsageTable() {
             </td></tr>`;
         }
     }
-    html += `</tbody></table></div></div>`;
+    // Row count label + column filter note
+    html += `</tbody></table>
+        <div style="margin-top:10px;font-size:11px;color:var(--text-muted);font-weight:600;">
+            ${sRequests.toLocaleString()} matching requests · showing ${loadedCount.toLocaleString()} loaded · column filters apply to loaded rows only
+        </div>
+    </div></div>`;
     container.innerHTML = html;
 }
 

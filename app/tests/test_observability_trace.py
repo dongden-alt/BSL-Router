@@ -146,6 +146,34 @@ def test_usage_stats_persisted_to_file(capsys):
     assert last["cost"] is not None
 
 
+def test_log_request_success_writes_to_sqlite(tmp_path, monkeypatch):
+    """A successful 200 MUST write a usage row into the SQLite store."""
+    db_path = str(tmp_path / "usage.sqlite3")
+    monkeypatch.setattr(obs, "usage_db_path", db_path)
+    obs.init_usage_store()
+
+    obs.log_request(
+        provider="vietapi",
+        model="coder-2",
+        status=200,
+        ttft=0.1,
+        in_tokens=100,
+        out_tokens=50,
+        cached_tokens=10,
+        config={},
+        total_time=1.0,
+        request_id="req_sqlite_test",
+        client="anthropic",
+        stream=False,
+    )
+
+    result = obs.query_usage_events()
+    assert result["total"] >= 1
+    assert any(e.get("provider") == "vietapi" for e in result["entries"])
+    assert any(e.get("model") == "coder-2" for e in result["entries"])
+    assert any(e.get("out") == 50 for e in result["entries"])
+
+
 def test_console_logs_persisted_to_file(capsys):
     obs.log_request_start(
         provider="vietapi",
