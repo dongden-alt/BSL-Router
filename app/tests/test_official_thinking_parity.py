@@ -164,3 +164,132 @@ def test_grok45_strips_incompatible_params():
 def test_grok420_multi_agent_xhigh_retained():
     out, _ = resolve_thinking(_payload(), "xai/grok-4.20-multi-agent", "xhigh")
     assert out.get("reasoning_effort") == "xhigh"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Hunyuan Hy3 — official sampling defaults (fill-when-absent)
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_hunyuan_fills_official_sampling_when_absent():
+    out, prov = resolve_thinking(_payload(), "tencent/hunyuan-hy3", "high")
+    assert out.get("temperature") == 0.9
+    assert out.get("top_p") == 1.0
+    assert any(r.rule == "official_sampling_defaults" for r in prov.records), (
+        f"missing official_sampling_defaults provenance: {prov.summary()}"
+    )
+
+
+def test_hunyuan_never_overrides_client_temperature():
+    out, _ = resolve_thinking(
+        _payload(temperature=0.3),
+        "tencent/hunyuan-hy3",
+        "high",
+    )
+    assert out.get("temperature") == 0.3
+    # top_p still filled when absent
+    assert out.get("top_p") == 1.0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Muse Spark 1.1 — thinking + output_config.effort
+# ─────────────────────────────────────────────────────────────────────────
+
+_MUSE11 = "meta/muse-spark-1.1"
+
+
+@pytest.mark.parametrize("effort", ["auto", "enable", ""])
+def test_muse11_auto_enable_adaptive_only(effort):
+    out, _ = resolve_thinking(_payload(), _MUSE11, effort)
+    assert out.get("thinking") == {"type": "adaptive"}
+    assert "output_config" not in out
+    assert "reasoning_effort" not in out
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh"])
+def test_muse11_explicit_depth_sets_output_config(effort):
+    out, _ = resolve_thinking(_payload(), _MUSE11, effort)
+    assert out.get("thinking") == {"type": "adaptive"}
+    assert out.get("output_config") == {"effort": effort}
+    assert "reasoning_effort" not in out
+
+
+@pytest.mark.parametrize("effort", ["off", "none", "minimal", "disable"])
+def test_muse11_off_coerced_to_low(effort):
+    out, prov = resolve_thinking(_payload(), _MUSE11, effort)
+    assert out.get("thinking") == {"type": "adaptive"}
+    assert out.get("output_config") == {"effort": "low"}
+    assert any(r.rule == "off_coerced_to_low" for r in prov.records), prov.summary()
+
+
+@pytest.mark.parametrize("effort", ["max", "ultra", "garbage", "banana"])
+def test_muse11_unknown_coerces_to_xhigh(effort):
+    out, _ = resolve_thinking(_payload(), _MUSE11, effort)
+    assert out.get("thinking") == {"type": "adaptive"}
+    assert out.get("output_config") == {"effort": "xhigh"}
+
+
+def test_muse11_budget_tokens_compat_with_depth():
+    src = _payload(thinking={"type": "enabled", "budget_tokens": 2048})
+    out, _ = resolve_thinking(src, _MUSE11, "high")
+    assert out.get("thinking") == {"type": "enabled", "budget_tokens": 2048}
+    assert out.get("output_config") == {"effort": "high"}
+
+
+def test_muse11_display_passthrough():
+    src = _payload(display="summarized")
+    out, _ = resolve_thinking(src, _MUSE11, "high")
+    assert out.get("display") == "summarized"
+    assert out.get("thinking") == {"type": "adaptive"}
+    assert out.get("output_config") == {"effort": "high"}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Muse Spark 1.2 — reasoning_effort OpenAI-compatible wire
+# ─────────────────────────────────────────────────────────────────────────
+
+_MUSE12 = "meta/muse-spark-1.2"
+
+
+@pytest.mark.parametrize("effort", ["auto", ""])
+def test_muse12_auto_omits_reasoning_effort(effort):
+    out, _ = resolve_thinking(_payload(), _MUSE12, effort)
+    assert "reasoning_effort" not in out
+
+
+@pytest.mark.parametrize("effort", [
+    "minimal", "low", "medium", "high", "xhigh", "ultra",
+])
+def test_muse12_vocab_passthrough(effort):
+    out, _ = resolve_thinking(_payload(), _MUSE12, effort)
+    assert out.get("reasoning_effort") == effort
+
+
+@pytest.mark.parametrize("effort", ["none", "off", "disable"])
+def test_muse12_off_coerced_to_minimal(effort):
+    out, prov = resolve_thinking(_payload(), _MUSE12, effort)
+    assert out.get("reasoning_effort") == "minimal"
+    assert any(r.rule == "off_coerced_to_minimal" for r in prov.records), prov.summary()
+
+
+def test_muse12_max_to_xhigh():
+    out, _ = resolve_thinking(_payload(), _MUSE12, "max")
+    assert out.get("reasoning_effort") == "xhigh"
+
+
+def test_muse12_garbage_to_xhigh():
+    out, _ = resolve_thinking(_payload(), _MUSE12, "banana")
+    assert out.get("reasoning_effort") == "xhigh"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Unversioned muse-spark → 1.2 wire (latest default)
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_muse_unversioned_behaves_as_12_none_to_minimal():
+    out, _ = resolve_thinking(_payload(), "meta/muse-spark", "none")
+    assert out.get("reasoning_effort") == "minimal"
+
+
+def test_muse_unversioned_behaves_as_12_auto_omitted():
+    out, _ = resolve_thinking(_payload(), "meta/muse-spark", "auto")
+    assert "reasoning_effort" not in out

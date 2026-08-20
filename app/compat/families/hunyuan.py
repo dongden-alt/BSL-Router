@@ -6,8 +6,11 @@ with an OpenAI-compatible API. Reasoning is controlled via `reasoning_effort`
 nested inside `chat_template_kwargs` — NOT as a top-level parameter.
 
 Effort vocabulary: `no_think` (default, direct response), `low` (light
-reasoning), `high` (deep chain-of-thought). `medium` and `max` are NOT
-valid and must be coerced.
+reasoning), `high` (deep chain-of-thought / complex logic/math/coding).
+`medium` and `max` are NOT valid and must be coerced.
+
+Recommended generation settings (official, fill-when-absent only):
+    temperature=0.9, top_p=1.0
 
 Per the official Tencent HuggingFace model card, the canonical invocation is:
     extra_body={"chat_template_kwargs": {"reasoning_effort": "no_think"}}
@@ -26,13 +29,15 @@ tham số top-level.
 Bộ từ vựng: `no_think` (mặc định, trả lời trực tiếp), `low` (suy luận nhẹ),
 `high` (deep chain-of-thought). `medium` và `max` không hợp lệ và phải
 chuyển đổi.
+
+Cài đặt sinh token khuyến nghị (chính thức, chỉ điền khi vắng):
+    temperature=0.9, top_p=1.0
 """
 from __future__ import annotations
 
 from typing import Any, Dict
 
 from app.compat.families._base import (
-    OFF_VALUES,
     Contract,
     Provenance,
     ThinkingContext,
@@ -42,6 +47,13 @@ SOURCE = "families/hunyuan.py"
 
 # Hy3 only accepts no_think, low, high (NO medium, NO max).
 _HY_VALID_EFFORTS = ("no_think", "low", "high")
+
+# Official recommended sampling defaults — fill only when the client/operator
+# left the key unset. Never override an explicit value.
+_OFFICIAL_SAMPLING_DEFAULTS: Dict[str, Any] = {
+    "temperature": 0.9,
+    "top_p": 1.0,
+}
 
 
 def _coerce_effort(ctx: ThinkingContext) -> str:
@@ -79,6 +91,23 @@ def _apply(
     )
 
 
+def _sanitize(
+    payload: Dict[str, Any],
+    ctx: ThinkingContext,
+    prov: Provenance,
+    contract: Contract,
+) -> Dict[str, Any]:
+    """Fill official sampling defaults for keys the client left unset.
+
+    temperature=0.9 and top_p=1.0 are Tencent's recommended generation
+    settings. Never override operator/client-supplied values.
+    """
+    fills = {k: v for k, v in _OFFICIAL_SAMPLING_DEFAULTS.items() if k not in payload}
+    if fills:
+        payload = prov.apply(payload, contract, "official_sampling_defaults", fills)
+    return payload
+
+
 CONTRACTS = [
     Contract(
         id="hunyuan-hy3",
@@ -86,6 +115,7 @@ CONTRACTS = [
         priority=50,
         pattern=r"hunyuan|hy3",
         apply=_apply,
+        sanitize=_sanitize,
         # Send no_think even when thinking is off so reasoning is
         # explicitly disabled, not left to the model's default.
         always_applies=True,

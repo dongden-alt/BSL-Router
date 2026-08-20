@@ -330,18 +330,21 @@ def test_k3_coerces_medium_to_max(f_val):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DIVERGENCE 5 — Doubao/Hunyuan/Muse explicit disable for auto/off/none.
+# DIVERGENCE 5 — Doubao/Hunyuan/Muse OFF-path behavior (moved 2026-08-20).
 #
 # WHY LEGACY WAS WRONG:
 #   The legacy cascade (line 81) returned the payload UNCHANGED for
 #   thinking_suffix in ("auto", "none", "off", "") — i.e., it did NOT emit
 #   any reasoning/thinking field.  This left the model's default behavior
 #   in effect, which may or may not be what the user intended.
-#   The new contracts use always_applies=True and map OFF_VALUES to
-#   explicit "disable" tokens (Doubao: minimal, Hunyuan: no_think, Muse:
-#   minimal) so reasoning is EXPLICITLY disabled, not left to the model's
-#   default.  This is the same pattern as Gemini: transport-dependent,
-#   explicit intent > implicit default.
+#
+# CURRENT (official 2026-08-20 Muse split):
+#   Doubao: auto/off/none/'' -> reasoning_effort=minimal (unchanged).
+#   Hunyuan: auto/off/none/'' -> chat_template_kwargs.reasoning_effort=no_think.
+#   Muse 1.1: auto/'' -> thinking adaptive only (model default depth);
+#             none/off -> adaptive + output_config.effort=low (off unsupported).
+#   Muse 1.2: auto/'' -> OMIT reasoning_effort (model default xhigh);
+#             none/off -> reasoning_effort=minimal (none is HTTP 400 upstream).
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -352,11 +355,8 @@ def test_k3_coerces_medium_to_max(f_val):
     "iamhc/hy3",
     "ltn-ai/tencent/hy3",
     "a6api/hy3",
-    "ltn-ai/meta/muse-spark-1.1",
-    "ltn-ai/meta/muse-spark-1.2",
-    "ltn-ai/meta/muse-spark-1.2-contributor",
 ])
-def test_doubao_hunyuan_muse_auto_explicit_disable(f_val, effort):
+def test_doubao_hunyuan_auto_explicit_disable(f_val, effort):
     """auto/off/none/'' -> explicit disable (minimal/no_think), not legacy no-op."""
     out, prov = resolve_thinking(_payload(), f_val, effort)
 
@@ -366,11 +366,57 @@ def test_doubao_hunyuan_muse_auto_explicit_disable(f_val, effort):
         # Hunyuan uses chat_template_kwargs.reasoning_effort
         chat_kwargs = out.get("chat_template_kwargs", {})
         assert chat_kwargs.get("reasoning_effort") == "no_think", f"{f_val} effort={effort!r}: expected no_think"
-    elif "muse" in f_val:
-        assert out.get("reasoning_effort") == "minimal", f"{f_val} effort={effort!r}: expected minimal"
 
     # Provenance recorded
     assert prov.records, f"{f_val} effort={effort!r}: no provenance for explicit disable"
+
+
+@pytest.mark.parametrize("effort", ["auto", ""])
+@pytest.mark.parametrize("f_val", [
+    "ltn-ai/meta/muse-spark-1.1",
+])
+def test_muse11_auto_adaptive_no_output_config(f_val, effort):
+    """Muse 1.1 auto/'' -> thinking adaptive, no output_config (model default depth)."""
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    assert out.get("thinking") == {"type": "adaptive"}
+    assert "output_config" not in out
+    assert "reasoning_effort" not in out
+    assert prov.records
+
+
+@pytest.mark.parametrize("effort", ["none", "off"])
+@pytest.mark.parametrize("f_val", [
+    "ltn-ai/meta/muse-spark-1.1",
+])
+def test_muse11_off_to_low(f_val, effort):
+    """Muse 1.1 none/off -> adaptive + output_config.effort=low (disabling unsupported)."""
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    assert out.get("thinking") == {"type": "adaptive"}
+    assert out.get("output_config") == {"effort": "low"}
+    assert any(r.rule == "off_coerced_to_low" for r in prov.records)
+
+
+@pytest.mark.parametrize("effort", ["auto", ""])
+@pytest.mark.parametrize("f_val", [
+    "ltn-ai/meta/muse-spark-1.2",
+    "ltn-ai/meta/muse-spark-1.2-contributor",
+])
+def test_muse12_auto_omits_effort(f_val, effort):
+    """Muse 1.2 auto/'' -> omit reasoning_effort (model default xhigh)."""
+    out, _prov = resolve_thinking(_payload(), f_val, effort)
+    assert "reasoning_effort" not in out
+
+
+@pytest.mark.parametrize("effort", ["none", "off"])
+@pytest.mark.parametrize("f_val", [
+    "ltn-ai/meta/muse-spark-1.2",
+    "ltn-ai/meta/muse-spark-1.2-contributor",
+])
+def test_muse12_off_to_minimal(f_val, effort):
+    """Muse 1.2 none/off -> reasoning_effort=minimal (400 avoidance)."""
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    assert out.get("reasoning_effort") == "minimal"
+    assert any(r.rule == "off_coerced_to_minimal" for r in prov.records)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -406,13 +452,36 @@ def test_hunyuan_explicit_effort_coerces(f_val, effort, expected):
     assert prov.records
 
 
-@pytest.mark.parametrize("f_val,effort,expected", [
+# Moved 2026-08-20: Muse 1.1 no longer emits top-level reasoning_effort.
+# Explicit depths land in output_config.effort; enable keeps adaptive only.
+@pytest.mark.parametrize("f_val,effort,expected_oc", [
     ("ltn-ai/meta/muse-spark-1.1", "high", "high"),
     ("ltn-ai/meta/muse-spark-1.1", "max", "xhigh"),
-    ("ltn-ai/meta/muse-spark-1.1", "enable", "xhigh"),
     ("ltn-ai/meta/muse-spark-1.1", "xhigh", "xhigh"),
 ])
-def test_muse_explicit_effort_coerces(f_val, effort, expected):
+def test_muse11_explicit_effort_via_output_config(f_val, effort, expected_oc):
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    assert out.get("thinking") == {"type": "adaptive"}
+    assert out.get("output_config") == {"effort": expected_oc}
+    assert "reasoning_effort" not in out
+    assert prov.records
+
+
+def test_muse11_enable_adaptive_only_no_output_config():
+    out, prov = resolve_thinking(_payload(), "ltn-ai/meta/muse-spark-1.1", "enable")
+    assert out.get("thinking") == {"type": "adaptive"}
+    assert "output_config" not in out
+    assert "reasoning_effort" not in out
+    assert prov.records
+
+
+@pytest.mark.parametrize("f_val,effort,expected", [
+    ("ltn-ai/meta/muse-spark-1.2", "high", "high"),
+    ("ltn-ai/meta/muse-spark-1.2", "max", "xhigh"),
+    ("ltn-ai/meta/muse-spark-1.2", "xhigh", "xhigh"),
+    ("ltn-ai/meta/muse-spark-1.2", "ultra", "ultra"),
+])
+def test_muse12_explicit_effort_coerces(f_val, effort, expected):
     out, prov = resolve_thinking(_payload(), f_val, effort)
     assert out.get("reasoning_effort") == expected
     assert prov.records

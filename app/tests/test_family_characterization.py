@@ -285,6 +285,8 @@ def test_no_contract_writes_outside_owned_keys():
         "temperature", "top_p", "top_k", "min_p",
         "presence_penalty", "repetition_penalty",
     }
+    # Official Hunyuan Hy3 sampling defaults (temperature=0.9, top_p=1.0).
+    hunyuan_sampling_fills = {"temperature", "top_p"}
     base = _base_payload()
 
     for provider_name, model_id in _MODEL_PAIRS:
@@ -302,6 +304,8 @@ def test_no_contract_writes_outside_owned_keys():
             row_allowed = set(allowed)
             if re.search(r"qwen(?!coder)", f_val):
                 row_allowed |= qwen_sampling_fills
+            if re.search(r"hunyuan|hy3", f_val):
+                row_allowed |= hunyuan_sampling_fills
             unexpected = written - row_allowed
             assert not unexpected, (
                 f"{f_val} (effort={effort}) wrote unowned keys: {unexpected}"
