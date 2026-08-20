@@ -1527,6 +1527,11 @@ async def lifespan(app: FastAPI):
     config = cs_get_config()
     global http_client
     load_config()
+    # ── SQLite usage store init ────────────────────────────────────────────────
+    # Create usage_events tables + one-shot JSONL→SQLite migration.
+    # Without this the Usage tab reads an empty DB (table never created) while
+    # append_usage_event() fails silently (fail-open design). Idempotent.
+    obs.init_usage_store()
     # â”€â”€ AEP ephemeral ban restore (Part 2b) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Re-hydrate still-live short cooldowns from the sidecar so a router restart
     # does not immediately re-select a leaf that was benched seconds earlier.

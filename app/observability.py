@@ -222,9 +222,16 @@ def _migrate_jsonl_once():
     try:
         with _usage_conn() as conn:
             existing = _meta_get(conn, "jsonl_migrated")
-            expected_marker = json.dumps({"path": src, "fingerprint": str(fp)})
-            if existing == expected_marker:
-                return  # Already migrated this exact file.
+            if existing is not None and existing != "none":
+                # One-shot guard: the JSONL archive keeps growing (log_request
+                # appends to it on every request), so a fingerprint match is
+                # never stable. Once a real import has completed (marker is a
+                # fingerprint JSON, not the "none" placeholder), skip re-import
+                # to avoid duplicating history on every restart. New events are
+                # written to SQLite live, so the growing tail needs no backfill.
+                # The "none" placeholder (JSONL absent at init) still permits a
+                # first-time import once the archive appears.
+                return
             count = 0
             with open(src, "r", encoding="utf-8") as fh:
                 for line in fh:
