@@ -19,6 +19,9 @@ import app.main as main
 
 
 EXPECTED_AG_SLOTS = (
+    "gemini-3.6-flash-high",
+    "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-low",
     "gemini-3.5-flash-medium",
     "gemini-3.5-flash-high",
     "gemini-3.5-flash-low",
@@ -29,6 +32,9 @@ EXPECTED_AG_SLOTS = (
     "gpt-oss-120b-medium",
 )
 EXPECTED_AG_LABELS = (
+    "Gemini 3.6 Flash (High)",
+    "Gemini 3.6 Flash (Medium)",
+    "Gemini 3.6 Flash (Low)",
     "Gemini 3.5 Flash (Medium)",
     "Gemini 3.5 Flash (High)",
     "Gemini 3.5 Flash (Low)",

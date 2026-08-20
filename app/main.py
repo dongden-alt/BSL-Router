@@ -341,7 +341,7 @@ def _ladder_deadline(attempt: int) -> float:
     return STREAM_DEADLINE_LADDER[min(attempt, len(STREAM_DEADLINE_LADDER) - 1)]
 
 
-_RECOVERABLE = {403, 404, 408, 429, 500, 502, 503, 504, 524, 525, 526}  # HTTP status codes that trigger combo/chain advance
+_RECOVERABLE = {400, 401, 403, 404, 405, 408, 409, 413, 422, 429, 500, 502, 503, 504, 524, 525, 526}  # HTTP status codes that trigger combo/chain advance
 
 _BLACKSAND_MODEL_ALIASES = {
     "blacksand-chat": "blacksand-chat",
@@ -538,6 +538,9 @@ def load_config():
 # path instead of falling through BSL's global aliases or compatibility normalizer.
 # This order mirrors the Antigravity IDE 2.1.1 model menu exactly.
 ANTIGRAVITY_INTEGRATION_SLOTS = (
+    "gemini-3.6-flash-high",
+    "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-low",
     "gemini-3.5-flash-medium",
     "gemini-3.5-flash-high",
     "gemini-3.5-flash-low",
@@ -2451,7 +2454,7 @@ async def get_logs(limit: int = 500, offset: int = 0):
 
 @app.get("/api/observability/artifacts")
 async def get_artifacts():
-    return JSONResponse(obs.error_reports)
+    return JSONResponse(getattr(obs, "error_reports", []))
 
 @app.get("/api/observability/artifact/{filename}")
 async def get_artifact(filename: str):

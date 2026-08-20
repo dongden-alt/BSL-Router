@@ -3006,6 +3006,9 @@ function renderEndpointTab() {
 
 
 const AG_SLOTS=[
+    {key:'gemini-3.6-flash-high',label:'Gemini 3.6 Flash (High)'},
+    {key:'gemini-3.6-flash-medium',label:'Gemini 3.6 Flash (Medium)'},
+    {key:'gemini-3.6-flash-low',label:'Gemini 3.6 Flash (Low)'},
     {key:'gemini-3.5-flash-medium',label:'Gemini 3.5 Flash (Medium)'},
     {key:'gemini-3.5-flash-high',label:'Gemini 3.5 Flash (High)'},
     {key:'gemini-3.5-flash-low',label:'Gemini 3.5 Flash (Low)'},

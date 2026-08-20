@@ -712,6 +712,9 @@ _terminal_end_registry: dict = {}
 # Ensure artifacts directory exists
 os.makedirs("artifacts/error_reports", exist_ok=True)
 
+# Error reports produced by run_error_analysis; consumed by /api/observability/artifacts.
+error_reports: list = []
+
 def _load_model_costs(config: dict) -> dict:
     """Extract $/1M token rates: config.yaml first, canonical registry fallback.
 
@@ -986,6 +989,21 @@ def log_request(
             }
         except Exception:
             pass
+
+    # A terminal 200 with zero input AND zero output tokens is an empty
+    # completion (upstream died before producing anything), not a success.
+    # Reclassify so error prevention / circuit breaker / usage see an error.
+    if (
+        event == "end"
+        and status == 200
+        and in_tokens == 0
+        and out_tokens == 0
+        and error_msg is None
+    ):
+        status = 502
+        error_msg = "empty"
+        log_entry["status"] = status
+        log_entry["error"] = error_msg
 
     # A streaming request can reach log_request from both an inner generator
     # finally block and an outer cancellation guard. Keep one visible END row.
