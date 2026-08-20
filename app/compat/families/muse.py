@@ -2,12 +2,14 @@
 Meta Muse Spark family contract / Hợp đồng gia đình Meta Muse Spark.
 
 Muse Spark is Meta's multimodal reasoning model (1M context). Wire shape
-diverges by version — detection is from `f_val`:
+diverges by version — detection parses a numeric version from `f_val`:
 
-  * contains ``1.1``  → Muse Spark 1.1 wire
-  * contains ``1.2``  → Muse Spark 1.2 wire
-  * unversioned bare ``muse-spark`` → **1.2** (latest default; document
-    this so a future 1.3 bump can re-point the fallback deliberately)
+  * version ``< 1.1`` (e.g. 1.0, 0.9) → Muse Spark **1.1** wire
+  * version ``== 1.1``                 → Muse Spark **1.1** wire
+  * version ``== 1.2``                 → Muse Spark **1.2** wire
+  * version ``> 1.2`` (e.g. 1.3, 2.0)  → Muse Spark **1.2** wire
+    until the contract is updated for a newer wire
+  * unversioned bare ``muse-spark``    → **1.2** (latest default)
 
 Muse Spark 1.1 (Meta Model API)
 -------------------------------
@@ -48,12 +50,13 @@ Contract identity (id/priority/pattern/always_applies) is shared across
 both wires — only the apply branch diverges.
 
 Muse Spark là model reasoning đa phương thức của Meta (cửa sổ 1M token).
-Hình dạng wire phụ thuộc phiên bản (1.1 vs 1.2); bare ``muse-spark``
-mặc định theo wire 1.2 (bản mới nhất).
+Hình dạng wire phụ thuộc phiên bản số (≤1.1 → wire 1.1; ≥1.2 → wire 1.2);
+bare ``muse-spark`` mặc định theo wire 1.2 (bản mới nhất).
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+import re
+from typing import Any, Dict, Optional, Tuple
 
 from app.compat.families._base import (
     Contract,
@@ -72,17 +75,38 @@ _OFF_WORDS = frozenset({"none", "off", "disable"})
 # 1.1 enable-like words that keep model-default depth (no output_config).
 _MUSE11_ENABLE_LIKE = frozenset({"enable", "adaptive", "auto", ""})
 
+# Parse "muse-spark-1.2", "muse_spark_1.1", "Muse Spark 1.0", etc.
+_MUSE_VERSION_RE = re.compile(
+    r"muse[\-_\s]?spark[\-_\s]?(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def _parse_muse_version(f_val: str) -> Optional[Tuple[int, int]]:
+    """Extract (major, minor) from f_val, or None if unversioned/unparseable."""
+    m = _MUSE_VERSION_RE.search(f_val or "")
+    if not m:
+        return None
+    raw = m.group(1)
+    parts = raw.split(".")
+    major = int(parts[0])
+    minor = int(parts[1]) if len(parts) > 1 else 0
+    return (major, minor)
+
 
 def _wire_version(f_val: str) -> str:
-    """Return ``1.1`` or ``1.2`` from f_val.
+    """Return ``1.1`` or ``1.2`` from f_val via numeric version parse.
 
-    Unversioned bare muse-spark defaults to 1.2 (latest). A future 1.3 must
-    update this deliberately rather than inherit an accidental 1.1 match.
+    Routing (tuple compare avoids float equality pitfalls):
+      * no version parsed           → 1.2 (unversioned latest default)
+      * version <= 1.1              → 1.1  (includes pre-1.1 like 1.0)
+      * version >= 1.2              → 1.2  (includes post-1.2 until contract update)
     """
-    fv = (f_val or "").lower()
-    if "1.1" in fv:
+    ver = _parse_muse_version(f_val)
+    if ver is None:
+        return "1.2"
+    if ver <= (1, 1):
         return "1.1"
-    # contains 1.2, or unversioned → 1.2
     return "1.2"
 
 

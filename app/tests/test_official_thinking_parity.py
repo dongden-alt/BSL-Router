@@ -293,3 +293,38 @@ def test_muse_unversioned_behaves_as_12_none_to_minimal():
 def test_muse_unversioned_behaves_as_12_auto_omitted():
     out, _ = resolve_thinking(_payload(), "meta/muse-spark", "auto")
     assert "reasoning_effort" not in out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Muse Spark numeric version routing (<1.1 → 1.1 wire; >1.2 → 1.2 wire)
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_muse_spark_10_behaves_as_11_high_effort():
+    """muse-spark-1.0 is pre-1.1 → 1.1 wire: high → thinking adaptive + effort."""
+    out, _ = resolve_thinking(_payload(), "meta/muse-spark-1.0", "high")
+    assert out.get("thinking") == {"type": "adaptive"}
+    assert out.get("output_config") == {"effort": "high"}
+    assert "reasoning_effort" not in out
+
+
+def test_muse_spark_13_behaves_as_12_none_to_minimal():
+    """muse-spark-1.3 is post-1.2 → 1.2 wire until contract update."""
+    out, _ = resolve_thinking(_payload(), "meta/muse-spark-1.3", "none")
+    assert out.get("reasoning_effort") == "minimal"
+    assert "output_config" not in out
+
+
+def test_muse_spark_13_behaves_as_12_auto_omitted():
+    out, _ = resolve_thinking(_payload(), "meta/muse-spark-1.3", "auto")
+    assert "reasoning_effort" not in out
+
+
+def test_muse_spark_20_behaves_as_12_none_to_minimal():
+    """muse-spark-2.0 is post-1.2 → 1.2 wire until contract update."""
+    out, _ = resolve_thinking(_payload(), "meta/muse-spark-2.0", "none")
+    assert out.get("reasoning_effort") == "minimal"
+
+
+def test_muse_spark_20_behaves_as_12_auto_omitted():
+    out, _ = resolve_thinking(_payload(), "meta/muse-spark-2.0", "auto")
+    assert "reasoning_effort" not in out
