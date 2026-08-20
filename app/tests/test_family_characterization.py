@@ -269,10 +269,22 @@ def test_no_contract_writes_outside_owned_keys():
 
     max_tokens is the one deliberate exception: the Claude budget paths
     raise it to leave room for the reasoning budget.
+
+    Qwen official sampling parity (2026-08-20) is another deliberate
+    exception: families/qwen.py fills mode-specific defaults
+    (temperature/top_p/top_k/min_p/presence_penalty/repetition_penalty)
+    when absent. Those keys are sampling, not reasoning containers — lock
+    the fill set here so the ownership guard does not regress the parity.
+    See test_qwen_thinking_levels.py.
     """
     from app.compat.families._base import THINKING_PAYLOAD_KEYS
 
     allowed = set(THINKING_PAYLOAD_KEYS) | {"max_tokens", "includeThoughts"}
+    # Official Qwen sampling defaults filled when absent (thinking + instruct).
+    qwen_sampling_fills = {
+        "temperature", "top_p", "top_k", "min_p",
+        "presence_penalty", "repetition_penalty",
+    }
     base = _base_payload()
 
     for provider_name, model_id in _MODEL_PAIRS:
@@ -287,7 +299,10 @@ def test_no_contract_writes_outside_owned_keys():
             # Sampling-param strips are removals, not writes — allow them.
             removed = {k for k in changed if k not in after}
             written = changed - removed
-            unexpected = written - allowed
+            row_allowed = set(allowed)
+            if re.search(r"qwen(?!coder)", f_val):
+                row_allowed |= qwen_sampling_fills
+            unexpected = written - row_allowed
             assert not unexpected, (
                 f"{f_val} (effort={effort}) wrote unowned keys: {unexpected}"
             )

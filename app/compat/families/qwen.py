@@ -36,9 +36,27 @@ app/tests/test_qwen_thinking_levels.py:
      hybrid model.
 
 Qwen also REJECTS the GLM/DeepSeek-style `thinking` / `output_config` /
-`reasoning` containers with "Request body format invalid", and rejects the
-same sampling parameters as Kimi K3. Both strips are unconditional (they must
-run even when thinking is off), so they live in `sanitize`.
+`reasoning` containers with "Request body format invalid". Those strips are
+unconditional (they must run even when thinking is off), so they live in
+`sanitize`.
+
+Official sampling defaults (qwen3.8-max, 2026-08-20): the vendor now publishes
+temperature / top_p / top_k / min_p / presence_penalty / repetition_penalty as
+supported parameters with mode-specific defaults. The legacy unconditional
+strip of temperature/top_p/presence_penalty was replaced by fill-if-absent
+defaults — operator/client-set values are never overridden.
+
+  Thinking mode (enable_thinking is not False):
+      temperature=1.0, top_p=0.95, top_k=20, min_p=0.0,
+      presence_penalty=0.0, repetition_penalty=1.0
+  Instruct mode (enable_thinking is False):
+      temperature=0.7, top_p=0.80, top_k=20,
+      presence_penalty=1.5, repetition_penalty=1.0
+
+frequency_penalty and n remain stripped — not published as supported.
+
+`preserve_thinking` defaults to true on the vendor side and is preserved by
+passthrough (this contract never strips it).
 
 Note: Qwen ids also match the generic GLM/Chinese-model pattern, which is
 why this contract outranks it — previously guaranteed only by elif order.
@@ -78,8 +96,30 @@ _ENABLE_WORDS = ("enable", "enabled", "adaptive", "on", "true")
 _DISABLE_WORDS = ("off", "none", "false", "disable", "disabled")
 _UNSET_WORDS = ("", "auto")
 
+# ── Official sampling defaults (fill-if-absent; never override) ───────────
+# Thinking mode: enable_thinking is not False (True, or absent → model default on).
+_THINKING_SAMPLING_DEFAULTS: Dict[str, Any] = {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+}
+# Instruct mode: enable_thinking is False. No min_p in the published instruct set.
+_INSTRUCT_SAMPLING_DEFAULTS: Dict[str, Any] = {
+    "temperature": 0.7,
+    "top_p": 0.80,
+    "top_k": 20,
+    "presence_penalty": 1.5,
+    "repetition_penalty": 1.0,
+}
+
 # ── Payload hygiene (unconditional) ──────────────────────────────────────
-_FORBIDDEN_SAMPLING = ("temperature", "top_p", "presence_penalty", "frequency_penalty", "n")
+# Only params the vendor does NOT publish as supported. temperature/top_p/
+# presence_penalty used to live here; they are now filled from the official
+# sampling defaults above when absent.
+_FORBIDDEN_SAMPLING = ("frequency_penalty", "n")
 # Reasoning containers Qwen rejects outright.
 _FORBIDDEN_OBJECTS = ("thinking", "output_config", "reasoning")
 
@@ -179,6 +219,10 @@ def _sanitize(
     also has to police a `reasoning_effort` the CLIENT injected: an operator
     who never configured thinking can still receive a 400 if e.g. Claude Code
     forwards its own `reasoning_effort: high`.
+
+    After strips, fill official sampling defaults for keys that are still
+    absent. Never override operator/client-set values. Mode is thinking when
+    `enable_thinking` is not False; instruct when it is False.
     """
     removals: Dict[str, Any] = {k: None for k in _FORBIDDEN_SAMPLING}
     for key in _FORBIDDEN_OBJECTS:
@@ -204,6 +248,18 @@ def _sanitize(
                 "clamp_client_effort",
                 {"reasoning_effort": clamped},  # None removes it → model default
             )
+
+    # Official sampling defaults: fill only keys the client/operator left unset.
+    # Thinking mode when enable_thinking is not False (True or absent); instruct
+    # when the operator explicitly disabled thinking.
+    defaults = (
+        _INSTRUCT_SAMPLING_DEFAULTS
+        if payload.get("enable_thinking") is False
+        else _THINKING_SAMPLING_DEFAULTS
+    )
+    fills = {k: v for k, v in defaults.items() if k not in payload}
+    if fills:
+        payload = prov.apply(payload, contract, "official_sampling_defaults", fills)
 
     # Qwen3.8-Max sometimes generates prose like "Tool X does not exist"
     # instead of emitting structured tool_calls.  Inject a brief reminder

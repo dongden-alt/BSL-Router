@@ -185,32 +185,56 @@ def test_every_contract_has_a_conformance_row():
     )
 
 
-def test_qwen_and_k3_reject_sampling_params_even_when_thinking_off():
-    """Sanitization must not be gated on the thinking setting.
+def test_k3_rejects_sampling_params_even_when_thinking_off():
+    """K3 sanitization must not be gated on the thinking setting.
 
-    Regression guard: if these strips were ever moved into the effort-gated
+    Regression guard: if K3 strips were ever moved into the effort-gated
     apply path, an effort=off request would ship temperature to a model
     that rejects it with a 400.
+
+    Qwen NO LONGER shares this lock. Official qwen3.8-max sampling parity
+    (2026-08-20) replaced the unconditional temperature/top_p strip with
+    fill-if-absent mode defaults; see test_qwen_thinking_levels.py
+    (test_official_sampling_defaults_*, test_unpublished_sampling_params_still_stripped).
     """
-    for f_val in ("hcnsec-vip/Qwen3.7-Max", "moonshot/kimi-k3"):
-        payload = {
-            "model": "x", "messages": [], "max_tokens": 8192,
-            "temperature": 0.7, "top_p": 0.9, "n": 1,
-        }
-        out, _prov = resolve_thinking(payload, f_val, "off")
-        for banned in ("temperature", "top_p", "n"):
-            assert banned not in out, (
-                f"{f_val} with thinking=off still sent {banned} — would 400 upstream"
-            )
-        # K3 is a THINKING-ONLY model: it cannot disable reasoning, so even at
-        # 'off' it must carry an effort. Qwen is HYBRID: 'off' means off, so it
-        # must NOT inject an effort (injecting one was the defect being fixed).
-        if "kimi-k3" in f_val:
-            assert "reasoning_effort" in out, (
-                f"{f_val}: always-on model dropped reasoning_effort at off"
-            )
-        else:
-            assert "reasoning_effort" not in out, (
-                f"{f_val}: hybrid model injected reasoning_effort at off — "
-                "'off' would silently mean 'on'"
-            )
+    f_val = "moonshot/kimi-k3"
+    payload = {
+        "model": "x", "messages": [], "max_tokens": 8192,
+        "temperature": 0.7, "top_p": 0.9, "n": 1,
+    }
+    out, _prov = resolve_thinking(payload, f_val, "off")
+    for banned in ("temperature", "top_p", "n"):
+        assert banned not in out, (
+            f"{f_val} with thinking=off still sent {banned} — would 400 upstream"
+        )
+    # K3 is a THINKING-ONLY model: it cannot disable reasoning, so even at
+    # 'off' it must carry an effort.
+    assert "reasoning_effort" in out, (
+        f"{f_val}: always-on model dropped reasoning_effort at off"
+    )
+
+
+def test_qwen_off_keeps_published_sampling_strips_only_unpublished():
+    """Qwen hybrid off: keep published sampling, strip only frequency_penalty/n.
+
+    Moved out of the shared K3 strip lock after official sampling parity
+    (2026-08-20). temperature/top_p/presence_penalty are supported defaults;
+    operator values must not be stripped. Full default-fill coverage lives in
+    test_qwen_thinking_levels.py.
+    """
+    f_val = "hcnsec-vip/Qwen3.7-Max"
+    payload = {
+        "model": "x", "messages": [], "max_tokens": 8192,
+        "temperature": 0.7, "top_p": 0.9, "n": 1,
+        "frequency_penalty": 0.0,
+    }
+    out, _prov = resolve_thinking(payload, f_val, "off")
+    assert out.get("temperature") == 0.7
+    assert out.get("top_p") == 0.9
+    assert "n" not in out
+    assert "frequency_penalty" not in out
+    assert "reasoning_effort" not in out, (
+        f"{f_val}: hybrid model injected reasoning_effort at off — "
+        "'off' would silently mean 'on'"
+    )
+    assert out.get("enable_thinking") is False

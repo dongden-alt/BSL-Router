@@ -248,16 +248,87 @@ def test_client_supplied_valid_effort_survives():
 # Unconditional hygiene — must not regress while adding the axes above.
 # ─────────────────────────────────────────────────────────────────────
 
+# Official sampling defaults (qwen3.8-max, 2026-08-20). temperature/top_p/
+# presence_penalty are NO LONGER stripped — the vendor publishes them.
+_THINKING_DEFAULTS = {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+}
+_INSTRUCT_DEFAULTS = {
+    "temperature": 0.7,
+    "top_p": 0.80,
+    "top_k": 20,
+    "presence_penalty": 1.5,
+    "repetition_penalty": 1.0,
+}
+
+
+@pytest.mark.parametrize("f_val", V38_ROUTES + V37_ROUTES)
+@pytest.mark.parametrize("effort", ["auto", "enable", "xhigh"])
+def test_official_sampling_defaults_filled_when_absent_thinking(f_val, effort):
+    """Absent sampling keys are filled with official thinking-mode defaults.
+
+    Thinking mode when enable_thinking is not False (True after apply, or
+    absent under effort=auto). Includes min_p per the published thinking set.
+    """
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    for key, want in _THINKING_DEFAULTS.items():
+        assert out.get(key) == want, (
+            f"{f_val} effort={effort!r}: {key} expected {want!r}, got {out.get(key)!r}"
+        )
+    assert "min_p" in out
+    assert any(r.rule == "official_sampling_defaults" for r in prov.records), (
+        f"{f_val} effort={effort!r}: missing official_sampling_defaults provenance"
+    )
+
+
+@pytest.mark.parametrize("f_val", V38_ROUTES + V37_ROUTES)
+def test_official_sampling_defaults_filled_when_absent_instruct(f_val):
+    """enable_thinking=False gets the 5 instruct defaults (no min_p)."""
+    out, prov = resolve_thinking(_payload(), f_val, "off")
+    for key, want in _INSTRUCT_DEFAULTS.items():
+        assert out.get(key) == want, (
+            f"{f_val} effort=off: {key} expected {want!r}, got {out.get(key)!r}"
+        )
+    assert "min_p" not in out, (
+        f"{f_val} effort=off: min_p must not be filled in instruct mode"
+    )
+    assert any(r.rule == "official_sampling_defaults" for r in prov.records)
+
+
+@pytest.mark.parametrize("f_val", V38_ROUTES + V37_ROUTES)
+def test_operator_sampling_values_never_overridden(f_val):
+    """Client/operator-set sampling values survive; only absent keys are filled."""
+    out, _ = resolve_thinking(_payload(temperature=0.3), f_val, "xhigh")
+    assert out["temperature"] == 0.3, (
+        f"{f_val}: operator temperature=0.3 was overridden to {out.get('temperature')!r}"
+    )
+    # Other thinking defaults still fill for keys the operator left unset.
+    assert out["top_p"] == 0.95
+    assert out["top_k"] == 20
+    assert out["min_p"] == 0.0
+    assert out["presence_penalty"] == 0.0
+    assert out["repetition_penalty"] == 1.0
+
+
 @pytest.mark.parametrize("f_val", V38_ROUTES + V37_ROUTES)
 @pytest.mark.parametrize("effort", ["off", "auto", "enable", "xhigh"])
-def test_sampling_params_always_stripped(f_val, effort):
-    """Qwen rejects these outright, at every thinking setting."""
+def test_unpublished_sampling_params_still_stripped(f_val, effort):
+    """frequency_penalty and n are still not published — strip unconditionally."""
     payload = _payload(
         temperature=0.7, top_p=0.9, presence_penalty=0.0, frequency_penalty=0.0, n=1
     )
     out, _ = resolve_thinking(payload, f_val, effort)
-    for banned in ("temperature", "top_p", "presence_penalty", "frequency_penalty", "n"):
+    for banned in ("frequency_penalty", "n"):
         assert banned not in out, f"{f_val} effort={effort!r}: leaked {banned}"
+    # Published params must NOT be stripped.
+    assert "temperature" in out
+    assert "top_p" in out
+    assert "presence_penalty" in out
 
 
 @pytest.mark.parametrize("effort", ["off", "auto", "enable", "xhigh"])
