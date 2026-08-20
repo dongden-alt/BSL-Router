@@ -27,7 +27,7 @@ def test_codex_profile():
     _inject_provider_headers(headers, "my-codex", active_conn, {"header_profile": "codex"})
     assert headers["originator"] == "codex"
     assert headers["OpenAI-Beta"] == "codex-1"
-    assert "codex" in headers["User-Agent"]
+    assert headers["User-Agent"].startswith("codex_cli_rs/")
     assert headers["ChatGPT-Account-ID"] == "acct-123"
 
 
@@ -35,6 +35,8 @@ def test_claude_code_profile():
     headers = {}
     _inject_provider_headers(headers, "my-claude", {}, {"header_profile": "claude_code"})
     assert headers["User-Agent"].startswith("claude-cli")
+    # AgentRouter rejects claude-cli UAs that omit the (external token.
+    assert "(external" in headers["User-Agent"]
     assert headers["anthropic-version"] == "2023-06-01"
     assert "oauth-2025-04-20" in headers["anthropic-beta"]
     assert "interleaved-thinking-2025-05-14" in headers["anthropic-beta"]

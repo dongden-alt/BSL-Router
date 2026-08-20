@@ -132,25 +132,28 @@ import fnmatch
 # by its default httpx User-Agent. These authentic UAs match the real IDE/CLI
 # clients so upstream providers see traffic from the expected application.
 _STEALTH_USER_AGENTS: dict[str, str] = {
-    "claude": "claude-cli/1.0.0 (cli; node:v22.16.0)",
-    "anthropic": "claude-cli/1.0.0 (cli; node:v22.16.0)",
+    # AgentRouter-class gates require "(external" in the Claude CLI UA.
+    "claude": "claude-cli/2.0.1 (external, cli)",
+    "anthropic": "claude-cli/2.0.1 (external, cli)",
+    "agentrouter": "claude-cli/2.0.1 (external, cli)",
     "antigravity": "google-api-nodejs-client/9.15.1",
     "gemini-cli": "google-api-nodejs-client/9.15.1",
     "gemini": "google-api-nodejs-client/9.15.1",
-    "codex": "codex/1.0.0",
+    # Align with header_profile=codex so OAuth codex leaf and profile share one UA.
+    "codex": "codex_cli_rs/0.61.0 (Windows NT 10.0; Win64; x64)",
     "kiro": "aws-toolkit-vscode/3.0.0",
     "github": "GitHubCopilotChat/0.26.7",
     "grok-cli": "grok-pager/0.2.99 grok-shell/0.2.99 (linux; x86_64)",
     "qwen": "qwen-cli/1.0.0",
     "cursor": "cursor/0.42.0",
-    "openai": "codex/1.0.0",
+    "openai": "codex_cli_rs/0.61.0 (Windows NT 10.0; Win64; x64)",
     # Image providers — map to the authentic UA of their app family
-    "openai-image": "codex/1.0.0",
+    "openai-image": "codex_cli_rs/0.61.0 (Windows NT 10.0; Win64; x64)",
     "gemini-image": "google-api-nodejs-client/9.15.1",
     "grok-image": "grok-pager/0.2.99 grok-shell/0.2.99 (linux; x86_64)",
     "qwen-image": "qwen-cli/1.0.0",
     # Video providers
-    "openai-video": "codex/1.0.0",
+    "openai-video": "codex_cli_rs/0.61.0 (Windows NT 10.0; Win64; x64)",
     "google-veo": "google-api-nodejs-client/9.15.1",
     "grok-video": "grok-pager/0.2.99 grok-shell/0.2.99 (linux; x86_64)",
     "runway-video": "RunwayML-API/1.0",
@@ -220,10 +223,12 @@ def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dic
                 headers["ChatGPT-Account-ID"] = str(_acct_id)
     elif profile == "claude_code":
         # Claude Code CLI client identity. First-party Anthropic and Anthropic-
-        # compatible proxies gate on these. oauth-2025-04-20 enables OAuth token
-        # acceptance; interleaved-thinking-2025-05-14 is the standard thinking
-        # beta the CLI sends.
-        headers["User-Agent"] = "claude-cli/2.0.1 (cli; node:v22.16.0)"
+        # compatible relays (AgentRouter, OrcaRouter, etc.) gate on these.
+        # AgentRouter specifically requires "(external" in the UA — without it
+        # requests 401 even with a valid key. oauth-2025-04-20 enables OAuth
+        # token acceptance; interleaved-thinking-2025-05-14 is the standard
+        # thinking beta the CLI sends.
+        headers["User-Agent"] = "claude-cli/2.0.1 (external, cli)"
         headers["anthropic-version"] = "2023-06-01"
         headers["anthropic-beta"] = "oauth-2025-04-20,interleaved-thinking-2025-05-14"
         headers["x-app"] = "cli"
