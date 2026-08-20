@@ -2961,7 +2961,30 @@ async def verify_key(request: Request):
             and is_custom
         )
         probe_url = build_custom_models_probe_url(base_url) if (is_custom_text or is_custom_image_video) else f"{base_url}/models"
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        # Verify must use the same identity headers as live egress. AgentRouter-class
+        # gates 401 on bare Bearer probes; header_profile=claude_code (or stealth UA)
+        # is required. Prefer modal-selected profile before save when provided.
+        verify_cfg = dict(provider_cfg) if isinstance(provider_cfg, dict) else {}
+        profile_override = str(body.get("header_profile") or "").strip().lower()
+        if profile_override:
+            verify_cfg["header_profile"] = profile_override
+        if "header_custom" in body and body.get("header_custom") is not None:
+            verify_cfg["header_custom"] = body.get("header_custom")
+        _inject_provider_headers(
+            headers,
+            provider_id or "",
+            {"api_key": api_key, "base_url": base_url},
+            verify_cfg,
+        )
+        if "User-Agent" not in headers:
+            _ua = _STEALTH_USER_AGENTS.get(provider_id or "")
+            if _ua:
+                headers["User-Agent"] = _ua
         try:
             resp = await http_client.get(probe_url, headers=headers, timeout=30.0)
             ok = resp.status_code in (200, 206)

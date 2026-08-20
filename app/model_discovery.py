@@ -41,11 +41,16 @@ def _get_probe_url(base_url: str, provider_format: str) -> str | None:
 
 
 def _get_auth_headers(provider_id: str, provider_config: dict) -> dict[str, str]:
-    """Extract auth headers from provider config."""
+    """Extract auth + identity headers from provider config.
+
+    Uses the same header_profile injection as live egress so gated providers
+    (AgentRouter / Claude Code identity) do not 401 on /models probes.
+    """
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    
+
     # Try first enabled connection
     connections = provider_config.get("connections", [])
+    active_conn: dict = {}
     for conn in connections:
         if not conn.get("enabled", True):
             continue
@@ -58,8 +63,20 @@ def _get_auth_headers(provider_id: str, provider_config: dict) -> dict[str, str]
                 headers["anthropic-version"] = "2023-06-01"
             else:
                 headers["Authorization"] = f"Bearer {api_key}"
+            active_conn = conn
         break
-    
+
+    try:
+        from app.main import _inject_provider_headers, _STEALTH_USER_AGENTS
+        _inject_provider_headers(headers, provider_id or "", active_conn or {}, provider_config or {})
+        if "User-Agent" not in headers:
+            _ua = _STEALTH_USER_AGENTS.get(provider_id or "")
+            if _ua:
+                headers["User-Agent"] = _ua
+    except Exception:
+        # Fail-open: keep basic auth headers if main import fails in isolation.
+        pass
+
     return headers
 
 

@@ -1873,10 +1873,25 @@ window.verifyProviderKey = async (btn) => {
     btn.disabled = true;
     try {
         const providerId = editingProviderId || document.getElementById('p-prefix').value.trim();
+        const headerProfile = (document.getElementById('p-header-profile') || {}).value || 'default';
+        const payload = { provider_id: providerId, format, api_key: key, base_url: normalized.value, header_profile: headerProfile };
+        if (headerProfile === 'custom') {
+            const headerCustom = {};
+            const rawHeaders = (document.getElementById('p-custom-headers') || {}).value || '';
+            rawHeaders.split('\n').forEach(line => {
+                const idx = line.indexOf(':');
+                if (idx > 0) {
+                    const k = line.slice(0, idx).trim();
+                    const v = line.slice(idx + 1).trim();
+                    if (k) headerCustom[k] = v;
+                }
+            });
+            payload.header_custom = headerCustom;
+        }
         const res = await fetch('/api/verify-key', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider_id: providerId, format, api_key: key, base_url: normalized.value })
+            body: JSON.stringify(payload)
         });
         const data = await res.json();
         btn.textContent = data.ok ? '✓ Valid' : '✗ Invalid';
