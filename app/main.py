@@ -8722,10 +8722,12 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
             # ── HTML / 400 Bad-Response Detection ─────────────────────
             # Upstream aggregators return HTML bodies (Cloudflare 5xx)
-            # or bare 400 errors. The matrix dispatcher only advances
-            # on {404, 429, 500, 502, 503, 504}, so raw 400/HTML falls
-            # through to client without combo fallback. Reclassify both
-            # as 502 so the fallback chain can advance.
+            # or bare 400 errors. Combo/matrix recovery advances on the
+            # expanded _RECOVERABLE set (400/401/403/404/405/408/409/
+            # 413/422/429 + 5xx incl. 500/502/503/504/524/525/526), but
+            # HTML bodies and bare 400s can still poison clients if
+            # passed through raw. Reclassify both as 502 so the
+            # fallback chain advances cleanly.
             if resp.status_code >= 400:
                 try:
                     _raw_start = resp.content[:200].decode("utf-8", errors="replace").strip()

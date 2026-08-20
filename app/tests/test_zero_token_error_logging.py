@@ -1,4 +1,8 @@
-"""BUG6: terminal 200 with 0/0 tokens must be reclassified as 502 empty error."""
+"""BUG6: terminal 200 with 0/0 tokens must be reclassified as 502 empty error.
+
+Only when no first token ever arrived (ttft falsy). Content that streamed
+with missing usage is a telemetry gap and must stay status 200.
+"""
 
 import os
 import sys
@@ -26,11 +30,12 @@ def _isolate_persistence(tmp_path, monkeypatch):
 
 
 def test_zero_token_200_end_reclassified_as_502_empty():
+    """No first token (ttft falsy) + 0/0 tokens → reclassify 200 → 502 empty."""
     obs.log_request(
         provider="vsllm",
         model="coder-2",
         status=200,
-        ttft=0.5,
+        ttft=0.0,
         in_tokens=0,
         out_tokens=0,
         cached_tokens=0,
@@ -46,11 +51,36 @@ def test_zero_token_200_end_reclassified_as_502_empty():
     assert len(ends) == 1
     assert ends[0]["status"] == 502
     assert ends[0]["error"] == "empty"
-    # Must not land as a successful usage row with 0/0
-    assert all(u.get("status") != 200 for u in obs.usage_stats) or not obs.usage_stats or True
-    # Prefer: usage recorded under non-200 if tracked
-    if obs.usage_stats:
-        assert obs.usage_stats[-1].get("status", 502) != 200 or obs.usage_stats[-1].get("out", 0) == 0
+    # status 502 skips the `if status == 200:` usage-cost block, so no
+    # success-semantics usage row is recorded for this terminal event.
+    assert obs.usage_stats == []
+
+
+def test_zero_token_with_ttft_stays_200():
+    """Content flowed (ttft>0) but usage omitted (0/0) is a telemetry gap, not empty."""
+    obs.log_request(
+        provider="vsllm",
+        model="coder-2",
+        status=200,
+        ttft=0.5,
+        in_tokens=0,
+        out_tokens=0,
+        cached_tokens=0,
+        config={},
+        total_time=1.0,
+        request_id="req_usage_gap",
+        client="openai",
+        stream=True,
+        error_msg=None,
+    )
+
+    ends = [e for e in obs.console_logs if e.get("event") == "end"]
+    assert len(ends) == 1
+    assert ends[0]["status"] == 200
+    assert "error" not in ends[0]
+    # Stays on the success path: usage block runs (may record a 0-token row).
+    assert len(obs.usage_stats) == 1
+    assert obs.usage_stats[0].get("out") == 0
 
 
 def test_zero_token_with_explicit_error_not_overwritten():

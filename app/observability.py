@@ -991,14 +991,17 @@ def log_request(
             pass
 
     # A terminal 200 with zero input AND zero output tokens is an empty
-    # completion (upstream died before producing anything), not a success.
-    # Reclassify so error prevention / circuit breaker / usage see an error.
+    # completion only when no first token ever arrived (ttft falsy).
+    # A streamed response with content but missing usage is a telemetry
+    # gap, not an empty completion — do not reclassify those as errors
+    # (would softban healthy leaves / open good circuit breakers).
     if (
         event == "end"
         and status == 200
         and in_tokens == 0
         and out_tokens == 0
         and error_msg is None
+        and not ttft
     ):
         status = 502
         error_msg = "empty"
@@ -1363,7 +1366,10 @@ async def run_error_analysis(http_client: httpx.AsyncClient, config: dict):
             "filepath": filepath,
             "error_count": len(errors)
         })
-        
+        # Bound growth: keep only the newest 100 reports in memory.
+        if len(error_reports) > 100:
+            del error_reports[:-100]
+
         # Clear errors from console_logs after analysis
         console_logs = [log for log in console_logs if not log.get("error")]
         
