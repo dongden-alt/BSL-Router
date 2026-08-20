@@ -1206,26 +1206,6 @@ function renderProviderDetail() {
     </div>
     `}
 
-    <div class="detail-card" style="border-radius:12px;border:1px solid var(--border-color);margin-bottom:24px;">
-        <div class="detail-card-header" style="border-bottom:0; padding-bottom:8px;">
-            <h2 style="font-size:15px;">Request Headers</h2>
-        </div>
-        <div style="padding:0 16px 16px;">
-            <label style="font-size:12px;font-weight:600;color:var(--text-muted);display:block;margin-bottom:6px;">Header Profile</label>
-            <select id="providerHeaderProfileSel" onchange="setProviderHeaderProfile(this.value)" style="width:100%;padding:8px 10px;border:1px solid var(--border-color);border-radius:8px;font-size:13px;background:var(--bg-body);color:var(--text-main);">
-                <option value="default" ${(p.header_profile || 'default') === 'default' ? 'selected' : ''}>Default Router Headers</option>
-                <option value="codex" ${p.header_profile === 'codex' ? 'selected' : ''}>Codex CLI Identity</option>
-                <option value="claude_code" ${p.header_profile === 'claude_code' ? 'selected' : ''}>Claude Code Identity</option>
-                <option value="custom" ${p.header_profile === 'custom' ? 'selected' : ''}>Custom Headers</option>
-            </select>
-            <div id="providerHeaderCustomWrap" style="display:${p.header_profile === 'custom' ? 'block' : 'none'};margin-top:12px;">
-                <label style="font-size:12px;font-weight:600;color:var(--text-muted);display:block;margin-bottom:6px;">Custom Headers (KEY: VALUE, one per line)</label>
-                <textarea id="providerHeaderCustomTxt" onchange="setProviderHeaderCustom(this.value)" rows="4" placeholder="X-Api-Key: sk-...&#10;User-Agent: my-app/1.0" style="width:100%;padding:8px 10px;border:1px solid var(--border-color);border-radius:8px;font-size:12px;font-family:monospace;background:var(--bg-body);color:var(--text-main);resize:vertical;">${p.header_custom || ''}</textarea>
-            </div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:8px;">Header profile is applied to every request to this provider. Codex / Claude Code identities set strict upstream user-agent + client headers.</div>
-        </div>
-    </div>
-
     <div class="detail-card" style="border-radius:12px;border:1px solid var(--border-color);">
         <div class="detail-card-header" style="flex-direction:column; align-items:flex-start; border-bottom:0; padding-bottom:8px;">
             <h2 style="font-size:15px;">Available Models</h2>
@@ -1942,20 +1922,6 @@ window.toggleProviderRoundRobin = async (enabled) => {
     globalConfig.providers[activeProviderId].round_robin = enabled;
     await saveConfig();
     renderActiveTab();
-};
-
-window.setProviderHeaderProfile = async (value) => {
-    if (!globalConfig.providers[activeProviderId]) return;
-    globalConfig.providers[activeProviderId].header_profile = value;
-    const _hpWrap = document.getElementById('providerHeaderCustomWrap');
-    if (_hpWrap) _hpWrap.style.display = value === 'custom' ? 'block' : 'none';
-    await saveConfig();
-};
-
-window.setProviderHeaderCustom = async (value) => {
-    if (!globalConfig.providers[activeProviderId]) return;
-    globalConfig.providers[activeProviderId].header_custom = value;
-    await saveConfig();
 };
 
 window.moveConnectionUp = async (idx) => {
