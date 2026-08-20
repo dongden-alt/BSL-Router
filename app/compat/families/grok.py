@@ -8,11 +8,19 @@ into a model with no reasoning engine.
 
 Effort vocabulary differs by version / Bộ từ vựng effort khác nhau theo phiên bản:
 
-  Grok 4.5    -> low / medium / high (NO xhigh — coerced to "high").
-  Grok 4.6+   -> low / medium / high / xhigh (all four accepted, xhigh is new).
+  Grok 4.5              -> low / medium / high (NO xhigh — coerced to "high").
+  Grok 4.6+             -> low / medium / high / xhigh (all four accepted).
+  Grok 4.20-multi-agent -> same four words; effort = agent count, same wire field.
 
 Per xAI docs: "xhigh is available on grok-4.6 and later. On models that do
 not support it, such as grok-4.5, requests with xhigh are treated as high."
+Default effort is high. Unknown/unsupported effort words must NOT pass
+through — the vendor rejects them — so they coerce to the documented
+default "high".
+
+presence_penalty, frequency_penalty, and stop CANNOT be used with reasoning
+models; upstream returns an error if present. All contracts matched here are
+reasoning SKUs (non-reasoning is excluded), so sanitize always strips them.
 
 Grok 4.x tương thích OpenAI và điều chỉnh độ sâu suy luận qua tham số
 `reasoning_effort` ở cấp độ top-level. Suy luận là bắt buộc, không có
@@ -30,6 +38,9 @@ SOURCE = "families/grok.py"
 # Grok 4.6+ supports xhigh; 4.5 and earlier do NOT.
 _GROK_BASE_EFFORTS = ("low", "medium", "high")
 
+# Reasoning models reject these; strip unconditionally in sanitize.
+_REASONING_FORBIDDEN = ("presence_penalty", "frequency_penalty", "stop")
+
 
 def _supports_xhigh(f_val: str) -> bool:
     """Return True if *f_val* denotes a Grok version that accepts xhigh."""
@@ -44,6 +55,9 @@ def _supports_xhigh(f_val: str) -> bool:
 def _coerce_grok_effort(ctx: ThinkingContext) -> str:
     """Coerce effort for Grok version-specific vocabularies.
     / Chuyển đổi effort theo bộ từ vựng riêng của từng phiên bản Grok.
+
+    Unknown words coerce to "high" (documented default) — never pass through,
+    because the vendor rejects unsupported effort values.
     """
     e = ctx.effort
     if e == "xhigh":
@@ -53,8 +67,8 @@ def _coerce_grok_effort(ctx: ThinkingContext) -> str:
         return "high"
     if e in _GROK_BASE_EFFORTS:
         return e
-    # Unknown effort values — pass through (operator may know something we don't).
-    return e
+    # Unknown / unsupported (none, off, banana, 32k, ...) -> default high.
+    return "high"
 
 
 def _apply(
@@ -71,6 +85,17 @@ def _apply(
     )
 
 
+def _sanitize(
+    payload: Dict[str, Any],
+    ctx: ThinkingContext,
+    prov: Provenance,
+    contract: Contract,
+) -> Dict[str, Any]:
+    """Strip params that reasoning Grok models reject with an upstream error."""
+    removals: Dict[str, Any] = {k: None for k in _REASONING_FORBIDDEN}
+    return prov.apply(payload, contract, "strip_reasoning_incompatible", removals)
+
+
 CONTRACTS = [
     Contract(
         id="grok",
@@ -79,5 +104,9 @@ CONTRACTS = [
         pattern=r"grok|xai",
         exclude=r"non-reasoning",
         apply=_apply,
+        sanitize=_sanitize,
+        # Reasoning cannot be disabled; none/off/auto must still emit the
+        # default effort ("high") rather than leaving the field absent.
+        always_applies=True,
     ),
 ]

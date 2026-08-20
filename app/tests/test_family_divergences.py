@@ -430,39 +430,69 @@ def test_kat_coder_passthrough(f_val, effort):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DIVERGENCE 6 — GLM-5.2/5.3 graded path uses _coerce_glm_effort().
+# DIVERGENCE 6 — GLM-5.2/5.3 graded path is VERSION-SPLIT (official 2026-08-20).
 #
 # WHY LEGACY WAS WRONG:
 #   The legacy cascade did NOT branch on GLM-5.2 vs 5.1: it emitted
 #   output_config.effort=<raw effort> for every GLM model.  So
 #   medium/xhigh reached upstream unchanged — both are rejected with a
 #   400 by GLM-5.2/5.3.  The new contract detects graded versions
-#   (glm-5.[23]) and always runs _coerce_glm_effort (medium->high, xhigh->max),
-#   emits reasoning_effort instead of output_config.effort, and sets
-#   thinking.type=enabled even when only an effort word was requested.
+#   (glm-5.[23]) and applies official per-version mappings:
+#     5.3: none/minimal/low->low; medium/high->high; xhigh/max->max
+#          (ONLY low/high/max accepted upstream)
+#     5.2: none/minimal -> thinking disabled (no reasoning_effort);
+#          low/medium->high; xhigh->max; high/max pass as high/max
+#   emits reasoning_effort (when on) instead of output_config.effort.
+#   Full lock: test_official_thinking_parity.py.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@pytest.mark.parametrize("f_val", ["iamhc/glm-5.2", "iamhc/glm-5.3", "hcnsec-vip/glm-5.3-anthropic"])
+@pytest.mark.parametrize("f_val", ["iamhc/glm-5.3", "hcnsec-vip/glm-5.3-anthropic"])
 @pytest.mark.parametrize("effort,expected", [
     ("low", "low"), ("medium", "high"), ("high", "high"),
+    ("max", "max"), ("xhigh", "max"), ("none", "low"), ("minimal", "low"),
+])
+def test_glm53_graded_coerces_and_uses_reasoning_effort(f_val, effort, expected):
+    """GLM-5.3 maps into the three-word vocab and uses reasoning_effort."""
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    assert out["thinking"] == {"type": "enabled"}
+    assert out["reasoning_effort"] == expected
+    assert out["reasoning_effort"] in ("low", "high", "max")
+    assert "output_config" not in out
+
+
+@pytest.mark.parametrize("effort,expected", [
+    ("low", "high"), ("medium", "high"), ("high", "high"),
     ("max", "max"), ("xhigh", "max"),
 ])
-def test_glm_graded_coerces_and_uses_reasoning_effort(f_val, effort, expected):
-    """Graded GLM models coerce invalid efforts and use reasoning_effort."""
-    out, prov = resolve_thinking(_payload(), f_val, effort)
+def test_glm52_graded_on_thinking_coerces_and_uses_reasoning_effort(effort, expected):
+    """GLM-5.2 on-thinking path: low/medium->high, xhigh->max."""
+    out, _ = resolve_thinking(_payload(), "iamhc/glm-5.2", effort)
     assert out["thinking"] == {"type": "enabled"}
     assert out["reasoning_effort"] == expected
     assert "output_config" not in out
 
 
+@pytest.mark.parametrize("effort", ["none", "minimal"])
+def test_glm52_none_minimal_disables_thinking(effort):
+    """GLM-5.2 none/minimal stop thinking (official: model stops thinking)."""
+    out, _ = resolve_thinking(_payload(), "iamhc/glm-5.2", effort)
+    assert out["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in out
+
+
 # ─────────────────────────────────────────────────────────────────────
-# DIVERGENCE 7 — Grok xhigh is version-gated (4.6+ only).
+# DIVERGENCE 7 — Grok effort is version-gated; unknowns default to high;
+#                presence_penalty/frequency_penalty/stop are stripped.
 #
 # WHY LEGACY WAS WRONG:
 #   The legacy cascade passed the effort through for Grok, so xhigh
 #   reached grok-4.5 which does not support it (per xAI docs, xhigh
-#   is available on grok-4.6 and later only).  The new code parses
-#   the version and keeps xhigh only for (major,minor) >= (4,6).
+#   is available on grok-4.6 and later only).  Unknown words also
+#   passed through and the vendor rejects them.  Legacy never stripped
+#   presence_penalty/frequency_penalty/stop, which reasoning models
+#   reject.  New code: version-gate xhigh, coerce unknowns -> high,
+#   sanitize always pops the three incompatible keys.
+#   Full lock: test_official_thinking_parity.py.
 # ─────────────────────────────────────────────────────────────────────
 
 def test_grok45_xhigh_coerces_to_high():
@@ -478,3 +508,20 @@ def test_grok46_xhigh_kept():
 def test_grok420_xhigh_kept():
     out, _ = resolve_thinking(_payload(), "xai/grok-4.20", "xhigh")
     assert out["reasoning_effort"] == "xhigh"
+
+
+def test_grok_unknown_effort_defaults_to_high():
+    out, _ = resolve_thinking(_payload(), "xai/grok-4.6", "banana")
+    assert out["reasoning_effort"] == "high"
+
+
+def test_grok_strips_reasoning_incompatible_params():
+    body = _payload()
+    body["presence_penalty"] = 0.5
+    body["frequency_penalty"] = 0.25
+    body["stop"] = ["\n"]
+    out, _ = resolve_thinking(body, "xai/grok-4.5", "high")
+    assert "presence_penalty" not in out
+    assert "frequency_penalty" not in out
+    assert "stop" not in out
+    assert out["reasoning_effort"] == "high"

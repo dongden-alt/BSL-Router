@@ -163,18 +163,20 @@ def test_registry_matches_legacy_for_all_config_models(effort):
         if re.search(r"qwen(?!coder)", f_val):
             continue
 
-        # GLM-5.2/5.3 graded path is deliberate (Divergence 6): new code coerces
-        # medium->high / xhigh->max and emits reasoning_effort instead of the legacy
-        # output_config.effort for graded versions. Budget forms (16k/32k/...) are
-        # also routed through _coerce_glm_effort -> high.
+        # GLM-5.2/5.3 graded path is deliberate (Divergence 6 / official parity):
+        # version-split coerce + reasoning_effort (or thinking disabled for
+        # 5.2 none/minimal). Legacy used output_config.effort / passthrough.
+        # Full lock: test_official_thinking_parity.py.
         if re.search(r"glm-5\.[23]", f_val) and effort not in (
-            "auto", "none", "off", "", "enable", "adaptive",
+            "auto", "off", "", "enable", "adaptive",
         ):
             continue
 
-        # Grok xhigh version-gating is deliberate (Divergence 7): 4.6+ keeps xhigh,
-        # older coerces to high. Legacy passed the effort through unchanged.
-        if re.search(r"grok|xai", f_val) and effort == "xhigh":
+        # Grok is a deliberate divergence (Divergence 7 / official parity):
+        # version-gate xhigh, unknown efforts -> high, and sanitize strips
+        # presence_penalty/frequency_penalty/stop (legacy passed them through).
+        # Full lock: test_official_thinking_parity.py.
+        if re.search(r"grok|xai", f_val) and "non-reasoning" not in f_val:
             continue
 
         legacy_payload = legacy_apply_thinking(_base_payload(), f_val, effort)
@@ -223,15 +225,17 @@ def test_registry_matches_legacy_for_all_config_models(effort):
     ],
 )
 def test_registry_matches_legacy_spot_checks(f_val, effort):
-    # GLM-5.2/5.3 graded path is deliberate (Divergence 6): omit effort forms
-    # that diverge from legacy (medium/xhigh/budget -> reasoning_effort).
+    # GLM-5.2/5.3 graded path is deliberate (Divergence 6 / official parity).
+    # 5.2 low->high and none/minimal->disabled diverge from legacy passthrough;
+    # only leave enable/adaptive/off forms (and non-graded 5.1) to legacy parity.
     if re.search(r"glm-5\.[23]", f_val) and effort not in (
-        "auto", "none", "off", "", "enable", "adaptive", "max", "high", "low",
+        "auto", "off", "", "enable", "adaptive",
     ):
         return
 
-    # Grok xhigh version-gating is deliberate (Divergence 7).
-    if re.search(r"grok|xai", f_val) and effort == "xhigh":
+    # Grok deliberate divergence (Divergence 7 / official parity): effort
+    # gating + unconditional sanitize of presence/frequency/stop.
+    if re.search(r"grok|xai", f_val) and "non-reasoning" not in f_val:
         return
 
     legacy_payload = legacy_apply_thinking(_base_payload(), f_val, effort)

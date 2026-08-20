@@ -4,8 +4,26 @@ GLM (Zhipu) family contract.
 Effort vocabulary differs BY VERSION within the family, which is the
 churn this refactor is designed for:
 
-  5.2/5.3  -> accepts graded effort words (low/high/max) alongside
-               thinking {type: enabled}. NO "medium" — coerced to "high".
+  GLM-5.3  -> ONLY three accepted words: low / high / max.
+               ANY other wire value is an upstream error.
+               Coding-plan mapping into that vocab:
+                 none/minimal/low -> low
+                 medium/high      -> high
+                 xhigh/max        -> max
+               Unknown leftovers coerce to high (safe default).
+
+  GLM-5.2  -> accepts max (default), xhigh, high, medium, low, minimal, none.
+               Official semantics:
+                 none/minimal = model stops thinking
+                   -> wire as thinking {type: disabled} WITHOUT reasoning_effort
+                      (disabled is the wire-off signal; vendor docs say
+                      none/minimal mean the model stops thinking)
+                 low/medium   -> high
+                 high         -> high
+                 xhigh        -> max
+                 max          -> max
+               Unknown leftovers coerce to high.
+
   5.1/5.x  -> "enable" / "adaptive" switch words; anything else degrades
                to enabled + output_config.effort.
 
@@ -14,9 +32,9 @@ GLM-5.2 with a switch word ("enable") must still fall through to the
 generic behavior — splitting into two contracts would make the 5.2
 contract win and silently drop that path.
 
-Adding GLM-5.3: add a branch to `_apply` (or a new Contract if 5.3 is a
-genuinely separate shape) and a row to the version table below. No other
-file changes.
+`always_applies` is True so the graded path can see the vendor word
+"none" (which is otherwise treated as an OFF_VALUE and would skip apply).
+auto/off/"" still no-op inside _apply — only real vocabulary is written.
 """
 from __future__ import annotations
 
@@ -30,28 +48,40 @@ SOURCE = "families/glm.py"
 
 # Versions that accept graded effort words rather than switch words.
 _GRADED_EFFORT_VERSIONS = r"glm-5\.[23]"
-# GLM-5.2/5.3 accepts low/high/max. NO "medium" — will be coerced to "high".
-_GRADED_EFFORT_WORDS = ("low", "high", "max")
+# GLM-5.3 native wire vocabulary — only these three words are accepted upstream.
+_GLM53_EFFORT_WORDS = ("low", "high", "max")
 
 
-def _coerce_glm_effort(ctx: ThinkingContext) -> str:
-    """Coerce invalid effort values for GLM graded versions.
-    / Chuyển đổi các giá trị effort không hợp lệ cho phiên bản GLM graded.
+def _is_glm53(f_val: str) -> bool:
+    return bool(re.search(r"glm-5\.3", f_val, re.IGNORECASE))
 
-    GLM-5.2 has a "7-value compatibility mapping" (effective levels: max/high).
-    GLM-5.3 narrows to three native levels: low/high/max.
-    Mapping (per Pi issue #5770 + AIHubMix GLM-5.3 guide):
-      medium  -> high   (default effective level for 5.2)
-      xhigh   -> max    (per Pi issue #5770)
-      others  -> high   (safe fallback)
-    """
-    e = ctx.effort
-    if e in _GRADED_EFFORT_WORDS:
-        return e
-    # xhigh -> max (per Pi GitHub issue #5770 mapping: "xhigh: max").
-    if e == "xhigh":
+
+def _is_glm52(f_val: str) -> bool:
+    return bool(re.search(r"glm-5\.2", f_val, re.IGNORECASE))
+
+
+def _coerce_glm53_effort(effort: str) -> str:
+    """Map any effort into GLM-5.3's three-word vocabulary (low/high/max)."""
+    if effort in ("none", "minimal", "low"):
+        return "low"
+    if effort in ("medium", "high"):
+        return "high"
+    if effort in ("xhigh", "max"):
         return "max"
-    # medium or anything unknown -> high.
+    # Garbage / budget words / anything else -> high (safe default).
+    return "high"
+
+
+def _coerce_glm52_effort(effort: str) -> str:
+    """Map on-thinking effort into GLM-5.2 effective levels (high/max).
+
+    none/minimal are handled by the caller (thinking off) — they never
+    reach this helper.
+    """
+    if effort in ("low", "medium", "high"):
+        return "high"
+    if effort in ("xhigh", "max"):
+        return "max"
     return "high"
 
 
@@ -63,14 +93,42 @@ def _apply(
 ) -> Dict[str, Any]:
     graded = bool(re.search(_GRADED_EFFORT_VERSIONS, ctx.f_val, re.IGNORECASE))
 
+    # auto/off/"" = operator did not pick a level. Leave payload alone.
+    # "none" is in OFF_VALUES globally but is a real vendor vocabulary word
+    # for graded GLM — it must fall through to the version-specific branch.
+    if not ctx.effort_is_explicit and not (graded and ctx.effort == "none"):
+        return payload
+
     if graded and ctx.effort not in ("enable", "adaptive"):
+        # ── GLM-5.2: none/minimal stop thinking ──────────────────────────
+        # Vendor docs: none/minimal mean the model stops thinking.
+        # Assumption: wire-off signal is thinking {type: disabled} and we
+        # omit reasoning_effort (a depth knob is meaningless when off).
+        if _is_glm52(ctx.f_val) and ctx.effort in ("none", "minimal"):
+            return prov.apply(
+                payload,
+                contract,
+                "graded_thinking_off",
+                {
+                    "thinking": {"type": "disabled"},
+                    "reasoning_effort": None,
+                },
+            )
+
+        if _is_glm52(ctx.f_val):
+            effort = _coerce_glm52_effort(ctx.effort)
+        else:
+            # GLM-5.3 (and any future graded match that isn't 5.2):
+            # result MUST be one of the three accepted words.
+            effort = _coerce_glm53_effort(ctx.effort)
+
         return prov.apply(
             payload,
             contract,
             "graded_effort",
             {
                 "thinking": {"type": "enabled"},
-                "reasoning_effort": _coerce_glm_effort(ctx),
+                "reasoning_effort": effort,
             },
         )
 
@@ -107,5 +165,7 @@ CONTRACTS = [
         # Hyphen is intentional: matches glm-5.1 / glm-5.2 model ids.
         pattern=r"glm-",
         apply=_apply,
+        # So graded "none" (an OFF_VALUE) still reaches version-specific mapping.
+        always_applies=True,
     ),
 ]
