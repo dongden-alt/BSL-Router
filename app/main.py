@@ -551,6 +551,26 @@ PROVIDER_DEFAULT_URLS = {
 def load_config():
     init_config()
     config = cs_get_config()
+    # Multi-key fix (2026-08-22): models discovered before the fix are stuck at
+    # connection_indexes:[0]. Expand them to all enabled connections on load so
+    # existing providers don't need manual re-discovery or config edits.
+    _dirty = False
+    for _pid, _pcfg in (config.get("providers") or {}).items():
+        if not isinstance(_pcfg, dict):
+            continue
+        _conns = _pcfg.get("connections", [])
+        _all_enabled = [
+            i for i, c in enumerate(_conns)
+            if isinstance(c, dict) and c.get("enabled", True)
+        ]
+        if len(_all_enabled) <= 1:
+            continue  # nothing to expand
+        for _m in _pcfg.get("models", []):
+            if isinstance(_m, dict) and _m.get("connection_indexes") == [0]:
+                _m["connection_indexes"] = list(_all_enabled)
+                _dirty = True
+    if _dirty:
+        _replace_runtime_config(config)
     # Initialize the connection-level circuit breaker from the loaded config.
     init_breaker(config)
     config = _validate_antigravity_integration_config(config)
@@ -9415,6 +9435,17 @@ async def apply_discovered_models_endpoint(provider_id: str):
     discovered_ids = {m["id"] for m in result.get("models", [])}
     existing_models = provider_config.get("models", [])
     existing_ids = {m.get("id") for m in existing_models}
+    # Multi-key fix (2026-08-22): this used to hard-code connection_indexes:[0],
+    # which pinned every discovered model to the FIRST key. Providers with
+    # multiple enabled keys then only ever used the top key and round-robin had
+    # a single-element candidate pool (nothing to rotate). New models now attach
+    # to ALL enabled connections, matching the union semantics of the UI's
+    # verifyProviderKey path. Providers with zero enabled connections keep [0]
+    # so the metadata stays well-formed (resolver filters disabled keys anyway).
+    enabled_conn_indexes = [
+        i for i, c in enumerate(provider_config.get("connections", []))
+        if isinstance(c, dict) and c.get("enabled", True)
+    ] or [0]
     added = []
     for m in result.get("models", []):
         if m["id"] not in existing_ids:
@@ -9422,7 +9453,7 @@ async def apply_discovered_models_endpoint(provider_id: str):
                 "id": m["id"],
                 "name": m["id"],
                 "thinking": "auto",
-                "connection_indexes": [0],
+                "connection_indexes": list(enabled_conn_indexes),
                 "enabled": True
             })
             added.append(m["id"])

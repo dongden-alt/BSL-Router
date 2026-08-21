@@ -194,7 +194,10 @@ CONTRACTS = [
         id="gemini-3",
         source=SOURCE,
         priority=90,
-        pattern=r"gemini.*3",
+        # gemini-pro-agent is Gemini 3.1 Pro served under an alias whose id
+        # contains no '3' - matched explicitly so it gets thinkingLevel enum
+        # semantics (low..max) instead of the legacy numeric-budget path.
+        pattern=r"gemini.*3|gemini-pro-agent",
         apply=_apply_gemini3,
         sanitize=_sanitize_gemini,
     ),
@@ -203,7 +206,7 @@ CONTRACTS = [
         source=SOURCE,
         priority=85,
         pattern=r"gemini",
-        exclude=r"gemini.*3",
+        exclude=r"gemini.*3|gemini-pro-agent",
         apply=_apply_gemini_legacy,
         sanitize=_sanitize_gemini,
     ),
