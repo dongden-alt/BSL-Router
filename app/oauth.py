@@ -1095,12 +1095,23 @@ def _expires_at(tokens: dict[str, Any]) -> str | None:
 
 
 def _save_connection(provider: str, flow_type: str, access_token: str, refresh_token: str | None, expires_at: str | None, email: str | None, display_name: str | None, provider_data: dict[str, Any]) -> dict[str, Any]:
-    """Persist BSL's normalized connection through main.py's YAML writer."""
-    from app import main as main_app
+    """Persist BSL's normalized connection through main.py's config-swap path.
 
-    if not isinstance(main_app.config, dict):
+    The module-level ``main.config`` global was deleted in the config_state
+    refactor, so the sanctioned mutation path is: take a deep-decrypted
+    mutable snapshot via ``get_mutable_config()``, mutate it, then commit with
+    ``_replace_runtime_config()`` (persist -> swap -> reconfigure breaker).
+    ``_persist_config_snapshot`` encrypts secrets before writing config.yaml
+    and raises OSError on disk failure; we pop the appended connection on that
+    failure so memory and disk never diverge.
+    """
+    from app import main as main_app
+    from app.config_state import get_mutable_config
+
+    config = get_mutable_config()
+    if not isinstance(config, dict):
         raise HTTPException(status_code=503, detail="Router configuration is not loaded")
-    providers = main_app.config.setdefault("providers", {})
+    providers = config.setdefault("providers", {})
     provider_config = providers.setdefault(provider, {"type": "oauth", "connections": []})
     connections = provider_config.setdefault("connections", [])
     if not isinstance(connections, list):
@@ -1114,7 +1125,7 @@ def _save_connection(provider: str, flow_type: str, access_token: str, refresh_t
     }
     connections.append(connection)
     try:
-        main_app._persist_config_snapshot(main_app.config)
+        main_app._replace_runtime_config(config)
     except OSError as exc:
         connections.pop()
         print(f"[OAuth] failed to persist {provider} connection: {exc}", flush=True)
@@ -2013,15 +2024,21 @@ def _update_connection_token(
     """Update an existing connection's tokens in config.yaml in-place.
 
     This is the missing counterpart to _save_connection: it mutates the
-    connection dict inside main_app.config and persists the snapshot, rather
-    than creating a new connection entry.
+    connection dict on a deep-decrypted snapshot and commits it through the
+    sanctioned swap path (_replace_runtime_config: persist -> swap -> breaker),
+    rather than creating a new connection entry. The old main_app.config global
+    no longer exists (config_state refactor), so mutating it was a no-op that
+    silently lost every refreshed token.
     """
     from app import main as main_app
+    from app.config_state import get_mutable_config
 
-    if not isinstance(main_app.config, dict):
+    config = get_mutable_config()
+    if not isinstance(config, dict):
         return
-    provider_config = main_app.config.get("providers", {}).get(provider, {})
+    provider_config = config.get("providers", {}).get(provider, {})
     connections = provider_config.get("connections", [])
+    updated = False
     for conn in connections:
         if isinstance(conn, dict) and conn.get("id") == connection_id:
             conn["api_key"] = new_access_token
@@ -2035,9 +2052,12 @@ def _update_connection_token(
                     pd.update(extra_provider_data)
                 else:
                     conn["provider_data"] = extra_provider_data
+            updated = True
             break
+    if not updated:
+        return  # Connection vanished (deleted elsewhere); nothing to persist.
     try:
-        main_app._persist_config_snapshot(main_app.config)
+        main_app._replace_runtime_config(config)
     except OSError as exc:
         print(
             f"[OAuth] Failed to persist refreshed token for {provider}"
