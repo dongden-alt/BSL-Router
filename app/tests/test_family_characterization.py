@@ -163,11 +163,20 @@ def test_registry_matches_legacy_for_all_config_models(effort):
         if re.search(r"qwen(?!coder)", f_val):
             continue
 
-        # GLM-5.2/5.3 graded path is deliberate (Divergence 6 / official parity):
+        # GLM-5.3 is a DELIBERATE divergence at EVERY effort value (1210 fix):
+        # off/auto/"" force enabled+low, enable/adaptive coerce to
+        # enabled+high, and graded efforts map into low/high/max.
+        # Legacy produced disabled/missing/switch-word payloads that the
+        # upstream rejects with code 1210. Full lock:
+        # test_official_thinking_parity.py + test_thinking_vocab_fixes.py.
+        if re.search(r"glm-5\.3", f_val):
+            continue
+
+        # GLM-5.2 graded path is deliberate (Divergence 6 / official parity):
         # version-split coerce + reasoning_effort (or thinking disabled for
         # 5.2 none/minimal). Legacy used output_config.effort / passthrough.
-        # Full lock: test_official_thinking_parity.py.
-        if re.search(r"glm-5\.[23]", f_val) and effort not in (
+        # auto/off/""/enable/adaptive still match legacy for 5.2.
+        if re.search(r"glm-5\.2", f_val) and effort not in (
             "auto", "off", "", "enable", "adaptive",
         ):
             continue
@@ -177,6 +186,14 @@ def test_registry_matches_legacy_for_all_config_models(effort):
         # presence_penalty/frequency_penalty/stop (legacy passed them through).
         # Full lock: test_official_thinking_parity.py.
         if re.search(r"grok|xai", f_val) and "non-reasoning" not in f_val:
+            continue
+
+        # DeepSeek-v4 is a deliberate divergence: legacy (and the original
+        # family contract) emitted output_config.effort as a third thinking
+        # shape. Live x5m5x 400s that field as "未知请求字段：output_config".
+        # New contract is dual_shape (thinking + reasoning_effort only).
+        # See test_family_divergences.py::test_deepseek_v4_omits_output_config.
+        if re.search(r"deepseek-v4", f_val, re.IGNORECASE):
             continue
 
         legacy_payload = legacy_apply_thinking(_base_payload(), f_val, effort)
@@ -225,10 +242,13 @@ def test_registry_matches_legacy_for_all_config_models(effort):
     ],
 )
 def test_registry_matches_legacy_spot_checks(f_val, effort):
-    # GLM-5.2/5.3 graded path is deliberate (Divergence 6 / official parity).
-    # 5.2 low->high and none/minimal->disabled diverge from legacy passthrough;
-    # only leave enable/adaptive/off forms (and non-graded 5.1) to legacy parity.
-    if re.search(r"glm-5\.[23]", f_val) and effort not in (
+    # GLM-5.3 diverges at every effort (1210 fix: forced-on + coercion).
+    # See test_official_thinking_parity.py + test_thinking_vocab_fixes.py.
+    if re.search(r"glm-5\.3", f_val):
+        return
+    # GLM-5.2 graded path is deliberate; leave enable/adaptive/off forms
+    # (and non-graded 5.1) to legacy parity.
+    if re.search(r"glm-5\.2", f_val) and effort not in (
         "auto", "off", "", "enable", "adaptive",
     ):
         return
@@ -236,6 +256,10 @@ def test_registry_matches_legacy_spot_checks(f_val, effort):
     # Grok deliberate divergence (Divergence 7 / official parity): effort
     # gating + unconditional sanitize of presence/frequency/stop.
     if re.search(r"grok|xai", f_val) and "non-reasoning" not in f_val:
+        return
+
+    # DeepSeek-v4 dual_shape divergence (no output_config).
+    if re.search(r"deepseek-v4", f_val, re.IGNORECASE):
         return
 
     legacy_payload = legacy_apply_thinking(_base_payload(), f_val, effort)

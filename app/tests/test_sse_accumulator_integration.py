@@ -209,6 +209,18 @@ class TestOpenAISSEIntegration:
         assert result["in_tokens"] == 100
         assert result["out_tokens"] == 50
 
+    def test_openai_missing_usage_estimates_out_tokens(self):
+        """Content without usage frames must not report Out:0 (AgentRouter path)."""
+        chunks = [
+            _oai_chunk(content="OK"),
+            _oai_chunk(finish_reason="stop"),
+            _done(),
+        ]
+        resp = MockSSEResponse(chunks)
+        result = self._run(resp)
+        assert result["content"] == "OK"
+        assert result["out_tokens"] >= 1
+
     def test_openai_id_and_model_capture(self):
         """ID captured from first SSE chunk; model is _target_model (authoritative).
 
@@ -284,6 +296,44 @@ class TestOpenAISSEIntegration:
         resp = MockSSEResponse(chunks)
         result = self._run(resp)
         assert result["cached_tokens"] == 0
+
+    def test_openai_null_delta_does_not_crash(self):
+        """AgentRouter emits `"delta": null` on ping/final chunks.
+
+        dict.get("delta", {}) still returns None when the key is present.
+        StreamBuffer used to raise `'NoneType' object has no attribute 'get'`.
+        """
+        chunks = [
+            b'data: {"choices":[{"index":0,"delta":null,"finish_reason":null}]}\n\n',
+            _oai_chunk(content="Hi"),
+            b'data: {"choices":[{"index":0,"delta":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":2}}\n\n',
+            _done(),
+        ]
+        resp = MockSSEResponse(chunks)
+        result = self._run(resp)
+        assert result["content"] == "Hi"
+        assert result["finish_reason"] == "stop"
+        assert result["in_tokens"] == 9
+        assert result["out_tokens"] == 2
+
+    def test_openai_sse_on_anthropic_wire_still_assembles(self):
+        """Anthropic-format providers that emit OpenAI SSE must not assemble empty.
+
+        Empty assemble previously became zombie_empty_response (gpt-5.6-sol).
+        """
+        chunks = [
+            _oai_chunk(content="OK", chunk_id="chatcmpl-ar"),
+            _oai_chunk(finish_reason="stop", usage={
+                "prompt_tokens": 12, "completion_tokens": 1, "total_tokens": 13,
+            }),
+            _done(),
+        ]
+        resp = MockSSEResponse(chunks)
+        result = self._run(resp, is_anthropic=True)
+        assert result["content"] == "OK"
+        assert result["finish_reason"] == "stop"
+        assert result["in_tokens"] == 12
+        assert result["out_tokens"] == 1
 
 
 # ── Anthropic SSE Integration Tests ───────────────────────────
@@ -410,6 +460,25 @@ class TestAnthropicSSEIntegration:
         result = self._run(resp)
         assert result["in_tokens"] == 30
         assert result["cached_tokens"] == 0
+
+    def test_anthropic_null_delta_and_message_do_not_crash(self):
+        """AgentRouter Anthropic SSE uses `"delta": null` / `"message": null`.
+
+        content_block_stop and ping events commonly set delta to JSON null.
+        """
+        chunks = [
+            b'data: {"type":"message_start","message":null}\n\n',
+            _anth_event("content_block_start", extra={"content_block": {"type": "text", "index": 0}}),
+            _anth_event("content_block_delta", delta={"type": "text_delta", "text": "Hi"}),
+            b'data: {"type":"content_block_stop","delta":null}\n\n',
+            _anth_event("message_delta", delta={"stop_reason": "end_turn"}, extra={"usage": {"output_tokens": 1}}),
+            _done(),
+        ]
+        resp = MockSSEResponse(chunks)
+        result = self._run(resp)
+        assert result["content"] == "Hi"
+        assert result["finish_reason"] == "stop"
+        assert result["out_tokens"] == 1
 
 
 # ── Disconnect Probe Tests ────────────────────────────────────

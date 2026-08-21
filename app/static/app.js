@@ -685,10 +685,17 @@ window.addEventListener('resize', function() {
 // so the user always knows the state without clicking a button.
 let _autoSaveTimer = null;
 let _autoSaveInFlight = false;
+// Set when a mutation arrives while a save is in flight; flushed once after it finishes.
+let _autoSaveDirty = false;
 
 async function saveConfig() {
-    if (_autoSaveInFlight) return false;
+    if (_autoSaveInFlight) {
+        // Queue one follow-up save so concurrent mutations are not dropped.
+        _autoSaveDirty = true;
+        return false;
+    }
     _autoSaveInFlight = true;
+    _autoSaveDirty = false;
     _setSaveIndicator('saving');
     try {
         const res = await fetch('/api/config', {
@@ -710,6 +717,12 @@ async function saveConfig() {
         return false;
     } finally {
         _autoSaveInFlight = false;
+        // If something mutated during the in-flight POST, save the latest snapshot once.
+        if (_autoSaveDirty) {
+            _autoSaveDirty = false;
+            // Fire-and-forget follow-up; nested call re-enters the same guard.
+            Promise.resolve().then(() => saveConfig());
+        }
     }
 }
 
@@ -1275,6 +1288,12 @@ function getThinkingSpec(modelId) {
     // engine, so it shows no controls.
     if (/grok/.test(id)) {
         if (/non-reasoning/.test(id)) return null;
+        // 4.6+ accepts xhigh (per xAI docs); older versions coerce to high
+        // server-side (families/grok.py _supports_xhigh).
+        const gm = id.match(/grok[-_.\s]*(\d+)(?:[.-](\d+))?/);
+        if (gm && (Number(gm[1]) > 4 || (Number(gm[1]) === 4 && Number(gm[2] || 0) >= 6))) {
+            return { effort: ['low','medium','high','xhigh'], mandatory: true };
+        }
         return { effort: ['low','medium','high'], mandatory: true };
     }
 
@@ -1305,6 +1324,10 @@ function getThinkingSpec(modelId) {
     if (/(claude|opus|sonnet)/.test(id)) return { effort: ['off','low','medium','high','xhigh','max'], mode: ['adaptive'] };
     // DeepSeek V4.
     if (/deepseek-v4/.test(id)) return { effort: ['off','low','medium','high','max'] };
+    // GLM-5.3 — ONLY low/high/max on the wire (backend families/glm.py coerces).
+    // Thinking is ALWAYS ON: upstream rejects disabled/missing thinking (code
+    // 1210). Backend forces enabled + low/high/max even for off/auto settings.
+    if (/glm-5\.3/.test(id)) return { effort: ['low','high','max'], mandatory: true };
     // GLM-5.2.
     if (/glm-5\.2/.test(id)) return { effort: ['off','enable','low','high','max'] };
     // Qwen — TWO axes, both version-dependent. Checked BEFORE the generic
@@ -1318,15 +1341,30 @@ function getThinkingSpec(modelId) {
     // Backend contract: app/compat/families/qwen.py (id "qwen").
     if (/qwen-?3\.8/.test(id)) return { effort: ['off','enable','low','medium','xhigh'] };
     if (/qwen/.test(id))       return { effort: ['off','enable'] };
+    // Tencent Hunyuan Hy3 — chat_template_kwargs.reasoning_effort (no_think/low/high).
+    // Backend contract: app/compat/families/hunyuan.py (id "hunyuan-hy3").
+    if (/hy3|hunyuan/.test(id)) return { effort: ['no_think','low','high'] };
     // Other Chinese reasoning models.
     if (/glm|mimo|minimax/.test(id)) return { effort: ['off','enable','adaptive'] };
-    // Gemini.
-    if (/gemini.*3/.test(id)) return { effort: ['off','low','medium','high'] };
+    // Gemini 3.x — thinkingLevel enum low/medium/high/max (families/gemini.py
+    // _VALID_LEVELS; xhigh coerces to max server-side).
+    if (/gemini.*3/.test(id)) return { effort: ['off','low','medium','high','max'] };
     if (/gemini/.test(id)) return { effort: ['off','16k','32k'] };
     // GPT-5.4 / 5.5
     if (/gpt-?5\.[45]/.test(id)) return { effort: ['off','low','medium','high','xhigh'] };
     // Generic reasoning-capable fallback.
     if (/gpt-5|o1|o3|o4|openrouter/.test(id)) return { effort: ['off','low','medium','high','max'] };
+    // Meta Muse Spark — versioned wire (families/muse.py). 1.1 uses
+    // thinking+output_config.effort (low..xhigh, no off); 1.2 uses top-level
+    // reasoning_effort (minimal..ultra, xhigh default, no off).
+    if (/muse[-_]?spark/.test(id)) {
+        if (/1\.0|1\.1|0\./.test(id)) return { effort: ['low','medium','high','xhigh'], mandatory: true };
+        return { effort: ['minimal','low','medium','high','xhigh','ultra'], mandatory: true };  // 1.2+ / bare
+    }
+    // ByteDance Doubao — minimal disables thinking (families/doubao.py).
+    if (/doubao/.test(id)) return { effort: ['minimal','low','medium','high'] };
+    // KwaiPilot Kat-Coder — vocabulary undocumented, backend passes through.
+    if (/kat-coder|kwaipilot/.test(id)) return { effort: ['off','minimal','low','medium','high','max'] };
 
     return null;  // no reasoning controls
 }
@@ -1517,17 +1555,13 @@ window.deleteAllModels = () => {
     }
 };
 
-// Save thinking config silently — no toast notification, no auto-test.
-// The user will explicitly test via the Test button if needed.
+// Thinking controls mutate globalConfig in place and go through the dirty-safe
+// autosave path. A raw fetch here raced the global change→scheduleAutoSave
+// listener and could be dropped by the in-flight guard with no retry.
 window.updateModelThinking = (idx, value) => {
     if (globalConfig.providers[activeProviderId].models[idx]) {
         globalConfig.providers[activeProviderId].models[idx].thinking = value;
-        // Silent save: persist to backend without showing UI notifications
-        fetch('/api/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(globalConfig)
-        }).catch(err => console.error('Silent thinking save failed:', err));
+        scheduleAutoSave();
     }
 };
 
@@ -1536,11 +1570,7 @@ window.updateModelReasoningMode = (idx, value) => {
     const models = globalConfig.providers[activeProviderId]?.models;
     if (models && models[idx]) {
         models[idx].reasoning_mode = value;
-        fetch('/api/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(globalConfig)
-        }).catch(err => console.error('Silent reasoning-mode save failed:', err));
+        scheduleAutoSave();
     }
 };
 
@@ -1550,11 +1580,7 @@ window.updateModelContext = (idx, value) => {
     const models = globalConfig.providers[activeProviderId]?.models;
     if (models && models[idx]) {
         models[idx].reasoning_context = value;
-        fetch('/api/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(globalConfig)
-        }).catch(err => console.error('Silent reasoning-context save failed:', err));
+        scheduleAutoSave();
     }
 };
 
@@ -1563,11 +1589,7 @@ window.updateModelThinkingDisplay = (idx, value) => {
     const models = globalConfig.providers[activeProviderId]?.models;
     if (models && models[idx]) {
         models[idx].thinking_display = value;
-        fetch('/api/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(globalConfig)
-        }).catch(err => console.error('Silent thinking-display save failed:', err));
+        scheduleAutoSave();
     }
 };
 
@@ -6662,15 +6684,6 @@ function renderConsumptionChartFromBuckets(buckets) {
         <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;">${grid}${bars}${labels}</svg>`;
 }
 
-// Helper: return chart data source for the current filter state.
-function _getChartData() {
-    // If summary is loaded and no column filters are active, use summary buckets.
-    if (usageSummaryState && !Object.keys(usageColFilters).length) {
-        return usageSummaryState.buckets || [];
-    }
-    return null; // fall through to client aggregation
-}
-
 function renderPricingPage() {
     // Loading guard: if canonical data isn't fetched yet, show a placeholder and
     // kick off the load (it calls renderUsageTable again when done).
@@ -6893,17 +6906,7 @@ function renderUsageTable() {
     const modeButtons = ['token', 'cost', 'pricing'].map(mode => `<button class="btn ${usageViewMode === mode ? 'btn-primary' : 'btn-outline'}" style="padding:7px 14px;font-size:12px;font-weight:800;letter-spacing:.04em;" onclick="setUsageViewMode('${mode}')">${mode.toUpperCase()}</button>`).join('');
     const timeframeButtons = USAGE_TIMEFRAMES.map(key => `<button class="btn ${usageTimeframe === key ? 'btn-primary' : 'btn-outline'}" style="padding:7px 12px;font-size:12px;font-weight:800;" onclick="setUsageTimeframe('${key}')">${USAGE_TIMEFRAME_LABELS[key]}</button>`).join('');
 
-    // Build provider/model/bucket data from summary or loaded rows.
-    let providerGraphData, providerPieData, chartData;
-    if (usageSummaryState && !filteredData.length) {
-        providerGraphData = usageSummaryState.providers || [];
-        providerPieData = usageSummaryState.models || [];
-        chartData = usageSummaryState.buckets || [];
-    } else {
-        providerGraphData = _buildProviderGraphData(filteredData);
-        providerPieData = _buildProviderGraphData(filteredData);
-        chartData = _consumeBucketsForChart(filteredData);
-    }
+    // Charts render directly from summary/filtered rows below — no intermediate locals.
 
     let html = `<div class="settings-section">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:16px;flex-wrap:wrap;">

@@ -226,17 +226,105 @@ def _remember_state(state: str, provider: str, redirect_uri: str, code_verifier:
     }
 
 
-def _consume_state(provider: str, state: Any, redirect_uri: str, code_verifier: Any) -> None:
+# Redacted failure categories — never log raw state/code/verifier/token.
+OAUTH_FAIL_MISSING = "missing"
+OAUTH_FAIL_EXPIRED = "expired"
+OAUTH_FAIL_MISMATCH = "mismatch"
+OAUTH_FAIL_DUPLICATE = "duplicate"
+
+
+class OAuthStateError(Exception):
+    """Controlled OAuth state failure with a redacted category (no secrets)."""
+
+    def __init__(self, category: str, message: str):
+        super().__init__(message)
+        self.category = category
+        self.message = message
+
+
+def consume_oauth_state(
+    state: Any,
+    *,
+    provider: str | None = None,
+    redirect_uri: str | None = None,
+    code_verifier: Any = None,
+    require_provider_match: bool = True,
+    require_redirect_match: bool = True,
+    require_verifier_match: bool = True,
+) -> dict[str, Any]:
+    """Shared one-shot OAuth state consume used by /callback and /exchange.
+
+    Pops the remembered state exactly once. Subsequent calls with the same
+    state yield category ``duplicate`` (Option B: after FE poll pops
+    completion the popup reload may show invalid — cosmetic, accepted for v1).
+
+    Never logs or returns raw state/code/verifier/token values.
+    Multi-worker note: ``_oauth_states`` is process-local; sticky sessions or
+    a shared store would be required across workers (doc only for v1).
+    """
     if not isinstance(state, str) or not state:
-        raise HTTPException(status_code=400, detail="state is required")
+        raise OAuthStateError(OAUTH_FAIL_MISSING, "OAuth state is required")
+
+    # Distinguish never-seen vs already-consumed without retaining secrets:
+    # FE poll pops completion after first success; until then status "done"
+    # remains briefly so a duplicate popup reload can surface category=duplicate.
+    # After the poll pop, reload shows missing/invalid — cosmetic (Option B).
+    already_done = (
+        isinstance(state, str)
+        and _oauth_completions.get(state, {}).get("status") == "done"
+    )
+
     entry = _oauth_states.pop(state, None)
     now = datetime.now(timezone.utc).timestamp()
-    if entry is None or entry["expires"] <= now:
-        raise HTTPException(status_code=400, detail="OAuth state is invalid or expired")
-    if entry["provider"] != provider or entry["redirect_uri"] != redirect_uri:
-        raise HTTPException(status_code=400, detail="OAuth state does not match this request")
-    if entry["code_verifier"] is not None and entry["code_verifier"] != code_verifier:
-        raise HTTPException(status_code=400, detail="PKCE code_verifier does not match the authorization request")
+
+    if entry is None:
+        if already_done:
+            raise OAuthStateError(
+                OAUTH_FAIL_DUPLICATE,
+                "OAuth state was already consumed",
+            )
+        raise OAuthStateError(
+            OAUTH_FAIL_MISSING,
+            "OAuth state is invalid or expired",
+        )
+
+    if entry.get("expires", 0) <= now:
+        raise OAuthStateError(OAUTH_FAIL_EXPIRED, "OAuth state is invalid or expired")
+
+    if require_provider_match and provider is not None and entry.get("provider") != provider:
+        raise OAuthStateError(OAUTH_FAIL_MISMATCH, "OAuth state does not match this request")
+
+    if require_redirect_match and redirect_uri is not None and entry.get("redirect_uri") != redirect_uri:
+        raise OAuthStateError(OAUTH_FAIL_MISMATCH, "OAuth state does not match this request")
+
+    if (
+        require_verifier_match
+        and entry.get("code_verifier") is not None
+        and entry.get("code_verifier") != code_verifier
+    ):
+        raise OAuthStateError(
+            OAUTH_FAIL_MISMATCH,
+            "PKCE code_verifier does not match the authorization request",
+        )
+
+    return entry
+
+
+def _consume_state(provider: str, state: Any, redirect_uri: str, code_verifier: Any) -> None:
+    """Legacy exchange path: raise HTTPException on failure (redacted detail)."""
+    try:
+        consume_oauth_state(
+            state,
+            provider=provider,
+            redirect_uri=redirect_uri,
+            code_verifier=code_verifier,
+            require_provider_match=True,
+            require_redirect_match=True,
+            require_verifier_match=True,
+        )
+    except OAuthStateError as exc:
+        # Map categories to the same user-facing messages; never include secrets.
+        raise HTTPException(status_code=400, detail=exc.message) from None
 
 
 def _error_message(payload: Any, fallback: str) -> str:

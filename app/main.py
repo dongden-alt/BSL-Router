@@ -41,6 +41,8 @@ from app.oauth import (
     _loopback_callback_page,
     OAUTH_PROVIDERS,
     ensure_fresh_token,
+    consume_oauth_state,
+    OAuthStateError,
 )
 from app.utils.google_cloudcode_egress import build_google_egress_client
 from app.normalizer import UniversalNormalizer
@@ -85,6 +87,10 @@ from app.antifreeze import (
 from app.compat import get_profile, is_anthropic_compatible, ToolLedger
 from app.middleware.response_format_guard import inject_json_instruction, has_response_format
 from app.middleware.glm_tools import normalize_glm_tool_calls, inject_glm_language_forcing
+from app.middleware.agentrouter_policy import (
+    agentrouter_should_skip_for_vietnamese,
+    format_agentrouter_vn_skip_error,
+)
 from app.middleware.quality import (
     is_length_truncated,
     build_continuation_payload,
@@ -386,7 +392,9 @@ def _response_has_model_output(data: dict, out_tokens: int = 0) -> bool:
     if isinstance(choices, list) and choices:
         has_choices = True
         for choice in choices:
-            message = choice.get("message") or {}
+            if not isinstance(choice, dict):
+                continue
+            message = _as_obj(choice.get("message"))
             # NOTE: Only "content" counts as visible user output.
             # reasoning_content / reasoning are thinking tokens — a response
             # with only reasoning but no visible content is a zombie from
@@ -419,6 +427,17 @@ def _response_has_model_output(data: dict, out_tokens: int = 0) -> bool:
     if out_tokens > 0 and not has_choices and not has_anthropic_content:
         return True
     return False
+
+
+def _as_obj(value):
+    """Dict-or-empty helper for JSON nulls.
+
+    dict.get("delta", {}) still returns None when the key is present with a
+    JSON null. AgentRouter and other gateways emit `"delta": null` on
+    ping / content_block_stop / final OpenAI chunks; calling .get on that
+    None crashed StreamBuffer (`'NoneType' object has no attribute 'get'`).
+    """
+    return value if isinstance(value, dict) else {}
 
 
 # NOTE: _resolve_combo_chain_segment used to be defined here. It now lives in
@@ -1850,20 +1869,41 @@ async def antigravity_callback(code: str | None = None, state: str | None = None
     """Handle Google/Standard OAuth redirects at root level.
 
     Exchanges the code automatically and registers completion in _oauth_completions.
+    Uses the shared consume_oauth_state helper (same path as /exchange).
+    Option B: duplicate popup reload after FE poll pops completion may show
+    invalid — cosmetic; FE already closed the modal on first success.
     """
+    from app.oauth import OAUTH_PROVIDERS, _oauth_completions
+
     if error:
         if state:
-            from app.oauth import _oauth_completions
-            _oauth_completions[state] = {"status": "error", "error": error_description or error}
+            # Record failure without secrets (error_description may be provider text).
+            _oauth_completions[state] = {
+                "status": "error",
+                "error": error_description or error,
+                "category": "provider_error",
+            }
         return _callback_page(False, error_description or error)
     if not code:
         return _callback_page(False, "No authorization code received.")
-    entry = _oauth_states.pop(state, None) if state else None
-    if not entry:
-        return _callback_page(False, "OAuth state is invalid or expired.")
+    try:
+        # Shared one-shot consume — no ad-hoc _oauth_states.pop here.
+        entry = consume_oauth_state(
+            state,
+            require_provider_match=False,
+            require_redirect_match=False,
+            require_verifier_match=False,
+        )
+    except OAuthStateError as exc:
+        if state:
+            _oauth_completions[state] = {
+                "status": "error",
+                "error": exc.message,
+                "category": exc.category,
+            }
+        return _callback_page(False, exc.message)
     provider = entry.get("provider")
     try:
-        from app.oauth import OAUTH_PROVIDERS, _oauth_completions
         provider_entry = OAUTH_PROVIDERS[provider]
         tokens = await _exchange_authorization_code(
             provider, provider_entry, code,
@@ -1874,8 +1914,12 @@ async def antigravity_callback(code: str | None = None, state: str | None = None
         return _callback_page(True, f"Connected as {connection.get('email', connection.get('displayName', ''))}")
     except Exception as exc:
         if state:
-            from app.oauth import _oauth_completions
-            _oauth_completions[state] = {"status": "error", "error": str(exc)}
+            _oauth_completions[state] = {
+                "status": "error",
+                # str(exc) may mention network/provider text; never include code/verifier.
+                "error": str(exc),
+                "category": "exchange_error",
+            }
         return _callback_page(False, str(exc))
 
 
@@ -4643,157 +4687,172 @@ async def _accumulate_sse_stream(
             # (without content), and SSE comments (: ping) are metadata — the
             # provider may send them then go silent for minutes while thinking.
             # Only actual content/reasoning/tool_call data marks TTFT done.
+            #
+            # NULL-SAFE + DUAL-FORMAT (2026-08-20 AgentRouter):
+            # - `"delta": null` / `"message": null` / `"choices":[null]` crash
+            #   dict.get("x", {}) because the key is present with JSON null.
+            # - Some anthropic-format gateways still emit OpenAI chat.completion
+            #   SSE on stream:true. Parse BOTH shapes every chunk so content is
+            #   not silently dropped (empty assemble → zombie_empty_response).
             _has_real_content = False
-            if _is_anthropic_fmt:
-                for _ln in _txt.split("\n"):
-                    _ln = _ln.strip()
-                    if not _ln.startswith("data: "):
-                        continue
-                    _d = _ln[6:]
-                    if _d == "[DONE]":
-                        continue
-                    try:
-                        _ev = json.loads(_d)
-                    except Exception:
-                        continue
-                    _et = _ev.get("type", "")
-                    _ed = _ev.get("delta", {})
-                    if _ed.get("type") in ("text_delta", "thinking_delta", "input_json_delta"):
+            for _ln in _txt.split("\n"):
+                _ln = _ln.strip()
+                if not _ln.startswith("data: "):
+                    continue
+                _ds = _ln[6:]
+                if _ds == "[DONE]":
+                    continue
+                try:
+                    _ev = json.loads(_ds)
+                except Exception:
+                    continue
+                if not isinstance(_ev, dict):
+                    continue
+                _et = _ev.get("type", "") or ""
+                _ed = _as_obj(_ev.get("delta"))
+                if _ed.get("type") in ("text_delta", "thinking_delta", "input_json_delta"):
+                    _has_real_content = True
+                    break
+                if _et == "content_block_start":
+                    _blk = _as_obj(_ev.get("content_block"))
+                    if _blk.get("type") == "tool_use":
                         _has_real_content = True
                         break
-                    if _et == "content_block_start":
-                        _blk = _ev.get("content_block", {})
-                        if _blk.get("type") == "tool_use":
-                            _has_real_content = True
-                            break
-            else:
-                for _ln in _txt.split("\n"):
-                    _ln = _ln.strip()
-                    if not _ln.startswith("data: "):
+                for _ch2 in (_ev.get("choices") or []):
+                    if not isinstance(_ch2, dict):
                         continue
-                    _ds = _ln[6:]
-                    if _ds == "[DONE]":
-                        continue
-                    try:
-                        _cd = json.loads(_ds)
-                    except Exception:
-                        continue
-                    for _ch2 in _cd.get("choices", []):
-                        _dl = _ch2.get("delta", {})
-                        if _dl.get("content") or _dl.get("reasoning_content") or _dl.get("tool_calls"):
-                            _has_real_content = True
-                            break
-                    if _has_real_content:
+                    _dl = _as_obj(_ch2.get("delta"))
+                    if _dl.get("content") or _dl.get("reasoning_content") or _dl.get("tool_calls"):
+                        _has_real_content = True
                         break
+                if _has_real_content:
+                    break
 
             if _has_real_content:
                 _a_seen_real_data = True
 
-            if _is_anthropic_fmt:
-                for _ln in _txt.split("\n"):
-                    _ln = _ln.strip()
-                    if not _ln.startswith("data: "):
-                        continue
-                    _d = _ln[6:]
-                    if _d == "[DONE]":
-                        continue
-                    try:
-                        _ev = json.loads(_d)
-                    except Exception:
-                        continue
-                    _et = _ev.get("type", "")
-                    _ed = _ev.get("delta", {})
-                    if _ed.get("type") == "thinking_delta":
-                        _a_rp.append(_ed.get("thinking", ""))
-                    elif _ed.get("type") == "text_delta":
-                        _a_cp.append(_ed.get("text", ""))
-                    elif _ed.get("type") == "input_json_delta":
-                        _pj = _ed.get("partial_json", "")
-                        if _pj and _a_tc:
-                            _li = max(_a_tc.keys())
-                            _a_tc[_li]["function"]["arguments"] += _pj
-                    elif _et == "content_block_start":
-                        _blk = _ev.get("content_block", {})
-                        if _blk.get("type") == "tool_use":
-                            _a_tc[len(_a_tc)] = {
-                                "id": _blk.get("id", ""),
-                                "type": "function",
-                                "function": {
-                                    "name": _blk.get("name", ""),
-                                    "arguments": "",
-                                },
-                            }
-                    elif _et == "message_delta":
-                        _do = _ev.get("delta", {})
-                        if _do.get("stop_reason"):
-                            _srm = {
-                                "end_turn": "stop",
-                                "stop_sequence": "stop",
-                                "max_tokens": "length",
-                                "tool_use": "tool_calls",
-                            }
-                            _a_fr = _srm.get(_do["stop_reason"], _do["stop_reason"])
-                        _uu = _ev.get("usage", {})
+            # Always run both dialect extractors. Expected-format first keeps
+            # priority when a gateway echoes dual-shaped metadata; the other
+            # dialect is a no-op on pure Anthropic/OpenAI streams.
+            _parse_order = (True, False) if _is_anthropic_fmt else (False, True)
+            for _ln in _txt.split("\n"):
+                _ln = _ln.strip()
+                if not _ln.startswith("data: "):
+                    continue
+                _d = _ln[6:]
+                if _d == "[DONE]":
+                    continue
+                try:
+                    _ev = json.loads(_d)
+                except Exception:
+                    continue
+                if not isinstance(_ev, dict):
+                    continue
+
+                for _try_anth in _parse_order:
+                    if _try_anth:
+                        _et = _ev.get("type", "") or ""
+                        # Skip pure OpenAI chunks in the Anthropic pass.
+                        if not _et and ("choices" in _ev or _ev.get("object") == "chat.completion.chunk"):
+                            continue
+                        _ed = _as_obj(_ev.get("delta"))
+                        if _ed.get("type") == "thinking_delta":
+                            _a_rp.append(_ed.get("thinking", "") or "")
+                        elif _ed.get("type") == "text_delta":
+                            _a_cp.append(_ed.get("text", "") or "")
+                        elif _ed.get("type") == "input_json_delta":
+                            _pj = _ed.get("partial_json", "") or ""
+                            if _pj and _a_tc:
+                                _li = max(_a_tc.keys())
+                                _a_tc[_li]["function"]["arguments"] += _pj
+                        if _et == "content_block_start":
+                            _blk = _as_obj(_ev.get("content_block"))
+                            if _blk.get("type") == "tool_use":
+                                _a_tc[len(_a_tc)] = {
+                                    "id": _blk.get("id", "") or "",
+                                    "type": "function",
+                                    "function": {
+                                        "name": _blk.get("name", "") or "",
+                                        "arguments": "",
+                                    },
+                                }
+                        elif _et == "message_delta":
+                            _do = _as_obj(_ev.get("delta"))
+                            if _do.get("stop_reason"):
+                                _srm = {
+                                    "end_turn": "stop",
+                                    "stop_sequence": "stop",
+                                    "max_tokens": "length",
+                                    "tool_use": "tool_calls",
+                                }
+                                _a_fr = _srm.get(_do["stop_reason"], _do["stop_reason"])
+                            _uu = _as_obj(_ev.get("usage"))
+                            if _uu:
+                                _a_out = _uu.get("output_tokens", _a_out)
+                        elif _et == "message_start":
+                            _uu = _as_obj(_as_obj(_ev.get("message")).get("usage"))
+                            if _uu:
+                                # Anthropic input_tokens is EXCLUSIVE of cache; OpenAI
+                                # prompt_tokens is INCLUSIVE. Fold fresh + read + creation
+                                # so the assembled OpenAI-shaped usage keeps the
+                                # cached_tokens <= prompt_tokens invariant. Only cache
+                                # READS map to cached_tokens (creation is fresh writes).
+                                _a_cache_read = _uu.get("cache_read_input_tokens", 0) or 0
+                                _a_cache_create = _uu.get("cache_creation_input_tokens", 0) or 0
+                                _fresh = _uu.get("input_tokens")
+                                if _fresh is not None:
+                                    _a_in = _fresh + _a_cache_read + _a_cache_create
+                                _a_cached = _a_cache_read or _a_cached
+                        if _et:
+                            # Consumed as Anthropic - skip OpenAI pass for this event.
+                            break
+                    else:
+                        _choices = _ev.get("choices")
+                        if not isinstance(_choices, list):
+                            _choices = []
+                        for _ch2 in _choices:
+                            if not isinstance(_ch2, dict):
+                                continue
+                            _dl = _as_obj(_ch2.get("delta"))
+                            if _dl.get("content"):
+                                _a_cp.append(_dl["content"])
+                            if _dl.get("reasoning_content"):
+                                _a_rp.append(_dl["reasoning_content"])
+                            _tcs2 = _dl.get("tool_calls")
+                            if _tcs2:
+                                for _tc2 in _tcs2:
+                                    if not isinstance(_tc2, dict):
+                                        continue
+                                    _ix = _tc2.get("index", 0)
+                                    if _ix not in _a_tc:
+                                        _a_tc[_ix] = {
+                                            "id": _tc2.get("id", "") or "",
+                                            "type": "function",
+                                            "function": {"name": "", "arguments": ""},
+                                        }
+                                    _fn2 = _as_obj(_tc2.get("function"))
+                                    if _fn2.get("name"):
+                                        _a_tc[_ix]["function"]["name"] += _fn2["name"]
+                                    if _fn2.get("arguments"):
+                                        _a_tc[_ix]["function"]["arguments"] += _fn2["arguments"]
+                            if _ch2.get("finish_reason"):
+                                _a_fr = _ch2["finish_reason"]
+                        _uu = _as_obj(_ev.get("usage"))
                         if _uu:
-                            _a_out = _uu.get("output_tokens", _a_out)
-                    elif _et == "message_start":
-                        _uu = _ev.get("message", {}).get("usage", {})
-                        if _uu:
-                            # Anthropic input_tokens is EXCLUSIVE of cache; OpenAI
-                            # prompt_tokens is INCLUSIVE. Fold fresh + read + creation
-                            # so the assembled OpenAI-shaped usage keeps the
-                            # cached_tokens <= prompt_tokens invariant. Only cache
-                            # READS map to cached_tokens (creation is fresh writes).
-                            _a_cache_read = _uu.get("cache_read_input_tokens", 0)
-                            _a_cache_create = _uu.get("cache_creation_input_tokens", 0)
-                            _fresh = _uu.get("input_tokens")
-                            if _fresh is not None:
-                                _a_in = _fresh + _a_cache_read + _a_cache_create
-                            _a_cached = _a_cache_read or _a_cached
-            else:
-                for _ln in _txt.split("\n"):
-                    _ln = _ln.strip()
-                    if not _ln.startswith("data: "):
-                        continue
-                    _ds = _ln[6:]
-                    if _ds == "[DONE]":
-                        continue
-                    try:
-                        _cd = json.loads(_ds)
-                    except Exception:
-                        continue
-                    for _ch2 in _cd.get("choices", []):
-                        _dl = _ch2.get("delta", {})
-                        if _dl.get("content"):
-                            _a_cp.append(_dl["content"])
-                        if _dl.get("reasoning_content"):
-                            _a_rp.append(_dl["reasoning_content"])
-                        _tcs2 = _dl.get("tool_calls")
-                        if _tcs2:
-                            for _tc2 in _tcs2:
-                                _ix = _tc2.get("index", 0)
-                                if _ix not in _a_tc:
-                                    _a_tc[_ix] = {
-                                        "id": _tc2.get("id", ""),
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""},
-                                    }
-                                _fn2 = _tc2.get("function", {})
-                                if _fn2.get("name"):
-                                    _a_tc[_ix]["function"]["name"] += _fn2["name"]
-                                if _fn2.get("arguments"):
-                                    _a_tc[_ix]["function"]["arguments"] += _fn2["arguments"]
-                        if _ch2.get("finish_reason"):
-                            _a_fr = _ch2["finish_reason"]
-                    _uu = _cd.get("usage", {})
-                    if _uu:
-                        _a_in = _uu.get("prompt_tokens", _a_in)
-                        _a_out = _uu.get("completion_tokens", _a_out)
-                        _ct = _uu.get("prompt_tokens_details", {})
-                        if isinstance(_ct, dict):
-                            _a_cached = _ct.get("cached_tokens", _a_cached)
-                    if not _a_cp and _cd.get("id"):
-                        _a_rid = _cd["id"]
+                            if _uu.get("prompt_tokens") is not None:
+                                _a_in = _uu.get("prompt_tokens", _a_in)
+                            elif _uu.get("input_tokens") is not None:
+                                _a_in = _uu.get("input_tokens", _a_in)
+                            if _uu.get("completion_tokens") is not None:
+                                _a_out = _uu.get("completion_tokens", _a_out)
+                            elif _uu.get("output_tokens") is not None:
+                                _a_out = _uu.get("output_tokens", _a_out)
+                            _ct = _as_obj(_uu.get("prompt_tokens_details"))
+                            if _ct.get("cached_tokens") is not None:
+                                _a_cached = _ct.get("cached_tokens", _a_cached)
+                        if not _a_cp and _ev.get("id"):
+                            _a_rid = _ev["id"]
+
                     # Don't override _a_rmodel with upstream's model echo.
                     # _target_model is the authoritative model name after combo
                     # fallback advancement. Upstream may echo a different model
@@ -4814,13 +4873,31 @@ async def _accumulate_sse_stream(
             response=_sse_resp,
         )
 
-    _a_msg = {"role": "assistant", "content": "".join(_a_cp)}
+    _a_content = "".join(_a_cp)
+    _a_msg = {"role": "assistant", "content": _a_content}
     if _a_rp:
         _a_msg["reasoning_content"] = "".join(_a_rp)
     if _a_tc:
         _a_msg["tool_calls"] = [
             _a_tc[k] for k in sorted(_a_tc.keys())
         ]
+
+    # Usage-less SSE (AgentRouter / some Chinese gateways): content is present
+    # but no usage frame. Without this, console shows Out:0 even on 200 "OK"
+    # and operators misread success as empty. Estimate only when upstream
+    # omitted completion_tokens AND we assembled visible output/tools.
+    if (not _a_out) and (_a_content.strip() or _a_tc or _a_rp):
+        _est_src = _a_content + ("".join(_a_rp) if _a_rp else "")
+        if _a_tc:
+            try:
+                _est_src += json.dumps(
+                    [_a_tc[k] for k in sorted(_a_tc.keys())], ensure_ascii=False
+                )
+            except Exception:
+                pass
+        # ~4 chars/token heuristic; floor 1 so out_tokens never lies as 0
+        # when the bubble is non-empty.
+        _a_out = max(1, (len(_est_src) + 3) // 4)
 
     return {
         "id": _a_rid,
@@ -5359,6 +5436,69 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     except Exception as e:
         print(f"Efficiency middleware error (non-blocking): {e}")
 
+    # AgentRouter-only VN preflight (live 2026-08-20):
+    # AR returns 400 content-blocked when the *request body* contains Vietnamese
+    # (file/history/context), even if the user tip is pure English. Soft system
+    # English force cannot fix that. Skip this leaf before dialing upstream:
+    #   - combo chain: advance to next entry
+    #   - direct agentrouter: clear 400 with reason
+    # Other providers are untouched.
+    try:
+        _ar_skip, _ar_reason = agentrouter_should_skip_for_vietnamese(
+            provider_name, internal_request.messages
+        )
+    except Exception as _ar_err:
+        print(f"[AgentRouter-VN] preflight failed (fail-open): {_ar_err}", flush=True)
+        _ar_skip, _ar_reason = False, ""
+    if _ar_skip:
+        _ar_err_body = format_agentrouter_vn_skip_error(_ar_reason)
+        print(
+            f"[AgentRouter-VN] skip {provider_name}/{target_model} reason={_ar_reason}",
+            flush=True,
+        )
+        try:
+            obs.log_request(
+                provider=provider_name,
+                model=target_model,
+                status=400,
+                ttft=0.0,
+                in_tokens=0,
+                out_tokens=0,
+                cached_tokens=0,
+                config=config,
+                error_msg=f"content-blocked-preflight:{_ar_reason}",
+                total_time=0.0,
+                stream=bool(getattr(internal_request, 'stream', False)),
+            )
+        except Exception:
+            pass
+        _ar_next = (_retry_state['idx'] + 1) if _retry_state else 1
+        _ar_chain = active_chain or []
+        if len(_ar_chain) > 1 and _ar_next < len(_ar_chain):
+            _ar_deadline = (
+                (_retry_state or {}).get('deadline')
+                or (time.monotonic() + CHAIN_TOTAL_BUDGET)
+            )
+            print(
+                f"[Combo Fallback] '{model}' agentrouter VN preflight for "
+                f"{target_model}/{provider_name} — advancing to entry {_ar_next}",
+                flush=True,
+            )
+            return await _process_chat_completion(
+                body,
+                client_wants_anthropic,
+                client_wants_gemini,
+                _retry_state={
+                    'chain': _ar_chain,
+                    'idx': _ar_next,
+                    'cache_bp': _cache_breakpoints,
+                    'original_model': original_model,
+                    'deadline': _ar_deadline,
+                },
+                request=request,
+            )
+        return JSONResponse(_ar_err_body, status_code=400)
+
     # Apply Static-First sorting to maximize cache hits (gated by tools.caching_static_sort)
     internal_request = PromptCachingAdapter.apply_static_first_sort(internal_request, tools_config=config.get("tools", {}))
 
@@ -5467,8 +5607,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             if _profile.requires_anthropic_version:
                 headers["anthropic-version"] = "2023-06-01"
 
-        # Phase 3: Reasoning Policy Engine — inject thinking config
-        thinking_setting = provider_config.get('thinking_config', {}).get(target_model, 'off')
+        # Phase 3: Reasoning Policy Engine — inject thinking config.
+        # Prefer per-model field written by UI, fallback to legacy config.yaml map.
+        model_entry_thinking = None
+        for m in provider_config.get("models", []):
+            if m.get("id") == target_model:
+                model_entry_thinking = m.get("thinking")
+                break
+        thinking_setting = model_entry_thinking or provider_config.get('thinking_config', {}).get(target_model, 'off')
         upstream_payload = apply_thinking_to_anthropic_payload(
             upstream_payload, target_model, provider_name, thinking_setting
         )
@@ -5477,6 +5623,9 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         upstream_payload = internal_request.model_dump(exclude_none=True)
         # Strip side-channel fields that should never reach upstream providers
         upstream_payload.pop("_bsl_cache_breakpoints", None)
+        # Anthropic top-level system must never ride the OpenAI wire
+        # (x5m5x 400: 未知请求字段：system).
+        upstream_payload = _fold_top_level_system_into_messages(upstream_payload)
 
         # Apply prompt caching for OpenAI / compatible / Gemini paths
         upstream_payload = PromptCachingAdapter.apply_provider_caching(
@@ -5664,7 +5813,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             intent = _detect_output_intent(internal_request.messages)
             if intent:
                 upstream_payload = _inject_intent_format_block(upstream_payload, intent)
-                print(f"[IntentDriven] Detected format intent '{intent}' â€” injected enforcement block", flush=True)
+                # OpenAI wire: ensure we did not leave a top-level system key
+                if not _is_anthropic_fmt:
+                    upstream_payload = _fold_top_level_system_into_messages(upstream_payload)
+                print(f"[IntentDriven] Detected format intent '{intent}' - injected enforcement block", flush=True)
         except Exception:
             pass  # Fail-open: never break the proxy for a format detection error
 
@@ -9068,7 +9220,14 @@ def _detect_output_intent(messages) -> str:
 
 
 def _inject_intent_format_block(payload: dict, intent: str) -> dict:
-    """Inject a format-enforcement system prompt block for the detected intent."""
+    """Inject a format-enforcement system prompt block for the detected intent.
+
+    Wire-aware:
+      - If payload already has top-level Anthropic `system` (str/list), append there.
+      - Otherwise fold into messages[] as role=system (OpenAI-compatible).
+    Never create a bare top-level `system` key on an OpenAI-shaped payload —
+    Chinese OpenAI gateways (x5m5x etc.) 400 unknown field `system`.
+    """
     FORMAT_BLOCKS = {
         "json": (
             "\n\nFORMAT DIRECTIVE: You MUST respond with valid JSON only. "
@@ -9097,7 +9256,7 @@ def _inject_intent_format_block(payload: dict, intent: str) -> dict:
         "detailed": (
             "\n\nFORMAT DIRECTIVE: You MUST provide a thorough, detailed response. "
             "Include step-by-step reasoning, examples, and edge-case analysis. "
-            "Leave nothing implicit â€” explain every assumption and tradeoff."
+            "Leave nothing implicit — explain every assumption and tradeoff."
         ),
     }
 
@@ -9105,21 +9264,69 @@ def _inject_intent_format_block(payload: dict, intent: str) -> dict:
     if not block:
         return payload
 
-    # Inject into system prompt (Anthropic format: system is top-level string or content array)
     existing_system = payload.get("system")
     if isinstance(existing_system, str):
         payload["system"] = existing_system + block
-    elif isinstance(existing_system, list):
-        # Content-block list â€” append a text block
+        return payload
+    if isinstance(existing_system, list):
         payload["system"] = existing_system + [{"type": "text", "text": block}]
-    else:
-        # No system prompt yet â€” create one
-        payload["system"] = block.strip()
+        return payload
 
+    # OpenAI-shaped: fold into messages[].role=system
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        messages = []
+        payload["messages"] = messages
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "system":
+            content = msg.get("content")
+            if isinstance(content, str):
+                msg["content"] = content + block
+            elif isinstance(content, list):
+                content.append({"type": "text", "text": block.strip()})
+            else:
+                msg["content"] = block.strip()
+            return payload
+    messages.insert(0, {"role": "system", "content": block.strip()})
     return payload
 
 
-# â”€â”€â”€ Async Polling Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def _fold_top_level_system_into_messages(payload: dict) -> dict:
+    """OpenAI-wire safety: top-level `system` is Anthropic-only.
+
+    Live x5m5x 2026-08-20: 400 未知请求字段：system when BSL left a top-level
+    system key on /v1/chat/completions. Fold into messages and drop the key.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    sys_val = payload.pop("system", None)
+    if sys_val is None:
+        return payload
+    if isinstance(sys_val, list):
+        text = "".join(
+            (b.get("text", "") if isinstance(b, dict) else str(b or ""))
+            for b in sys_val
+        ).strip()
+    else:
+        text = str(sys_val).strip()
+    if not text:
+        return payload
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        messages = []
+        payload["messages"] = messages
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "system":
+            content = msg.get("content")
+            if isinstance(content, str):
+                msg["content"] = (content + "\n" + text).strip()
+            elif isinstance(content, list):
+                content.append({"type": "text", "text": text})
+            else:
+                msg["content"] = text
+            return payload
+    messages.insert(0, {"role": "system", "content": text})
+    return payload
 
 async def _poll_qwen_task(
     client: httpx.AsyncClient,

@@ -5,12 +5,17 @@ Effort vocabulary differs BY VERSION within the family, which is the
 churn this refactor is designed for:
 
   GLM-5.3  -> ONLY three accepted words: low / high / max.
-               ANY other wire value is an upstream error.
-               Coding-plan mapping into that vocab:
-                 none/minimal/low -> low
-                 medium/high      -> high
-                 xhigh/max        -> max
-               Unknown leftovers coerce to high (safe default).
+                ANY other wire value is an upstream error (code 1210).
+                Thinking is ALWAYS ON — the model rejects disabled/adaptive
+                and bare enabled-without-effort. Even when the operator
+                selects off/auto, the contract forces enabled + low.
+                Coding-plan mapping into that vocab:
+                  none/minimal/low -> low
+                  medium/high      -> high
+                  xhigh/max        -> max
+                  enable/adaptive  -> high (switch words coerced)
+                  off/auto/""      -> low  (thinking cannot be disabled)
+                Unknown leftovers coerce to high (safe default).
 
   GLM-5.2  -> accepts max (default), xhigh, high, medium, low, minimal, none.
                Official semantics:
@@ -34,7 +39,8 @@ contract win and silently drop that path.
 
 `always_applies` is True so the graded path can see the vendor word
 "none" (which is otherwise treated as an OFF_VALUE and would skip apply).
-auto/off/"" still no-op inside _apply — only real vocabulary is written.
+GLM-5.3 additionally runs even for off/auto because thinking is
+mandatory — the early-return gate must not skip it.
 """
 from __future__ import annotations
 
@@ -93,6 +99,17 @@ def _apply(
 ) -> Dict[str, Any]:
     graded = bool(re.search(_GRADED_EFFORT_VERSIONS, ctx.f_val, re.IGNORECASE))
 
+    # GLM-5.3: thinking is MANDATORY. Even off/auto/"" must produce
+    # enabled + low — the upstream rejects disabled/missing thinking
+    # with code 1210 ("该模型始终思考，不支持关闭思考").
+    if graded and _is_glm53(ctx.f_val) and not ctx.effort_is_explicit:
+        return prov.apply(
+            payload,
+            contract,
+            "glm53_forced_on",
+            {"thinking": {"type": "enabled"}, "reasoning_effort": "low"},
+        )
+
     # auto/off/"" = operator did not pick a level. Leave payload alone.
     # "none" is in OFF_VALUES globally but is a real vendor vocabulary word
     # for graded GLM — it must fall through to the version-specific branch.
@@ -130,6 +147,17 @@ def _apply(
                 "thinking": {"type": "enabled"},
                 "reasoning_effort": effort,
             },
+        )
+
+    # GLM-5.3: "enable"/"adaptive" are switch words from older GLM configs.
+    # The 5.3 upstream does NOT accept them — they must be coerced into
+    # the three-word vocabulary with thinking always enabled.
+    if graded and _is_glm53(ctx.f_val) and ctx.effort in ("enable", "adaptive"):
+        return prov.apply(
+            payload,
+            contract,
+            "glm53_switch_coerced",
+            {"thinking": {"type": "enabled"}, "reasoning_effort": "high"},
         )
 
     if ctx.effort == "enable":

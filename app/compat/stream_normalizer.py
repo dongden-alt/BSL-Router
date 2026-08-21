@@ -25,6 +25,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _as_obj(value):
+    """Dict-or-empty helper for JSON nulls (`"delta": null` must not crash)."""
+    return value if isinstance(value, dict) else {}
+
+
 # BUG A streaming rescue helpers (delimiter-scoped buffering for text-form
 # tool calls emitted by GLM/Opus/Sonnet). See app/middleware/glm_tools.py.
 from app.middleware.glm_tools import (
@@ -146,7 +152,7 @@ class StreamNormalizer:
             """
             nonlocal current_tool_index
             for call in calls:
-                fn = call.get("function", {}) if isinstance(call, dict) else {}
+                fn = _as_obj(call.get("function") if isinstance(call, dict) else None)
                 args = fn.get("arguments") or ""
                 tool_blocks[1000 + len(tool_blocks)] = {
                     "index": current_tool_index,
@@ -342,7 +348,7 @@ class StreamNormalizer:
                     continue
 
                 choice = choices[0]
-                delta = choice.get("delta", {})
+                delta = _as_obj(choice.get("delta"))
                 finish = choice.get("finish_reason")
 
                 # Text content delta
@@ -385,7 +391,7 @@ class StreamNormalizer:
                 for tc in tool_calls:
                     tc_index = tc.get("index", 0)
                     tc_id = tc.get("id", "")
-                    function = tc.get("function", {})
+                    function = _as_obj(tc.get("function"))
                     tc_name = function.get("name", "")
                     tc_args = function.get("arguments", "")
 
@@ -537,13 +543,13 @@ class StreamNormalizer:
                         event_type = data.get("type", "")
 
                         if event_type == "message_start":
-                            _msg = data.get("message", {})
+                            _msg = _as_obj(data.get("message"))
                             _start_usage = _msg.get("usage") or {}
                             if _start_usage:
                                 input_tokens = _start_usage.get("input_tokens", input_tokens)
 
                         elif event_type == "content_block_delta":
-                            delta = data.get("delta", {})
+                            delta = _as_obj(data.get("delta"))
                             delta_type = delta.get("type", "")
 
                             if delta_type == "text_delta":
@@ -599,7 +605,7 @@ class StreamNormalizer:
                                     })
 
                         elif event_type == "content_block_start":
-                            block = data.get("content_block", {})
+                            block = _as_obj(data.get("content_block"))
                             if block.get("type") == "tool_use":
                                 current_tool_index += 1
                                 current_tool_name = block.get("name", "")
@@ -650,7 +656,7 @@ class StreamNormalizer:
                                     })
 
                         elif event_type == "message_delta":
-                            msg_delta = data.get("delta", {})
+                            msg_delta = _as_obj(data.get("delta"))
                             stop_reason = msg_delta.get("stop_reason", "end_turn")
                             finish = "stop"
                             if stop_reason == "tool_use":

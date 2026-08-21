@@ -122,6 +122,27 @@ def test_zero_out_tokens_error_still_bans():
     assert ban_type == "softban"
 
 
+def test_detects_chinese_unknown_output_config_field():
+    """x5m5x 400: 未知请求字段：output_config must trigger thinking fallback."""
+    body = '{"error":{"message":"未知请求字段：output_config","type":"invalid_request_error"}}'
+    assert is_thinking_param_rejection(400, body) is True
+
+
+def test_detects_english_unknown_output_config_field():
+    assert is_thinking_param_rejection(
+        400, "unknown request field: output_config"
+    ) is True
+
+
+def test_detects_chinese_unknown_thinking_field():
+    assert is_thinking_param_rejection(400, "未知请求字段：thinking") is True
+
+
+def test_ignores_unrelated_chinese_400():
+    # Mentions 未知 but not a thinking field — must not false-positive.
+    assert is_thinking_param_rejection(400, "未知错误：invalid api key") is False
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

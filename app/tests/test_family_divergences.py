@@ -594,3 +594,83 @@ def test_grok_strips_reasoning_incompatible_params():
     assert "frequency_penalty" not in out
     assert "stop" not in out
     assert out["reasoning_effort"] == "high"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# DIVERGENCE 8 — DeepSeek V4 drops output_config (Chinese reseller 400).
+#
+# WHY LEGACY WAS WRONG:
+#   Legacy (and the original family contract) emitted a "triple shape":
+#     thinking:{type:enabled} + reasoning_effort + output_config.effort
+#   Live x5m5x (and other Chinese OpenAI-compatible gateways) reject
+#   unknown top-level fields with:
+#     400 invalid_request_error: "未知请求字段：output_config"
+#   Dual shape (thinking + reasoning_effort) is accepted; output_config
+#   is not. The thinking-fallback detector also missed the Chinese
+#   phrasing, so BSL never degraded-and-retried.
+# ─────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("f_val", [
+    "x5m5x/deepseek-v4-pro",
+    "iamhc/DeepSeek-V4-Pro",
+    "hcnsec-vip/deepseek-v4-pro",
+])
+@pytest.mark.parametrize("effort", ["high", "max"])
+def test_deepseek_v4_omits_output_config(f_val, effort):
+    """DeepSeek V4 must not emit output_config — Chinese resellers 400 it."""
+    payload = _payload()
+    payload["output_config"] = {"effort": "high"}  # inherited stale field
+    out, prov = resolve_thinking(payload, f_val, effort)
+    assert "output_config" not in out, (
+        f"{f_val}: output_config survived — x5m5x 400s this field. Got: {out}"
+    )
+    assert out.get("thinking") == {"type": "enabled"}
+    assert out.get("reasoning_effort") == effort
+    assert any(r.rule == "dual_shape" for r in prov.records), prov.summary()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# DIVERGENCE 9 — GPT-5 on Anthropic wire strips OpenAI reasoning keys.
+#
+# WHY LEGACY WAS WRONG:
+#   GPT-5 always emitted reasoning_effort + reasoning.mode regardless of
+#   transport. Live AgentRouter probe 2026-08-20 for gpt-5.6-sol:
+#     /v1/messages plain              -> content "OK"
+#     /v1/messages + reasoning_effort -> stalls after message_start (empty)
+#     /v1/chat/completions + effort   -> content "OK"
+#   On the anthropic wire those OpenAI keys produce a zombie empty
+#   stream. Strip them; on openai wire keep the existing GPT-5 shape.
+# ─────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("f_val", [
+    "agentrouter/gpt-5.6-sol",
+    "vsllm-gpt/gpt-5.6-terra",
+])
+def test_gpt5_anthropic_wire_strips_openai_reasoning(f_val):
+    """GPT-5 over /v1/messages must not emit reasoning_effort/reasoning."""
+    payload = _payload()
+    payload["reasoning_effort"] = "max"
+    payload["reasoning"] = {"effort": "max", "mode": "pro"}
+    out, prov = resolve_thinking(
+        payload, f_val, "max", reasoning_mode="pro", wire_format="anthropic"
+    )
+    for banned in ("reasoning_effort", "reasoning", "output_config", "thinking"):
+        assert banned not in out, (
+            f"{f_val} anthropic wire leaked {banned!r}: {out}"
+        )
+    assert any(
+        r.rule == "anthropic_wire_strip_openai_reasoning" for r in prov.records
+    ), prov.summary()
+
+
+def test_gpt5_openai_wire_still_emits_reasoning_controls():
+    """OpenAI wire must keep GPT-5 reasoning_effort + reasoning.mode."""
+    out, _ = resolve_thinking(
+        _payload(),
+        "agentrouter/gpt-5.6-sol",
+        "max",
+        reasoning_mode="pro",
+        wire_format="openai",
+    )
+    assert out.get("reasoning_effort") == "max"
+    assert out.get("reasoning") == {"effort": "max", "mode": "pro"}

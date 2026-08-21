@@ -38,6 +38,7 @@ THINKING_PAYLOAD_KEYS = (
 )
 
 # Phrases that indicate the upstream rejected a *parameter* it does not accept.
+# Includes Chinese reseller phrasing (x5m5x etc.): "未知请求字段：output_config".
 _UNSUPPORTED_MARKERS = (
     "unsupported parameter",
     "unexpected parameter",
@@ -47,10 +48,28 @@ _UNSUPPORTED_MARKERS = (
     "invalid parameter",
     "extra fields not permitted",
     "unexpected keyword",
+    "unknown request field",
+    "unknown field",
+    "未知请求字段",  # Chinese: unknown request field
+    "未知字段",        # Chinese: unknown field
+    "不支持的参数",    # Chinese: unsupported parameter
+    "不支持参数",
 )
 
 # Secondary markers: the rejection specifically names thinking/reasoning.
-_THINKING_TERMS = ("thinking", "reasoning")
+# Include concrete field names so "未知请求字段：output_config" matches even
+# when the body never says the English words "thinking" / "reasoning".
+_THINKING_TERMS = (
+    "thinking",
+    "reasoning",
+    "output_config",
+    "reasoning_effort",
+    "enable_thinking",
+    "thinking_config",
+    "thinkinglevel",
+    "generationconfig",
+    "includethoughts",
+)
 _REJECTION_VERBS = (
     "not support",
     "unsupported",
@@ -61,6 +80,8 @@ _REJECTION_VERBS = (
     "unknown",
     "unrecognized",
     "cannot be used",
+    "未知",   # Chinese: unknown
+    "不支持", # Chinese: not support
 )
 
 
@@ -81,6 +102,8 @@ def is_thinking_param_rejection(status_code: int, body_text: str) -> bool:
     # thinking/reasoning term. Requiring both prevents false-positive retries
     # when a payload happens to carry thinking but the 400 is for a completely
     # different invalid parameter (e.g. bad api_key format).
+    # Note: Chinese markers are matched case-insensitively via the already-
+    # lowercased English half; Chinese itself has no case, so lower() is a no-op.
     if any(marker in text for marker in _UNSUPPORTED_MARKERS) and any(
         term in text for term in _THINKING_TERMS
     ):

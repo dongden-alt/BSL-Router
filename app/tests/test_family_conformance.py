@@ -68,10 +68,10 @@ CONFORMANCE = [
     # ── Grok ──
     ("xai/grok-4.5", "high", {"reasoning_effort": "high"}),
 
-    # ── DeepSeek: deliberately redundant triple shape ──
+    # ── DeepSeek V4: dual shape. output_config is a 400 on Chinese
+    # OpenAI-compatible resellers ("未知请求字段：output_config").
     ("iamhc/DeepSeek-V4-Pro", "high",
-     {"thinking": {"type": "enabled"}, "reasoning_effort": "high",
-      "output_config": {"effort": "high"}}),
+     {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}),
 
     # ── Kimi: SAME VENDOR, INCOMPATIBLE CONTRACTS ──
     ("moonshot/kimi-k3", "high", {"reasoning_effort": "high"}),
@@ -103,9 +103,10 @@ CONFORMANCE = [
     # ── Doubao: own vocabulary (minimal/low/medium/high) ──
     ("volcengine/doubao-2.0-pro", "high", {"reasoning_effort": "high"}),
 
-    # ── Hunyuan Hy3: effort nested in chat_template_kwargs ──
+    # ── Hunyuan Hy3: effort nested in chat_template_kwargs; interleaved_thinking
+    # defaulted True (families/hunyuan.py official docs, 2026-08-20).
     ("tencent/hunyuan-hy3", "high",
-     {"chat_template_kwargs": {"reasoning_effort": "high"}}),
+     {"chat_template_kwargs": {"reasoning_effort": "high", "interleaved_thinking": True}}),
 
     # ── Kat-Coder: undocumented vocabulary, pass-through ──
     ("blackbox/kat-coder-pro-v2.5", "high", {"reasoning_effort": "high"}),

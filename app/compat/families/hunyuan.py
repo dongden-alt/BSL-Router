@@ -83,6 +83,10 @@ def _apply(
     if not isinstance(chat_kwargs, dict):
         chat_kwargs = {}
     chat_kwargs["reasoning_effort"] = effort
+    # Official canonical invocation also sets interleaved_thinking so tool
+    # calls interleave with reasoning. Preserve any explicit client value.
+    if "interleaved_thinking" not in chat_kwargs:
+        chat_kwargs["interleaved_thinking"] = True
     return prov.apply(
         payload,
         contract,
