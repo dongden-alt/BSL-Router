@@ -6,6 +6,8 @@ from app.utils.model_resolver import (
     resolve_model_conn,
     resolve_active_connection,
     _choose_connection_for_model,
+    reset_provider_round_robin_state,
+    _PROVIDER_RR_STATE,
 )
 
 
@@ -96,13 +98,13 @@ def test_combo_fallback_when_indexed_connection_disabled():
     assert model == "model-y"
 
 
-# ─── Test 3: missing indexes → legacy random among enabled connections ────────
+# ─── Test 3: missing indexes → top-first determinism among enabled connections ─
 
-def test_missing_indexes_uses_legacy_random_enabled():
+def test_missing_indexes_uses_top_first_deterministic():
     """
     When a model has no connection_indexes (or metadata is absent),
-    the resolver must pick randomly from ALL enabled connections and
-    must never return a disabled connection's key.
+    the resolver must pick the LOWEST enabled index deterministically
+    (top-first mode) and must never return a disabled connection's key.
     """
     conn_enabled_0 = {"api_key": "enabled-0", "enabled": True}
     conn_disabled  = {"api_key": "disabled-1", "enabled": False}
@@ -120,11 +122,9 @@ def test_missing_indexes_uses_legacy_random_enabled():
         assert conn is not None
         seen.add(conn["api_key"])
 
-    # Disabled key must never appear
-    assert "disabled-1" not in seen, "Disabled connection was returned"
-    # At least one of the two enabled keys must appear
-    assert seen.issubset({"enabled-0", "enabled-2"}), (
-        f"Unexpected keys in results: {seen}"
+    # Top-first: always the lowest enabled index (enabled-0)
+    assert seen == {"enabled-0"}, (
+        f"Expected only enabled-0 (top-first), but got: {seen}"
     )
 
 
@@ -227,3 +227,118 @@ def test_choose_connection_for_model_with_breaker_param():
     # Without breaker - must still work (backward compat)
     conn = _choose_connection_for_model(config["providers"]["prov-a"], "m")
     assert conn is not None
+
+
+# ─── Multi-key selection mode tests ──────────────────────────────────────────
+
+
+def _provider_with_keys(keys, round_robin=False, model_id="m"):
+    """Build a provider whose connections carry api_key names from `keys`."""
+    connections = [{"api_key": k, "enabled": True} for k in keys]
+    return {
+        "connections": connections,
+        "models": [{"id": model_id, "enabled": True}],
+        "round_robin": round_robin,
+    }
+
+
+def test_top_first_without_round_robin():
+    """round_robin falsy (default): 2 enabled keys -> always index 0."""
+    reset_provider_round_robin_state()
+    prov = _provider_with_keys(["k0", "k1"], round_robin=False)
+    config = _make_config({"prov-a": prov})
+
+    for _ in range(50):
+        conn, idx = resolve_active_connection(config, "prov-a", "m")
+        assert conn["api_key"] == "k0"
+        assert idx == 0
+
+
+def test_top_first_skips_disabled_top():
+    """round_robin falsy: keys [disabled, enabled] -> always index 1."""
+    reset_provider_round_robin_state()
+    connections = [
+        {"api_key": "k0", "enabled": False},
+        {"api_key": "k1", "enabled": True},
+    ]
+    prov = {
+        "connections": connections,
+        "models": [{"id": "m", "enabled": True}],
+        "round_robin": False,
+    }
+    config = _make_config({"prov-a": prov})
+
+    for _ in range(50):
+        conn, idx = resolve_active_connection(config, "prov-a", "m")
+        assert conn["api_key"] == "k1"
+        assert idx == 1
+
+
+def test_round_robin_rotates():
+    """round_robin true, 2 enabled keys -> alternating indices over even calls."""
+    reset_provider_round_robin_state()
+    prov = _provider_with_keys(["k0", "k1"], round_robin=True)
+    config = _make_config({"prov-a": prov})
+
+    indices = []
+    for _ in range(20):
+        conn, idx = resolve_active_connection(config, "prov-a", "m")
+        indices.append(idx)
+
+    expected = [i % 2 for i in range(20)]
+    assert indices == expected, f"Expected alternating {expected}, got {indices}"
+
+
+def test_round_robin_with_breaker():
+    """round_robin true, breaker removes index 0 -> RR rotates only over remaining."""
+    reset_provider_round_robin_state()
+    prov = _provider_with_keys(["k0", "k1", "k2"], round_robin=True)
+    config = _make_config({"prov-a": prov})
+    breaker = _FakeBreaker(removed_indices=[0])
+
+    indices = []
+    for _ in range(12):
+        conn, idx = resolve_active_connection(config, "prov-a", "m", breaker=breaker)
+        indices.append(idx)
+
+    # Pool is [k1(idx1), k2(idx2)]; rotation yields 1,2,1,2,...
+    expected = [1, 2] * 6
+    assert indices == expected, f"Expected {expected}, got {indices}"
+
+
+def test_breaker_top_first_fallback():
+    """Top key OPEN via breaker -> picks next; when breaker clears -> back to top."""
+    reset_provider_round_robin_state()
+    prov = _provider_with_keys(["k0", "k1"], round_robin=False)
+    config = _make_config({"prov-a": prov})
+
+    # Index 0 is OPEN -> top-first falls through to index 1
+    breaker_open = _FakeBreaker(removed_indices=[0])
+    conn, idx = resolve_active_connection(config, "prov-a", "m", breaker=breaker_open)
+    assert conn["api_key"] == "k1"
+    assert idx == 1
+
+    # Breaker clears (no removals) -> top-first resumes index 0
+    breaker_clear = _FakeBreaker(removed_indices=[])
+    conn, idx = resolve_active_connection(config, "prov-a", "m", breaker=breaker_clear)
+    assert conn["api_key"] == "k0"
+    assert idx == 0
+
+
+def test_reset_provider_round_robin_state_clears_counters():
+    """reset_provider_round_robin_state() wipes the module-level RR dict."""
+    reset_provider_round_robin_state()
+    prov = _provider_with_keys(["k0", "k1"], round_robin=True)
+    config = _make_config({"prov-a": prov})
+
+    # First pick -> index 0
+    _, idx = resolve_active_connection(config, "prov-a", "m")
+    assert idx == 0
+    # Second pick -> index 1
+    _, idx = resolve_active_connection(config, "prov-a", "m")
+    assert idx == 1
+
+    reset_provider_round_robin_state()
+    # After reset, rotation restarts at index 0
+    _, idx = resolve_active_connection(config, "prov-a", "m")
+    assert idx == 0

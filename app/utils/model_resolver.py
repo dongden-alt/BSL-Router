@@ -19,10 +19,28 @@ on the connection.
 """
 
 from typing import Dict, Any, Tuple, Optional, List
-import random
+import threading
 
 
-# ─── Connection selection helpers ────────────────────────────────────────────
+# ─── Provider-key round-robin state ──────────────────────────────────────────
+
+# Module-level rotation counters for per-provider-key round_robin selection.
+# Keyed by (provider_name, model_id) -> next index to use within the eligible
+# pool. Cleared from POST /api/config so edited/reordered keys start fresh.
+_PROVIDER_RR_STATE: Dict[Tuple[str, str], int] = {}
+_PROVIDER_RR_LOCK = threading.Lock()
+
+
+def reset_provider_round_robin_state() -> None:
+    """Clear per-provider round-robin counters.
+
+    Call this from POST /api/config so that adding, removing, reordering, or
+    toggling a connection does not leave stale rotation counters pointing at
+    indices that no longer exist or are no longer enabled.
+    """
+    with _PROVIDER_RR_LOCK:
+        _PROVIDER_RR_STATE.clear()
+
 
 def _get_model_meta(provider_config: dict, model_id: str) -> Optional[dict]:
     """Return the model metadata dict for model_id in provider_config, or None."""
@@ -58,12 +76,22 @@ def _pick_connection(
 ) -> Tuple[Optional[dict], Optional[int]]:
     """Pick (enriched_conn, original_index) honoring connection_indexes + breaker.
 
+    Selection mode is driven by `provider_config.get("round_robin")`:
+      - falsy (default, "top-first"): sort eligible by original index ascending
+        and pick the FIRST (lowest index). Deterministic — 100 identical calls
+        return the same connection index.
+      - truthy ("round_robin"): rotate across eligible per call using a
+        module-level counter keyed by (provider_name, model_id). Increment after
+        each pick; modulo by len(eligible) so a shrinking pool (disabled/broken
+        key) stays in range.
+
     - Enumerates connections with their original index, keeps only enabled ones.
     - If model metadata has a non-empty list[int] connection_indexes:
         · filters the enabled connections to only those whose original index is in the list.
         · if none qualify (all disabled), returns None.
     - If metadata is missing or connection_indexes is missing/invalid/empty:
-        · legacy behavior — random choice among all enabled connections.
+        · legacy path — the same top-first / round_robin rule applies to all
+          enabled connections (random selection removed entirely).
     - When breaker is provided and enabled, filters OPEN connections first.
       Fail-open: an exception inside the breaker never blocks selection.
     - Returns (None, None) when nothing qualifies.
@@ -104,7 +132,22 @@ def _pick_connection(
     if not eligible:
         return None, None
 
-    picked = random.choice(eligible)
+    use_round_robin = bool(provider_config.get("round_robin"))
+
+    if use_round_robin:
+        # Rotate across the healthy eligible pool. State is keyed by
+        # (provider_name, model_id) so each model on each provider tracks
+        # its own rotation independently.
+        state_key = (provider_name, model_id)
+        with _PROVIDER_RR_LOCK:
+            pos = _PROVIDER_RR_STATE.get(state_key, 0)
+            picked = eligible[pos % len(eligible)]
+            _PROVIDER_RR_STATE[state_key] = pos + 1
+    else:
+        # Top-first: deterministic lowest-index wins. Eligible is already
+        # ordered by original index (built via enumerate), so pick index 0.
+        picked = eligible[0]
+
     return _with_provider_meta(picked["conn"], provider_config), picked["index"]
 
 
@@ -136,7 +179,7 @@ def resolve_active_connection(
     2. Enumerate enabled connections with their original index
     3. Filter by model metadata connection_indexes if present
     4. Filter by circuit breaker if breaker is provided and enabled
-    5. Random choice among remaining
+    5. Select via _pick_connection (top-first or round_robin per provider config)
     6. Return (enriched_connection_dict, original_index) or (None, None)
 
     The connection dict is enriched with provider-level format/type via

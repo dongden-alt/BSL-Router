@@ -226,7 +226,7 @@ class CircuitBreaker:
 
     @property
     def enabled(self) -> bool:
-        return self.settings.get("enabled", False)
+        return self.settings.get("enabled", True)
 
     @property
     def failure_threshold(self) -> int:

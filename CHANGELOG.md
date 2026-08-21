@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **MULTI-KEY SELECTION: deterministic top-first + round_robin** — `_pick_connection()` in `app/utils/model_resolver.py` no longer uses `random.choice`. Default mode ("top-first") always picks the lowest-index eligible connection; when `provider.round_robin` is truthy, requests rotate across all healthy eligible keys via a module-level counter keyed by `(provider_name, model_id)`. Rotation state is cleared on `POST /api/config` so edited/reordered keys start fresh. The legacy no-metadata path (no `connection_indexes`) now obeys the same rule instead of random.
+
+### Fixed
+- **BREAKER default ON** — `CircuitBreaker.enabled` now defaults to `True` (`settings.get("enabled", True)`), so rate-limited (429) keys are removed from the pool and fail over by default. The explicit `circuit_breaker.enabled: false` config override still works.
+
+---
+
 ## [1.0.2] - 2026-08-15
 
 ### Fixed

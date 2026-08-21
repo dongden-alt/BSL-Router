@@ -69,7 +69,7 @@ from app.middleware.thinking_fallback import (
     strip_thinking,
 )
 import app.observability as obs
-from app.utils.model_resolver import resolve_active_connection
+from app.utils.model_resolver import resolve_active_connection, reset_provider_round_robin_state
 from app.circuit_breaker import init_breaker, reconfigure_breaker, get_breaker
 from app.antifreeze import (
     next_stream_id,
@@ -1988,6 +1988,7 @@ async def update_config(request: Request):
         # Clear round-robin state so edited/reordered combos start fresh.
         # Without this, RR counters leak stale indices after combo add/remove/reorder.
         ROUND_ROBIN_STATE.clear()
+        reset_provider_round_robin_state()
 
         return JSONResponse({"status": "success"})
     except ValueError as e:
