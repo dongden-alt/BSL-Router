@@ -78,6 +78,91 @@ def resolve_combo_alias_redirect(
 
 
 # ---------------------------------------------------------------------------
+# Chain retry expansion (429 continuous-fallback support)
+# ---------------------------------------------------------------------------
+# The 24 fallback sites in main.py all gate recursion on
+# `_next_idx < len(active_chain)`, so a chain whose every entry fails (e.g. all
+# 429 "rate_limited_by_admin") terminates after ONE pass. Rather than rewrite 24
+# guards, the chain itself is repeated into N passes: index 0..L-1 is pass 1,
+# L..2L-1 is pass 2, and so on. Every existing guard, the banned-leaf skip, the
+# monotonic-idx invariant (C2/C3) and the exhaustion terminal keep working
+# unchanged, and `tried_conns` naturally advances to the next API key each time
+# the same leaf comes back around.
+
+CHAIN_MIN_PASSES = 2       # combos always get at least one full retry pass
+CHAIN_MAX_PASSES = 6       # ceiling regardless of key count
+CHAIN_MAX_ATTEMPTS = 24    # hard ceiling on total upstream attempts per request
+# Request-wide wall-clock ceiling for the whole retry loop. CHAIN_TOTAL_BUDGET in
+# main.py resets per combo entry (BUG K), so it cannot bound a repeated chain: a
+# pathological chain where every leaf dies on a 90s header wait would otherwise
+# hold the client for passes x entries x 90s. This is the only true per-request
+# clock in the fallback path.
+CHAIN_WALL_BUDGET = 240.0
+
+
+def count_eligible_keys(config: dict, provider: str, model: str) -> int:
+    """Count connections a given provider/model may actually use.
+
+    Mirrors the authorization rule in model_resolver._pick_connection: when the
+    model entry carries `connection_indexes`, only those indices are eligible.
+    Used to size retry passes so a provider with 3 keys gets 3 chances.
+    """
+    try:
+        prov = (config.get("providers") or {}).get(provider) or {}
+        conns = prov.get("connections") or []
+        enabled = [i for i, c in enumerate(conns) if isinstance(c, dict) and c.get("enabled", True)]
+        if not enabled:
+            return 0
+        for m in prov.get("models") or []:
+            if m.get("id") == model or m.get("name") == model:
+                idxs = m.get("connection_indexes")
+                if isinstance(idxs, list) and idxs:
+                    return len([i for i in idxs if i in enabled])
+                break
+        return len(enabled)
+    except Exception:
+        return 1
+
+
+def expand_chain_for_retries(
+    chain: list,
+    config: dict,
+    min_passes: int = CHAIN_MIN_PASSES,
+    max_attempts: int = CHAIN_MAX_ATTEMPTS,
+) -> tuple[list, int]:
+    """Repeat `chain` so the existing fallback guards cycle through it.
+
+    Passes are sized by the WIDEST key pool in the chain, so a leaf backed by 4
+    API keys gets 4 opportunities (one per key, via `tried_conns`). The result is
+    clamped to `max_attempts` total entries and CHAIN_MAX_PASSES.
+
+    Returns (expanded_chain, passes). passes == 1 means "unchanged".
+    """
+    if not chain:
+        return chain, 1
+    base_len = len(chain)
+    try:
+        widest = max(
+            (count_eligible_keys(config, p, m) for m, p, _t in chain),
+            default=1,
+        )
+    except Exception:
+        widest = 1
+    passes = max(min_passes, widest)
+    # The attempt ceiling sizes passes ABOVE the guaranteed minimum; it must never
+    # drag them BELOW it. Naively clamping by `max_attempts // base_len` silently
+    # disabled the whole feature for long chains: coder-2 has 37 entries, so
+    # 24 // 37 == 0 and the combo got no retry pass at all — exactly the reported
+    # bug. For chains longer than the ceiling, CHAIN_WALL_BUDGET is the effective
+    # bound (each failing leaf here is a fast 429, not a slow timeout).
+    _ceiling_passes = max(min_passes, max_attempts // base_len)
+    passes = min(passes, CHAIN_MAX_PASSES, _ceiling_passes)
+    if passes <= 1:
+        return chain, 1
+    return list(chain) * passes, passes
+
+
+# ---------------------------------------------------------------------------
 # Step 0: Combo chain resolution
 # ---------------------------------------------------------------------------
 
@@ -282,6 +367,8 @@ def advance_combo_retry(
     _retry_state: dict,
     config: dict,
     combo_alias: str = "",
+    wall_start: Optional[float] = None,
+    wall_budget: float = CHAIN_WALL_BUDGET,
 ) -> RetryAdvance:
     """Advance past failed/banned combo chain entries on recursive retry.
 
@@ -290,6 +377,12 @@ def advance_combo_retry(
     - C2: use chain SNAPSHOT from _retry_state, NOT rebuilt chain
     - C3: write back advanced idx to _retry_state
     - C5: exhausted chain -> caller returns 502
+    - C7 (2026-08-22): request-wide wall-clock stop. `wall_start` is a
+      time.monotonic() stamp taken when the chain was first expanded for
+      continuous fallback. Once `wall_budget` seconds have elapsed the chain is
+      reported exhausted even if entries remain, because main.py's
+      CHAIN_TOTAL_BUDGET resets per entry and therefore cannot bound a repeated
+      chain. Omitting `wall_start` disables the check (backward compatible).
 
     combo_alias: optional alias name prefixed onto the "skipping banned
     leaf" log line for parity with the pre-refactor format (default ""
@@ -304,6 +397,19 @@ def advance_combo_retry(
     """
     stable_chain = _retry_state["chain"]
     idx = _retry_state["idx"]
+
+    # C7: request-wide wall-clock stop.
+    if wall_start is not None:
+        import time as _t
+        _elapsed = _t.monotonic() - wall_start
+        if _elapsed >= wall_budget:
+            print(
+                f"[Combo] {combo_alias} > wall-clock budget exhausted after "
+                f"{_elapsed:.1f}s (limit {wall_budget:.0f}s) at idx={idx}/"
+                f"{len(stable_chain)}; stopping retries",
+                flush=True,
+            )
+            return RetryAdvance(exhausted=True, active_chain=stable_chain)
 
     import app.error_prevention as _ep
     while idx < len(stable_chain):

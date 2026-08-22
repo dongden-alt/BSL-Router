@@ -317,7 +317,11 @@ def test_last_combo_entry_error_is_valid_gemini_sse(monkeypatch):
     output = b"".join(chunks)
     data_frames = [chunk for chunk in chunks if chunk.startswith(b"data:")]
 
-    assert client.models == ["dead-model", "healthy-model"]
+    # CONTINUOUS FALLBACK (2026-08-22): the chain is expanded into retry passes,
+    # so after the LAST entry fails it wraps back to the TOP entry instead of
+    # hard-stopping. Order must still be chain order, repeated.
+    assert client.models == ["dead-model", "healthy-model"] * 2, \
+        f"expected two full passes in chain order, got {client.models}"
     # FREEZE FIX (2026-08-07): the upstream error text must still be VISIBLE in
     # the terminal frame's `parts` text (terminal_error_frame puts the message
     # there), but NO bare top-level {"error":...} frame may precede it.
@@ -431,9 +435,16 @@ def test_all_leaves_429_terminates_with_one_terminal_contract(monkeypatch):
     output = b"".join(chunks)
     data_frames = [c for c in chunks if c.startswith(b"data:")]
 
-    # Attempt order: every eligible leaf tried exactly once, in chain order.
-    assert client.models == ["m0", "m1", "m2"], f"attempt order wrong: {client.models}"
-    assert len(client.models) == len(set(client.models)), "a leaf was attempted more than once"
+    # Attempt order: CONTINUOUS FALLBACK (2026-08-22). Previously this asserted
+    # each leaf was tried exactly once and the request then died with
+    # "All N combo chain entries exhausted" — which is the reported bug: an
+    # all-429 combo must keep cycling (each revisit dials the next API key via
+    # request-scoped tried_conns) rather than stop after one pass. The chain is
+    # expanded into passes, so leaves repeat in chain order.
+    assert client.models == ["m0", "m1", "m2"] * 2, f"attempt order wrong: {client.models}"
+    # Still bounded: expansion is capped by passes/attempt ceilings, so the loop
+    # cannot run away.
+    assert len(client.models) <= 24, f"retry loop unbounded: {len(client.models)} attempts"
 
     # Bounded completion: the whole chain must drain well under the 150s budget.
     # (Pre-fix this still completed fast — the freeze was client-side, not

@@ -463,6 +463,7 @@ from app.routing.combo_resolver import (  # noqa: E402
     resolve_combo_alias_redirect,
     resolve_combo,
     advance_combo_retry,
+    expand_chain_for_retries,
     resolve_alias,
     find_provider_for_model,
     build_not_found_error,
@@ -5273,6 +5274,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     combo_thinking_override = None
     active_chain = None  # Populated during combo resolution; used for downstream fallback loop
     _combo_matched = False  # Set True when a combo alias matches; used to emit combo_route AFTER retry override
+    # True only when the combo produced a REAL traversable fallback chain.
+    # round_robin also reports matched=True but deliberately returns
+    # active_chain=None to disable retry traversal, and main.py then substitutes a
+    # synthetic 1-entry chain further down — which is indistinguishable from a
+    # single-model fallback combo by that point. Capturing it here is the only
+    # place the two can still be told apart.
+    _combo_fallback_chain = False
     _combo_result = resolve_combo(model, provider_name, config, ROUND_ROBIN_STATE)
     if _combo_result.matched:
         _combo_matched = True
@@ -5280,6 +5288,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         provider_name = _combo_result.provider_name
         combo_thinking_override = _combo_result.thinking_override
         active_chain = _combo_result.active_chain
+        _combo_fallback_chain = bool(active_chain)
         if target_model is None and provider_name is None:
             return JSONResponse(
                 {"error": f"Combo '{model}' has no available models in its chain. All chain members are offline or unregistered."},
@@ -5305,7 +5314,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # but don't write idx back, the next failure recomputes from the stale idx and
     # re-picks the current leaf. Writing back closes that loop.
     if _retry_state and _retry_state.get('chain'):
-        _advance = advance_combo_retry(_retry_state, config, combo_alias=model)
+        _advance = advance_combo_retry(
+            _retry_state, config, combo_alias=model,
+            wall_start=getattr(getattr(request, "state", None), "bsl_chain_wall_start", None),
+        )
         if _advance.exhausted:
             return JSONResponse(
                 {"error": f"All {len(_retry_state['chain'])} combo chain entries exhausted for '{model}'."},
@@ -5367,6 +5379,46 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # can trigger the existing status-peek probe and upstream failure loop.
     if not active_chain:
         active_chain = [(target_model, provider_name, None)]
+
+    # ── Continuous fallback (2026-08-22) ─────────────────────────────────────
+    # Every one of the 24 downstream fallback sites gates recursion on
+    # `_next_idx < len(active_chain)`, so a chain whose entries ALL fail (the
+    # reported case: every leaf answering 429 "rate_limited_by_admin") stopped
+    # after a single pass and surfaced "All N combo chain entries exhausted".
+    # Repeating the chain into N passes makes those same guards cycle: idx L..2L-1
+    # is pass 2 of the identical leaves, and because `tried_conns` is
+    # request-scoped, each revisit dials the NEXT api key rather than the drained
+    # one. Applied ONLY on a fresh request — retry frames inherit the expanded
+    # snapshot through _retry_state (see the override above), so expanding again
+    # would multiply the chain on every hop.
+    #
+    # min_passes: EVERY fallback combo gets a guaranteed retry pass — including a
+    # single-model combo (e.g. Qwen3.8-Max, chain length 1). Sizing this on chain
+    # length was wrong on both of the reported cases: a 1-entry combo whose only
+    # leaf failed got exactly one attempt and hard-stopped, and a multi-entry
+    # combo whose LAST leaf failed stopped instead of wrapping back to the top.
+    # `_combo_fallback_chain` excludes round_robin (whose chain is nulled by
+    # design) and bare direct models, so both keep their previous behaviour.
+    if not _retry_state:
+        _base_chain_len = len(active_chain)
+        active_chain, _chain_passes = expand_chain_for_retries(
+            active_chain, config,
+            min_passes=2 if _combo_fallback_chain else 1,
+        )
+        if _chain_passes > 1:
+            # Request-wide wall clock for the whole retry loop. Stamped here (not
+            # per frame) and carried on request.state, which every recursive
+            # dispatch forwards — so it survives the hops without touching the 24
+            # fallback sites. main.py's CHAIN_TOTAL_BUDGET resets per entry and
+            # therefore cannot bound a repeated chain.
+            if request is not None and getattr(request, "state", None) is not None:
+                if getattr(request.state, "bsl_chain_wall_start", None) is None:
+                    request.state.bsl_chain_wall_start = time.monotonic()
+            print(
+                f"[Combo] {model}: chain expanded {_base_chain_len} -> "
+                f"{len(active_chain)} entries ({_chain_passes} passes) for continuous fallback",
+                flush=True,
+            )
 
     # Auto Error Prevention — skip models under an active soft/long-ban or disabled by self-heal.
     try:

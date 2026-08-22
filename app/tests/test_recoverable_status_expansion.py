@@ -223,7 +223,12 @@ def test_recoverable_400_advances_combo_chain(monkeypatch):
 
 
 def test_recoverable_400_single_leaf_surfaces_terminal(monkeypatch):
-    """Single-leaf chain returning 400 must surface the error (no infinite retry)."""
+    """Single-leaf chain returning 400 must surface the error (no infinite retry).
+
+    Continuous-fallback (2026-08-22): a 1-entry combo now receives a guaranteed
+    second pass, so the leaf is attempted exactly twice (bounded, not infinite)
+    before the terminal error is surfaced to the client.
+    """
 
     async def upstream_400(request):
         return httpx.Response(
@@ -240,7 +245,8 @@ def test_recoverable_400_single_leaf_surfaces_terminal(monkeypatch):
 
     output = b"".join(asyncio.run(_collect()))
 
-    # Exactly one attempt — no infinite retry on last leaf.
-    assert client.models == ["dead-model"]
+    # Exactly two bounded attempts (second pass of the single leaf) — not
+    # infinite, and not a silent single-attempt stop.
+    assert client.models == ["dead-model", "dead-model"]
     # Terminal error is surfaced to the client (status embedded in SSE error frame).
     assert b"400" in output or b"bad request" in output or b"error" in output
