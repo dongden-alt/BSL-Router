@@ -73,6 +73,7 @@ def _pick_connection(
     model_id: str,
     provider_name: str = "",
     breaker=None,
+    exclude_indexes=None,
 ) -> Tuple[Optional[dict], Optional[int]]:
     """Pick (enriched_conn, original_index) honoring connection_indexes + breaker.
 
@@ -94,6 +95,12 @@ def _pick_connection(
           enabled connections (random selection removed entirely).
     - When breaker is provided and enabled, filters OPEN connections first.
       Fail-open: an exception inside the breaker never blocks selection.
+    - `exclude_indexes` (set[int] | None) drops specific original indexes from
+      the pool. Used for request-scoped key failover: a connection that already
+      failed for THIS request (quota/auth/429) must not be re-picked while the
+      same leaf is retried. Applied AFTER the connection_indexes filter so an
+      excluded key can never smuggle in a connection the model is not
+      authorized to use.
     - Returns (None, None) when nothing qualifies.
     """
     connections: List[dict] = provider_config.get("connections", [])
@@ -121,6 +128,12 @@ def _pick_connection(
     eligible = [e for e in enabled if e["index"] in indexes] if indexes is not None else enabled
     if not eligible:
         return None, None
+
+    # Request-scoped key failover: drop already-attempted connections.
+    if exclude_indexes:
+        eligible = [e for e in eligible if e["index"] not in exclude_indexes]
+        if not eligible:
+            return None, None
 
     if breaker is not None:
         try:
@@ -156,6 +169,7 @@ def _choose_connection_for_model(
     model_id: str,
     provider_name: str = "",
     breaker=None,
+    exclude_indexes=None,
 ) -> Optional[dict]:
     """
     Choose a connection for (provider_config, model_id) respecting connection_indexes.
@@ -163,7 +177,7 @@ def _choose_connection_for_model(
     Backward-compatible wrapper over _pick_connection returning just the
     connection dict (or None). Optional breaker filters OPEN connections.
     """
-    conn, _ = _pick_connection(provider_config, model_id, provider_name, breaker)
+    conn, _ = _pick_connection(provider_config, model_id, provider_name, breaker, exclude_indexes)
     return conn
 
 
@@ -172,15 +186,17 @@ def resolve_active_connection(
     provider_name: str,
     model_id: str,
     breaker=None,
+    exclude_indexes=None,
 ) -> Tuple[Optional[dict], Optional[int]]:
     """Resolve to (connection_dict, original_index) for main dispatch paths.
 
     1. Get provider_config from config["providers"][provider_name]
     2. Enumerate enabled connections with their original index
     3. Filter by model metadata connection_indexes if present
-    4. Filter by circuit breaker if breaker is provided and enabled
-    5. Select via _pick_connection (top-first or round_robin per provider config)
-    6. Return (enriched_connection_dict, original_index) or (None, None)
+    4. Drop any index in exclude_indexes (request-scoped key failover)
+    5. Filter by circuit breaker if breaker is provided and enabled
+    6. Select via _pick_connection (top-first or round_robin per provider config)
+    7. Return (enriched_connection_dict, original_index) or (None, None)
 
     The connection dict is enriched with provider-level format/type via
     _with_provider_meta. The original index lets callers track per-connection
@@ -189,7 +205,7 @@ def resolve_active_connection(
     provider_config = config.get("providers", {}).get(provider_name)
     if not isinstance(provider_config, dict):
         return None, None
-    return _pick_connection(provider_config, model_id, provider_name, breaker)
+    return _pick_connection(provider_config, model_id, provider_name, breaker, exclude_indexes)
 
 
 # ─── Internal helpers ─────────────────────────────────────────────────────────

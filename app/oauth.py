@@ -10,6 +10,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import secrets
 import sqlite3
 from time import time
@@ -1644,11 +1645,24 @@ async def poll(provider: str, request: Request):
     return {"success": True, "connection": connection}
 
 
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
 async def _kiro_refresh_token(refresh_token: str, provider_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Refresh a Kiro OAuth token.
+
+    Social tokens (GitHub/Google/Builder-ID) are refreshed at the kiro.dev
+    endpoint with just the refreshToken. OIDC tokens (external_idp / builder-id
+    with a registered UUID clientId) use the AWS OIDC endpoint. The guard is
+    BOTH: authMethod must be OIDC-class AND clientId must match UUID format
+    (social SSO-cache blobs carry base64-ish clientIds that are NOT UUIDs).
+    """
     provider_data = provider_data or {}
     client_id, client_secret = provider_data.get("clientId"), provider_data.get("clientSecret")
     region = str(provider_data.get("region") or "us-east-1")
-    if client_id and client_secret:
+    auth_method = str(provider_data.get("authMethod") or "").lower()
+    is_oidc = auth_method in ("external_idp", "builder-id") and isinstance(client_id, str) and bool(_UUID_RE.match(client_id))
+    if is_oidc and client_id and client_secret:
         url = f"https://oidc.{region}.amazonaws.com/token"
         payload = {"clientId": client_id, "clientSecret": client_secret, "refreshToken": refresh_token, "grantType": "refresh_token"}
     else:
@@ -1674,6 +1688,51 @@ async def _save_kiro_tokens(raw: dict[str, Any], auth_method: str, source: str) 
     mapped = _map_kiro(raw)
     mapped["providerSpecificData"]["provider"] = source
     return await _complete_connection("kiro", OAUTH_PROVIDERS["kiro"], mapped)
+
+
+async def try_auto_import_kiro() -> bool:
+    """Lazily auto-import a Kiro connection from the AWS SSO cache.
+
+    Idempotent and fail-open: if `providers.kiro.connections` is already
+    non-empty this is a no-op (returns False). Otherwise reads the SSO cache
+    once and persists the connection through the standard config-swap path so
+    the caller's connection-selection loop sees it immediately.
+
+    NEVER raises — any failure is logged and returns False.
+    """
+    try:
+        from app.config_state import get_mutable_config
+        config = get_mutable_config()
+        if not isinstance(config, dict):
+            return False
+        kiro_cfg = config.get("providers", {}).get("kiro", {})
+        connections = kiro_cfg.get("connections", [])
+        if isinstance(connections, list) and connections:
+            # Already imported — nothing to do.
+            return False
+    except Exception as _ai_exc:
+        print(f"[OAuth] Kiro auto-import config check failed (fail-open): {_ai_exc}", flush=True)
+        return False
+
+    try:
+        raw_tokens = _kiro_token_from_sso_cache({})
+    except HTTPException as _http_exc:
+        print(f"[OAuth] Kiro auto-import: SSO cache unavailable (fail-open): {_http_exc.detail}", flush=True)
+        return False
+    except Exception as _ai_exc:
+        print(f"[OAuth] Kiro auto-import read failed (fail-open): {_ai_exc}", flush=True)
+        return False
+
+    try:
+        mapped = _map_kiro(raw_tokens)
+        entry = OAUTH_PROVIDERS["kiro-import"]
+        connection = await _complete_connection("kiro", entry, mapped)
+        email = connection.get("email") or "unknown"
+        print(f"[OAuth] Kiro auto-imported from SSO cache ({email})", flush=True)
+        return True
+    except Exception as _ai_exc:
+        print(f"[OAuth] Kiro auto-import persist failed (fail-open): {_ai_exc}", flush=True)
+        return False
 
 
 @oauth_router.get("/kiro/social-authorize")

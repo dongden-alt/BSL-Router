@@ -10,17 +10,47 @@ Format reference: 9Router MITM server.js gd()/cd()/dd() functions.
 """
 import json
 import re
+import uuid
 from typing import Any
 
 # Kiro expects Content-Type: application/x-amz-json-1.0 for the generateAssistantResponse endpoint
 KIRO_CONTENT_TYPE = "application/x-amz-json-1.0"
 
 
-def openai_to_kiro(upstream_payload: dict) -> dict[str, Any]:
-    """Convert OpenAI ChatCompletion request → Kiro CodeWhisperer protocol body."""
+def openai_to_kiro(upstream_payload: dict, profile_arn: str | None = None) -> dict[str, Any]:
+    """Convert OpenAI ChatCompletion request → Kiro CodeWhisperer protocol body.
+
+    SCHEMA SOURCE (2026-08-22): reverse-engineered from a REAL status=success
+    request captured in 9Router's request log
+    (%APPDATA%/9router/request-details.sqlite -> request_details.provider_request).
+    Observed working shape:
+
+        {
+          "conversationState": {
+            "chatTriggerType": "MANUAL",
+            "conversationId": "<uuid>",
+            "currentMessage": {"userInputMessage": {
+                "content": ..., "modelId": ..., "origin": "AI_EDITOR",
+                "userInputMessageContext": {"tools": [...], "toolResults": [...]}}},
+            "history": [...]
+          },
+          "inferenceConfig": {"maxTokens": 32000, "temperature": 0},
+          "model": "claude-sonnet-4.5"
+        }
+
+    Two corrections vs. earlier BSL versions, both of which produced
+    {"reason":"REQUEST_BODY_INVALID","message":"Improperly formed request."}:
+      1. `modelId` / `stream` / `maxResponseTokens` must NOT sit at the top
+         level. modelId belongs INSIDE userInputMessage (and inside each
+         history userInputMessage); stream is implied by the endpoint.
+      2. `inferenceConfig` is TOP-LEVEL, not nested in conversationState.
+
+    `profile_arn`, when provided, is injected at the top level — Kiro's
+    /generateAssistantResponse rejects the request without it
+    (400 "profileArn is required").
+    """
     model = upstream_payload.get("model", "claude-3-5-sonnet-20241022")
     messages = upstream_payload.get("messages", [])
-    stream = upstream_payload.get("stream", False)
     tools = upstream_payload.get("tools", None) or upstream_payload.get("functions", None)
     history_msgs = []
     current_msg_content = ""
@@ -36,48 +66,77 @@ def openai_to_kiro(upstream_payload: dict) -> dict[str, Any]:
         if i == len(messages) - 1:
             current_msg_content = content or ""
         else:
-            entry = _to_kiro_history_entry(role, content, msg)
+            entry = _to_kiro_history_entry(role, content, msg, model)
             if entry:
                 history_msgs.append(entry)
 
-    body = {
+    body: dict[str, Any] = {
         "conversationState": {
-            "history": history_msgs,
+            "chatTriggerType": "MANUAL",
+            "conversationId": str(uuid.uuid4()),
             "currentMessage": {
                 "userInputMessage": {
                     "content": current_msg_content,
+                    "modelId": model,
+                    "origin": "AI_EDITOR",
                     "userInputMessageContext": {
                         "tools": current_msg_tools
                     }
                 }
-            }
+            },
+            "history": history_msgs,
         },
-        "modelId": model,
+        "model": model,
     }
 
-    if stream:
-        body["stream"] = True
+    # Kiro requires profileArn at the top level of the request body.
+    if profile_arn:
+        body["profileArn"] = profile_arn
 
-    # map max_tokens
+    # Generation parameters → TOP-LEVEL inferenceConfig.
+    inference: dict[str, Any] = {}
     mt = upstream_payload.get("max_tokens") or upstream_payload.get("maxTokens")
     if mt:
-        body["maxResponseTokens"] = int(mt)
+        inference["maxTokens"] = int(mt)
+    temp = upstream_payload.get("temperature")
+    if isinstance(temp, (int, float)):
+        inference["temperature"] = temp
+
+    # Thinking controls ride along in inferenceConfig; AWS accepts them there
+    # but structurally rejects them at the request root.
+    thinking = upstream_payload.get("thinking")
+    if isinstance(thinking, dict) and thinking:
+        inference["thinking"] = thinking
+    output_config = upstream_payload.get("output_config")
+    if isinstance(output_config, dict) and output_config:
+        inference["output_config"] = output_config
+    reasoning_effort = upstream_payload.get("reasoning_effort")
+    if isinstance(reasoning_effort, str) and reasoning_effort:
+        inference["reasoning_effort"] = reasoning_effort
+
+    if inference:
+        body["inferenceConfig"] = inference
 
     return body
 
 
-def _to_kiro_history_entry(role: str, content: str, msg: dict) -> dict | None:
-    """Convert a single OpenAI message to Kiro conversationState.history entry."""
+def _to_kiro_history_entry(role: str, content: str, msg: dict, model: str = "") -> dict | None:
+    """Convert a single OpenAI message to Kiro conversationState.history entry.
+
+    Observed working history entries carry `modelId` on every
+    userInputMessage, matching what the Kiro IDE sends.
+    """
     if not content and role != "assistant":
         return None
 
     if role == "user":
-        return {
-            "userInputMessage": {
-                "content": content or "",
-                "userInputMessageContext": {"tools": []}
-            }
+        uim: dict[str, Any] = {
+            "content": content or "",
+            "userInputMessageContext": {"tools": []},
         }
+        if model:
+            uim["modelId"] = model
+        return {"userInputMessage": uim}
     elif role == "assistant":
         entry: dict[str, Any] = {
             "assistantResponseMessage": {
@@ -97,12 +156,13 @@ def _to_kiro_history_entry(role: str, content: str, msg: dict) -> dict | None:
         return entry
     elif role == "tool":
         tc_id = msg.get("tool_call_id", "unknown")
-        return {
-            "userInputMessage": {
-                "content": f"[Tool result {tc_id}]: {content}" if content else f"[Tool result {tc_id}]",
-                "userInputMessageContext": {"tools": []}
-            }
+        uim_t: dict[str, Any] = {
+            "content": f"[Tool result {tc_id}]: {content}" if content else f"[Tool result {tc_id}]",
+            "userInputMessageContext": {"tools": []},
         }
+        if model:
+            uim_t["modelId"] = model
+        return {"userInputMessage": uim_t}
     return None
 
 

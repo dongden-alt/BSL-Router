@@ -128,6 +128,7 @@ from app.compat.adapters import (
     build_response_headers as gemini_response_headers,
 )
 from app import kiro_adapter
+from app import codex_adapter
 from app.model_discovery import discover_models, clear_discovery_cache
 import fnmatch
 
@@ -5512,10 +5513,60 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # Select an active connection (connection-aware when model metadata
     # advertises which connection indexes can serve it). Falls back to the
     # legacy single-key / random-choice path when metadata is absent.
+    # Kiro auto-import: lazily pull a connection from the AWS SSO cache so the
+    # selection loop below sees it. Idempotent — no-op if connections exist.
+    if provider_name == 'kiro':
+        from app import oauth as _oauth_mod
+        try:
+            if await _oauth_mod.try_auto_import_kiro():
+                # The import persisted a new connection through the standard
+                # config-swap path, which REPLACED the global config object.
+                # This frame's local `config` is now a stale pre-import
+                # snapshot and would still see zero kiro connections —
+                # re-read the canonical store so THIS request (the one that
+                # triggered the import) routes on the fresh config too.
+                config = cs_get_config()
+        except Exception as _ai_exc:
+            # Fail-open: never break routing on auto-import.
+            print(f"[OAuth] Kiro auto-import failed (fail-open): {_ai_exc}", flush=True)
     _breaker = get_breaker()
+
+    # MULTI-KEY FAILOVER (2026-08-22): on an in-flight combo/leaf retry the
+    # connection just failed for THIS request (quota/auth/429), so the key must
+    # not be re-picked while the same provider is retried. The breaker cannot be
+    # relied on here: it may be disabled in config, and it records the outcome
+    # only AFTER this frame has already re-resolved (mid-race). So the request
+    # carries its own tried-set and the resolver filters on it, which keeps
+    # connection_indexes / round_robin / breaker semantics intact.
+    _tried_conns = (_retry_state or {}).get("tried_conns") or {}
+    _tried_idx = set(_tried_conns.get(provider_name) or ())
+
     active_conn, _active_conn_index = resolve_active_connection(
-        config, provider_name, target_model, breaker=_breaker
+        config, provider_name, target_model, breaker=_breaker,
+        exclude_indexes=_tried_idx or None,
     )
+    if active_conn is not None and _tried_idx:
+        print(
+            f"[KeyFailover] {provider_name}/{target_model}: tried conn idx(es) "
+            f"{sorted(_tried_idx)}, now using idx={_active_conn_index}",
+            flush=True,
+        )
+    elif active_conn is None and _tried_idx:
+        # Every eligible key for this leaf has already been attempted on this
+        # request. Re-pick WITHOUT the filter rather than failing hard: the
+        # duplicate attempt fails the same way and the combo chain advances,
+        # which is exactly the pre-failover behaviour. Returning None here
+        # would instead surface "no active connections" (HTTP 500) and skip
+        # the remaining chain entries.
+        print(
+            f"[KeyFailover] {provider_name}/{target_model}: all eligible keys "
+            f"{sorted(_tried_idx)} exhausted for this request — falling back to "
+            f"normal selection so the combo chain can advance",
+            flush=True,
+        )
+        active_conn, _active_conn_index = resolve_active_connection(
+            config, provider_name, target_model, breaker=_breaker
+        )
 
     if active_conn is None:
         # Fallback to legacy structure if present
@@ -5748,10 +5799,21 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         
     if bool(re.search(r'kiro', f_val)):
         # Kiro CodeWhisperer protocol: transform OpenAI payload → AWS JSON body
-        upstream_payload = kiro_adapter.openai_to_kiro(upstream_payload)
+        # Pass the connection's profileArn (required by Kiro's /generateAssistantResponse).
+        upstream_payload = kiro_adapter.openai_to_kiro(
+            upstream_payload,
+            profile_arn=((active_conn.get('provider_data') or {}).get('profileArn')),
+        )
         headers["x-amz-target"] = "CodeWhisperer.GenerateAssistantResponse"
         headers["Content-Type"] = "application/x-amz-json-1.0"
-            
+
+    if provider_name == 'codex':
+        # Codex Responses-API protocol: transform OpenAI payload → Responses body.
+        # Codex upstream MUST always receive stream:true + store:false; the
+        # egress layer below buffers SSE for non-stream clients.
+        upstream_payload = codex_adapter.openai_to_responses(upstream_payload)
+        headers["Content-Type"] = "application/json"
+
     # ── Reasoning resolution: SINGLE WRITER ──────────────────────────
     # Every thinking/reasoning field is written here and nowhere else.
     # Contract selection, effort vocabulary, forbidden-parameter strips
@@ -5860,7 +5922,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             _buffer_enabled = _prov_sb.get("enabled", _buffer_enabled)
     # Skip for n>1 â€” streaming path only handles choices[0] (consistent).
     _has_n_gt_1 = isinstance(upstream_payload.get("n"), int) and upstream_payload["n"] > 1
-    _apply_stream_buffer = (not is_stream and _buffer_enabled and not _has_n_gt_1)
+    _apply_stream_buffer = (not is_stream and _buffer_enabled and not _has_n_gt_1 and provider_name != 'codex')
 
     # â”€â”€ Response Format Resilience â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Many "deep market" reverse-proxy sellers silently strip response_format
@@ -5888,6 +5950,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             return JSONResponse({"error": str(exc)}, status_code=400)
     elif provider_name == 'kiro':
         _upstream_url = f"{resolved_base_url}/generateAssistantResponse"
+    elif provider_name == 'codex':
+        _upstream_url = f"{resolved_base_url}/responses"
     elif provider_name in ('ollama', 'ollama-local'):
         _upstream_url = f"{resolved_base_url}/chat"
     elif _is_anthropic_fmt:
@@ -6292,45 +6356,48 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         _err_body = await _probe_resp.aread()
                         _err_text = _err_body.decode("utf-8", errors="replace")
                 
-                if _probe_resp.status_code != 200:
-                    await _probe_resp.aclose()
-                    _err_text_short = _err_text[:500]
-                    _dump_upstream_failure(
-                        provider_name, target_model, _upstream_url, headers,
-                        upstream_payload, _probe_resp.status_code, _err_text_short,
-                    )
-                    obs.log_request(
-                        provider=provider_name, model=target_model,
-                        status=_probe_resp.status_code, ttft=0,
-                        in_tokens=0, out_tokens=0, cached_tokens=0,
-                        config=config, error_msg=_err_text_short,
-                        total_time=time.time() - start_time,
-                        request_id=request_id, client=client_label,
-                        stream=True, upstream_url=_upstream_url,
-                        conn_index=_active_conn_index,
-                        thinking=thinking_info,
-                        combo=_combo_label,
-                    )
-                    print(f"[Combo Fallback] '{model}' upstream {_probe_resp.status_code} for {target_model}/{provider_name} — advancing")
+            # THINKING-RETRY FIX (2026-08-22): this gate is at the SAME level as the
+            # non-200 block above (not nested inside it), so the combo-advance code
+            # below is governed by the FINAL probe status. Previously it lived one
+            # level deeper while the fallback block sat outside it: when the
+            # stripped-payload thinking retry succeeded (400 -> 200), the healthy
+            # 200 probe was discarded, the chain advanced anyway, and exhaustion
+            # reported the nonsensical "Last: upstream 200". This is what made every
+            # codex leaf fail even though the Responses egress itself was correct.
+            if _probe_resp.status_code != 200:
+                await _probe_resp.aclose()
+                _err_text_short = _err_text[:500]
+                _dump_upstream_failure(
+                    provider_name, target_model, _upstream_url, headers,
+                    upstream_payload, _probe_resp.status_code, _err_text_short,
+                )
+                obs.log_request(
+                    provider=provider_name, model=target_model,
+                    status=_probe_resp.status_code, ttft=0,
+                    in_tokens=0, out_tokens=0, cached_tokens=0,
+                    config=config, error_msg=_err_text_short,
+                    total_time=time.time() - start_time,
+                    request_id=request_id, client=client_label,
+                    stream=True, upstream_url=_upstream_url,
+                    conn_index=_active_conn_index,
+                    thinking=thinking_info,
+                    combo=_combo_label,
+                )
+                print(f"[Combo Fallback] '{model}' upstream {_probe_resp.status_code} for {target_model}/{provider_name} — advancing")
                 # ALL non-200 triggers fallback (per user directive). Even 400/422
                 # payload errors advance — a different provider may accept the same
                 # payload (different validation rules, different model capabilities).
                 _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
                 if active_chain and _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
-                    # FORENSIC (2026-08-04): the recursive call returns a Response
-                    # object to THIS frame, which must hand it back up the stack
-                    # untouched. If the outer frame has already begun streaming,
-                    # this returned response is dropped on the floor and the client
-                    # is left with an open connection. Log the handoff so the
-                    # exhaustion-vs-dropped-response question is answerable.
-                    print(
-                        f"[AFZ-TRACE] recursing chain idx={_next_idx}/{len(active_chain)} "
-                        f"client={client_label} stream={is_stream} rid={request_id}",
-                        flush=True,
-                    )
+                    # MULTI-KEY FAILOVER: mark THIS leaf's connection as tried so
+                    # the recursive frame doesn't re-dial the same drained key.
+                    _kc = (_retry_state or {}).get('tried_conns') if _retry_state else None
+                    _kc = dict(_kc) if _kc else {}
+                    if _active_conn_index is not None:
+                        _kc.setdefault(provider_name, []).append(_active_conn_index)
                     _recursed = await _process_chat_completion(
                         body, client_wants_anthropic, client_wants_gemini,
-                        _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                        _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
                         request=request,
                     )
                     print(
@@ -6459,9 +6526,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
             if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
                 print(f"[Combo Fallback] '{model}' stream network error for {target_model}/{provider_name}: {_probe_err} â€” advancing to entry {_next_idx}")
+                # MULTI-KEY FAILOVER: mark this leaf's connection as tried
+                # so the recursive frame doesn't re-dial the same drained key.
+                _kc = dict((_retry_state or {}).get('tried_conns') or {})
+                if _active_conn_index is not None:
+                    _kc.setdefault(provider_name, []).append(_active_conn_index)
                 return await _process_chat_completion(
                     body, client_wants_anthropic, client_wants_gemini,
-                    _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                    _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
                     request=request,
                 )
             if _chain_budget_remaining() <= 0:
@@ -6638,7 +6710,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                     ('"content":"' in text_chunk and '"content":""' not in text_chunk) or
                                     ('"content": "' in text_chunk and '"content": ""' not in text_chunk) or
                                     ('"reasoning_content":"' in text_chunk and '"reasoning_content":""' not in text_chunk) or
-                                    ('"text":"' in text_chunk and '"text":""' not in text_chunk)
+                                    ('"text":"' in text_chunk and '"text":""' not in text_chunk) or
+                                    # CODEX FIX (2026-08-22): Responses SSE emits
+                                    # response.output_text.delta frames (delta field,
+                                    # no content/text keys). Without this match TTFT
+                                    # never sets and the zero_output_tokens guard
+                                    # below kills a healthy 200 stream pre-emission.
+                                    '"output_text.delta"' in text_chunk
                                 )
                                 _is_gemini_content = (
                                     '"candidates"' in text_chunk or
@@ -6662,8 +6740,15 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                     data_str = line[6:]
                                     try:
                                         data_json = json.loads(data_str)
-                                        if "usage" in data_json and data_json["usage"]:
-                                            usage = data_json["usage"]
+                                        # CODEX FIX (2026-08-22): Responses SSE nests
+                                        # usage under response.usage (event
+                                        # response.completed); OpenAI/Anthropic put it
+                                        # top-level. Accept both so stats["out"] is
+                                        # populated and the zero-token fallback does not
+                                        # fire for codex.
+                                        _usage_src = data_json.get("usage") or (data_json.get("response") or {}).get("usage")
+                                        if _usage_src:
+                                            usage = _usage_src
                                             stats["in"], stats["out"], stats["cached"] = _extract_usage_tokens(usage)
                                             stats["cache_write"] = _extract_cache_write_tokens(usage)
                                     except json.JSONDecodeError:
@@ -8486,6 +8571,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 afz_guard(kiro_adapter.kiro_raw_to_openai_sse(raw_upstream_guarded()), _afz_sid, deadline_s=0),
                 media_type="text/event-stream",
             )
+        # Codex streaming egress: wrap raw upstream bytes through Responses SSE→OpenAI SSE converter
+        if provider_name == 'codex':
+            _afz_sid = next_stream_id()
+            return StreamingResponse(
+                afz_guard(codex_adapter.responses_sse_to_openai_sse(raw_upstream_guarded()), _afz_sid, deadline_s=0),
+                media_type="text/event-stream",
+            )
         _afz_sid = next_stream_id()
         return StreamingResponse(afz_guard(raw_upstream_guarded(), _afz_sid, deadline_s=0), media_type="text/event-stream")
     else:
@@ -8654,9 +8746,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         pass
                     _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
                     if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
+                        # MULTI-KEY FAILOVER: mark this leaf's connection as tried
+                        # so the recursive frame doesn't re-dial the same drained key.
+                        _kc = dict((_retry_state or {}).get('tried_conns') or {})
+                        if _active_conn_index is not None:
+                            _kc.setdefault(provider_name, []).append(_active_conn_index)
                         return await _process_chat_completion(
                             body, client_wants_anthropic, client_wants_gemini,
-                            _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                            _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
                             request=request,
                         )
                     if _chain_budget_remaining() <= 0:
@@ -8694,9 +8791,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         pass
                     _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
                     if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
+                        # MULTI-KEY FAILOVER: mark this leaf's connection as tried
+                        # so the recursive frame doesn't re-dial the same drained key.
+                        _kc = dict((_retry_state or {}).get('tried_conns') or {})
+                        if _active_conn_index is not None:
+                            _kc.setdefault(provider_name, []).append(_active_conn_index)
                         return await _process_chat_completion(
                             body, client_wants_anthropic, client_wants_gemini,
-                            _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                            _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
                             request=request,
                         )
                     if _chain_budget_remaining() <= 0:
@@ -8734,9 +8836,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         pass
                     _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
                     if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
+                        # MULTI-KEY FAILOVER: mark this leaf's connection as tried
+                        # so the recursive frame doesn't re-dial the same drained key.
+                        _kc = dict((_retry_state or {}).get('tried_conns') or {})
+                        if _active_conn_index is not None:
+                            _kc.setdefault(provider_name, []).append(_active_conn_index)
                         return await _process_chat_completion(
                             body, client_wants_anthropic, client_wants_gemini,
-                            _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                            _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
                             request=request,
                         )
                     if _chain_budget_remaining() <= 0:
@@ -8803,7 +8910,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         _stripped = strip_thinking(upstream_payload)
                         print(
                             f"[ThinkingFallback] '{target_model}/{provider_name}' rejected thinking params "
-                            f"(400) â€” retrying once with stripped payload",
+                            f"(400) — retrying once with stripped payload",
                             flush=True,
                         )
                         # Open replacement BEFORE closing original so a raise
@@ -8817,6 +8924,32 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         resp = _new_resp
                 except Exception as _tf_err:
                     print(f"[ThinkingFallback] degrade-retry failed (non-blocking): {_tf_err}", flush=True)
+
+            # CODEX NON-STREAM FIX (2026-08-22): Codex upstream ALWAYS streams
+            # (store:false + stream:true are forced by openai_to_responses), so a
+            # non-stream client gets an SSE body here, not JSON. The conversion
+            # used to live ~250 lines below, AFTER the usage extractor and the
+            # zombie guard had already run against an unparseable body: usage came
+            # back 0 and _response_has_model_output() saw no content, so every
+            # healthy codex call was reclassified 504 zombie_empty_response and the
+            # whole chain "failed". Assemble FIRST, then let the standard guards
+            # inspect real OpenAI JSON.
+            _codex_converted = False
+            if provider_name == 'codex' and resp.status_code == 200:
+                try:
+                    async def _codex_sse_pre_aiter():
+                        async for _b in resp.aiter_bytes():
+                            yield _b
+                    _cx_completed = await codex_adapter.assemble_responses_from_sse(_codex_sse_pre_aiter())
+                    _cx_openai = codex_adapter.responses_json_to_openai(_cx_completed, model=target_model)
+                    try:
+                        await resp.aclose()
+                    except Exception:
+                        pass
+                    resp = _SyntheticResponse(200, _cx_openai)
+                    _codex_converted = True
+                except Exception as _cx_err:
+                    print(f"[Egress] Codex Responses->OpenAI pre-conversion failed (passthrough): {_cx_err}", flush=True)
 
             ttft = time.time() - start_time
             
@@ -8902,9 +9035,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
                     _fb_code = 504 if _is_zombie else resp.status_code
                     print(f"[Combo Fallback] '{model}' non-stream {_fb_code} for {target_model}/{provider_name} â€” advancing to entry {_next_idx}")
+                    # MULTI-KEY FAILOVER: mark this leaf's connection as tried
+                    # so the recursive frame doesn't re-dial the same drained key.
+                    _kc = dict((_retry_state or {}).get('tried_conns') or {})
+                    if _active_conn_index is not None:
+                        _kc.setdefault(provider_name, []).append(_active_conn_index)
                     return await _process_chat_completion(
                         body, client_wants_anthropic, client_wants_gemini,
-                        _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                        _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
                         request=request,
                     )
                 if _chain_budget_remaining() <= 0:
@@ -9057,6 +9195,28 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 except Exception as e:
                     print(f"[Egress] Kiro->OpenAI response conversion failed (passthrough): {e}")
 
+            # Egress conversion: Codex upstream ALWAYS streams (store:false +
+            # stream:true forced in the payload transform). For a non-stream
+            # client we buffer the upstream SSE, assemble the completed response
+            # object, and render it as a standard OpenAI chat.completion.
+            # We MUST NOT send stream:false upstream — Codex rejects it.
+            #
+            # Normally this already happened in the pre-conversion block above
+            # (needed so the zombie guard sees real content); this stays as the
+            # fallback path for when that conversion failed.
+            if provider_name == 'codex' and resp.status_code == 200 and not _codex_converted:
+                try:
+                    # Read raw SSE bytes from the (streaming) upstream response
+                    # and assemble the response.completed object.
+                    async def _codex_sse_aiter():
+                        async for b in resp.aiter_bytes():
+                            yield b
+                    completed = await codex_adapter.assemble_responses_from_sse(_codex_sse_aiter())
+                    openai_json = codex_adapter.responses_json_to_openai(completed, model=target_model)
+                    return JSONResponse(openai_json, status_code=200)
+                except Exception as e:
+                    print(f"[Egress] Codex Responses->OpenAI response conversion failed (passthrough): {e}")
+
             # Egress conversion: client hit /v1/messages (Anthropic) but upstream
             # is OpenAI-format. Convert the OpenAI response so Claude Code can parse it.
             if client_wants_anthropic and not _is_anthropic_fmt and resp.status_code == 200:
@@ -9168,9 +9328,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
                 if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
                     print(f"[Combo Fallback] '{model}' non-stream network error for {target_model}/{provider_name}: {e} â€” advancing to entry {_next_idx}")
+                    # MULTI-KEY FAILOVER: mark this leaf's connection as tried
+                    # so the recursive frame doesn't re-dial the same drained key.
+                    _kc = dict((_retry_state or {}).get('tried_conns') or {})
+                    if _active_conn_index is not None:
+                        _kc.setdefault(provider_name, []).append(_active_conn_index)
                     return await _process_chat_completion(
                         body, client_wants_anthropic, client_wants_gemini,
-                        _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                        _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
                         request=request,
                     )
                 if _chain_budget_remaining() <= 0:
