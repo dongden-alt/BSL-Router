@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **BREAKER default ON** — `CircuitBreaker.enabled` now defaults to `True` (`settings.get("enabled", True)`), so rate-limited (429) keys are removed from the pool and fail over by default. The explicit `circuit_breaker.enabled: false` config override still works.
 
+- **AGENTROUTER: NFKD transcode replaces VN hard-block** — The AgentRouter Vietnamese preflight previously skipped the leaf (returning 400 and advancing the combo chain) whenever VN text was detected in the request body. Live probe 2026-08-22 showed AR 400s only on PRECOMPOSED Vietnamese codepoints (U+1EA0..U+1EF9); NFKD-decomposed VN passes with a correct model answer. New `agentrouter_nfkd_transcode()` in `app/middleware/agentrouter_policy.py` deep-walks `internal_request.messages` (dicts, content lists, `.content`/`.text` objects), the request-level `system` prompt (str or list), and tool `description` strings, rewriting each non-empty string via `unicodedata.normalize("NFKD", s)` only when it actually changes. Scoped to `provider_name == "agentrouter"`; other providers are untouched. The skip/400/combo-advance path is removed entirely — VN content now flows to AR successfully instead of being blocked.
+
 ---
 
 ## [1.0.2] - 2026-08-15

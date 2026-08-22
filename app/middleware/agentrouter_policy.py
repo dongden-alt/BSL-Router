@@ -20,6 +20,7 @@ Policy (agentrouter ONLY):
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, List, Sequence, Tuple
 
 # Vietnamese-specific Latin letters (covers common NFC forms in source).
@@ -116,6 +117,67 @@ def agentrouter_should_skip_for_vietnamese(
         return False, ""
     text = _message_text(messages)
     return detect_vietnamese_content(text)
+
+
+def agentrouter_nfkd_transcode(provider_name: str, messages: Sequence[Any]) -> Tuple[bool, str]:
+    """NFKD-normalise outbound text for the agentrouter provider only.
+
+    agentrouter.org 400s content-blocked on PRECOMPOSED Vietnamese codepoints
+    (U+1EA0..U+1EF9, U+0110/U+0111) anywhere in the request body. NFKD
+    decomposition rewrites those into base letter + combining mark, which AR
+    accepts. Other providers are untouched.
+
+    Returns (changed, summary) for logging. Never raises.
+    """
+    if str(provider_name or "").lower() != _PROVIDER:
+        return False, ""
+
+    changed = False
+    count = 0
+
+    def _rewrite_str(s: str) -> str:
+        nonlocal changed, count
+        n = unicodedata.normalize("NFKD", s)
+        if n != s:
+            changed = True
+            count += 1
+            return n
+        return s
+
+    def _walk(obj: Any) -> Any:
+        if isinstance(obj, str):
+            return _rewrite_str(obj)
+        if isinstance(obj, dict):
+            for k, v in list(obj.items()):
+                obj[k] = _walk(v)
+            return obj
+        if isinstance(obj, list):
+            for i, v in enumerate(obj):
+                obj[i] = _walk(v)
+            return obj
+        # Plain objects exposing .content / .text (e.g. pydantic models).
+        for attr in ("content", "text"):
+            val = getattr(obj, attr, None)
+            if isinstance(val, str):
+                try:
+                    setattr(obj, attr, _rewrite_str(val))
+                except Exception:
+                    pass
+        return obj
+
+    try:
+        for i, msg in enumerate(list(messages or [])):
+            # messages may be a plain list or a mutating sequence; rewrite
+            # items in place where possible.
+            walked = _walk(msg)
+            if isinstance(messages, list):
+                messages[i] = walked
+    except Exception:
+        pass
+
+    if changed:
+        return True, f"nfkd:{count}_blobs"
+    return False, ""
 
 
 def format_agentrouter_vn_skip_error(reason: str) -> dict:

@@ -25,6 +25,7 @@ from starlette.background import BackgroundTask
 import asyncio
 import copy
 import re
+import unicodedata
 import yaml
 import json
 import time
@@ -87,10 +88,7 @@ from app.antifreeze import (
 from app.compat import get_profile, is_anthropic_compatible, ToolLedger
 from app.middleware.response_format_guard import inject_json_instruction, has_response_format
 from app.middleware.glm_tools import normalize_glm_tool_calls, inject_glm_language_forcing
-from app.middleware.agentrouter_policy import (
-    agentrouter_should_skip_for_vietnamese,
-    format_agentrouter_vn_skip_error,
-)
+from app.middleware.agentrouter_policy import agentrouter_nfkd_transcode
 from app.middleware.quality import (
     is_length_truncated,
     build_continuation_payload,
@@ -5457,68 +5455,56 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     except Exception as e:
         print(f"Efficiency middleware error (non-blocking): {e}")
 
-    # AgentRouter-only VN preflight (live 2026-08-20):
-    # AR returns 400 content-blocked when the *request body* contains Vietnamese
-    # (file/history/context), even if the user tip is pure English. Soft system
-    # English force cannot fix that. Skip this leaf before dialing upstream:
-    #   - combo chain: advance to next entry
-    #   - direct agentrouter: clear 400 with reason
-    # Other providers are untouched.
+    # AgentRouter-only NFKD transcode (live 2026-08-22):
+    # AR returns 400 content-blocked on PRECOMPOSED Vietnamese codepoints
+    # (U+1EA0..U+1EF9, U+0110/U+0111) anywhere in the request body. NFKD
+    # decomposition rewrites those into base letter + combining mark, which AR
+    # accepts. Other providers are untouched. Transcode in place and log only
+    # when something actually changed.
     try:
-        _ar_skip, _ar_reason = agentrouter_should_skip_for_vietnamese(
+        _ar_changed, _ar_summary = agentrouter_nfkd_transcode(
             provider_name, internal_request.messages
         )
-    except Exception as _ar_err:
-        print(f"[AgentRouter-VN] preflight failed (fail-open): {_ar_err}", flush=True)
-        _ar_skip, _ar_reason = False, ""
-    if _ar_skip:
-        _ar_err_body = format_agentrouter_vn_skip_error(_ar_reason)
-        print(
-            f"[AgentRouter-VN] skip {provider_name}/{target_model} reason={_ar_reason}",
-            flush=True,
-        )
-        try:
-            obs.log_request(
-                provider=provider_name,
-                model=target_model,
-                status=400,
-                ttft=0.0,
-                in_tokens=0,
-                out_tokens=0,
-                cached_tokens=0,
-                config=config,
-                error_msg=f"content-blocked-preflight:{_ar_reason}",
-                total_time=0.0,
-                stream=bool(getattr(internal_request, 'stream', False)),
-            )
-        except Exception:
-            pass
-        _ar_next = (_retry_state['idx'] + 1) if _retry_state else 1
-        _ar_chain = active_chain or []
-        if len(_ar_chain) > 1 and _ar_next < len(_ar_chain):
-            _ar_deadline = (
-                (_retry_state or {}).get('deadline')
-                or (time.monotonic() + CHAIN_TOTAL_BUDGET)
-            )
+        # Also transcode the request-level system prompt (str or list of
+        # {type, text} content blocks) when present.
+        _ar_sys = getattr(internal_request, "system", None)
+        if _ar_sys is not None:
+            if isinstance(_ar_sys, str):
+                _n = unicodedata.normalize("NFKD", _ar_sys)
+                if _n != _ar_sys:
+                    internal_request.system = _n
+                    _ar_changed = True
+                    _ar_summary = "nfkd:sys"
+            elif isinstance(_ar_sys, list):
+                for block in _ar_sys:
+                    if isinstance(block, dict) and "text" in block:
+                        t = block["text"]
+                        if isinstance(t, str):
+                            n = unicodedata.normalize("NFKD", t)
+                            if n != t:
+                                block["text"] = n
+                                _ar_changed = True
+                                _ar_summary = "nfkd:sys"
+        # Transcode tool description strings when tools are present.
+        _ar_tools = getattr(internal_request, "tools", None)
+        if _ar_tools is not None:
+            for tool in _ar_tools:
+                if isinstance(tool, dict):
+                    f = tool.get("function") or tool
+                    d = f.get("description")
+                    if isinstance(d, str):
+                        n = unicodedata.normalize("NFKD", d)
+                        if n != d:
+                            f["description"] = n
+                            _ar_changed = True
+                            _ar_summary = "nfkd:tools"
+        if _ar_changed:
             print(
-                f"[Combo Fallback] '{model}' agentrouter VN preflight for "
-                f"{target_model}/{provider_name} — advancing to entry {_ar_next}",
+                f"[AgentRouter-VN] NFKD transcoded {provider_name}/{target_model} {_ar_summary}",
                 flush=True,
             )
-            return await _process_chat_completion(
-                body,
-                client_wants_anthropic,
-                client_wants_gemini,
-                _retry_state={
-                    'chain': _ar_chain,
-                    'idx': _ar_next,
-                    'cache_bp': _cache_breakpoints,
-                    'original_model': original_model,
-                    'deadline': _ar_deadline,
-                },
-                request=request,
-            )
-        return JSONResponse(_ar_err_body, status_code=400)
+    except Exception as _ar_err:
+        print(f"[AgentRouter-VN] transcode failed (fail-open): {_ar_err}", flush=True)
 
     # Apply Static-First sorting to maximize cache hits (gated by tools.caching_static_sort)
     internal_request = PromptCachingAdapter.apply_static_first_sort(internal_request, tools_config=config.get("tools", {}))

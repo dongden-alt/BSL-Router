@@ -1,10 +1,12 @@
 """AgentRouter VN preflight — provider-scoped only."""
 import os
 import sys
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from app.middleware.agentrouter_policy import (
+    agentrouter_nfkd_transcode,
     agentrouter_should_skip_for_vietnamese,
     detect_vietnamese_content,
     format_agentrouter_vn_skip_error,
@@ -72,3 +74,78 @@ def test_message_object_content_list():
     skip, reason = agentrouter_should_skip_for_vietnamese("agentrouter", msgs)
     assert skip is True
     assert "vietnamese_phrase:" in reason
+
+
+# ---- NFKD transcode tests ----
+
+# Precomposed VN codepoints that NFKD decomposes (U+1EA0..U+1EF9).
+# These are what agentrouter.org 400s on; NFKD rewrites them to base +
+# combining mark. Đ/đ (U+0110/U+0111) are NOT decomposed by NFKD and AR
+# accepts them, so they are intentionally excluded from this set.
+_VN_PRECOMPOSED = set(chr(c) for c in range(0x1EA0, 0x1EFA))
+
+
+def _has_precomposed_vn(s: str) -> bool:
+    return any(ch in _VN_PRECOMPOSED for ch in s)
+
+
+def test_nfkd_removes_precomposed_vn_codepoints():
+    original = "Hệ thống quản trị biên tập tin tức bóng đá."
+    assert _has_precomposed_vn(original)
+
+    msgs = [{"role": "user", "content": original}]
+    changed, summary = agentrouter_nfkd_transcode("agentrouter", msgs)
+
+    assert changed is True
+    assert summary.startswith("nfkd:")
+    rewritten = msgs[0]["content"]
+    assert not _has_precomposed_vn(rewritten)
+    # NFKD round-trips back to the original NFC via NFKC/NFC composition.
+    assert unicodedata.normalize("NFC", rewritten) == unicodedata.normalize("NFC", original)
+
+
+def test_nfkd_ascii_untouched_returns_false():
+    msgs = [{"role": "user", "content": "Reply with exactly: OK. Summarize this file."}]
+    changed, summary = agentrouter_nfkd_transcode("agentrouter", msgs)
+    assert changed is False
+    assert summary == ""
+    assert msgs[0]["content"] == "Reply with exactly: OK. Summarize this file."
+
+
+def test_nfkd_provider_gate_not_agentrouter():
+    original = "Hệ thống quản trị biên tập tin tức bóng đá."
+    msgs = [{"role": "user", "content": original}]
+    changed, summary = agentrouter_nfkd_transcode("pix4k", msgs)
+    assert changed is False
+    assert summary == ""
+    # Untouched — precomposed VN still present.
+    assert _has_precomposed_vn(msgs[0]["content"])
+
+
+def test_nfkd_content_list_messages():
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Hệ thống quản trị tin tức."},
+                {"type": "text", "text": "Bóng đá."},
+            ],
+        }
+    ]
+    changed, summary = agentrouter_nfkd_transcode("agentrouter", msgs)
+    assert changed is True
+    blocks = msgs[0]["content"]
+    for block in blocks:
+        assert not _has_precomposed_vn(block["text"])
+
+
+def test_nfkd_object_with_content_attr():
+    class Msg:
+        def __init__(self, content):
+            self.content = content
+
+    original = "Hệ thống quản trị."
+    msg = Msg(original)
+    changed, summary = agentrouter_nfkd_transcode("agentrouter", [msg])
+    assert changed is True
+    assert not _has_precomposed_vn(msg.content)
