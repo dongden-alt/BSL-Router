@@ -42,6 +42,18 @@ def _budget_to_effort(budget: Any) -> str:
         return "medium"
     return "high"
 
+# §8.8 (2026-08-24): the single source of truth for the synthetic notice the
+# router emits when upstream produced zero renderable output. The Antigravity
+# IDE hard-rejects frames where text and tool calls are BOTH empty, so an
+# honest visible notice replaces the old parts=[{"text": ""}] placeholder.
+# gemini_frame_has_content deliberately treats this exact string as NON-content
+# so combo fallback stays available on zero-output finishes.
+BSL_NO_OUTPUT_NOTICE = (
+    "[BSL Router] Upstream returned no renderable output "
+    "(text and tool calls were both empty). Try again or "
+    "switch model."
+)
+
 # Model key mapping — spec §6. Exact synonym map first, then regex cascade.
 MODEL_SYNONYMS: Dict[str, str] = {
     "gemini-default": "gemini-3.5-flash-low",
@@ -458,6 +470,19 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
                 })
                 continue
 
+            # fileData → image_url remote URI (§3; GAP fix 2026-08-24).
+            # Remote files (gs://, https://) were silently DROPPED before —
+            # Vision requests with remote URIs reached upstream image-less.
+            if "fileData" in part:
+                fdata = part["fileData"] or {}
+                uri = fdata.get("fileUri") or fdata.get("uri") or ""
+                if isinstance(uri, str) and uri:
+                    image_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": uri},
+                    })
+                continue
+
             # thought:true (+ text) → reasoning_content channel (§3)
             if part.get("thought") is True:
                 # §8.2: pure-thought parts (no text/fn) are dropped on request.
@@ -578,9 +603,13 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
 
     choices = chunk.get("choices") or []
     if not choices:
-        # A usage-only chunk (no choices) — emit usageMetadata if we have it.
+        # A usage-only chunk (no choices) — emit usageMetadata WITHOUT any
+        # parts (2026-08-24): an empty text part trips the IDE's
+        # "text and tool calls cannot both be empty" validator.
         if state.get("usage"):
-            obj = _base_gemini_response(state, parts=[{"text": ""}], finish_reason=None)
+            obj = _base_gemini_response(state, parts=[], finish_reason=None)
+            if obj["candidates"]:
+                obj["candidates"][0]["content"]["parts"] = []
             obj["usageMetadata"] = _usage_metadata(state["usage"])
             state["usage"] = None
             return {"response": obj}
@@ -652,9 +681,15 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
             # these metadata fields — inject defaults to prevent IDE rejection.
             args = _inject_tool_metadata(args, name)
             parts.append({"functionCall": {"name": name, "args": args}})
-        # §8.8: a finish with no produced parts must still keep parts non-empty.
+        # §8.8 (REVISED 2026-08-24): a finish with no produced parts must NOT
+        # emit parts=[{"text": ""}] — the Antigravity IDE hard-rejects frames
+        # where text and tool calls are BOTH empty ("model output must contain
+        # either output text or tool calls, these cannot both be empty"), which
+        # surfaced to the user as an opaque recurring error. Emit an honest,
+        # VISIBLE notice so the IDE sees renderable text and the transcript
+        # stays truthful about what the upstream produced.
         if not parts:
-            parts.append({"text": ""})
+            parts.append({"text": BSL_NO_OUTPUT_NOTICE})
 
     # §4a: emit nothing for empty mid-stream deltas (no parts, no finish).
     if not parts and not finish:
@@ -685,14 +720,18 @@ def gemini_frame_has_content(frame: Dict[str, Any]) -> bool:
     content may disable fallback.
 
     NOT content (returns False):
-      * usage-only chunks - `openai_chunk_to_gemini` emits `parts=[{"text": ""}]`
-        purely to carry `usageMetadata` (see the `not choices` branch above).
-      * a finish chunk whose tool calls were all dropped - §8.8 forces
-        `parts=[{"text": ""}]` to keep `parts` non-empty.
+      * usage-only chunks - `openai_chunk_to_gemini` emits parts without any
+        text part purely to carry `usageMetadata` (see the `not choices`
+        branch above).
+      * a finish chunk whose tool calls were all dropped - §8.8 forces the
+        synthetic notice part to keep `parts` non-empty.
+      * the §8.8 synthetic no-output notice itself - it is router-generated
+        text, not model output. Counting it would block combo fallback on
+        exactly the zero-output finishes we must fail over from.
       * empty-string text or thought deltas.
 
-    IS content (returns True): non-empty text, non-empty thought text,
-    functionCall, inlineData/fileData.
+    IS content (returns True): non-empty text (except the synthetic notice),
+    non-empty thought text, functionCall, inlineData/fileData.
 
     A `finishReason` alone is deliberately NOT content: it ends the stream but
     renders nothing, and treating it as content would re-block fallback on
@@ -714,8 +753,11 @@ def gemini_frame_has_content(frame: Dict[str, Any]) -> bool:
                 continue
             # Any non-empty text counts, whether or not it is a thought: the
             # IDE renders thoughts in the reasoning pane, so splicing a second
-            # provider after one would still be visible corruption.
+            # provider after one would still be visible corruption. The
+            # synthetic §8.8 notice is the one deliberate exception.
             if isinstance(part.get("text"), str) and part["text"] != "":
+                if part["text"] == BSL_NO_OUTPUT_NOTICE:
+                    continue
                 return True
             if part.get("functionCall") or part.get("inlineData") or part.get("fileData"):
                 return True
@@ -820,7 +862,9 @@ def openai_response_to_gemini(openai_resp: Dict[str, Any], model: str) -> Dict[s
         parts.append({"functionCall": {"name": fn_name, "args": args}})
 
     if not parts:
-        parts.append({"text": ""})
+        # §8.8 (2026-08-24) non-stream twin: the IDE hard-rejects
+        # empty text + empty tool calls ("...these cannot both be empty").
+        parts.append({"text": BSL_NO_OUTPUT_NOTICE})
 
     finish = choice.get("finish_reason") if isinstance(choice, dict) else None
     finish_reason = _FINISH_MAP.get(finish, "STOP") if finish else "STOP"

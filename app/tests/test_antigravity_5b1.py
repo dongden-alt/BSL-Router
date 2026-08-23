@@ -347,8 +347,10 @@ def test_t5_finish_chunk_stop_with_usage():
     resp = g["response"]
     cand = resp["candidates"][0]
     assert cand["finishReason"] == "STOP"
-    # Empty parts on a finish chunk → {"text": ""} (§8.8).
-    assert cand["content"]["parts"] == [{"text": ""}]
+    # §8.8 (2026-08-24): empty finish parts now carry a VISIBLE notice —
+    # the IDE hard-rejects text+tool_calls both empty.
+    assert cand["content"]["parts"][0]["text"].startswith("[BSL Router]"), cand["content"]["parts"]
+    assert cand["content"]["parts"][0]["text"].strip() != ""
     um = resp["usageMetadata"]
     assert um["promptTokenCount"] == 12
     assert um["candidatesTokenCount"] == 2
@@ -413,8 +415,8 @@ def test_t5_truncated_tool_call_drops_and_signals_max_tokens():
     cand = finish["candidates"][0]
     # No functionCall part should survive (the malformed call is dropped).
     assert not any("functionCall" in p for p in cand["content"]["parts"]), cand["content"]["parts"]
-    # §8.8 keeps parts non-empty with a text placeholder.
-    assert cand["content"]["parts"] == [{"text": ""}]
+    # §8.8 (2026-08-24): visible notice instead of the empty placeholder.
+    assert cand["content"]["parts"][0]["text"].startswith("[BSL Router]"), cand["content"]["parts"]
     # Honest truncation signal, NOT STOP.
     assert cand["finishReason"] == "MAX_TOKENS"
 
@@ -481,7 +483,8 @@ def test_non_stream_response_shape():
 
 
 def test_non_stream_empty_content_keeps_parts_nonempty():
-    """§4b / §8.8: even with empty content, candidates[0].content.parts is non-empty."""
+    """§4b / §8.8 (2026-08-24): empty content yields a VISIBLE notice part —
+    the IDE rejects text+tool_calls both empty."""
     openai_resp = {
         "id": "x", "model": "m",
         "choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}],
@@ -489,7 +492,8 @@ def test_non_stream_empty_content_keeps_parts_nonempty():
     }
     out = openai_response_to_gemini(openai_resp, "m")
     parts = out["response"]["candidates"][0]["content"]["parts"]
-    assert parts and parts[0] == {"text": ""}
+    assert parts and parts[0]["text"].startswith("[BSL Router]"), parts
+    assert parts[0]["text"].strip() != ""
 
 
 if __name__ == "__main__":
