@@ -6062,12 +6062,24 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     _upstream_host = httpx.URL(_upstream_url).host if _upstream_url else ""
     if provider_name == "antigravity" or _upstream_host in _ANTIGRAVITY_NATIVE_HOSTS:
         client = _get_antigravity_egress_client()
+        # Cloud Code upstream adapter (2026-08-23): the antigravity host serves
+        # ONLY v1internal:* RPC verbs — /chat/completions gets an HTML 404.
+        # Wrap the egress client so OpenAI-canonical payloads are forged into
+        # the verified Cloud Code envelope (IDE UA + agent requestType) and
+        # Gemini SSE responses are translated back to OpenAI chunks in-place.
+        # All hardened send sites (401-retry, thinking-degrade, combo
+        # fallback, zero-token watchdogs) operate unchanged.
+        from app.compat.adapters.antigravity_upstream import (
+            wrap_antigravity_upstream_client,
+        )
+        client = wrap_antigravity_upstream_client(client, target_model)
     elif provider_config.get("ssl_verify", True) is False:
         # Provider uses a self-signed cert (e.g. api.iamhc.cn, api.hcnsec.cn).
         # Disable TLS verification for this provider only.
         client = _get_ssl_disabled_client(active_conn.get("proxy_url"))
     else:
         client = _get_client_for_proxy(active_conn.get("proxy_url"))
+
 
     # OAuth 401-retry guard: ensures we only retry once per request on 401.
     _oauth_401_retried = False
@@ -8684,7 +8696,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         await _bs_resp.aclose()
                         print(
                             f"[StreamBuffer:{_label}] '{target_model}/{provider_name}' "
-                            f"stream rejected ({_bs_resp.status_code} in {_bs_elapsed:.1f}s) — fail-open",
+                            f"stream rejected ({_bs_resp.status_code} in {_bs_elapsed:.1f}s) \u2014 fail-open",
                             flush=True,
                         )
                         return await client.send(_build_req(_payload_to_stream))
@@ -8788,11 +8800,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     )
                     resp = _SyntheticResponse(504, {"error": _sb_err_text[:1000]})
                 except Exception as _sb_exc:
+                    import traceback as _tb
                     print(
-                        f"[StreamBuffer] '{target_model}/{provider_name}' dispatch failed: {_sb_exc} — fail-open to non-stream",
+                        f"[StreamBuffer] '{target_model}/{provider_name}' dispatch failed: {_sb_exc} - fail-open to non-stream",
                         flush=True,
                     )
+                    _tb.print_exc()
                     resp = await client.send(req)
+
             else:
                 # ── Hardened non-stream send + generation budget ─────────────────────
                 # Unified policy: non-stream total budget bounds how long we
