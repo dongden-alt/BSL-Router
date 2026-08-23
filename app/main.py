@@ -5172,6 +5172,34 @@ async def _deadline_stall_fire(
     return
 
 
+def _openai_chunk_carries_output(text_chunk: str) -> bool:
+    """True when an SSE chunk proves the model produced output.
+
+    Covers text content, reasoning, AND tool calls (modern `tool_calls`
+    plus legacy `function_call`). DeepSeek-family resellers often omit
+    `usage` on streamed responses; for a tool-call-only reply these markers
+    are the only witness standing between a healthy stream and the false
+    `zero_output_tokens` combo fallback / post-message_stop error frames.
+    A tool call IS output. Compact and spaced JSON forms both accepted.
+    """
+    if not text_chunk:
+        return False
+    return (
+        ('"content":"' in text_chunk and '"content":""' not in text_chunk)
+        or ('"content": "' in text_chunk and '"content": ""' not in text_chunk)
+        or ('"reasoning_content":"' in text_chunk and '"reasoning_content":""' not in text_chunk)
+        or ('"reasoning_content": "' in text_chunk and '"reasoning_content": ""' not in text_chunk)
+        or ('"text":"' in text_chunk and '"text":""' not in text_chunk)
+        or ('"text": "' in text_chunk and '"text": ""' not in text_chunk)
+        or ('"tool_calls":[' in text_chunk and '"tool_calls":[]' not in text_chunk)
+        or ('"tool_calls": [' in text_chunk and '"tool_calls": []' not in text_chunk)
+        or ('"function_call":{' in text_chunk and '"function_call":{}' not in text_chunk)
+        or ('"function_call": {' in text_chunk and '"function_call": {}' not in text_chunk)
+        or '"finish_reason":"tool_calls"' in text_chunk
+        or '"finish_reason": "tool_calls"' in text_chunk
+    )
+
+
 async def _process_chat_completion(body: dict, client_wants_anthropic: bool = False, client_wants_gemini: bool = False, _retry_state: dict = None, request: Request = None):
 
     config = cs_get_config()
@@ -6759,16 +6787,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             text_chunk = chunk.decode("utf-8")
                             if stats["ttft"] == 0.0:
                                 _is_openai_content = (
-                                    ('"content":"' in text_chunk and '"content":""' not in text_chunk) or
-                                    ('"content": "' in text_chunk and '"content": ""' not in text_chunk) or
-                                    ('"reasoning_content":"' in text_chunk and '"reasoning_content":""' not in text_chunk) or
-                                    ('"text":"' in text_chunk and '"text":""' not in text_chunk) or
+                                    _openai_chunk_carries_output(text_chunk)
                                     # CODEX FIX (2026-08-22): Responses SSE emits
                                     # response.output_text.delta frames (delta field,
                                     # no content/text keys). Without this match TTFT
                                     # never sets and the zero_output_tokens guard
                                     # below kills a healthy 200 stream pre-emission.
-                                    '"output_text.delta"' in text_chunk
+                                    or '"output_text.delta"' in text_chunk
                                 )
                                 _is_gemini_content = (
                                     '"candidates"' in text_chunk or
@@ -7140,12 +7165,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             try:
                                 text_chunk = chunk.decode("utf-8")
                                 if stats["ttft"] == 0.0:
-                                    _is_openai_content = (
-                                        ('"content":"' in text_chunk and '"content":""' not in text_chunk) or
-                                        ('"content": "' in text_chunk and '"content": ""' not in text_chunk) or
-                                        ('"reasoning_content":"' in text_chunk and '"reasoning_content":""' not in text_chunk) or
-                                        ('"text":"' in text_chunk and '"text":""' not in text_chunk)
-                                    )
+                                    _is_openai_content = _openai_chunk_carries_output(text_chunk)
                                     _is_gemini_content = (
                                         '"candidates"' in text_chunk or
                                         '"parts"' in text_chunk or
@@ -7176,7 +7196,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                 pass
                             _emit.mark_emitted(chunk)
                             yield chunk
-                        if stats.get("status") == 200 and stats.get("out", 0) == 0:
+                        if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft"):
                             _zero_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                             if active_chain and _zero_next_idx < len(active_chain):
                                 _zero_retry_state = {
@@ -8299,12 +8319,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                 if stats["ttft"] == 0.0:
                                     # OpenAI format: content/reasoning_content/text fields
                                     # Gemini/Antigravity format: candidates/parts/role fields
-                                    _is_openai_content = (
-                                        ('"content":"' in text_chunk and '"content":""' not in text_chunk) or
-                                        ('"content": "' in text_chunk and '"content": ""' not in text_chunk) or
-                                        ('"reasoning_content":"' in text_chunk and '"reasoning_content":""' not in text_chunk) or
-                                        ('"text":"' in text_chunk and '"text":""' not in text_chunk)
-                                    )
+                                    _is_openai_content = _openai_chunk_carries_output(text_chunk)
                                     _is_gemini_content = (
                                         '"candidates"' in text_chunk or
                                         '"parts"' in text_chunk or
@@ -8343,7 +8358,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             yield chunk
                         # Zero-token 200: stream completed with status 200 but produced
                         # zero output tokens — dead leaf. Advance combo if possible.
-                        if stats.get("status") == 200 and stats.get("out", 0) == 0:
+                        if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft"):
                             _zero_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                             if active_chain and _zero_next_idx < len(active_chain):
                                 _zero_retry_state = {
