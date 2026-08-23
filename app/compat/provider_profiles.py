@@ -345,6 +345,45 @@ def get_profile(provider_name: str, provider_config: Optional[Dict] = None) -> P
                 allow_mock_prefill=False,
                 agent_mode_label="translated-agent",
             )
+        # Operator-declared OpenAI wire format wins over a registry profile
+        # that speaks anthropic_messages. This is the kilocode case: the
+        # registry assumes Kilo's native Anthropic-shaped API, but the
+        # operator pointed the connection at an OpenAI-compatible gateway
+        # (e.g. api.kilo.ai/api/gateway) with format: openai. Ignoring the
+        # override normalizes tool schemas into Anthropic shape (name/
+        # input_schema) which an OpenAI gateway rejects with
+        # "tools[0].type invalid or missing". The config format is the
+        # operator's declared intent for THIS connection and is authoritative.
+        if (
+            fmt
+            and fmt.startswith("openai")
+            and fmt != "openai-image"
+            and provider_name in PROFILES
+            and PROFILES[provider_name].upstream_protocol != "openai_chat"
+        ):
+            return ProviderProfile(
+                id=provider_name,
+                upstream_protocol="openai_chat",
+                endpoint_path="/chat/completions",
+                base_url_kind="openai_compatible",
+            )
+        if fmt == "anthropic" and provider_name in PROFILES and PROFILES[provider_name].upstream_protocol == "openai_chat":
+            return ProviderProfile(
+                id=provider_name,
+                upstream_protocol="anthropic_messages",
+                endpoint_path="/messages",
+                base_url_kind="anthropic_compatible",
+                requires_anthropic_version=True,
+                allows_anthropic_beta=False,
+                tools_request_format="anthropic_tools",
+                tools_response_format="anthropic_tool_use",
+                reasoning_policy="provider_native",
+                supports_thinking=True,
+                thinking_request_fields=["thinking"],
+                stream_dialect="anthropic_sse",
+                allow_mock_prefill=False,
+                agent_mode_label="translated-agent",
+            )
 
     # Direct registry lookup
     if provider_name in PROFILES:

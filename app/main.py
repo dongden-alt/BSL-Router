@@ -308,7 +308,7 @@ GEMINI_EGRESS_TTFT_TIMEOUT = 0.0
 # before the TTFT watchdog (60s) could ever apply. The TTFT watchdog is the
 # correct kill mechanism for silent upstreams — the header probe must be looser.
 # High-latency providers + thinking models need 90s.
-HEADER_WAIT_TIMEOUT = 90.0
+HEADER_WAIT_TIMEOUT = 300.0  # Raised from 90s: reasoning-heavy models (e.g. GLM-5.3 effort:max with 100k+ token context) legitimately think >90s before the first byte; a 90s bound killed healthy streams and the client saw a spurious "network issue" disconnect.
 
 # â”€â”€ Unified Mode-Split Timeout Policy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Derived from production log analysis (console_logs.jsonl, n=6749 end events).
