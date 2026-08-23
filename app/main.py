@@ -325,11 +325,25 @@ HEADER_WAIT_TIMEOUT = 300.0  # Raised from 90s: reasoning-heavy models (e.g. GLM
 STREAM_STALL_TIMEOUT_DEFAULT = 0.0        # Body stall: disabled (0 = wait forever)
 STREAM_TTFT_TIMEOUT_DEFAULT = 0.0         # First token cap: disabled (0 = wait forever)
 NONSTREAM_TOTAL_BUDGET = 120.0            # Total generation budget for non-stream (seconds); fails inside AEP cooldown window
-# Total wall-clock cap across the ENTIRE combo/fallback chain (all recursive
-# hops combined). Per-leaf budgets above are per-attempt; without this cap a
-# 4-leaf dead chain holds the client connection for 4x120s = 8 minutes, which
-# exhausts the IDE's per-host connection pool and freezes every window.
-CHAIN_TOTAL_BUDGET = 150.0
+# Total wall-clock cap per combo ENTRY (budget resets per entry — BUG K).
+# Per-leaf budgets above are per-attempt; without a cap a dead chain holds the
+# client connection and exhausts the IDE's per-host connection pool.
+#
+# FORCE-STOP FIX (2026-08-23): the budget must cover the entry's WORST-CASE
+# timeline so a legitimate failure can always advance:
+#   HEADER_WAIT_TIMEOUT (300s connect/header wait)
+# + max(STREAM_DEADLINE_LADDER) (600s rung)
+# + 60s advance margin
+# = 960s.
+# At the old 150s the invariant was inverted: every deadline-stall fire
+# (>=660s into the entry; observed 668s/672s) ALWAYS found the budget
+# exhausted, so the combo advance was vetoed ("refusing further fallback")
+# and a recoverable stall degraded into _DeadlineRetryNeeded -> terminal
+# 504 -> the client-side force-stop ("network issue"/empty-output errors).
+# It also silently clamped the header wait via min(HEADER_WAIT_TIMEOUT,
+# budget) back to 150s, nullifying the 300s header-wait fix. Non-stream leaf
+# budget (NONSTREAM_TOTAL_BUDGET=120s) still bounds buffered sends.
+CHAIN_TOTAL_BUDGET = 960.0
 # Stream-deadline retry ladder (2026-08-14): attempt deadlines in seconds.
 # Attempt N (0-indexed) uses LADDER[min(N, len-1)]: 600 → 300 → 600, then hard-stop.
 STREAM_DEADLINE_LADDER = (600.0, 300.0, 600.0)

@@ -32,7 +32,15 @@ def test_deadline_present_and_identical_across_recursive_hops():
     main = _reload_main()
     assert hasattr(main, "CHAIN_TOTAL_BUDGET")
     assert main.CHAIN_TOTAL_BUDGET > 0
-    assert main.CHAIN_TOTAL_BUDGET < main.NONSTREAM_TOTAL_BUDGET * 3
+    # FORCE-STOP FIX (2026-08-23): the budget is per-entry (BUG K reset) and
+    # must cover the stream worst case — header wait + max ladder rung +
+    # advance margin — so a deadline-stall fire can always take its combo
+    # fallback. The old pin (< NONSTREAM_TOTAL_BUDGET*3) encoded pre-ladder
+    # semantics and inverted this invariant at 150s (force-stop bug).
+    assert (
+        main.CHAIN_TOTAL_BUDGET
+        >= main.HEADER_WAIT_TIMEOUT + max(main.STREAM_DEADLINE_LADDER) + 60.0
+    )
 
     # Simulate a 3-hop chain: each hop re-enters with the previous state.
     deadline = time.monotonic() + main.CHAIN_TOTAL_BUDGET
@@ -62,16 +70,19 @@ def test_chain_budget_remaining_and_refusal_logic():
 def test_dead_chain_bounded_by_chain_budget_not_per_leaf():
     """A chain whose leaves all fail must stop at the total deadline.
 
-    Each leaf burns its full per-attempt budget (NONSTREAM_TOTAL_BUDGET).
-    Without the chain deadline, 4 leaves x 120s = 480s. With it, the hop
-    guard refuses recursion once the shared deadline passes, so the chain
-    returns well under N x NONSTREAM_TOTAL_BUDGET.
+    FORCE-STOP FIX (2026-08-23): CHAIN_TOTAL_BUDGET is now per-entry and
+    sized to the stream worst case (960s), so simulating with the REAL
+    constant would sleep ~960s. The hop-guard semantics are unchanged, so
+    this test now simulates with a small LOCAL budget (mirroring the pre-fix
+    value) to prove the guard still refuses recursion once the deadline
+    passes — the protective intent of the original test.
     """
     main = _reload_main()
     per_leaf = main.NONSTREAM_TOTAL_BUDGET
     chain_len = 4
+    simulated_budget = 150.0  # local stand-in; real per-entry budget is 960s
 
-    total_deadline = time.monotonic() + main.CHAIN_TOTAL_BUDGET
+    total_deadline = time.monotonic() + simulated_budget
 
     # Each "leaf" burns per_leaf seconds of budget.
     async def _fail_chain():
@@ -85,9 +96,9 @@ def test_dead_chain_bounded_by_chain_budget_not_per_leaf():
                 await asyncio.sleep(wait)
             # Hop guard (A4): do not recurse when budget is exhausted.
             if _chain_deadline - time.monotonic() <= 0:
-                return idx, time.monotonic() - (total_deadline - main.CHAIN_TOTAL_BUDGET)
-        return chain_len, time.monotonic() - (total_deadline - main.CHAIN_TOTAL_BUDGET)
+                return idx, time.monotonic() - (total_deadline - simulated_budget)
+        return chain_len, time.monotonic() - (total_deadline - simulated_budget)
 
     hops, wall = asyncio.run(_fail_chain())
-    assert wall <= main.CHAIN_TOTAL_BUDGET + 1.5  # ~150s cap, not 480s
+    assert wall <= simulated_budget + 1.5  # ~150s cap, not 480s
     assert hops < chain_len  # refused the tail leaves
