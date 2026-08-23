@@ -10785,8 +10785,17 @@ def _normalize_billing(hard_limit: float, total_usage: float) -> dict:
 
 
 async def _probe_oneapi_billing(base: str, key: str) -> Optional[dict]:
-    """Query billing endpoints for ONE key. None = gateway has no billing API."""
-    _headers = {"Authorization": f"Bearer {key}"}
+    """Query billing endpoints for ONE key. None = gateway has no billing API.
+
+    Browser-like headers are REQUIRED: Cloudflare-fronted gateways (tabitoken,
+    gorouter) return 403 HTML challenge pages to the default httpx UA (verified
+    live 2026-08-24: plain UA -> 403, browser UA -> 200 + billing JSON).
+    """
+    _headers = {
+        "Authorization": f"Bearer {key}",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+    }
     try:
         async with httpx.AsyncClient(timeout=_QUOTA_PROBE_TIMEOUT_S) as _hc:
             _sub = await _hc.get(f"{base}/v1/dashboard/billing/subscription", headers=_headers)
