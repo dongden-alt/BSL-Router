@@ -9287,6 +9287,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 try:
                     kiro_json = _normalized_json if _normalized_json is not None else resp.json()
                     openai_json = kiro_adapter.kiro_nonstream_to_openai(kiro_json)
+                    _log_nonstream_success(openai_json)
                     return JSONResponse(openai_json, status_code=200)
                 except Exception as e:
                     print(f"[Egress] Kiro->OpenAI response conversion failed (passthrough): {e}")
@@ -9309,9 +9310,42 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             yield b
                     completed = await codex_adapter.assemble_responses_from_sse(_codex_sse_aiter())
                     openai_json = codex_adapter.responses_json_to_openai(completed, model=target_model)
+                    try:
+                        _xi, _xo, _xc = _extract_usage_tokens(openai_json.get("usage") or {})
+                        obs.log_request(
+                            provider=provider_name, model=target_model, status=200,
+                            ttft=time.time() - start_time, in_tokens=_xi, out_tokens=_xo,
+                            cached_tokens=_xc, config=config, error_msg=None,
+                            total_time=time.time() - start_time,
+                            request_id=request_id, client=client_label, stream=False,
+                            upstream_url=_upstream_url, conn_index=_active_conn_index,
+                            thinking=thinking_info, combo=_combo_label,
+                        )
+                    except Exception as _cx_log_err:
+                        print(f"[BSL Router] codex success log failed: {_cx_log_err}", flush=True)
                     return JSONResponse(openai_json, status_code=200)
                 except Exception as e:
                     print(f"[Egress] Codex Responses->OpenAI response conversion failed (passthrough): {e}")
+
+            # Shared usage-log helper for the early-return egress conversions
+            # below (Gemini/Kiro/Codex/OpenAI-passthrough). BUG (2026-08-24,
+            # user: "in/out=0/0 in console but model works"): these paths
+            # returned JSONResponse WITHOUT obs.log_request — no console line,
+            # no DB row, no usage. Fail-open on any error.
+            def _log_nonstream_success(_openai_json: dict) -> None:
+                try:
+                    _li, _lo, _lc = _extract_usage_tokens((_openai_json or {}).get("usage") or {})
+                    obs.log_request(
+                        provider=provider_name, model=target_model, status=200,
+                        ttft=time.time() - start_time, in_tokens=_li, out_tokens=_lo,
+                        cached_tokens=_lc, config=config, error_msg=None,
+                        total_time=time.time() - start_time,
+                        request_id=request_id, client=client_label, stream=False,
+                        upstream_url=_upstream_url, conn_index=_active_conn_index,
+                        thinking=thinking_info, combo=_combo_label,
+                    )
+                except Exception as _log_exc:
+                    print(f"[BSL Router] nonstream success log failed: {_log_exc}", flush=True)
 
             # Egress conversion: client hit /v1/messages (Anthropic) but upstream
             # is OpenAI-format. Convert the OpenAI response so Claude Code can parse it.
@@ -9331,6 +9365,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     try:
                         openai_json = _normalized_json if _normalized_json is not None else resp.json()
                         gemini_json = openai_response_to_gemini(openai_json, model=target_model)
+                        _log_nonstream_success(openai_json)
                         return JSONResponse(gemini_json, status_code=200)
                     except Exception as e:
                         print(f"[Egress] OpenAI->Gemini response conversion failed: {e}")
@@ -9380,6 +9415,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     _passthrough_json = _normalized_json if _normalized_json is not None else resp.json()
                     if _passthrough_json.get("model") != target_model:
                         _passthrough_json["model"] = target_model
+                    _log_nonstream_success(_passthrough_json)
                     _dbg_zombie = str(_zombie_check) if '_zombie_check' in locals() else 'not-reached'
                     _dbg_headers = {
                         "X-BSL-Debug-Zombie-Check": _dbg_zombie,
@@ -10594,6 +10630,48 @@ async def trigger_update_endpoint():
 async def get_version_endpoint():
     """Return current BSL Router version."""
     return JSONResponse({"version": _get_bsl_version()})
+
+
+@app.get("/api/breaker/status")
+async def get_breaker_status_endpoint():
+    """Per-connection (per-key) circuit breaker states for UI visibility.
+
+    One drained/429 key is skipped automatically during selection until its
+    OPEN cooldown expires; then HALF_OPEN admits exactly one probe request
+    (replenish test) before the key returns to full rotation. This endpoint
+    surfaces that state so the admin UI can show WHY a key is not in use.
+    Fail-open: any internal error returns an empty list, never a 500.
+    """
+    import time as _time
+    try:
+        from app.circuit_breaker import get_breaker
+        _b = get_breaker()
+        entries = []
+        if _b is not None and _b.enabled:
+            _now = _time.time()
+            for _key, _st in (_b.state or {}).items():
+                try:
+                    _parts = _key.rsplit("/", 2)
+                    if len(_parts) != 3:
+                        continue
+                    _state = _st.get("state", "CLOSED")
+                    _remaining = max(0.0, float(_st.get("open_until", 0.0)) - _now)
+                    entries.append({
+                        "provider": _parts[0],
+                        "model": _parts[1],
+                        "conn_index": int(_parts[2]) if str(_parts[2]).lstrip("-").isdigit() else _parts[2],
+                        "state": _state,
+                        "cooldown_remaining_seconds": round(_remaining, 1) if _state == "OPEN" else 0.0,
+                        "last_error_type": _st.get("last_error_type"),
+                        "consecutive_failures": _st.get("consecutive_failures", 0),
+                        "total_failures": _st.get("total_failures", 0),
+                        "total_successes": _st.get("total_successes", 0),
+                    })
+                except Exception:
+                    continue
+        return JSONResponse({"enabled": bool(_b is not None and _b.enabled), "connections": entries})
+    except Exception as _e:
+        return JSONResponse({"enabled": False, "connections": [], "error": str(_e)})
 
 
 def _compare_versions(v1: str, v2: str) -> int:

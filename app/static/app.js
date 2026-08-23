@@ -767,11 +767,63 @@ function showProviderDetail(id) {
     activeProviderId = id;
     currentView = 'detail';
     renderActiveTab();
+    refreshBreakerBadges();
+}
+
+// ── Per-key quota cooldown badges (2026-08-24) ──────────────────────────
+// Fetches /api/breaker/status and annotates each API-key row with its
+// circuit state: OPEN (skipped, cooldown remaining), HALF_OPEN (probe),
+// CLOSED (healthy). Refreshes every 15s while the detail view is open.
+let _breakerBadgeTimer = null;
+
+function _fmtCooldownLabel(b) {
+    if (!b) return '';
+    if (b.state === 'OPEN') {
+        const s = Math.ceil(b.cooldown_remaining_seconds || 0);
+        return `<span data-breaker-badge="1" style="font-size:11px;font-weight:600;color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:2px 6px;border-radius:4px;" title="Quota drained / rate-limited — auto-skipped until cooldown expires">⏳ cooldown ${s}s</span>`;
+    }
+    if (b.state === 'HALF_OPEN') {
+        return `<span data-breaker-badge="1" style="font-size:11px;font-weight:600;color:#7c3aed;background:#f5f3ff;border:1px solid #ddd6fe;padding:2px 6px;border-radius:4px;" title="Cooldown expired — next request is a replenish probe">🔍 probing</span>`;
+    }
+    return '';
+}
+
+async function refreshBreakerBadges() {
+    // Clear stale timer regardless of path
+    if (_breakerBadgeTimer) { clearInterval(_breakerBadgeTimer); _breakerBadgeTimer = null; }
+    if (currentView !== 'detail' || !activeProviderId) return;
+    try {
+        const res = await fetch('/api/breaker/status');
+        const data = await res.json();
+        if (currentView !== 'detail') return; // navigated away mid-fetch
+        // Remove old badges first
+        document.querySelectorAll('[data-breaker-badge]').forEach(el => el.remove());
+        if (!data.enabled || !Array.isArray(data.connections)) return;
+        // Worst state per conn index across models for THIS provider
+        const worst = {};
+        for (const c of data.connections) {
+            if (c.provider !== activeProviderId) continue;
+            const prev = worst[c.conn_index];
+            if (!prev || prev.state !== 'OPEN') worst[c.conn_index] = c; // OPEN outranks all
+        }
+        // Attach badges to each connection row (rows are in DOM order = conn index)
+        const rows = document.querySelectorAll('.connection-row');
+        rows.forEach((row, idx) => {
+            const b = worst[idx];
+            const label = _fmtCooldownLabel(b);
+            if (!label) return;
+            const meta = row.querySelector('div[style*="flex-direction:column"][style*="gap:8px"]') || row.querySelector('.conn-key')?.parentElement?.querySelector('div[style*="gap:8px"]');
+            const host = meta || row.querySelector('div');
+            if (host) host.insertAdjacentHTML('beforeend', label);
+        });
+    } catch { /* fail-open: badges are informational only */ }
+    _breakerBadgeTimer = setInterval(refreshBreakerBadges, 15000);
 }
 
 window.backToList = () => {
     currentView = 'list';
     activeProviderId = null;
+    if (_breakerBadgeTimer) { clearInterval(_breakerBadgeTimer); _breakerBadgeTimer = null; }
     renderActiveTab();
 };
 
@@ -1172,7 +1224,13 @@ function renderProviderDetail() {
                 </div>
             </div>
         </div>
-        ${connCount > 0 ? p.connections.map((conn, idx) => `
+        ${connCount > 0 ? `
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+            <span style="font-size:12px; color:var(--text-muted); font-weight:500;">${connCount} key${connCount > 1 ? 's' : ''}</span>
+            ${connCount > 5 ? `<span style="font-size:11px; color:var(--text-muted); font-style:italic;">showing first 5 — scroll for more</span>` : ''}
+        </div>
+        <div style="max-height:372px; overflow-y:auto; ${connCount > 5 ? 'padding-right:4px;' : ''}">
+        ${p.connections.map((conn, idx) => `
         <div class="connection-row" style="padding:12px 16px; border:1px solid var(--border-color); border-radius:8px; display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
             <div style="display:flex; align-items:center; gap:12px;">
                 <svg viewBox="0 0 24 24" width="16" height="16" stroke="var(--text-muted)" stroke-width="2" fill="none" style="transform:rotate(135deg);"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
@@ -1211,7 +1269,9 @@ function renderProviderDetail() {
                 <label class="switch"><input type="checkbox" ${conn.enabled !== false ? 'checked' : ''} onchange="toggleConnection(${idx}, this.checked)"><span class="slider" style="${conn.enabled !== false ? 'background:var(--brand-color)' : ''}"></span></label>
             </div>
         </div>
-        `).join('') : `
+        `).join('')}
+        </div>
+        ` : `
         <div class="empty-state">
             <svg viewBox="0 0 24 24" width="16" height="16" stroke="var(--text-muted)" stroke-width="2" fill="none"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
             No connections yet
