@@ -268,6 +268,12 @@ GEMINI_EGRESS_KEEPALIVE_INTERVAL = 2.0
 # stream (a reasoning pane that large is no longer safe to replay silently
 # after a failover). 256 KiB is far above any observed thought burst.
 GEMINI_THOUGHT_BUFFER_CAP_BYTES = 256 * 1024
+
+# GRACEFUL RESTART (2026-08-24): how long POST /api/version/restart waits for
+# in-flight streams to drain before relaunching the process. 120s covers the
+# typical 87s worst-case observed zero-output stream plus margin; streams that
+# somehow outlive it are killed by the relaunch (old behavior) as a floor.
+GRACEFUL_RESTART_MAX_WAIT_S = 120
 GEMINI_EGRESS_CONNECT_KEEPALIVE_INTERVAL = 2.0
 # RC4 fail-fast: the connect budget covers only the pre-header wait (TCP/TLS +
 # response status line + headers). A healthy leaf returns headers in <5s; 90s
@@ -1858,11 +1864,18 @@ async def update_status():
 
 @app.post("/api/version/restart")
 async def restart_server():
-    """Restart the BSL Router server process.
+    """Restart the BSL Router server process — gracefully.
 
-    Returns immediately; a 1s delayed callback kills the current process
-    and relaunches uvicorn via subprocess. The frontend polls
-    /api/version/check until the server comes back, then reloads.
+    GRACEFUL RESTART (2026-08-24): the old implementation killed the process
+    1s after the call, murdering every in-flight IDE stream (observed: 3
+    concurrent streams died as "Server restarted before completion (stale
+    request)" 500s, and the IDE agent force-stopped). Now we WAIT for active
+    streams to drain before relaunching:
+      - 0 active streams  -> relaunch immediately (1s delay as before)
+      - N active streams  -> poll every 2s up to GRACEFUL_RESTART_MAX_WAIT_S;
+                             relaunch as soon as the count reaches 0
+    Returns immediately with the drain plan; the frontend keeps polling
+    /api/version/check as before.
     """
     import subprocess as _sp
     import threading as _th
@@ -1872,8 +1885,28 @@ async def restart_server():
     _main_module = "app.main:app"
     _port = 6969  # canonical; config-derived port is read at startup
 
+    _waiting = active_stream_count()
+    if _waiting:
+        print(
+            f"[GracefulRestart] { _waiting } active stream(s) — waiting up to "
+            f"{GRACEFUL_RESTART_MAX_WAIT_S}s for drain before relaunch",
+            flush=True,
+        )
+
     def _delayed_restart():
         import time as _time
+        _drained_at = _time.time()
+        while _time.time() - _drained_at < GRACEFUL_RESTART_MAX_WAIT_S:
+            if active_stream_count() == 0:
+                break
+            _time.sleep(2.0)
+        _remaining = active_stream_count()
+        if _remaining:
+            print(
+                f"[GracefulRestart] {GRACEFUL_RESTART_MAX_WAIT_S}s elapsed with "
+                f"{_remaining} stream(s) still active — relaunching anyway",
+                flush=True,
+            )
         _time.sleep(1.0)
         # Launch new uvicorn process in detached mode
         _sp.Popen(
@@ -1886,7 +1919,7 @@ async def restart_server():
         os._exit(0)
 
     _th.Thread(target=_delayed_restart, daemon=True).start()
-    return {"ok": True}
+    return {"ok": True, "draining": bool(_waiting), "active_streams": _waiting}
 
 
 # ── Antigravity OAuth Callback (root-level, for Google redirect) ──────────
@@ -7827,6 +7860,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                             sse_data as _g_sse_data,
                                             gemini_frame_has_content as _gemini_frame_has_content,
                                             gemini_frame_is_thought_only as _gemini_frame_is_thought_only,
+                                            BSL_NO_OUTPUT_NOTICE as _BSL_NO_OUTPUT_NOTICE_CONST,
                                         )
                                         # BUG L (2026-08-04) - THE `after 0B` FREEZE.
                                         # Evidence: "[STREAM-GUARD] refused 1
@@ -7940,7 +7974,33 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                             for _held in _thought_buf:
                                                 yield _held
                                             _thought_buf.clear()
-                                        if _gemini_frame_has_content(_frame):
+                                        # ── ZERO-RENDERABLE-OUTPUT WHITELIST
+                                        # (2026-08-24, "no renderable output" bug) ──
+                                        # An Antigravity-IDE stream may finish 200
+                                        # with only reasoning frames + a §8.8 notice
+                                        # and NOTHING the transcript can render
+                                        # (observed: agentrouter-o/gpt-5.6-sol at
+                                        # effort:max, 57-87s, in=0 out=0). The
+                                        # emission gate used to mark emission on ANY
+                                        # non-empty text, including a whitespace-only
+                                        # body delta — which vetoed fallback on
+                                        # exactly the zero-output finishes that must
+                                        # fail over (stream_guard.py BUG L/N class).
+                                        # The transcript is only committed by text
+                                        # with non-whitespace characters (the §8.8
+                                        # notice is router-generated and excluded by
+                                        # gemini_frame_has_content already).
+                                        _frame_text_parts = [
+                                            p.get("text")
+                                            for cand_ in (_frame.get("response", _frame).get("candidates") or [])
+                                            for p in ((cand_.get("content") or {}).get("parts") or [])
+                                            if isinstance(p, dict) and isinstance(p.get("text"), str)
+                                        ]
+                                        _has_visible_text = any(
+                                            (t != _BSL_NO_OUTPUT_NOTICE_CONST) and (t or "").strip()
+                                            for t in _frame_text_parts
+                                        )
+                                        if _gemini_frame_has_content(_frame) and _has_visible_text:
                                             emitted_model_data = True
                                             _emit.mark_emitted(_payload)
                                         yield _payload
@@ -8015,6 +8075,20 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     # Zero-token 200: stream COMPLETED with status 200 but produced
                     # zero output tokens — dead leaf. Advance combo if possible.
                     if stats.get("status") == 200 and stats.get("out", 0) == 0 and not emitted_model_data:
+                        # BENCH THE LEAF (2026-08-24): a zero-renderable-output finish
+                        # is a dead leaf (agentrouter-o/gpt-5.6-sol burned 57-87s per
+                        # request producing nothing). Record the outcome so
+                        # error_prevention's dead-leaf cooldown benches it and the
+                        # combo's next request starts further down the chain.
+                        try:
+                            bench_leaf(config, provider_name, target_model, 504, "zero_renderable_output", 0)
+                            print(
+                                f"[ZeroOutput] benched {provider_name}/{target_model} "
+                                f"(200 finish, zero renderable output)",
+                                flush=True,
+                            )
+                        except Exception as _bench_err:
+                            print(f"[ZeroOutput] bench failed (non-blocking): {_bench_err}", flush=True)
                         _raise_gemini_combo_fallback(504, "zero_output_tokens", _emit)
                         # FREEZE FIX (2026-08-07): if we reach here, no eligible
                         # leaf/budget remained and _raise_gemini_combo_fallback
