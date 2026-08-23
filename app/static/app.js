@@ -768,6 +768,7 @@ function showProviderDetail(id) {
     currentView = 'detail';
     renderActiveTab();
     refreshBreakerBadges();
+    refreshQuotaBars();
 }
 
 // ── Per-key quota cooldown badges (2026-08-24) ──────────────────────────
@@ -820,10 +821,56 @@ async function refreshBreakerBadges() {
     _breakerBadgeTimer = setInterval(refreshBreakerBadges, 15000);
 }
 
+// ── Per-key live quota bars (2026-08-24, Variant C) ─────────────────────
+// GET /api/quota/status probes one-api/new-api billing per key
+// (subscription hard_limit + usage → remaining). Non-billing gateways
+// return null → we show a muted "no billing API" note instead of a bar.
+let _quotaBarTimer = null;
+
+function _fmtQuotaBar(q) {
+    if (!q) return '';
+    const pct = Math.max(0, Math.min(100, q.remaining_pct || 0));
+    const fillClass = pct < 5 ? 'linear-gradient(90deg,#dc2626,#f87171)' : (pct < 20 ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#22c55e,#4ade80)');
+    const txtColor = pct < 5 ? 'var(--danger)' : 'var(--text-main)';
+    return `<div data-quota-bar="1" style="display:flex; align-items:center; gap:10px; margin-top:6px; min-width:260px;">
+        <div style="flex:1; height:6px; background:#f1f5f9; border-radius:3px; overflow:hidden; min-width:120px;">
+            <div style="height:100%; border-radius:3px; width:${pct}%; background:${fillClass};"></div>
+        </div>
+        <span style="font-size:11px; font-weight:600; color:${txtColor}; white-space:nowrap;">$${(q.remaining_usd ?? 0).toFixed(2)} / $${(q.hard_limit_usd ?? 0).toFixed(2)}</span>
+        <span style="font-size:10px; color:var(--text-muted); white-space:nowrap;">${pct}% left</span>
+    </div>`;
+}
+
+async function refreshQuotaBars() {
+    if (_quotaBarTimer) { clearInterval(_quotaBarTimer); _quotaBarTimer = null; }
+    if (currentView !== 'detail' || !activeProviderId) return;
+    try {
+        const res = await fetch(`/api/quota/status?provider=${encodeURIComponent(activeProviderId)}`);
+        const data = await res.json();
+        if (currentView !== 'detail') return; // navigated away mid-fetch
+        document.querySelectorAll('[data-quota-bar]').forEach(el => el.remove());
+        const prov = (data.providers || {})[activeProviderId];
+        if (!Array.isArray(prov)) return;
+        const rows = document.querySelectorAll('.connection-row');
+        rows.forEach((row, idx) => {
+            const q = prov[idx];
+            const host = row.querySelector('div[style*="flex-direction:column"]') || row.querySelector('div');
+            if (!host) return;
+            if (q && typeof q === 'object') {
+                host.insertAdjacentHTML('beforeend', _fmtQuotaBar(q));
+            } else {
+                host.insertAdjacentHTML('beforeend', `<div data-quota-bar="1" style="font-size:10px; color:var(--text-muted); font-style:italic; margin-top:6px;">⌁ no billing API</div>`);
+            }
+        });
+    } catch { /* fail-open */ }
+    _quotaBarTimer = setInterval(refreshQuotaBars, 60000);
+}
+
 window.backToList = () => {
     currentView = 'list';
     activeProviderId = null;
     if (_breakerBadgeTimer) { clearInterval(_breakerBadgeTimer); _breakerBadgeTimer = null; }
+    if (_quotaBarTimer) { clearInterval(_quotaBarTimer); _quotaBarTimer = null; }
     renderActiveTab();
 };
 

@@ -10748,6 +10748,119 @@ async def get_breaker_status_endpoint():
         return JSONResponse({"enabled": False, "connections": [], "error": str(_e)})
 
 
+# ── Per-key live quota remaining (one-api / new-api billing) ─────────────
+# Research (2026-08-24, source-verified controller/billing.go + common/constants.go):
+#   GET /v1/dashboard/billing/subscription → hard_limit_usd = (RemainQuota + UsedQuota) / QuotaPerUnit
+#   GET /v1/dashboard/billing/usage        → total_usage  (same quota units over the window)
+#   QuotaPerUnit = 500 * 1000 = 500,000 quota = $1
+# When the gateway runs DisplayInCurrencyEnabled the subscription values are already USD and
+# usage arrives OpenAI-style in cents; raw-quota gateways return large integers instead.
+# _normalize_billing resolves which variant a gateway speaks using the hard_limit magnitude
+# (self-consistent per gateway: both endpoints read the same DB row).
+_QUOTA_PROBE_TIMEOUT_S = 8.0
+_QUOTA_CACHE_TTL_S = 60.0
+_QUOTA_CACHE: dict = {"ts": 0.0, "providers": {}}
+
+
+def _normalize_billing(hard_limit: float, total_usage: float) -> dict:
+    """Convert one-api/new-api billing values to USD, resolving unit variant.
+
+    hard_limit > 10,000 → the gateway speaks raw quota units (500,000 = $1) for BOTH
+    endpoints, so usage is raw quota too. Otherwise values are already USD and usage
+    is OpenAI-style cents (÷100).
+    """
+    if hard_limit > 10_000:
+        hard_usd = hard_limit / 500_000.0
+        used_usd = total_usage / 500_000.0
+    else:
+        hard_usd = hard_limit
+        used_usd = total_usage / 100.0
+    remaining = max(0.0, hard_usd - used_usd)
+    return {
+        "hard_limit_usd": round(hard_usd, 2),
+        "used_usd": round(used_usd, 2),
+        "remaining_usd": round(remaining, 2),
+        "remaining_pct": round(100.0 * remaining / hard_usd, 1) if hard_usd > 0 else 0.0,
+    }
+
+
+async def _probe_oneapi_billing(base: str, key: str) -> Optional[dict]:
+    """Query billing endpoints for ONE key. None = gateway has no billing API."""
+    _headers = {"Authorization": f"Bearer {key}"}
+    try:
+        async with httpx.AsyncClient(timeout=_QUOTA_PROBE_TIMEOUT_S) as _hc:
+            _sub = await _hc.get(f"{base}/v1/dashboard/billing/subscription", headers=_headers)
+            if _sub.status_code != 200:
+                return None
+            _sj = _sub.json()
+            _hard = float(_sj.get("hard_limit_usd") or 0)
+            if _hard <= 0:
+                return None
+            _used = 0.0
+            try:
+                _usg = await _hc.get(f"{base}/v1/dashboard/billing/usage", headers=_headers)
+                if _usg.status_code == 200:
+                    _used = float(_usg.json().get("total_usage") or 0)
+            except Exception:
+                pass  # subscription alone still yields total; usage defaults 0
+            return _normalize_billing(_hard, _used)
+    except Exception:
+        return None
+
+
+@app.get("/api/quota/status")
+async def get_quota_status_endpoint(provider: Optional[str] = None):
+    """Live per-key quota remaining for one-api/new-api gateways (UI Variant C).
+
+    Probes /v1/dashboard/billing/* per API-key connection with the KEY's own
+    credential (per-token quota when the gateway enables DisplayTokenStat,
+    per-account otherwise). 60s cache; ?provider= filters one provider;
+    non-billing gateways yield null entries (never an error). Fail-open: any
+    internal error returns the last cache (or empty), never a 500.
+    """
+    import time as _time
+    try:
+        _now = _time.time()
+        _fresh = (_now - _QUOTA_CACHE["ts"]) < _QUOTA_CACHE_TTL_S
+        if not _fresh:
+            async def _null_probe():
+                return None
+
+            _cfg = cs_get_config()
+            _tasks = {}
+            for _pid, _p in (_cfg.get("providers") or {}).items():
+                _conns = _p.get("connections") or []
+                _p_base = str((_p.get("base_url") or "")).rstrip("/")
+                _conn_tasks = []
+                for _c in _conns:
+                    _k = str(_c.get("api_key") or "").strip()
+                    _cb = str(_c.get("base_url") or "").rstrip("/")
+                    _k_base = _cb or _p_base
+                    if _k and _k_base and not _c.get("refresh_token"):
+                        _conn_tasks.append(_probe_oneapi_billing(_k_base, _k))
+                    else:
+                        _conn_tasks.append(_null_probe())
+                if _conns:
+                    _tasks[_pid] = asyncio.ensure_future(asyncio.gather(*_conn_tasks))
+            _results = {}
+            for _pid, _gather in _tasks.items():
+                try:
+                    _results[_pid] = list(await _gather)
+                except Exception:
+                    _results[_pid] = None
+            _QUOTA_CACHE["ts"] = _now
+            _QUOTA_CACHE["providers"] = {
+                _pid: [(_r if isinstance(_r, dict) else None) for _r in (_res or [])]
+                for _pid, _res in _results.items()
+            }
+        _out = _QUOTA_CACHE["providers"]
+        if provider is not None:
+            _out = {provider: _out.get(provider)}
+        return JSONResponse({"cached": _fresh, "providers": _out})
+    except Exception as _e:
+        return JSONResponse({"cached": True, "providers": _QUOTA_CACHE.get("providers", {}), "error": str(_e)})
+
+
 def _compare_versions(v1: str, v2: str) -> int:
     """Compare two semantic version strings. Returns >0 if v1>v2, 0 if equal, <0 if v1<v2."""
     try:
