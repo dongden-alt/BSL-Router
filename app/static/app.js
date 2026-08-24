@@ -831,13 +831,12 @@ function _fmtQuotaBar(q) {
     if (!q) return '';
     const pct = Math.max(0, Math.min(100, q.remaining_pct || 0));
     const fillClass = pct < 5 ? 'linear-gradient(90deg,#dc2626,#f87171)' : (pct < 20 ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#22c55e,#4ade80)');
-    const txtColor = pct < 5 ? 'var(--danger)' : 'var(--text-main)';
-    return `<div data-quota-bar="1" style="display:flex; align-items:center; gap:10px; margin-top:6px; min-width:260px;">
+    const txtColor = pct < 5 ? 'var(--danger)' : (pct < 20 ? '#b45309' : 'var(--text-main)');
+    return `<div data-quota-bar="1" style="display:flex; align-items:center; gap:10px; margin-top:6px; min-width:220px;">
         <div style="flex:1; height:6px; background:#f1f5f9; border-radius:3px; overflow:hidden; min-width:120px;">
             <div style="height:100%; border-radius:3px; width:${pct}%; background:${fillClass};"></div>
         </div>
-        <span style="font-size:11px; font-weight:600; color:${txtColor}; white-space:nowrap;">$${(q.remaining_usd ?? 0).toFixed(2)} / $${(q.hard_limit_usd ?? 0).toFixed(2)}</span>
-        <span style="font-size:10px; color:var(--text-muted); white-space:nowrap;">${pct}% left</span>
+        <span style="font-size:12px; font-weight:700; color:${txtColor}; white-space:nowrap;">${pct.toFixed(1)}% left</span>
     </div>`;
 }
 
