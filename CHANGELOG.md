@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.3] - 2026-08-24
 
-65 commits since 1.0.2 — combo-chain resilience overhaul, live quota indicators, official thinking-parameter parity across model families, and the Ox Alpha contract.
+67 commits since 1.0.2 — combo-chain resilience overhaul (incl. never-stop retry), live quota indicators, official thinking-parameter parity across model families, and the Ox Alpha contract.
 
 ### Added
 
@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Combo continuous fallback** — chains now cycle through retry passes instead of hard-stopping after one pass ("All N combo chain entries exhausted"). `expand_chain_for_retries()` sizes passes by the widest key pool, clamped (max 6 passes / 24 attempts), bounded by a request-wide wall clock.
+- **Never-stop combo retry** — chain exhaustion is now a pass boundary, not a terminal. When every expanded entry fails (including wall-budget exhaustion), the chain wraps to entry 0 with cleared key-failover state and exponential backoff (2s→4s→8s→16s→30s cap), then keeps retrying until the client disconnects — the only permitted terminator. `return await` recursion adds no stack frames; the wall clock re-arms each pass. `settings.combo_infinite_retry: false` restores the terminal 502.
 - **Chain-sized wall budget** — the retry wall clock now scales with chain length (`max(240s, entries × 130s)`), so slow Cloudflare-524 leaves (~125s each) can no longer strand later entries (the Opus-Tabitoken force-stop). Flat 240s budget retired.
 - **CHAIN_TOTAL_BUDGET 150s → 960s** — deadline-stall fires can always advance the chain.
 - **Per-entry combo budget reset (BUG K)** — stops chain starvation on header-timeout/midstream fallback.
@@ -181,7 +182,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.3] - 2026-08-24
 
-65 commit từ 1.0.2 — đại tu khả năng phục hồi combo-chain, chỉ báo quota trực tiếp, chuẩn hóa tham số thinking theo tài liệu chính thức cho mọi họ model, và contract Ox Alpha.
+67 commit từ 1.0.2 — đại tu khả năng phục hồi combo-chain (kèm never-stop retry), chỉ báo quota trực tiếp, chuẩn hóa tham số thinking theo tài liệu chính thức cho mọi họ model, và contract Ox Alpha.
 
 ### Thêm Mới
 
@@ -207,6 +208,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Sửa Lỗi
 
 - **Continuous fallback cho combo** — chuỗi giờ quay vòng qua các lượt retry thay vì dừng cứng sau một lượt ("All N combo chain entries exhausted").
+- **Never-stop combo retry** — hết chuỗi giờ là ranh giới lượt, không phải điểm dừng: khi mọi entry thất bại (kể cả hết wall budget), chuỗi quay về entry 0, xóa state failover key, backoff luỹ thừa (2s→30s) và thử lại đến khi client ngắt kết nối — terminator duy nhất. Đặt `settings.combo_infinite_retry: false` để khôi phục 502 cũ.
 - **Wall budget theo kích thước chuỗi** — đồng hồ tường giờ scale theo độ dài chuỗi (`max(240s, entries × 130s)`), lá 524 chậm (~125s) không thể làm kẹt các entry sau (lỗi force-stop Opus-Tabitoken).
 - **CHAIN_TOTAL_BUDGET 150s → 960s**.
 - **Reset budget từng entry (BUG K)** — hết đói chuỗi khi header-timeout/midstream fallback.

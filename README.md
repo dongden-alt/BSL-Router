@@ -126,7 +126,7 @@ combos:
     strategy: fallback
 ```
 
-If the first provider returns an error, BSL Router automatically tries the next one — **and cycles through retry passes**: each revisit dials the next API key in the pool, bounded by a chain-sized wall clock so slow-failing providers can never strand the rest of the chain.
+If the first provider returns an error, BSL Router automatically tries the next one — **and cycles through retry passes**: each revisit dials the next API key in the pool, bounded by a chain-sized wall clock so slow-failing providers can never strand the rest of the chain. And when the **entire** chain fails, the router wraps around and keeps retrying with exponential backoff (2s→30s) until the client disconnects — exhaustion is a pass boundary, never a dead end (`settings.combo_infinite_retry: false` restores the terminal 502).
 
 ### 📊 Live Quota Indicators
 Per-key remaining quota (from one-api/new-api billing endpoints and rate-limit headers) rendered as compact % bars inline with each key's status row — API keys and OAuth accounts alike. Percentage only, no dollar values.
@@ -375,7 +375,7 @@ Client nói format OpenAI? Provider dùng format Anthropic? Không vấn đề. 
 | Bất kỳ | Bất kỳ | ✅ |
 
 ### 🛡️ Tự Động Chuyển Hướng Khi Lỗi
-Xác định chuỗi fallback (gọi là **combo**) trong config. Nếu provider đầu trả lỗi, BSL Router tự động thử provider kế tiếp — **và quay vòng qua các lượt retry**: mỗi lượt bấm API key kế tiếp trong pool, giới hạn bởi đồng hồ tường scale theo chuỗi để provider lỗi chậm không thể làm kẹt phần còn lại.
+Xác định chuỗi fallback (gọi là **combo**) trong config. Nếu provider đầu trả lỗi, BSL Router tự động thử provider kế tiếp — **và quay vòng qua các lượt retry**: mỗi lượt bấm API key kế tiếp trong pool, giới hạn bởi đồng hồ tường scale theo chuỗi để provider lỗi chậm không thể làm kẹt phần còn lại. Khi **cả chuỗi** thất bại, router quay vòng lại và thử tiếp với backoff luỹ thừa (2s→30s) cho đến khi client ngắt kết nối — hết chuỗi là ranh giới lượt, không bao giờ là ngõ cụt (`settings.combo_infinite_retry: false` khôi phục 502 cũ).
 
 ### 📊 Chỉ Báo Quota Trực Tiếp
 Quota còn lại theo từng key (từ billing endpoint one-api/new-api và header rate-limit) hiển thị thanh % gọn ngay dòng trạng thái key — cho cả API key lẫn tài khoản OAuth. Chỉ phần trăm, không hiển thị tiền.
