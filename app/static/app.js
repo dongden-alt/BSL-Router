@@ -832,11 +832,11 @@ function _fmtQuotaBar(q) {
     const pct = Math.max(0, Math.min(100, q.remaining_pct || 0));
     const fillClass = pct < 5 ? 'linear-gradient(90deg,#dc2626,#f87171)' : (pct < 20 ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#22c55e,#4ade80)');
     const txtColor = pct < 5 ? 'var(--danger)' : (pct < 20 ? '#b45309' : 'var(--text-main)');
-    return `<div data-quota-bar="1" style="display:flex; align-items:center; gap:10px; margin-top:6px; min-width:220px;">
-        <div style="flex:1; height:6px; background:#f1f5f9; border-radius:3px; overflow:hidden; min-width:120px;">
+    return `<div data-quota-bar="1" style="display:flex; align-items:center; gap:5px;">
+        <div style="width:80px; height:5px; background:#f1f5f9; border-radius:3px; overflow:hidden;">
             <div style="height:100%; border-radius:3px; width:${pct}%; background:${fillClass};"></div>
         </div>
-        <span style="font-size:12px; font-weight:700; color:${txtColor}; white-space:nowrap;">${pct.toFixed(1)}% left</span>
+        <span style="font-size:11px; font-weight:700; color:${txtColor}; white-space:nowrap;">${pct.toFixed(0)}%</span>
     </div>`;
 }
 
@@ -853,12 +853,12 @@ async function refreshQuotaBars() {
         const rows = document.querySelectorAll('.connection-row');
         rows.forEach((row, idx) => {
             const q = prov[idx];
-            const host = row.querySelector('div[style*="flex-direction:column"]') || row.querySelector('div');
-            if (!host) return;
+            const slot = row.querySelector(`[data-quota-slot="${idx}"]`);
+            if (!slot) return;
             if (q && typeof q === 'object') {
-                host.insertAdjacentHTML('beforeend', _fmtQuotaBar(q));
+                slot.insertAdjacentHTML('beforeend', _fmtQuotaBar(q));
             } else {
-                host.insertAdjacentHTML('beforeend', `<div data-quota-bar="1" style="font-size:10px; color:var(--text-muted); font-style:italic; margin-top:6px;">⌁ no billing API</div>`);
+                slot.insertAdjacentHTML('beforeend', `<span data-quota-bar="1" style="font-size:10px; color:var(--text-muted); font-style:italic;">∤ no billing</span>`);
             }
         });
     } catch { /* fail-open */ }
@@ -1289,6 +1289,7 @@ function renderProviderDetail() {
                         <span style="font-size:11px; background:#f3f4f6; color:var(--text-muted); padding:2px 6px; border-radius:4px; font-weight:500;">API Key</span>
                         ${!conn.api_key ? `<span style="font-size:11px; color:var(--text-muted); font-style:italic;">No API Key set</span>` : ''}
                         ${conn.proxy_url ? `<span style="font-size:11px; background:#fff7ed; color:#c2410c; padding:2px 6px; border-radius:4px; font-weight:500;" title="${conn.proxy_url}">Proxy</span>` : ''}
+                        <div data-quota-slot="${idx}" style="display:flex; align-items:center; gap:6px;"></div>
                         <span style="font-size:11px; color:var(--text-muted);">#${idx + 1}</span>
                     </div>
                 </div>
