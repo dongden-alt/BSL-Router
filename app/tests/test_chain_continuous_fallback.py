@@ -169,13 +169,68 @@ def test_exhaustion_still_reported_at_true_end():
 
 # -- wall-clock stop (C7) -----------------------------------------------------
 
-def test_wall_clock_stops_retries_when_budget_spent():
-    chain = [("a", "p", None), ("b", "p", None)]
+# -- chain-sized wall budget (2026-08-24: force-stop-instead-of-retry report) --
+
+def test_wall_budget_scales_with_chain():
+    """Flat 240s stranded entries 3+4 of a 4-entry chain whose leaves each
+    burned ~125s on Cloudflare 524s. Every entry must get one full burn."""
+    from app.routing.combo_resolver import wall_budget_for_chain
+    assert wall_budget_for_chain(0) == CHAIN_WALL_BUDGET       # floor
+    assert wall_budget_for_chain(1) == CHAIN_WALL_BUDGET       # floor still (130 < 240)
+    assert wall_budget_for_chain(2) == 2 * 130.0               # scaling wins at 2 entries (260 > 240)
+    assert wall_budget_for_chain(4) == 4 * 130.0               # Opus-Tabitoken
+    assert wall_budget_for_chain(24) == 24 * 130.0             # attempt ceiling
+
+
+def test_slow_chain_not_stranded_by_wall():
+    """Opus-Tabitoken shape: 2 leaves x 2 passes, each ~125s. After entry 2
+    (elapsed ~250s), the advance must STILL allow entry 3 — the flat 240s
+    budget force-stopped here, reporting 'All 4 exhausted' with 2 untried."""
+    from app.routing.combo_resolver import wall_budget_for_chain
+    chain = [("claude-opus-5-thinking", "tabitoken", None),
+             ("claude-opus-4-8-thinking", "tabitoken", None)] * 2
+    state = {"chain": chain, "idx": 2}
+    wall_start = time.monotonic() - 250.0  # after two ~125s leaf burns
+    adv = advance_combo_retry(state, _cfg({"tabitoken": 1}), wall_start=wall_start)
+    assert not adv.exhausted
+    assert adv.target_model == "claude-opus-5-thinking"  # entry 3 = pass 2 of leaf 1
+
+
+def test_wall_still_stops_pathological_loops():
+    """Even chain-sized, the wall must eventually stop an endless loop of
+    slow failures — e.g. 4 entries x 130s budget after 600s elapsed."""
+    chain = [("m1", "p", None), ("m2", "p", None)] * 2
+    state = {"chain": chain, "idx": 2}
+    wall_start = time.monotonic() - 600.0  # far past 4 x 130 = 520
+    adv = advance_combo_retry(state, _cfg({"p": 1}), wall_start=wall_start)
+    assert adv.exhausted
+
+
+def test_wall_uses_fallback_budget_without_chain():
+    """wall_start set but _retry_state has no chain (defensive) -> floor budget."""
+    chain = [("m", "p", None)]
     state = {"chain": chain, "idx": 0}
-    adv = advance_combo_retry(
-        state, _cfg({"p": 1}),
-        wall_start=time.monotonic() - (CHAIN_WALL_BUDGET + 1),
-    )
+    wall_start = time.monotonic() - 300.0  # past floor 240, under 130 * 1... floor wins
+    adv = advance_combo_retry(state, _cfg({"p": 1}), wall_start=wall_start)
+    assert adv.exhausted  # 300 > max(240, 130) -> wall fires
+
+
+def test_wall_uses_fallback_budget_without_chain_lower():
+    """1-entry chain below floor: 300s elapsed still trips (240 floor)."""
+    chain = [("m", "p", None)] * 1
+    state = {"chain": chain, "idx": 0}
+    wall_start = time.monotonic() - 300.0
+    adv = advance_combo_retry(state, _cfg({"p": 1}), wall_start=wall_start)
+    assert adv.exhausted
+
+
+def test_wall_no_chain_sizes_from_snapshot():
+    """Exhausted-check uses the SNAPSHOT chain in _retry_state (C2), and the
+    budget derives from that same snapshot — proven by exhausting past it."""
+    chain = [("m1", "p", None), ("m2", "p", None)] * 2
+    state = {"chain": chain, "idx": 3}  # last entry
+    wall_start = time.monotonic() - (4 * 130.0 + 10)  # past chain-sized budget
+    adv = advance_combo_retry(state, _cfg({"p": 1}), wall_start=wall_start)
     assert adv.exhausted
 
 

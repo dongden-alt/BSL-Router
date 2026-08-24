@@ -479,6 +479,7 @@ from app.compat.families._effort import (  # noqa: E402
 
 from app.config_state import get_config as cs_get_config, replace_config, init_config, get_mutable_config  # noqa: E402
 from app.security.pool_auth import make_pool_auth_middleware  # noqa: E402
+from app.routing.model_normalizer import maybe_fuzzy_normalize_model  # noqa: E402
 from app.routing.combo_resolver import (  # noqa: E402
     resolve_combo_alias_redirect,
     resolve_combo,
@@ -3112,9 +3113,25 @@ async def verify_key(request: Request):
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
+# Concurrency + wall-clock guard for /api/test-model (2026-08-24). Each Test
+# press routes through the FULL production path (combo chain × continuous-
+# fallback passes × per-connection rotation), so rapid presses on several
+# models spawn dozens of overlapping upstream dials with 30s timeouts each —
+# enough to saturate the event loop and make the router appear dead (the
+# "must restart to work" report). Hard bounds make that impossible:
+#   - max 2 concurrent probes; extra arrivals get an immediate 429
+#   - one 75s wall per probe; overrun cancels the probe and returns 504
+_MODEL_TEST_SEMAPHORE = asyncio.Semaphore(2)
+_MODEL_TEST_TIMEOUT_S = 75.0
+
+
 @app.post("/api/test-model")
 async def test_model(request: Request):
-    """Smoke-test a configured provider/model through BSL's normal routing path."""
+    """Smoke-test a configured provider/model through BSL's normal routing path.
+
+    Guarded: see _MODEL_TEST_SEMAPHORE above. Returns 429 when 2 tests are
+    already in flight, 504 when a probe exceeds _MODEL_TEST_TIMEOUT_S.
+    """
     config = cs_get_config()
     try:
         body = await request.json()
@@ -3125,19 +3142,41 @@ async def test_model(request: Request):
         if provider not in config.get("providers", {}):
             return JSONResponse({"ok": False, "error": f"Unknown provider: {provider}"}, status_code=404)
 
-        # Antigravity uses Gemini-format API (:generateContent), NOT OpenAI /chat/completions.
-        # The standard _process_chat_completion builds the wrong upstream URL → 404.
-        if provider == "antigravity":
-            return await _test_antigravity_model(provider, model)
+        if _MODEL_TEST_SEMAPHORE.locked():
+            return JSONResponse(
+                {"ok": False, "error": "Another model test is still running — wait a moment and retry."},
+                status_code=429,
+            )
 
-        probe_body = {
-            "model": f"{provider}/{model}",
-            "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
-            "max_tokens": 8,
-            "temperature": 0,
-            "stream": False,
-        }
-        resp = await _process_chat_completion(probe_body)
+        async with _MODEL_TEST_SEMAPHORE:
+            try:
+                # Antigravity uses Gemini-format API (:generateContent), NOT OpenAI
+                # /chat/completions. The standard _process_chat_completion builds
+                # the wrong upstream URL → 404.
+                if provider == "antigravity":
+                    return await asyncio.wait_for(
+                        _test_antigravity_model(provider, model),
+                        timeout=_MODEL_TEST_TIMEOUT_S,
+                    )
+
+                probe_body = {
+                    "model": f"{provider}/{model}",
+                    "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
+                    "max_tokens": 8,
+                    "temperature": 0,
+                    "stream": False,
+                }
+                resp = await asyncio.wait_for(
+                    _process_chat_completion(probe_body),
+                    timeout=_MODEL_TEST_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                return JSONResponse(
+                    {"ok": False, "status": 504,
+                     "error": f"Test timed out after {_MODEL_TEST_TIMEOUT_S:.0f}s "
+                              "(thinking model or slow upstream)"},
+                    status_code=504,
+                )
         status = getattr(resp, "status_code", 200)
         if status >= 400:
             raw = getattr(resp, "body", b"")
@@ -3186,6 +3225,16 @@ async def _test_antigravity_model(provider: str, model: str):
         # integration mapping's combo alias.
         integration = _antigravity_integration_settings()
         combo_alias = integration.get("mappings", {}).get(model)
+        if not combo_alias:
+            # Fuzzy dash/order normalization across mapping keys (gpt-5-6-terra /
+            # gpt-terra-5-6 -> gpt-5.6-terra) BEFORE the blunt first-mapping
+            # fallback. Mini-config shape: only alias KEYS are consulted.
+            _fz_key, _fz_note = maybe_fuzzy_normalize_model(
+                model, {"aliases": dict.fromkeys(integration.get("mappings", {}) or {})}
+            )
+            if _fz_note and _fz_key in integration.get("mappings", {}):
+                print(_fz_note, flush=True)
+                combo_alias = integration["mappings"][_fz_key]
         if not combo_alias:
             combo_alias = next(iter(integration.get("mappings", {}).values())) if integration.get("mappings") else None
 
@@ -5343,6 +5392,33 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # chains like coder-2 / GPT-5.5 / Opus-VA-Thinking.
     model, _ = resolve_combo_alias_redirect(model, provider_name, config)
 
+    # Step -1c: Fuzzy model-ID normalization (2026-08-24) — dash/order variants
+    # like 'gpt-5-6-terra' / 'gpt-terra-5-6' -> registered 'gpt-5.6-terra'.
+    # LAST-RESORT only: the normalizer short-circuits exact-known names (never
+    # rewrites a valid ID), and provider-qualified/namespaced requests
+    # (provider_name already set above) skip this entirely. Correcting HERE —
+    # before combo resolution — means a fuzzy COMBO hit flows through normal
+    # chain semantics (active_chain, fallback traversal, thinking overrides).
+    if not provider_name:
+        _fuzzy_model, _fuzzy_note = maybe_fuzzy_normalize_model(model, config)
+        if _fuzzy_note:
+            print(_fuzzy_note, flush=True)
+            try:
+                _fz_entry = {
+                    "event": "model_fuzzy",
+                    "text": _fuzzy_note,
+                    "timestamp": datetime.now().isoformat(),
+                    "request_id": f"bsl_{time.time_ns()}",
+                }
+                obs.console_logs.append(_fz_entry)
+                if len(obs.console_logs) > 10000:
+                    obs.console_logs.pop(0)
+                obs._persist_entry(obs._CONSOLE_LOG_PATH, _fz_entry)
+            except Exception:
+                pass
+            model = _fuzzy_model
+            target_model = model
+
     # Step 0: Combo model resolution
     # globalConfig.combos = [{alias: str, chain: [model_id, ...], strategy: str}]
     # Strategy 'fallback' (default): use first available. Strategy 'round_robin': rotate.
@@ -5486,6 +5562,12 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             # dispatch forwards — so it survives the hops without touching the 24
             # fallback sites. main.py's CHAIN_TOTAL_BUDGET resets per entry and
             # therefore cannot bound a repeated chain.
+            #
+            # 2026-08-24: the budget is CHAIN-SIZED, resolved inside
+            # advance_combo_retry from the retry snapshot (wall_budget_for_chain,
+            # floor 240s, 130s per entry) so every entry gets one full
+            # slow-leaf burn. A flat 240s stranded entries 3+4 of a 4-entry
+            # Opus-Tabitoken chain whose leaves each burned ~125s on 524s.
             if request is not None and getattr(request, "state", None) is not None:
                 if getattr(request.state, "bsl_chain_wall_start", None) is None:
                     request.state.bsl_chain_wall_start = time.monotonic()
@@ -10040,6 +10122,20 @@ async def images_generations(request: Request):
                     break
             if provider_name:
                 break
+
+    # Fuzzy dash/order normalization (see chat ladder Step -1c): exact ladder
+    # above found nothing — try 'gpt-5-6-terra' -> 'gpt-5.6-terra' style keys.
+    if not provider_name:
+        _fz_model, _fz_note = maybe_fuzzy_normalize_model(model, config)
+        if _fz_note:
+            print(_fz_note, flush=True)
+            model = _fz_model
+            if model in config.get("aliases", {}):
+                target_model = config["aliases"][model].get("model", model)
+                provider_name = config["aliases"][model].get("provider")
+            else:
+                target_model = model
+                provider_name = find_provider_for_model(model, config)
 
     if not provider_name:
         return JSONResponse({"error": f"Image model '{model}' not found."}, status_code=404)

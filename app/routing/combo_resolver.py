@@ -98,6 +98,24 @@ CHAIN_MAX_ATTEMPTS = 24    # hard ceiling on total upstream attempts per request
 # hold the client for passes x entries x 90s. This is the only true per-request
 # clock in the fallback path.
 CHAIN_WALL_BUDGET = 240.0
+# Per-entry time share used to size the wall budget for chains of slow-failing
+# leaves. Sized above Cloudflare's origin-timeout cap (~100s idle / 524 at
+# ~125s): the reported Opus-Tabitoken case burned 125s per leaf and hit the
+# flat 240s budget mid-chain, stranding later entries with no time to run.
+CHAIN_WALL_PER_ENTRY_S = 130.0
+
+
+def wall_budget_for_chain(entries: int, floor: float = CHAIN_WALL_BUDGET, per_entry: float = CHAIN_WALL_PER_ENTRY_S) -> float:
+    """Chain-sized wall budget: every expanded entry gets one full slow-leaf burn.
+
+    floor=240s covers fast-failure chains (all-429, ~1s per attempt). Longer
+    chains get len(chain) x per_entry so a 4-entry chain of ~125s Cloudflare
+    524s can run every entry (the 2026-08-24 'force stop instead of retry'
+    report: 240s budget tripped after entry 2 of 4).
+    """
+    if entries <= 0:
+        return floor
+    return max(floor, entries * per_entry)
 
 
 def count_eligible_keys(config: dict, provider: str, model: str) -> int:
@@ -368,7 +386,7 @@ def advance_combo_retry(
     config: dict,
     combo_alias: str = "",
     wall_start: Optional[float] = None,
-    wall_budget: float = CHAIN_WALL_BUDGET,
+    wall_budget: Optional[float] = None,
 ) -> RetryAdvance:
     """Advance past failed/banned combo chain entries on recursive retry.
 
@@ -383,6 +401,8 @@ def advance_combo_retry(
       reported exhausted even if entries remain, because main.py's
       CHAIN_TOTAL_BUDGET resets per entry and therefore cannot bound a repeated
       chain. Omitting `wall_start` disables the check (backward compatible).
+      Budget is chain-sized via wall_budget_for_chain (2026-08-24) so slow
+      Cloudflare-524 leaves cannot strand later entries.
 
     combo_alias: optional alias name prefixed onto the "skipping banned
     leaf" log line for parity with the pre-refactor format (default ""
@@ -399,13 +419,21 @@ def advance_combo_retry(
     idx = _retry_state["idx"]
 
     # C7: request-wide wall-clock stop.
+    # An EXPLICIT wall_budget (tests / future callers) always wins. The default
+    # (None) resolves to the chain-sized budget via wall_budget_for_chain so
+    # slow Cloudflare-524 leaves (~125s each) cannot strand later entries the
+    # way the old flat 240s did (2026-08-24 force-stop report).
     if wall_start is not None:
         import time as _t
+        _resolved_budget = (
+            wall_budget if wall_budget is not None
+            else wall_budget_for_chain(len(stable_chain))
+        )
         _elapsed = _t.monotonic() - wall_start
-        if _elapsed >= wall_budget:
+        if _elapsed >= _resolved_budget:
             print(
                 f"[Combo] {combo_alias} > wall-clock budget exhausted after "
-                f"{_elapsed:.1f}s (limit {wall_budget:.0f}s) at idx={idx}/"
+                f"{_elapsed:.1f}s (limit {_resolved_budget:.0f}s, chain-sized) at idx={idx}/"
                 f"{len(stable_chain)}; stopping retries",
                 flush=True,
             )

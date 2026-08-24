@@ -1587,7 +1587,13 @@ async function copyProviderModelId(idx) {
     }
 }
 
+let _modelTestInFlight = false;  // one Test at a time; backend 429s extras (2026-08-24)
+
 async function testProviderModel(idx) {
+    if (_modelTestInFlight) {
+        showToast('A model test is already running — wait for it to finish', true);
+        return;
+    }
     const provider = globalConfig.providers[activeProviderId];
     const model = provider?.models?.[idx];
     const modelId = model?.id || '';
@@ -1596,6 +1602,7 @@ async function testProviderModel(idx) {
         return;
     }
     const routedModel = `${activeProviderId}/${modelId}`;
+    _modelTestInFlight = true;
     showToast(`Testing ${routedModel}...`);
     try {
         const resp = await fetch('/api/test-model', {
@@ -1613,6 +1620,8 @@ async function testProviderModel(idx) {
     } catch (err) {
         console.error('Model test failed', err);
         showToast(`Test failed: ${err.message}`, true);
+    } finally {
+        _modelTestInFlight = false;
     }
 }
 
