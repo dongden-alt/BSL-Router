@@ -8288,7 +8288,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     if hasattr(_fallback, "body_iterator"):
                         async for _fc in _fallback.body_iterator:
                             yield _fc
-                    elif hasattr(_fallback, "body_iterator") is False and hasattr(_fallback, "__aiter__"):
+                    elif hasattr(_fallback, "__aiter__"):
                         async for _fc in _fallback:
                             yield _fc
                     else:
