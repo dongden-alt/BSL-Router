@@ -5076,6 +5076,53 @@ class _ComboFallbackNeeded(Exception):
         super().__init__(err_text)
 
 
+def _combo_infinite_retry_enabled(config: dict) -> bool:
+    """settings.combo_infinite_retry — default True (2026-08-24 directive: never force stop)."""
+    try:
+        raw = (config.get("settings") or {}).get("combo_infinite_retry", True)
+        return bool(raw) if raw is not None else True
+    except Exception:
+        return True
+
+
+def _combo_restart_or_give_up(model, retry_state, active_chain, original_model,
+                              cache_bp, request, reason):
+    """Build the wrap state for never-stop combo retry (exhaustion is a pass boundary, not a terminal).
+
+    Returns (backoff_seconds, retry_state_dict). The caller sleeps `backoff`
+    (client disconnect cancels the sleep — the only permitted terminator) and
+    recurses with the returned state: idx 0, cleared tried_conns (quota may
+    recover; the circuit breaker still filters hard-banned keys), deadline None
+    (re-arms CHAIN_TOTAL_BUDGET and forces a fresh wall-start stamp), pass_no+1
+    for exponential backoff (2,4,8,16,30,30... capped at 30s).
+    """
+    pass_no = int((retry_state or {}).get('pass_no', 1))
+    backoff = min(2 * (2 ** (pass_no - 1)), 30)
+    chain = list(active_chain or (retry_state or {}).get('chain') or [])
+    print(
+        f"[Combo] '{model}' chain exhausted ({reason}) — never-stop retry: "
+        f"wrapping to pass {pass_no + 1} in {backoff}s "
+        f"(client disconnect is the only terminator)",
+        flush=True,
+    )
+    # Fresh wall clock: clearing the stamp forces a re-stamp on the next
+    # expansion, re-arming the chain-sized budget for the new pass.
+    try:
+        if request is not None and getattr(request, "state", None) is not None:
+            request.state.bsl_chain_wall_start = None
+    except Exception:
+        pass
+    wrapped = {
+        'chain': chain,
+        'idx': 0,
+        'cache_bp': cache_bp,
+        'original_model': original_model,
+        'deadline': None,
+        'pass_no': pass_no + 1,
+    }
+    return backoff, wrapped
+
+
 class _DeadlineRetryNeeded(Exception):
     """Wall-clock attempt deadline exhausted with zero bytes emitted.
 
@@ -5470,6 +5517,23 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             wall_start=getattr(getattr(request, "state", None), "bsl_chain_wall_start", None),
         )
         if _advance.exhausted:
+            # NEVER-STOP RETRY (2026-08-24): exhaustion is a pass boundary, not
+            # a terminal. Wrap to idx 0, sleep exponential backoff (client
+            # disconnect cancels the sleep — the only permitted terminator),
+            # and recurse. settings.combo_infinite_retry=false restores 502.
+            if _combo_infinite_retry_enabled(config):
+                _backoff, _wrap = _combo_restart_or_give_up(
+                    model, _retry_state, _advance.active_chain,
+                    _retry_state.get('original_model') or model,
+                    _retry_state.get('cache_bp'), request,
+                    reason="entry_override_exhausted",
+                )
+                await asyncio.sleep(_backoff)
+                return await _process_chat_completion(
+                    body, client_wants_anthropic, client_wants_gemini,
+                    _retry_state=_wrap,
+                    request=request,
+                )
             return JSONResponse(
                 {"error": f"All {len(_retry_state['chain'])} combo chain entries exhausted for '{model}'."},
                 status_code=502,
@@ -9126,6 +9190,19 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         )
                     if _chain_budget_remaining() <= 0:
                         print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
+                    # NEVER-STOP RETRY: wrap to pass 2+ instead of a terminal 502.
+                    if _combo_infinite_retry_enabled(config):
+                        _backoff, _wrap = _combo_restart_or_give_up(
+                            model, _retry_state, active_chain, original_model,
+                            _cache_breakpoints, request,
+                            reason="nonstream_transport_exhausted",
+                        )
+                        await asyncio.sleep(_backoff)
+                        return await _process_chat_completion(
+                            body, client_wants_anthropic, client_wants_gemini,
+                            _retry_state=_wrap,
+                            request=request,
+                        )
                     print(f"[AFZ-FORENSIC] route=chat stream=False status=502 leaf={provider_name}/{target_model} active_streams={active_stream_count()} reason=nonstream_transport_exhausted", flush=True)
                     return JSONResponse(
                         {
@@ -9171,6 +9248,19 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         )
                     if _chain_budget_remaining() <= 0:
                         print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
+                    # NEVER-STOP RETRY: wrap to pass 2+ instead of a terminal 502.
+                    if _combo_infinite_retry_enabled(config):
+                        _backoff, _wrap = _combo_restart_or_give_up(
+                            model, _retry_state, active_chain, original_model,
+                            _cache_breakpoints, request,
+                            reason="nonstream_unexpected_exhausted",
+                        )
+                        await asyncio.sleep(_backoff)
+                        return await _process_chat_completion(
+                            body, client_wants_anthropic, client_wants_gemini,
+                            _retry_state=_wrap,
+                            request=request,
+                        )
                     print(f"[AFZ-FORENSIC] route=chat stream=False status=502 leaf={provider_name}/{target_model} active_streams={active_stream_count()} reason=nonstream_unexpected_exhausted", flush=True)
                     return JSONResponse(
                         {

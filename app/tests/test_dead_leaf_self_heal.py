@@ -539,9 +539,14 @@ def test_retry_index_uses_snapshot_not_rebuilt(monkeypatch):
 
 
 def test_all_banned_chain_returns_exhausted_502(monkeypatch):
-    """Test 6 (C5): every remaining leaf banned → exhausted 502, no dispatch."""
+    """Test 6 (C5): every remaining leaf banned → exhausted 502, no dispatch.
+
+    Never-stop retry defaults ON, so this test must pin
+    settings.combo_infinite_retry=false to observe the terminal 502 contract.
+    """
     chain = [("model-a", "prova"), ("model-b", "provb")]
     config = _combo_config(chain, banned=[("prova", "model-a"), ("provb", "model-b")])
+    config["settings"] = {"combo_infinite_retry": False}
     client = _ScriptedClient({
         "model-a": _success_stream("model-a"),
         "model-b": _success_stream("model-b"),
