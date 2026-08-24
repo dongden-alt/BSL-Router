@@ -11,32 +11,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.0.3] - 2026-08-24
+
+65 commits since 1.0.2 — combo-chain resilience overhaul, live quota indicators, official thinking-parameter parity across model families, and the Ox Alpha contract.
+
+### Added
+
+- **Live per-key quota remaining** — one-api/new-api billing probes report remaining quota per API key (browser-UA variant for Cloudflare-fronted gateways), surfaced as compact % bars inline with each key's status row in the dashboard. Percentage only — no dollar values.
+- **Passive OAuth quota indicator** — rate-limit response headers are captured and rendered as quota bars for all OAuth accounts (merged with endpoint quota data).
+- **Ox Alpha reasoning-effort contract** — new family contract for Ox Alpha / `x-preview-f-free` (community-fingerprinted GLM-5.3, reseller-served): 4-word effort vocabulary `low/medium/high/max` (default `max`), `xhigh`→`max`, budget-string coercion, top-level `reasoning_effort`, Anthropic-wire strip, and structured 1210 error markers so an invalid effort triggers one degrade-and-retry instead of a terminal 400. Live-verified against opencode-zen.
+- **Anti-freeze controls** — Settings tab: stream kill button, live stream badge, auto-restart watchdog.
+- **Provider header profiles** — per-provider strict client-identity headers (`default`/`codex`/`claude_code`/`custom`), applied on requests and key verification; single dropdown control in the admin modal.
+- **Usage history in SQLite** — persisted usage store (100k-record retention) replacing JSONL, one-shot migration guard, startup init.
+- **Tier-2 pool inbound Ed25519 verifier** — signature-verified pool auth (body-hash binding, fail-closed config).
+- **Codex Responses-API egress adapter** — `app/codex_adapter.py` translates OpenAI chat payloads to/from Codex's `/responses` endpoint (fixes the Cloudflare HTML 403 on `/chat/completions`): forces `store:false`+`stream:true`, normalizes effort (minimal→low, max→xhigh, default medium), strips unsupported params, converts Responses SSE → OpenAI chunk frames.
+- **Kiro auto-import + profileArn** — lazy import of Kiro connections from the AWS SSO cache on first request; `profileArn` top-level injection (fixes 400 "profileArn is required"); refresh routing split social (kiro.dev) vs OIDC/builder-id with UUID clientId (AWS OIDC).
+- **Fuzzy model-ID normalization** — dash/order-insensitive last-resort resolution (`gpt-5-6-terra` / `gpt-terra-5-6` → `gpt-5.6-terra`) in the chat ladder, images endpoint, and model-test path; exact matches are never rewritten.
 
 ### Changed
-- **MULTI-KEY SELECTION: deterministic top-first + round_robin** — `_pick_connection()` in `app/utils/model_resolver.py` no longer uses `random.choice`. Default mode ("top-first") always picks the lowest-index eligible connection; when `provider.round_robin` is truthy, requests rotate across all healthy eligible keys via a module-level counter keyed by `(provider_name, model_id)`. Rotation state is cleared on `POST /api/config` so edited/reordered keys start fresh. The legacy no-metadata path (no `connection_indexes`) now obeys the same rule instead of random.
+
+- **Thinking-contract official parity wave** — per-vendor reasoning vocabularies rebuilt from official docs: GLM-5.2 (none/minimal→disabled) and GLM-5.3 (3-word vocab, mandatory thinking, 1210 fixes), Grok-4.5/4.6 (xhigh gating, penalty/stop sanitize), Qwen 3.8 (official sampling defaults, published enum only), Hunyuan Hy3 (chat_template_kwargs nesting + sampling defaults), Muse Spark 1.1/1.2 wire split, numeric-version routing.
+- **Deterministic multi-key selection** — `_pick_connection()` replaces `random.choice`: top-first by default, real `round_robin` toggle per provider, rotation reset on config save.
+- **Circuit breaker default ON** — 429'd keys rotate out of the pool automatically.
+- **MITM parse caching** — config.yaml parse cached by mtime (CSafeLoader), cutting per-connection auth latency.
+- **Observability** — logs newest-first, Logs/Usage tab pagination, throttled cost recompute, capped DOM rows; usage logged on all non-stream 200 egress paths.
 
 ### Fixed
-- **[2026-08-22] COMBO CONTINUOUS FALLBACK: chains no longer stop after one pass (fixes 429 + last-leaf/single-model hard-stop)** — Every one of the 24 downstream fallback sites in `app/main.py` gates recursion on `_next_idx < len(active_chain)`, so a combo whose entries ALL failed (e.g. every leaf answering 429 `rate_limited_by_admin`) stopped after a single pass and surfaced "All N combo chain entries exhausted" — and a multi-entry combo whose LAST leaf failed (or a single-model combo) hard-stopped instead of wrapping back to the top. New `expand_chain_for_retries()` in `app/routing/combo_resolver.py` repeats the chain into N passes so those same guards cycle through it: passes are sized by the widest key pool (each revisit dials the NEXT api key via request-scoped `tried_conns`), clamped to `CHAIN_MAX_PASSES=6` / `CHAIN_MAX_ATTEMPTS=24`. Every fallback combo gets a guaranteed retry pass — including single-model combos; round-robin combos and bare direct models keep their previous behavior. A request-wide wall-clock ceiling (`CHAIN_WALL_BUDGET=240s`, stamped on `request.state`) bounds the whole retry loop, because main.py's per-entry `CHAIN_TOTAL_BUDGET` resets on each hop and cannot bound a repeated chain. Tests: `app/tests/test_chain_continuous_fallback.py` (20 new); single-leaf expectation in `test_recoverable_status_expansion.py` updated to the new bounded two-attempt behavior.
 
-- **[2026-08-22] KIRO: request schema corrected from captured ground truth (fixes `REQUEST_BODY_INVALID`)** — `openai_to_kiro()` was assembling a body that AWS CodeWhisperer rejected with `{"reason":"REQUEST_BODY_INVALID","message":"Improperly formed request."}`. The correct shape was reverse-engineered from a real `status=success` request captured in 9Router's own log (`%APPDATA%/9router/request-details.sqlite` → `request_details.provider_request`), not from prose notes. Three corrections: (1) `inferenceConfig` is **top-level**, sibling of `conversationState` — it was previously nested *inside* `conversationState`; (2) `modelId` belongs **inside** `userInputMessage` (and inside every history `userInputMessage`), never at the request root alongside `stream`/`maxResponseTokens`; (3) `conversationState` must carry `chatTriggerType: "MANUAL"` + a `conversationId` UUID, and `currentMessage.userInputMessage` must carry `origin: "AI_EDITOR"` — all three were absent. `temperature` now also maps into `inferenceConfig`, and `inferenceConfig` is omitted entirely when no generation params are supplied. `profileArn` top-level injection is unchanged.
-
-- **[2026-08-22] MULTI-KEY FAILOVER: request-scoped `exclude_indexes` (fixes retry re-dialing the drained key)** — When a combo/leaf retry fired after a quota/auth/429 failure, the recursive frame re-resolved the connection from scratch and picked the SAME key that had just failed, so a provider with N healthy keys still failed after one attempt. The breaker cannot cover this: it may be disabled in config, and it records the outcome only *after* the retry frame has already re-resolved. `resolve_active_connection()` / `_choose_connection_for_model()` / `_pick_connection()` in `app/utils/model_resolver.py` now accept `exclude_indexes`, and `_process_chat_completion` threads a per-request `tried_conns` set through all 7 recursion sites. Filtering happens **inside** `_pick_connection`, so failover still honors `connection_indexes` authorization (a model pinned to conn 1 will NOT fail over to conn 0), the circuit breaker, and round-robin rotation. When every eligible key for a leaf is exhausted, selection falls back to the unfiltered pick rather than returning `None` — returning `None` would surface "no active connections" (HTTP 500) and abort the remaining combo chain.
-
-- **BREAKER default ON** — `CircuitBreaker.enabled` now defaults to `True` (`settings.get("enabled", True)`), so rate-limited (429) keys are removed from the pool and fail over by default. The explicit `circuit_breaker.enabled: false` config override still works.
-
-- **AGENTROUTER: NFKD transcode replaces VN hard-block** — The AgentRouter Vietnamese preflight previously skipped the leaf (returning 400 and advancing the combo chain) whenever VN text was detected in the request body. Live probe 2026-08-22 showed AR 400s only on PRECOMPOSED Vietnamese codepoints (U+1EA0..U+1EF9); NFKD-decomposed VN passes with a correct model answer. New `agentrouter_nfkd_transcode()` in `app/middleware/agentrouter_policy.py` deep-walks `internal_request.messages` (dicts, content lists, `.content`/`.text` objects), the request-level `system` prompt (str or list), and tool `description` strings, rewriting each non-empty string via `unicodedata.normalize("NFKD", s)` only when it actually changes. Scoped to `provider_name == "agentrouter"`; other providers are untouched. The skip/400/combo-advance path is removed entirely — VN content now flows to AR successfully instead of being blocked.
-
-- **[2026-08-22] Codex Responses-API egress adapter** — `app/codex_adapter.py` (new) translates OpenAI ChatCompletion requests to/from Codex's `/responses` endpoint, which only serves the Responses API and rejects `/chat/completions` with a 403 HTML page. `openai_to_responses()` forces `store: false` + `stream: true` (always), normalizes reasoning effort to Codex vocabulary (`minimal`→`low`, `max`→`xhigh`, default `medium`) by inspecting `reasoning_effort`/`reasoning`/`thinking`/`x_reasoning`, strips unsupported params (`max_tokens`/`max_output_tokens`/`temperature`/`top_p`/`tools`/`functions`/etc.), and maps the system prompt to top-level `instructions`. `responses_json_to_openai()` assembles a `chat.completion` from a completed Responses object (walking `output[].message.content[].output_text`, mapping `usage.input_tokens`→`prompt_tokens`). `responses_sse_to_openai_sse()` (async generator) converts raw Codex SSE bytes — handling arbitrary byte boundaries, injecting a role-only `{delta:{role:assistant}}` chunk before the first content delta, mapping `response.output_text.delta`→content chunks and `response.completed`→`finish_reason:'stop'` + usage, ignoring all other events. `main.py` wires the adapter into the proxy egress path.
-
-- **[2026-08-22] Kiro profileArn injection + refresh routing + auto-import** — `app/kiro_adapter.py`: `openai_to_kiro(upstream_payload, profile_arn=None)` now accepts an optional `profile_arn` and injects it at the TOP level of the returned body (next to `conversationState`) when provided; absent/empty → key omitted (backward compatible). `app/oauth.py`: `_kiro_refresh_token()` routes the refresh call — OIDC-class authMethod (`external_idp`/`builder-id`) with a UUID-format `clientId` → AWS OIDC `https://oidc.{region}.amazonaws.com/token` with `clientId`/`clientSecret`/`refreshToken`/`grantType`; otherwise (social/base64-ish clientId) → Kiro `https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken` with just `{refreshToken}`. Guard is BOTH authMethod-class AND UUID match (social SSO-cache blobs carry non-UUID clientIds). `try_auto_import_kiro()` lazily auto-imports a Kiro connection from the AWS SSO cache — no-op (returns False) when `providers.kiro.connections` is already non-empty, otherwise reads the SSO cache and persists via the standard config-swap path; fail-open, never raises. Config read uses `app.config_state.get_mutable_config` (sanctioned mutation path after the `main.config` global was deleted).
-
-- **[2026-08-22] Tests: Codex/Kiro adapter + OAuth routing** — `app/tests/test_codex_kiro_oauth.py` (new): 24 unit tests covering effort mapping (`minimal`→`low`/`max`→`xhigh`/`high`→`high`/absent→`medium`), store/stream forcing (`store:False`+`stream:True` regardless of input), unsupported-param stripping, `responses_json_to_openai` assembly (completed Responses → `chat.completion` with correct `prompt_tokens`/`completion_tokens`), SSE conversion (role-only first frame, content deltas, `finish_reason:'stop'`), Kiro `profileArn` top-level injection/absence, Kiro refresh endpoint selection (social→kiro.dev, OIDC+UUID→AWS oidc, builder-id+UUID→AWS oidc), and `try_auto_import_kiro` no-op/fail-open/success paths. All async via `asyncio.run` (no pytest-asyncio plugin). No network, no live config access — all mocked.
-
----
-
-- **CODEX: Responses-API egress (fixes HTML 403)** — Codex's chatgpt.com backend only serves the Responses API at `/responses` (rejects `/chat/completions` with a Cloudflare HTML 403 and enforces `store:false` + `stream:true` server-side). New `app/codex_adapter.py` converts OpenAI chat payloads → Responses bodies (forces `store:false`/`stream:true`, strips `max_tokens`/`max_output_tokens`/`temperature`/tools, normalizes effort: minimal→low, max→xhigh, default medium) and converts Responses SSE back to OpenAI `chat.completion.chunk` frames for streaming clients; non-stream clients get the buffered `response.completed` assembled into a standard chat.completion. Header identity (ChatGPT-Account-ID, OpenAI-Beta, originator) unchanged.
-- **KIRO: profileArn injection + lazy auto-import (fixes 400 "profileArn is required")** — Kiro's `/generateAssistantResponse` requires `profileArn` at the top level of the request body; `kiro_adapter.openai_to_kiro()` now accepts and injects it (sourced from the connection's `provider_data.profileArn`). New fail-open `try_auto_import_kiro()` in `app/oauth.py` lazily imports a connection from `~/.aws/sso/cache/` on the first kiro request when none exists (9Router parity — no manual Import click needed). Refresh routing fixed: social tokens (non-UUID clientId) refresh at the kiro.dev endpoint; only external_idp/builder-id with a UUID clientId use the AWS OIDC endpoint.
+- **Combo continuous fallback** — chains now cycle through retry passes instead of hard-stopping after one pass ("All N combo chain entries exhausted"). `expand_chain_for_retries()` sizes passes by the widest key pool, clamped (max 6 passes / 24 attempts), bounded by a request-wide wall clock.
+- **Chain-sized wall budget** — the retry wall clock now scales with chain length (`max(240s, entries × 130s)`), so slow Cloudflare-524 leaves (~125s each) can no longer strand later entries (the Opus-Tabitoken force-stop). Flat 240s budget retired.
+- **CHAIN_TOTAL_BUDGET 150s → 960s** — deadline-stall fires can always advance the chain.
+- **Per-entry combo budget reset (BUG K)** — stops chain starvation on header-timeout/midstream fallback.
+- **Zero-renderable-output streams** — advance the combo chain and drain gracefully on restart instead of returning an empty/None response; v3 finish frames emit empty text (not None); no-renderable-output force-stop and a JSONResponse TypeError eliminated.
+- **Reasoning-only pre-render buffer (BUG N)** — pre-content thought frames are held without committing emission, keeping combo fallback legal when a reasoning stream dies mid-transport.
+- **Test-endpoint app-kill** — `/api/test-model` probes run under a 2-slot semaphore + 75s timeout; the dashboard also refuses overlapping tests. Spamming Test can no longer saturate the event loop and kill the app.
+- **Kilocode tools[0].type 400** + spurious network-disconnect on slow reasoning.
+- **Antigravity Cloud Code envelope forging** — combo upstream calls (Vision/compaction) no longer 404.
+- **Gemini egress** — visible no-output notice, fileData passthrough, gate exclusion.
+- **AgentRouter Vietnamese content** — NFKD transcode replaces the hard block (precomposed codepoints were the only 400 trigger).
+- **Multi-key failover** — request-scoped `tried_conns`/`exclude_indexes` so retries dial the NEXT key instead of re-dialing the drained one; still honors `connection_indexes` authorization, breaker, and round-robin.
+- **Kiro request schema** — corrected from captured ground truth (`inferenceConfig` top-level, `modelId` inside `userInputMessage`, `chatTriggerType`/`conversationId`/`origin`) — fixes `REQUEST_BODY_INVALID`.
+- **OAuth connection persistence** — via the sanctioned config-state swap path (was reading the deleted `main.config` global).
+- **Recoverability reclassification** — transport-level timeouts/500/502 route through combo fallback (Py3.10 builtin TimeoutError escape); 4xx treated as recoverable where appropriate; insufficient_user_quota classified as auth; artifacts 500 and gemini-3.6 slots fixed.
 
 ## [1.0.2] - 2026-08-15
 
@@ -160,6 +176,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 # 🇻🇳 Tiếng Việt
+
+---
+
+## [1.0.3] - 2026-08-24
+
+65 commit từ 1.0.2 — đại tu khả năng phục hồi combo-chain, chỉ báo quota trực tiếp, chuẩn hóa tham số thinking theo tài liệu chính thức cho mọi họ model, và contract Ox Alpha.
+
+### Thêm Mới
+
+- **Quota còn lại theo key (trực tiếp)** — dò billing one-api/new-api báo quota còn lại cho từng API key (biến thể browser-UA cho các gateway sau Cloudflare), hiển thị thanh % gọn ngay dòng trạng thái key. Chỉ phần trăm — không hiển thị tiền.
+- **Chỉ báo quota OAuth thụ động** — header rate-limit từ phản hồi được ghi lại và hiển thị thành thanh quota cho mọi tài khoản OAuth.
+- **Contract reasoning-effort cho Ox Alpha** — contract mới cho Ox Alpha / `x-preview-f-free` (fingerprint GLM-5.3, qua reseller): từ vựng effort 4 mức `low/medium/high/max` (mặc định `max`), `xhigh`→`max`, gửi `reasoning_effort` top-level, marker lỗi 1210 để effort sai chỉ hạ cấp và thử lại một lần thay vì 400 cuối. Đã xác minh trực tiếp với opencode-zen.
+- **Điều khiển chống treo** — tab Settings: nút kill stream, badge stream trực tiếp, watchdog tự khởi động lại.
+- **Header profile theo provider** — header định danh client nghiêm ngặt (`default`/`codex`/`claude_code`/`custom`), áp dụng cho request và xác minh key.
+- **Lịch sử dùng trong SQLite** — lưu usage bền vững (giữ 100k bản ghi), thay JSONL.
+- **Trình xác minh Ed25519 đầu vào pool Tier-2** — xác thực chữ ký (body-hash binding, cấu hình fail-closed).
+- **Adapter egress Codex Responses-API** — dịch payload OpenAI sang/đừ `/responses` của Codex (sửa 403 HTML): ép `store:false`+`stream:true`, chuẩn hóa effort, chuyển SSE Responses → khung OpenAI.
+- **Tự nhập Kiro + profileArn** — tự nhập kết nối Kiro từ AWS SSO cache; chèn `profileArn` top-level (sửa 400); tách đường refresh social (kiro.dev) vs OIDC (AWS).
+- **Chuẩn hóa model-ID mờ** — phân giải dự phòng không phân biệt gạch/chữ số/thứ tự (`gpt-5-6-terra` → `gpt-5.6-terra`); tên chính xác không bao giờ bị viết lại.
+
+### Thay Đổi
+
+- **Sóng chuẩn hóa thinking-contract chính thức** — từ vựng reasoning theo vendor dựng lại từ tài liệu chính thức: GLM-5.2/5.3, Grok-4.5/4.6, Qwen 3.8, Hunyuan Hy3, Muse Spark 1.1/1.2.
+- **Chọn key đa tầng tất định** — thay `random.choice` bằng top-first mặc định + công tắc `round_robin` thật.
+- **Circuit breaker bật mặc định** — key 429 tự động rút khỏi pool.
+- **Cache parse MITM** — config.yaml cache theo mtime, giảm độ trễ xác thực mỗi kết nối.
+- **Khả năng quan sát** — log mới nhất trước, phân trang tab Logs/Usage, ghi usage trên mọi đường 200 không stream.
+
+### Sửa Lỗi
+
+- **Continuous fallback cho combo** — chuỗi giờ quay vòng qua các lượt retry thay vì dừng cứng sau một lượt ("All N combo chain entries exhausted").
+- **Wall budget theo kích thước chuỗi** — đồng hồ tường giờ scale theo độ dài chuỗi (`max(240s, entries × 130s)`), lá 524 chậm (~125s) không thể làm kẹt các entry sau (lỗi force-stop Opus-Tabitoken).
+- **CHAIN_TOTAL_BUDGET 150s → 960s**.
+- **Reset budget từng entry (BUG K)** — hết đói chuỗi khi header-timeout/midstream fallback.
+- **Stream không render được** — tiến chuỗi combo + drain nhẹ nhàng khi restart; frame kết thúc rỗng thay vì None; hết force-stop và JSONResponse TypeError.
+- **Buffer tiền render reasoning (BUG N)** — khung thought trước nội dung được giữ không cam kết emission, fallback combo hợp pháp khi stream reasoning chết giữa đường.
+- **App-kill khi test model** — `/api/test-model` chạy dưới semaphore 2 slot + timeout 75s; dashboard chặn test chồng lấn.
+- **Kilocode tools[0].type 400** + ngắt kết nối giả khi reasoning chậm.
+- **Forge envelope Cloud Code cho Antigravity** — gọi upstream combo (Vision/compaction) hết 404.
+- **Gemini egress** — thông báo không-đầu-ra hiển thị, fileData passthrough, loại trừ gate.
+- **Nội dung tiếng Việt AgentRouter** — chuyển mã NFKD thay chặn cứng (chỉ codepoint precomposed gây 400).
+- **Failover đa key** — `tried_conns` theo request để retry bấm key KẾ TIẾP thay vì key vừa cạn; vẫn tôn trọng `connection_indexes`, breaker, round-robin.
+- **Schema request Kiro** — sửa từ ground truth bắt được (`inferenceConfig` top-level, `modelId` trong `userInputMessage`, `chatTriggerType`/`conversationId`/`origin`).
+- **Lưu kết nối OAuth** — qua đường config-state swap chuẩn.
+- **Phân loại lại khả năng phục hồi** — timeout/500/502 mức transport đi qua combo fallback; insufficient_user_quota xếp là auth.
 
 ---
 

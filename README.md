@@ -126,7 +126,16 @@ combos:
     strategy: fallback
 ```
 
-If the first provider returns an error, BSL Router automatically tries the next one. A chain deadline timer prevents infinite retries.
+If the first provider returns an error, BSL Router automatically tries the next one — **and cycles through retry passes**: each revisit dials the next API key in the pool, bounded by a chain-sized wall clock so slow-failing providers can never strand the rest of the chain.
+
+### 📊 Live Quota Indicators
+Per-key remaining quota (from one-api/new-api billing endpoints and rate-limit headers) rendered as compact % bars inline with each key's status row — API keys and OAuth accounts alike. Percentage only, no dollar values.
+
+### 🧠 Official Thinking-Parameter Parity
+Every model family's reasoning vocabulary is locked to official docs as conformance-tested contracts: GLM-5.2/5.3, Grok-4.5/4.6, Qwen 3.8, Kimi K2/K3, DeepSeek V4, Hunyuan Hy3, Muse Spark, Claude legacy/modern, GPT-5, and Ox Alpha (`low/medium/high/max`, default `max`). Wrong-vocabulary requests are coerced before they ever reach the upstream — and rejected thinking params degrade-and-retry automatically.
+
+### 🔍 Fuzzy Model-ID Resolution
+Typos and format variants still route correctly: `gpt-5-6-terra`, `gpt-terra-5-6` → `gpt-5.6-terra`. Exact model names are never rewritten.
 
 ### 🧰 Tools & Intelligence
 Built-in content processing that runs before your request reaches the provider:
@@ -366,7 +375,16 @@ Client nói format OpenAI? Provider dùng format Anthropic? Không vấn đề. 
 | Bất kỳ | Bất kỳ | ✅ |
 
 ### 🛡️ Tự Động Chuyển Hướng Khi Lỗi
-Định nghĩa chuỗi dự phòng (gọi là **combo**) trong config. Bộ đếm deadline ngăn thử lại vô hạn.
+Xác định chuỗi fallback (gọi là **combo**) trong config. Nếu provider đầu trả lỗi, BSL Router tự động thử provider kế tiếp — **và quay vòng qua các lượt retry**: mỗi lượt bấm API key kế tiếp trong pool, giới hạn bởi đồng hồ tường scale theo chuỗi để provider lỗi chậm không thể làm kẹt phần còn lại.
+
+### 📊 Chỉ Báo Quota Trực Tiếp
+Quota còn lại theo từng key (từ billing endpoint one-api/new-api và header rate-limit) hiển thị thanh % gọn ngay dòng trạng thái key — cho cả API key lẫn tài khoản OAuth. Chỉ phần trăm, không hiển thị tiền.
+
+### 🧠 Chuẩn Hóa Tham Số Thinking Theo Tài Liệu Chính Thức
+Từ vựng reasoning của mọi họ model khóa theo tài liệu chính thức qua conformance test: GLM-5.2/5.3, Grok-4.5/4.6, Qwen 3.8, Kimi K2/K3, DeepSeek V4, Hunyuan Hy3, Muse Spark, Claude, GPT-5, và Ox Alpha (`low/medium/high/max`, mặc định `max`). Từ sai bị ép đúng trước khi tới upstream — tham số bị từ chối sẽ tự hạ cấp và thử lại.
+
+### 🔍 Phân Giải Model-ID Mờ
+Tên gõ sai vẫn định tuyến đúng: `gpt-5-6-terra`, `gpt-terra-5-6` → `gpt-5.6-terra`. Tên chính xác không bao giờ bị viết lại.
 
 ### 🧰 Tools & Intelligence
 Xử lý nội dung tích hợp trước khi request đến provider:
