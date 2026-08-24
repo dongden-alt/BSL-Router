@@ -7106,9 +7106,23 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     if hasattr(_raw_fallback, "body_iterator"):
                         async for _fc in _raw_fallback.body_iterator:
                             yield _fc
-                    else:
+                    elif hasattr(_raw_fallback, "__aiter__"):
                         async for _fc in _raw_fallback:
                             yield _fc
+                    else:
+                        # TYPEERROR FIX (2026-08-24): serialize a plain
+                        # Response/JSONResponse instead of 'async for' (TypeError
+                        # -> terminal 502 -> force-stop).
+                        try:
+                            _rfb = getattr(_raw_fallback, "body", b"") or b""
+                            if isinstance(_rfb, str):
+                                _rfb = _rfb.encode("utf-8", "replace")
+                            _rfb_err = {"error": {"message": _rfb.decode("utf-8", "replace")[:500] or "fallback_failed", "type": "proxy_error"}}
+                            yield f"data: {json.dumps(_rfb_err)}\n\n".encode("utf-8")
+                            yield b"data: [DONE]\n\n"
+                        except Exception:
+                            yield f'data: {{"error": {{"message": "fallback_failed", "type": "proxy_error"}}}}\n\n'.encode("utf-8")
+                            yield b"data: [DONE]\n\n"
                     return
                 except (GeneratorExit, asyncio.CancelledError):
                     raise
@@ -7469,9 +7483,23 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         if hasattr(_egr_fallback, "body_iterator"):
                             async for _fc in _egr_fallback.body_iterator:
                                 yield _fc
-                        else:
+                        elif hasattr(_egr_fallback, "__aiter__"):
                             async for _fc in _egr_fallback:
                                 yield _fc
+                        else:
+                            # TYPEERROR FIX (2026-08-24): serialize a plain
+                            # Response/JSONResponse return instead of 'async for'
+                            # over it (TypeError -> terminal 502 -> force-stop).
+                            try:
+                                _egr_fb_body = getattr(_egr_fallback, "body", b"") or b""
+                                if isinstance(_egr_fb_body, str):
+                                    _egr_fb_body = _egr_fb_body.encode("utf-8", "replace")
+                                _egr_err_frame = {"error": {"message": _egr_fb_body.decode("utf-8", "replace")[:500] or "fallback_failed", "type": "proxy_error"}}
+                                yield f"data: {json.dumps(_egr_err_frame)}\n\n".encode("utf-8")
+                                yield b"data: [DONE]\n\n"
+                            except Exception:
+                                yield f'data: {{"error": {{"message": "fallback_failed", "type": "proxy_error"}}}}\n\n'.encode("utf-8")
+                                yield b"data: [DONE]\n\n"
                         return
                     except (GeneratorExit, asyncio.CancelledError):
                         raise
@@ -8260,9 +8288,26 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     if hasattr(_fallback, "body_iterator"):
                         async for _fc in _fallback.body_iterator:
                             yield _fc
-                    else:
+                    elif hasattr(_fallback, "body_iterator") is False and hasattr(_fallback, "__aiter__"):
                         async for _fc in _fallback:
                             yield _fc
+                    else:
+                        # TYPEERROR FIX (2026-08-24): the nested call can return a
+                        # plain Response (e.g. JSONResponse on the non-stream error
+                        # path). 'async for' over it raised TypeError -> afz_guard
+                        # caught it -> terminal 502 -> force-stop. Serialize its
+                        # JSON body as the SOLE terminal Gemini error frame.
+                        try:
+                            _fb_bytes = _fallback.body if isinstance(getattr(_fallback, "body", None), (bytes, bytearray)) else str(getattr(_fallback, "body", "")).encode("utf-8", "replace")
+                            from app.compat.adapters.gemini import sse_data as _g_sse_fb, SSE_DONE as _G_SSE_FB, terminal_error_frame as _g_term_fb
+                            _fb_status = getattr(_fallback, "status_code", 502) or 502
+                            yield _g_sse_fb(_g_term_fb(_fb_status, _fb_bytes.decode("utf-8", "replace")[:500] or "fallback_failed", target_model))
+                            yield _G_SSE_FB
+                        except Exception as _fb_err:
+                            print(f"[Combo Fallback] nested-response serialization failed: {_fb_err}", flush=True)
+                            from app.compat.adapters.gemini import sse_data as _g_sse_fb2, SSE_DONE as _G_SSE_FB2, terminal_error_frame as _g_term_fb2
+                            yield _g_sse_fb2(_g_term_fb2(502, "fallback_failed", target_model))
+                            yield _G_SSE_FB2
                 except (GeneratorExit, asyncio.CancelledError):
                     raise
                 except Exception:
@@ -8656,9 +8701,23 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         if hasattr(_anthr_fallback, "body_iterator"):
                             async for _fc in _anthr_fallback.body_iterator:
                                 yield _fc
-                        else:
+                        elif hasattr(_anthr_fallback, "__aiter__"):
                             async for _fc in _anthr_fallback:
                                 yield _fc
+                        else:
+                            # TYPEERROR FIX (2026-08-24): serialize a plain
+                            # Response/JSONResponse instead of 'async for' (TypeError
+                            # -> terminal 502 -> force-stop).
+                            try:
+                                _afb = getattr(_anthr_fallback, "body", b"") or b""
+                                if isinstance(_afb, str):
+                                    _afb = _afb.encode("utf-8", "replace")
+                                _afb_err = {"error": {"message": _afb.decode("utf-8", "replace")[:500] or "fallback_failed", "type": "proxy_error"}}
+                                yield f"data: {json.dumps(_afb_err)}\n\n".encode("utf-8")
+                                yield b"data: [DONE]\n\n"
+                            except Exception:
+                                yield f'data: {{"error": {{"message": "fallback_failed", "type": "proxy_error"}}}}\n\n'.encode("utf-8")
+                                yield b"data: [DONE]\n\n"
                         return
                     except (GeneratorExit, asyncio.CancelledError):
                         try:

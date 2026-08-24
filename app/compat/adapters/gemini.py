@@ -681,15 +681,17 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
             # these metadata fields — inject defaults to prevent IDE rejection.
             args = _inject_tool_metadata(args, name)
             parts.append({"functionCall": {"name": name, "args": args}})
-        # §8.8 (REVISED 2026-08-24): a finish with no produced parts must NOT
-        # emit parts=[{"text": ""}] — the Antigravity IDE hard-rejects frames
-        # where text and tool calls are BOTH empty ("model output must contain
-        # either output text or tool calls, these cannot both be empty"), which
-        # surfaced to the user as an opaque recurring error. Emit an honest,
-        # VISIBLE notice so the IDE sees renderable text and the transcript
-        # stays truthful about what the upstream produced.
+        # §8.8 (FORCE-STOP FIX 2026-08-24, v2): a parts-less finish must NOT
+        # carry the notice text downstream. Emitting it here shipped a fake
+        # finishReason=STOP whose only content was the notice — the client
+        # rendered it as the recurring "no renderable output" force-stop
+        # while combo fallback never fired (the notice counts as text).
+        # Instead DROP the frame entirely: the drain loop in main.py detects
+        # zero renderable output (emitted_model_data stays False) and either
+        # advances the combo chain or emits ONE terminal error frame — where
+        # the notice text legitimately belongs as a last resort.
         if not parts:
-            parts.append({"text": BSL_NO_OUTPUT_NOTICE})
+            return None
 
     # §4a: emit nothing for empty mid-stream deltas (no parts, no finish).
     if not parts and not finish:
