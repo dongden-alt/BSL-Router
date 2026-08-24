@@ -185,6 +185,51 @@ def _apply(
     )
 
 
+# -- Ox Alpha (GLM-5.3 fingerprint, reseller-served) --
+# x-preview-f-free (opencode-zen) and stealth/ox-alpha (vsllm) are
+# community-fingerprinted as the unreleased GLM-5.3 family, but served
+# via OpenAI-compatible gateways whose validation is more permissive
+# than direct GLM-5.3: 4-word vocab (low/medium/high/max), default max.
+# Effort rides TOP-LEVEL reasoning_effort (chat/completions wire).
+# End-anchored: `x-preview` alone is a substring of qwen3.6-max-preview
+# and MUST NOT capture Qwen preview models.
+
+_OX_ALPHA_EFFORT_WORDS = ("low", "medium", "high", "max")
+
+
+def _coerce_ox_alpha_effort(effort: str) -> str:
+    """Map any effort into Ox Alpha 4-word vocab (default max)."""
+    if effort in _OX_ALPHA_EFFORT_WORDS:
+        return effort
+    if effort == "xhigh":
+        return "max"
+    from app.compat.families._effort import coerce_effort as _ce
+    coerced = _ce(effort)
+    if coerced in _OX_ALPHA_EFFORT_WORDS:
+        return coerced
+    return "max"   # documented default; unlike direct GLM-5.3 `high`
+
+
+def _apply_ox_alpha(
+    payload: Dict[str, Any],
+    ctx: ThinkingContext,
+    prov: Provenance,
+    contract: Contract,
+) -> Dict[str, Any]:
+    # Anthropic wire: no OpenAI reasoning keys on /v1/messages
+    if ctx.wire_format == "anthropic":
+        strip = {k: None for k in ("reasoning_effort", "reasoning", "output_config", "thinking") if k in payload}
+        if strip:
+            return prov.apply(payload, contract, "anthropic_wire_strip", strip)
+        return payload
+    if not ctx.effort_is_explicit:
+        return payload   # auto/off: model default (max) applies
+    return prov.apply(
+        payload, contract, "ox_alpha_effort",
+        {"reasoning_effort": _coerce_ox_alpha_effort(ctx.effort)},
+    )
+
+
 CONTRACTS = [
     Contract(
         id="glm",
@@ -195,5 +240,12 @@ CONTRACTS = [
         apply=_apply,
         # So graded "none" (an OFF_VALUE) still reaches version-specific mapping.
         always_applies=True,
+    ),
+    Contract(
+        id="ox-alpha",
+        source=SOURCE,
+        priority=45,   # above the generic glm- contract (40)
+        pattern=r"(?:x-preview-f-free|ox-alpha)$",
+        apply=_apply_ox_alpha,
     ),
 ]

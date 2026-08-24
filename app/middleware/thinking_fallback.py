@@ -54,6 +54,8 @@ _UNSUPPORTED_MARKERS = (
     "未知字段",        # Chinese: unknown field
     "不支持的参数",    # Chinese: unsupported parameter
     "不支持参数",
+    'code":1210',
+    'code": 1210',
 )
 
 # Secondary markers: the rejection specifically names thinking/reasoning.

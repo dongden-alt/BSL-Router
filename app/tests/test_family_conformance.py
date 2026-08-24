@@ -97,6 +97,14 @@ CONFORMANCE = [
     ("hcnsec-vip/glm-5.1", "enable", {"thinking": {"type": "enabled"}}),
     ("hcnsec-vip/glm-5.1", "adaptive", {"thinking": {"type": "adaptive"}}),
 
+    # ── Ox Alpha (GLM-5.3 fingerprint, reseller-served; 4-word vocab, default max) ──
+    # Live-verified 2026-08-24 vs opencode-zen: top-level reasoning_effort
+    # accepted; medium returns live reasoning_content (unlike direct GLM-5.3
+    # which rejects medium with 1210). Lock: test_ox_alpha_thinking.py.
+    ("opencode-zen/x-preview-f-free", "max", {"reasoning_effort": "max"}),
+    ("vsllm-o/stealth/ox-alpha", "medium", {"reasoning_effort": "medium"}),
+    ("vsllm-o/stealth/ox-alpha", "xhigh", {"reasoning_effort": "max"}),
+
     # ── MiniMax ──
     ("iamhc/Minimax-M3", "enable", {"thinking": {"type": "enabled"}}),
 

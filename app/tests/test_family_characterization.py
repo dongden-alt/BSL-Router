@@ -196,6 +196,16 @@ def test_registry_matches_legacy_for_all_config_models(effort):
         if re.search(r"deepseek-v4", f_val, re.IGNORECASE):
             continue
 
+        # Ox Alpha is a DELIBERATE divergence at every graded effort: the
+        # legacy cascade had ZERO branches for stealth/ox-alpha or
+        # x-preview-f-free ids, so any operator effort was silently dropped
+        # (never sent upstream). The new contract emits top-level
+        # reasoning_effort with the live-verified 4-word vocab (low/medium/
+        # high/max; medium confirmed accepted 2026-08-24). Full lock:
+        # test_ox_alpha_thinking.py + test_family_conformance.py rows.
+        if re.search(r"(?:ox-alpha|x-preview-f-free)$", f_val):
+            continue
+
         legacy_payload = legacy_apply_thinking(_base_payload(), f_val, effort)
         new_payload, _prov = resolve_thinking(_base_payload(), f_val, effort)
 
