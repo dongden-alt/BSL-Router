@@ -6793,6 +6793,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     # check below instead.
                 stats["status"] = resp.status_code
 
+                # OAuth passive quota capture (2026-08-24): rate-limit headers
+                # arrive on ANY status; capture before the body is consumed.
+                try:
+                    _capture_rate_limit_headers(provider_name, _active_conn_index, resp.headers)
+                except Exception:
+                    pass
+
                 # NON-200 CHECK (2026-08-02): When upstream returns 400/5xx
                 # (e.g. "model doesn't support images"), we must NOT iterate
                 # the error body as raw chunks — the IDE would receive non-SSE
@@ -8951,6 +8958,11 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     resp = await asyncio.wait_for(
                         client.send(req), timeout=max(1.0, min(NONSTREAM_TOTAL_BUDGET, _chain_budget_remaining()))
                     )
+                    # OAuth passive quota capture (2026-08-24)
+                    try:
+                        _capture_rate_limit_headers(provider_name, _active_conn_index, resp.headers)
+                    except Exception:
+                        pass
                 except (asyncio.TimeoutError, TimeoutError):
                     _budget_elapsed = time.time() - start_time
                     _budget_err = (
@@ -10876,6 +10888,53 @@ async def _probe_oneapi_billing(base: str, key: str) -> Optional[dict]:
         return None
 
 
+# ── OAuth passive quota capture (2026-08-24) ──────────────────────────────
+# OAuth upstreams (claude/codex/etc.) have no billing dashboard API; their
+# rate-limit info arrives in RESPONSE HEADERS of live proxied calls. We parse
+# those passively (zero extra upstream traffic) and expose them through the
+# same /api/quota/status shape the one-api bars already use.
+_OAUTH_QUOTA: dict = {}  # {provider: {conn_index: {remaining_pct, metric, window_reset, updated_at}}}
+
+_OAUTH_RL_HEADERS = [
+    # (remaining_header, limit_header, metric)
+    ("anthropic-ratelimit-tokens-remaining", "anthropic-ratelimit-tokens-limit", "tokens"),
+    ("anthropic-ratelimit-requests-remaining", "anthropic-ratelimit-requests-limit", "requests"),
+    ("x-ratelimit-remaining-tokens", "x-ratelimit-limit-tokens", "tokens"),
+    ("x-ratelimit-remaining-requests", "x-ratelimit-limit-requests", "requests"),
+]
+
+
+def _capture_rate_limit_headers(provider: str, conn_index, headers) -> None:
+    """Passively parse rate-limit headers from a live upstream response.
+
+    Token-based % preferred (most meaningful for LLM traffic); falls back to
+    request-based. Best-effort: never raises, never blocks the stream.
+    """
+    if conn_index is None:
+        return
+    try:
+        _h = {str(k).lower(): v for k, v in headers.items()}
+        entry = None
+        for _rem_k, _lim_k, _metric in _OAUTH_RL_HEADERS:
+            try:
+                _rem = float(_h.get(_rem_k, "") or "nan")
+                _lim = float(_h.get(_lim_k, "") or "nan")
+            except (TypeError, ValueError):
+                continue
+            if _rem == _rem and _lim == _lim and _lim > 0:
+                entry = {
+                    "remaining_pct": round(100.0 * max(0.0, _rem) / _lim, 1),
+                    "metric": _metric,
+                    "window_reset": _h.get(_rem_k.replace("remaining", "reset")),
+                    "updated_at": time.time(),
+                }
+                break
+        if entry:
+            _OAUTH_QUOTA.setdefault(str(provider), {})[int(conn_index)] = entry
+    except Exception:
+        pass
+
+
 @app.get("/api/quota/status")
 async def get_quota_status_endpoint(provider: Optional[str] = None):
     """Live per-key quota remaining for one-api/new-api gateways (UI Variant C).
@@ -10896,6 +10955,7 @@ async def get_quota_status_endpoint(provider: Optional[str] = None):
 
             _cfg = cs_get_config()
             _tasks = {}
+            _oauth_reg = {}
             for _pid, _p in (_cfg.get("providers") or {}).items():
                 _conns = _p.get("connections") or []
                 _p_base = str((_p.get("base_url") or "")).rstrip("/")
@@ -10906,6 +10966,10 @@ async def get_quota_status_endpoint(provider: Optional[str] = None):
                     _k_base = _cb or _p_base
                     if _k and _k_base and not _c.get("refresh_token"):
                         _conn_tasks.append(_probe_oneapi_billing(_k_base, _k))
+                    elif _c.get("refresh_token") or _c.get("access_token"):
+                        # OAuth connection: serve from passive header-capture registry
+                        _conn_tasks.append(_null_probe())
+                        _oauth_reg.setdefault(_pid, {})[len(_conn_tasks) - 1] = True
                     else:
                         _conn_tasks.append(_null_probe())
                 if _conns:
@@ -10917,10 +10981,20 @@ async def get_quota_status_endpoint(provider: Optional[str] = None):
                 except Exception:
                     _results[_pid] = None
             _QUOTA_CACHE["ts"] = _now
-            _QUOTA_CACHE["providers"] = {
-                _pid: [(_r if isinstance(_r, dict) else None) for _r in (_res or [])]
-                for _pid, _res in _results.items()
-            }
+            _QUOTA_CACHE["providers"] = {}
+            for _pid, _res in _results.items():
+                _row = [(_r if isinstance(_r, dict) else None) for _r in (_res or [])]
+                # Merge passive OAuth registry entries (live traffic headers)
+                for _oi in _oauth_reg.get(_pid, {}):
+                    _live = _OAUTH_QUOTA.get(_pid, {}).get(_oi)
+                    if _live and _oi < len(_row):
+                        _row[_oi] = {
+                            "remaining_pct": _live.get("remaining_pct", 0.0),
+                            "metric": _live.get("metric"),
+                            "source": "oauth_live",
+                            "updated_at": _live.get("updated_at"),
+                        }
+                _QUOTA_CACHE["providers"][_pid] = _row
         _out = _QUOTA_CACHE["providers"]
         if provider is not None:
             _out = {provider: _out.get(provider)}

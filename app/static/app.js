@@ -858,7 +858,7 @@ async function refreshQuotaBars() {
             if (q && typeof q === 'object') {
                 slot.insertAdjacentHTML('beforeend', _fmtQuotaBar(q));
             } else {
-                slot.insertAdjacentHTML('beforeend', `<span data-quota-bar="1" style="font-size:10px; color:var(--text-muted); font-style:italic;">∤ no billing</span>`);
+                slot.insertAdjacentHTML('beforeend', `<span data-quota-bar="1" style="font-size:10px; color:var(--text-muted); font-style:italic;">∤ no data</span>`);
             }
         });
     } catch { /* fail-open */ }
@@ -1213,7 +1213,8 @@ function renderProviderDetail() {
                             <div style="width:6px;height:6px;background:${conn.enabled !== false ? 'var(--success)' : 'var(--text-muted)'};border-radius:50%;"></div> ${conn.enabled !== false ? 'active' : 'disabled'}
                         </span>
                         <span style="font-size:11px; background:#f3f4f6; color:var(--text-muted); padding:2px 6px; border-radius:4px; font-weight:500;">OAuth</span>
-                        <span style="font-size:11px; color:var(--text-muted);">#${idx + 1}</span>
+                        <div data-quota-slot="${idx}" style="display:flex; align-items:center; gap:6px;"></div>
+
                     </div>
                 </div>
             </div>
