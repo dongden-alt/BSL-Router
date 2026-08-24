@@ -18,6 +18,7 @@ from app.compat.adapters.gemini import (
     sse_data,
     SSE_DONE,
     build_response_headers,
+    BSL_NO_OUTPUT_NOTICE,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "sse_data",
     "SSE_DONE",
     "build_response_headers",
+    "BSL_NO_OUTPUT_NOTICE",
 ]

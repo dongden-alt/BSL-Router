@@ -1,4 +1,4 @@
-﻿
+
 """Force-stop fix regression tests (2026-08-24).
 
 Bug 1: gemini stream adapter appended BSL_NO_OUTPUT_NOTICE as ordinary finish
@@ -23,11 +23,21 @@ def _finish_chunk(finish: str = "stop"):
 
 
 def test_stream_adapter_drops_notice_finish_frame():
-    """A parts-less finish chunk must convert to None, never a notice frame."""
-    from app.compat.adapters.gemini import openai_chunk_to_gemini
+    """A parts-less finish chunk must NOT carry BSL_NO_OUTPUT_NOTICE as text.
+
+    v3: the frame is still emitted (carries finishReason + usageMetadata),
+    but its sole part is empty text — not the notice. gemini_frame_has_content
+    returns False for empty text, so combo fallback still fires.
+    """
+    from app.compat.adapters.gemini import openai_chunk_to_gemini, gemini_frame_has_content
     state = {}
     frame = openai_chunk_to_gemini(_finish_chunk(), state)
-    assert frame is None, f"parts-less finish must drop, got {frame!r}"
+    assert frame is not None, "finish frame must be emitted (carries finishReason)"
+    parts = frame["response"]["candidates"][0]["content"]["parts"]
+    assert len(parts) == 1
+    assert parts[0].get("text") == "", f"expected empty text, got {parts[0]!r}"
+    assert parts[0].get("text") != BSL_NO_OUTPUT_NOTICE
+    assert gemini_frame_has_content(frame) is False
 
 
 def test_stream_adapter_keeps_real_text():

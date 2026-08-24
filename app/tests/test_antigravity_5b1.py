@@ -25,6 +25,7 @@ from app.compat.adapters import (
     openai_response_to_gemini,
     sse_data,
     SSE_DONE,
+    BSL_NO_OUTPUT_NOTICE,
 )
 
 
@@ -347,10 +348,10 @@ def test_t5_finish_chunk_stop_with_usage():
     resp = g["response"]
     cand = resp["candidates"][0]
     assert cand["finishReason"] == "STOP"
-    # §8.8 (2026-08-24): empty finish parts now carry a VISIBLE notice —
-    # the IDE hard-rejects text+tool_calls both empty.
-    assert cand["content"]["parts"][0]["text"].startswith("[BSL Router]"), cand["content"]["parts"]
-    assert cand["content"]["parts"][0]["text"].strip() != ""
+    # §8.8 (2026-08-24, v3): empty finish parts carry empty text (not notice).
+    # The frame is emitted (finishReason + usageMetadata), but has no renderable content.
+    assert cand["content"]["parts"][0]["text"] == "", cand["content"]["parts"]
+    assert cand["content"]["parts"][0]["text"] != BSL_NO_OUTPUT_NOTICE
     um = resp["usageMetadata"]
     assert um["promptTokenCount"] == 12
     assert um["candidatesTokenCount"] == 2
@@ -415,8 +416,9 @@ def test_t5_truncated_tool_call_drops_and_signals_max_tokens():
     cand = finish["candidates"][0]
     # No functionCall part should survive (the malformed call is dropped).
     assert not any("functionCall" in p for p in cand["content"]["parts"]), cand["content"]["parts"]
-    # §8.8 (2026-08-24): visible notice instead of the empty placeholder.
-    assert cand["content"]["parts"][0]["text"].startswith("[BSL Router]"), cand["content"]["parts"]
+    # §8.8 (2026-08-24, v3): empty-text part (not notice) — no renderable content.
+    assert cand["content"]["parts"][0]["text"] == "", cand["content"]["parts"]
+    assert cand["content"]["parts"][0]["text"] != BSL_NO_OUTPUT_NOTICE
     # Honest truncation signal, NOT STOP.
     assert cand["finishReason"] == "MAX_TOKENS"
 
