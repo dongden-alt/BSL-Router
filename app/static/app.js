@@ -2949,6 +2949,9 @@ window.openProviderModal = (type = 'text', providerId = null) => {
             normalizeUrlField('p-url', 'p-url-notice', formatInput.value, false);
         }
         keyInput.value = firstConn.api_key || '';
+        if (p.connections && p.connections.length >= 1) {
+            keyInput.placeholder = 'Leave blank to keep existing key — a different key adds a new connection';
+        }
         if (headerProfileSelect) {
             headerProfileSelect.value = p.header_profile || 'default';
             if (p.header_profile === 'custom') {
@@ -3076,11 +3079,32 @@ window.saveProviderModal = () => {
 
     if (url || key) {
         if (!globalConfig.providers[id].connections) globalConfig.providers[id].connections = [];
-        const firstConn = globalConfig.providers[id].connections[0] || { name: 'Primary Connection', enabled: true };
-        firstConn.base_url = url;
-        firstConn.api_key = key;
-        if (firstConn.enabled === undefined) firstConn.enabled = true;
-        globalConfig.providers[id].connections[0] = firstConn;
+        const existingConns = globalConfig.providers[id].connections;
+        const firstConn = existingConns[0] || { name: 'Primary Connection', enabled: true };
+        // Editing an existing provider never overwrites conn[0] — a changed key appends a new connection (parity with + Add API Key). Fix for silent key loss 2026-08-25.
+        if (existingConns.length === 0) {
+            // New provider: keep current behavior (create Primary Connection with url+key).
+            firstConn.base_url = url;
+            firstConn.api_key = key;
+            if (firstConn.enabled === undefined) firstConn.enabled = true;
+            globalConfig.providers[id].connections[0] = firstConn;
+        } else {
+            // Existing provider: never clobber conn[0].api_key.
+            if (url) firstConn.base_url = url; // never write '' over an existing base_url
+            if (key && key !== firstConn.api_key) {
+                // Different key => APPEND a new connection (same semantics as + Add API Key).
+                const newConn = {
+                    name: 'Connection ' + (existingConns.length + 1),
+                    api_key: key,
+                    base_url: url || (firstConn.base_url || ''),
+                    enabled: true
+                };
+                globalConfig.providers[id].connections.push(newConn);
+            } else {
+                // Blank key or same key => leave conn[0].api_key untouched.
+                globalConfig.providers[id].connections[0] = firstConn;
+            }
+        }
     }
 
     closeProviderModal();
