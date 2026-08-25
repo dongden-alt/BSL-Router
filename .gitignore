@@ -62,6 +62,7 @@ scratch/
 
 # --- Internal dev task files (contain debugging context, never commit ---
 .brain/cc_tasks/
+docs/reports/
 
 # --- Timestamped provider-migration backups --------------------------------
 # Auto-generated when a provider is added/removed (e.g.

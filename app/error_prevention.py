@@ -105,6 +105,7 @@ class ErrorPreventionManager:
                   # Billing/account issues — treat like auth: the account
                   # is dead. Immediate softban prevents 60-86s retries.
                   'arrearage', 'access denied', 'good standing',
+                  'not allowed to access', 'action plan limited', 'plan limited',
                   'insufficient balance', 'insufficient_balance',
                   'out of credit', 'payment required', 'unpaid',
                   'account suspended', 'account_disabled', 'no credit',
@@ -277,6 +278,7 @@ class ErrorPreventionManager:
             marker in _msg_lower
             for marker in (
                 'arrearage', 'access denied', 'good standing',
+                'not allowed to access', 'action plan limited', 'plan limited',
                 'insufficient balance', 'insufficient_balance',
                 'out of credit', 'payment required', 'unpaid',
                 'account suspended', 'account_disabled', 'no credit',

@@ -11,9 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.3] - 2026-08-24
+## [1.0.3] - 2026-08-25
 
-67 commits since 1.0.2 — combo-chain resilience overhaul (incl. never-stop retry), live quota indicators, official thinking-parameter parity across model families, and the Ox Alpha contract.
+77 commits since 1.0.2 — combo-chain resilience overhaul (incl. never-stop retry), live quota indicators, official thinking-parameter parity across model families, the Ox Alpha contract, plus a post-tag wave: zero-network Kiro imports, `blacksand-agentic-ultra` orchestration, multi-key loss guards, and MITM supervisor cleanup.
 
 ### Added
 
@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Codex Responses-API egress adapter** — `app/codex_adapter.py` translates OpenAI chat payloads to/from Codex's `/responses` endpoint (fixes the Cloudflare HTML 403 on `/chat/completions`): forces `store:false`+`stream:true`, normalizes effort (minimal→low, max→xhigh, default medium), strips unsupported params, converts Responses SSE → OpenAI chunk frames.
 - **Kiro auto-import + profileArn** — lazy import of Kiro connections from the AWS SSO cache on first request; `profileArn` top-level injection (fixes 400 "profileArn is required"); refresh routing split social (kiro.dev) vs OIDC/builder-id with UUID clientId (AWS OIDC).
 - **Fuzzy model-ID normalization** — dash/order-insensitive last-resort resolution (`gpt-5-6-terra` / `gpt-terra-5-6` → `gpt-5.6-terra`) in the chat ladder, images endpoint, and model-test path; exact matches are never rewritten.
+- **Kiro zero-network IDE-cache import** — new `/kiro/import-ide` endpoint imports connections from the local AWS SSO cache without a single network call at import time (immune to Kiro anti-abuse rate flags); recommended button in the provider modal.
+- **Kiro SSO auto-detect** — the Kiro provider modal probes the IDE SSO cache and offers a one-click "session detected" connect (manual key/device modes remain as fallback).
+- **`blacksand-agentic-ultra` full orchestration** — runs the complete balanced-mode loop (7 phase templates, lead+1 member on commit phases, 22-message cap, substance gate, synthesis step, aggregated usage), ported from Blacksand Code.
 
 ### Changed
 
@@ -54,6 +57,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Kiro request schema** — corrected from captured ground truth (`inferenceConfig` top-level, `modelId` inside `userInputMessage`, `chatTriggerType`/`conversationId`/`origin`) — fixes `REQUEST_BODY_INVALID`.
 - **OAuth connection persistence** — via the sanctioned config-state swap path (was reading the deleted `main.config` global).
 - **Recoverability reclassification** — transport-level timeouts/500/502 route through combo fallback (Py3.10 builtin TimeoutError escape); 4xx treated as recoverable where appropriate; insufficient_user_quota classified as auth; artifacts 500 and gemini-3.6 slots fixed.
+- **Edit-Provider modal key clobber** — a blank key field now keeps the existing key; a different key appends a new connection (parity with "+ Add API Key"); fixes silent key loss on multi-key providers (Tabitoken/Gorouter/Seekai).
+- **Two-tab stale-save connection loss** — lost-update saves can no longer drop connections edited in another tab; merge guard with `_deleted_connection` opt-out for intentional deletes.
+- **Codex 400 `Unsupported parameter: messages`** — intent-driven payload injection no longer runs on Codex Responses payloads; the fold helper folds content into `instructions` instead of creating a `messages` key.
+- **Kiro import route shadowing** — the dedicated `/kiro/import` route is registered above the generic `/{provider}/import` (FastAPI match order), so Kiro imports reach the Kiro handler.
+- **MITM respawn-supervisor guard** — `force_kill_mitm_port` now walks each listener's parent chain (WMI/CIM) and tree-kills respawn supervisors (`while($true){mitmdump}` PowerShell loops) BEFORE the listener kill loop, so a rogue respawner can no longer defeat port cleanup and cascade 503s; PID 0/4/self are protected.
+- **Dead-account 400s now softban** — deterministic upstream account rejects ("Action plan limited", "user is not allowed to access") are classified as `auth`, triggering an immediate 90s cooldown and combo-chain skip; previously the dead leaf was re-selected as chain primary on every request (~5s wasted per call).
+- **GPT-5.6 ultra effort honesty** — `ultra` effort coerced to `max` with honest UI/comment (ultra is Codex multi-agent orchestration, not a wire parameter).
+- **Ox Alpha thinking dropdown** — effort selector on the model row; `/api/test-model` concurrency 2→3.
 
 ## [1.0.2] - 2026-08-15
 
@@ -180,9 +191,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.3] - 2026-08-24
+## [1.0.3] - 2026-08-25
 
-67 commit từ 1.0.2 — đại tu khả năng phục hồi combo-chain (kèm never-stop retry), chỉ báo quota trực tiếp, chuẩn hóa tham số thinking theo tài liệu chính thức cho mọi họ model, và contract Ox Alpha.
+77 commit từ 1.0.2 — đại tu khả năng phục hồi combo-chain (kèm never-stop retry), chỉ báo quota trực tiếp, chuẩn hóa tham số thinking theo tài liệu chính thức cho mọi họ model, contract Ox Alpha, cùng đợt sau tag: nhập Kiro zero-network, orchestration `blacksand-agentic-ultra`, chống mất key đa tab, và dọn supervisor MITM.
 
 ### Thêm Mới
 
@@ -196,6 +207,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Adapter egress Codex Responses-API** — dịch payload OpenAI sang/đừ `/responses` của Codex (sửa 403 HTML): ép `store:false`+`stream:true`, chuẩn hóa effort, chuyển SSE Responses → khung OpenAI.
 - **Tự nhập Kiro + profileArn** — tự nhập kết nối Kiro từ AWS SSO cache; chèn `profileArn` top-level (sửa 400); tách đường refresh social (kiro.dev) vs OIDC (AWS).
 - **Chuẩn hóa model-ID mờ** — phân giải dự phòng không phân biệt gạch/chữ số/thứ tự (`gpt-5-6-terra` → `gpt-5.6-terra`); tên chính xác không bao giờ bị viết lại.
+- **Kiro nhập từ IDE-cache zero-network** — endpoint `/kiro/import-ide` nhập kết nối từ AWS SSO cache local, không gọi mạng lúc nhập (miễn nhiễm flag anti-abuse của Kiro); nút khuyến nghị trong modal provider.
+- **Kiro tự dò SSO** — modal provider Kiro dò IDE SSO cache và đề xuất kết nối một chạm "session detected" (các chế độ thủ công vẫn còn làm fallback).
+- **`blacksand-agentic-ultra` orchestration đầy đủ** — chạy trọn vòng balanced-mode (7 mẫu phase, lead+1 member ở phase commit, trần 22 message, substance gate, bước synthesis, usage gộp), port từ Blacksand Code.
 
 ### Thay Đổi
 
@@ -223,6 +237,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Schema request Kiro** — sửa từ ground truth bắt được (`inferenceConfig` top-level, `modelId` trong `userInputMessage`, `chatTriggerType`/`conversationId`/`origin`).
 - **Lưu kết nối OAuth** — qua đường config-state swap chuẩn.
 - **Phân loại lại khả năng phục hồi** — timeout/500/502 mức transport đi qua combo fallback; insufficient_user_quota xếp là auth.
+- **Modal Edit-Provider ghi đè key** — ô key bỏ trống giờ giữ key cũ; key khác sẽ thêm connection mới (ngang "+ Add API Key"); hết mất key âm thầm trên provider đa key (Tabitoken/Gorouter/Seekai).
+- **Mất connection do lưu stale hai tab** — save lost-update không thể rơi connection chỉnh ở tab khác; merge guard kèm opt-out `_deleted_connection` cho lần xóa chủ đích.
+- **Codex 400 `Unsupported parameter: messages`** — khối inject payload theo intent không còn chạy trên payload Responses của Codex; helper fold gộp nội dung vào `instructions` thay vì tạo key `messages`.
+- **Route import Kiro bị che** — route riêng `/kiro/import` đăng ký trước generic `/{provider}/import` (thứ tự match FastAPI).
+- **Guard supervisor respawn MITM** — `force_kill_mitm_port` đi parent chain từng listener (WMI/CIM) và tree-kill supervisor respawn (vòng PowerShell `while($true){mitmdump}`) TRƯỚC vòng kill listener, nên respawner lạ không còn phá dọn port và gây chuỗi 503; bảo vệ PID 0/4/self.
+- **400 tài khoản chết giờ bị softban** — lỗi từ chối tài khoản deterministic ("Action plan limited", "user is not allowed to access") xếp loại `auth`, cooldown 90s ngay lập tức và combo bỏ qua lá chết; trước đây lá chết được chọn lại làm primary mỗi request (~5s phí mỗi lần gọi).
+- **Effort `ultra` GPT-5.6 trung thực** — ép về `max` kèm UI/comment rõ (ultra là orchestration multi-agent của Codex, không phải tham số wire).
+- **Dropdown thinking Ox Alpha** — chọn effort ngay trên dòng model; concurrency `/api/test-model` 2→3.
 
 ---
 

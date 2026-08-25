@@ -28,6 +28,13 @@ logger = logging.getLogger("bsl.mitm_kill")
 
 _MAX_KILL_ROUNDS = 3
 _KILL_WAIT_MS = 500  # wait between kill and recheck
+_SUPERVISOR_WALK_DEPTH = 6
+
+# Tokens that suggest a process is a MITM listener (its command line mentions
+# mitmdump or the listen-port flag).
+_MITM_TOKENS = ("mitmdump", "mitm.py", "listen-port", "--listen", "listen_port")
+# Tokens that suggest a process is a respawn supervisor (a loop or sleep).
+_RESPAWN_TOKENS = ("while", "Start-Sleep", "for(", "Repeat")
 
 
 def _get_listener_pids(port: int) -> set:
@@ -67,6 +74,128 @@ def _get_listener_pids(port: int) -> set:
     return pids
 
 
+def _is_protected_pid(pid: int) -> bool:
+    """Safety guard: PID 0 (idle) and PID 4 (System/HTTP.sys) can never be
+    terminated via taskkill, and our own PID must never be killed — doing so
+    would kill the BSL Router process serving the current request.
+    """
+    return pid <= 4 or pid == os.getpid()
+
+
+def _get_process_info(pid: int) -> tuple:
+    """Return (parent_pid, command_line) for *pid* via WMI CIM query.
+
+    Returns (None, None) if the process cannot be found (already exited) or
+    the query fails.
+    """
+    try:
+        import subprocess as _sp
+        cmd = [
+            "powershell", "-NoProfile", "-Command",
+            f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId={pid}' -ErrorAction SilentlyContinue; "
+            f"if ($p) {{ \"$($p.ParentProcessId)|$($p.CommandLine)\" }} else {{ 'NONE|NONE' }}",
+        ]
+        result = _sp.run(cmd, capture_output=True, text=True, timeout=10)
+        out = (result.stdout or "").strip()
+        if not out or out == "NONE|NONE":
+            return None, None
+        parts = out.split("|", 1)
+        ppid_str = parts[0].strip()
+        cmdline = parts[1] if len(parts) > 1 else ""
+        ppid = int(ppid_str) if ppid_str.isdigit() else None
+        return ppid, cmdline
+    except Exception:
+        return None, None
+
+
+def _is_respawn_supervisor(cmdline: str) -> bool:
+    """A supervisor is a process whose command line contains both a MITM
+    listener token (it knows about mitmdump / listen-port) AND a respawn
+    token (a loop or sleep primitive). This avoids false positives such as
+    a one-off `mitmdump --listen-port 443` invocation, which is just a
+    normal listener, not a supervisor.
+    """
+    if not cmdline:
+        return False
+    lower = cmdline.lower()
+    has_mitm = any(t.lower() in lower for t in _MITM_TOKENS)
+    has_respawn = any(t.lower() in lower for t in _RESPAWN_TOKENS)
+    return has_mitm and has_respawn
+
+
+def kill_respawn_supervisors(port: int) -> tuple:
+    """Walk the parent chain of every listener on *port* and tree-kill any
+    ancestor that is a respawn supervisor — i.e. a `while($true){mitmdump ...}`
+    or `Start-Sleep` loop that would otherwise survive a child-only kill and
+    respawn a fresh listener ~3s later.
+
+    This is the PRE-STEP that defeats the respawn pattern. Without it,
+    `taskkill /T` on the child only kills descendants, never the parent loop.
+
+    Returns (ok: bool, detail: str). ok=True if no supervisors were found or
+    all were killed successfully.
+    """
+    try:
+        listener_pids = _get_listener_pids(port)
+        if not listener_pids:
+            return True, f"No listeners on port {port}; nothing to scan for supervisors."
+
+        supervisor_pids = set()
+        for pid in listener_pids:
+            current = pid
+            for _depth in range(_SUPERVISOR_WALK_DEPTH):
+                ppid, cmdline = _get_process_info(current)
+                if ppid is None:
+                    break
+                if _is_protected_pid(ppid):
+                    break
+                if _is_respawn_supervisor(cmdline or ""):
+                    supervisor_pids.add(ppid)
+                    logger.info(
+                        f"[mitm_kill] Supervisor detected on port {port}: "
+                        f"PID {ppid} (child of {pid}) — {cmdline[:120]}"
+                    )
+                    # Stop walking: a supervisor higher up the chain will be
+                    # tree-killed along with this one, or we already flagged it.
+                    break
+                current = ppid
+
+        if not supervisor_pids:
+            return True, f"Port {port}: no respawn supervisors found in parent chains."
+
+        killed = []
+        failed = []
+        for spid in sorted(supervisor_pids):
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(spid)],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    killed.append(str(spid))
+                else:
+                    stderr_lower = (result.stderr or "").lower()
+                    if "not found" in stderr_lower or "no such" in stderr_lower:
+                        killed.append(str(spid))
+                    else:
+                        failed.append(f"{spid}({result.stderr.strip()[:80]})")
+            except subprocess.TimeoutExpired:
+                failed.append(f"{spid}(timeout)")
+            except Exception as e:
+                failed.append(f"{spid}({e})")
+
+        detail = f"Killed respawn supervisors: {', '.join(killed)}"
+        if failed:
+            detail += f" | Failed: {', '.join(failed)}"
+        logger.info(f"[mitm_kill] kill_respawn_supervisors port {port}: {detail}")
+        ok = len(failed) == 0
+        return ok, detail
+
+    except Exception as e:
+        logger.error(f"[mitm_kill] kill_respawn_supervisors unexpected error on port {port}: {e}")
+        return False, str(e)
+
+
 def force_kill_mitm_port(port: int = 443) -> tuple:
     """Kill ALL listeners on *port* using raw netstat + taskkill /F /T.
 
@@ -85,6 +214,18 @@ def force_kill_mitm_port(port: int = 443) -> tuple:
     try:
         all_killed = []
         all_failed = []
+
+        # PRE-STEP: kill any respawn supervisor (e.g. `while($true){mitmdump}`)
+        # BEFORE the listener kill loop. Tree-killing a listener child does NOT
+        # kill its parent loop, which would respawn a fresh child ~3s later and
+        # defeat the retry loop. Killing the supervisor first breaks the cycle.
+        sup_ok, sup_detail = kill_respawn_supervisors(port)
+        if not sup_ok:
+            logger.warning(
+                f"[mitm_kill] Supervisor kill did not fully succeed on port {port}: {sup_detail}"
+            )
+            # Continue anyway — the listener kill loop below may still clear
+            # the port even if a supervisor survived.
 
         for round_num in range(1, _MAX_KILL_ROUNDS + 1):
             pids = _get_listener_pids(port)
