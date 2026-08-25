@@ -1738,7 +1738,8 @@ async def _kiro_refresh_if_stale(raw: dict[str, Any]) -> dict[str, Any]:
                 "Use 'Login with Kiro — AWS Builder ID' above instead: it works without the Kiro IDE."
             ),
         ) from exc
-    fresh.setdefault("_startUrl", raw.get("_startUrl"))
+    for k in ("_authMethod", "_clientId", "_clientSecret", "_region", "_startUrl"):
+        fresh.setdefault(k, raw.get(k))
     return fresh
 
 

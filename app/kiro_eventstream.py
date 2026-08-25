@@ -94,6 +94,8 @@ def is_eventstream(buf: bytes) -> bool:
 
 def frame_to_openai_chunk(event_type: str, payload: bytes) -> dict | None:
     """Convert one decoded event-stream frame payload to an OpenAI chunk dict."""
+    # Imported lazily to avoid a circular import at module load.
+    from app.kiro_adapter import kiro_event_to_openai_chunk
     try:
         data = json.loads(payload.decode("utf-8")) if payload else {}
     except (json.JSONDecodeError, UnicodeDecodeError):

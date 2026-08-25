@@ -9856,6 +9856,26 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 except Exception:
                     _normalized_json = None  # Fail-open: use raw resp
 
+            # Shared usage-log helper for the early-return egress conversions
+            # below (Gemini/Kiro/Codex/OpenAI-passthrough). BUG (2026-08-24,
+            # user: "in/out=0/0 in console but model works"): these paths
+            # returned JSONResponse WITHOUT obs.log_request — no console line,
+            # no DB row, no usage. Fail-open on any error.
+            def _log_nonstream_success(_openai_json: dict) -> None:
+                try:
+                    _li, _lo, _lc = _extract_usage_tokens((_openai_json or {}).get("usage") or {})
+                    obs.log_request(
+                        provider=provider_name, model=target_model, status=200,
+                        ttft=time.time() - start_time, in_tokens=_li, out_tokens=_lo,
+                        cached_tokens=_lc, config=config, error_msg=None,
+                        total_time=time.time() - start_time,
+                        request_id=request_id, client=client_label, stream=False,
+                        upstream_url=_upstream_url, conn_index=_active_conn_index,
+                        thinking=thinking_info, combo=_combo_label,
+                    )
+                except Exception as _log_exc:
+                    print(f"[BSL Router] nonstream success log failed: {_log_exc}", flush=True)
+
             # Egress conversion: Kiro upstream returns AWS CodeWhisperer JSON
             # not OpenAI JSON. Convert so client sees standard OpenAI format.
             # (_kiro_converted=True means pre-conversion already produced
@@ -10013,26 +10033,6 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     return JSONResponse(openai_json, status_code=200)
                 except Exception as e:
                     print(f"[Egress] Codex Responses->OpenAI response conversion failed (passthrough): {e}")
-
-            # Shared usage-log helper for the early-return egress conversions
-            # below (Gemini/Kiro/Codex/OpenAI-passthrough). BUG (2026-08-24,
-            # user: "in/out=0/0 in console but model works"): these paths
-            # returned JSONResponse WITHOUT obs.log_request — no console line,
-            # no DB row, no usage. Fail-open on any error.
-            def _log_nonstream_success(_openai_json: dict) -> None:
-                try:
-                    _li, _lo, _lc = _extract_usage_tokens((_openai_json or {}).get("usage") or {})
-                    obs.log_request(
-                        provider=provider_name, model=target_model, status=200,
-                        ttft=time.time() - start_time, in_tokens=_li, out_tokens=_lo,
-                        cached_tokens=_lc, config=config, error_msg=None,
-                        total_time=time.time() - start_time,
-                        request_id=request_id, client=client_label, stream=False,
-                        upstream_url=_upstream_url, conn_index=_active_conn_index,
-                        thinking=thinking_info, combo=_combo_label,
-                    )
-                except Exception as _log_exc:
-                    print(f"[BSL Router] nonstream success log failed: {_log_exc}", flush=True)
 
             # Egress conversion: client hit /v1/messages (Anthropic) but upstream
             # is OpenAI-format. Convert the OpenAI response so Claude Code can parse it.

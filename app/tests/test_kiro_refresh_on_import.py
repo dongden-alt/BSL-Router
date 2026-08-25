@@ -40,6 +40,9 @@ def _fresh_result():
         "expires_in": 3600,
         "_authMethod": "social",
         "_startUrl": None,  # setdefault("_startUrl", raw's value) in _kiro_refresh_if_stale
+        "_clientId": None,  # preserved through refresh by setdefault loop
+        "_clientSecret": None,
+        "_region": None,
     }
 
 
