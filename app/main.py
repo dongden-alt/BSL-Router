@@ -2001,6 +2001,130 @@ async def get_config():
     config = cs_get_config()
     return JSONResponse(config)
 
+def _connection_identity(conn):
+    """Identity token for matching a connection across two config snapshots.
+
+    api_key is primary (unique per connection in practice); name is the
+    fallback for keyless OAuth-style connections. Both the server config and
+    the request body are decrypted at this point in the flow (cs_get_config
+    returns plaintext; the UI holds decrypted GET output), so plaintext
+    comparison is correct regardless of storage encryption.
+    """
+    if not isinstance(conn, dict):
+        return None
+    key = str(conn.get("api_key") or "")
+    if key:
+        return ("key", key)
+    name = str(conn.get("name") or "")
+    if name:
+        return ("name", name)
+    return None
+
+
+def _apply_connections_stale_save_guard(old_config, new_config) -> None:
+    """Merge-guard providers.<id>.connections against stale client saves.
+
+    THE BUG THIS FIXES (lost-update config save, 2026-08-25)
+    Two dashboard tabs (normal + incognito) each hold a full globalConfig
+    snapshot. Every save POSTs the WHOLE config, so a stale tab's debounced
+    autosave replaces the fresh config and silently deletes connections added
+    in the other tab. The user lost keys 011/013 on tabitoken/gorouter/seekai
+    this way — no error, keys just gone on next GET.
+
+    Surgical scope: ONLY providers.<id>.connections arrays, plus per-connection
+    api_key values that would go non-empty -> empty/missing. No other deep
+    merge. A save that would REMOVE connections from a provider that currently
+    has more is treated as stale: the missing server connections are restored
+    (server list first, then genuinely-new body-only ones appended).
+
+    Explicit opt-out: a body carrying ``_deleted_connection`` =
+    ``{"provider": "<id>", "api_key": "<key>"}`` is a deliberate single-tab
+    deleteConnection — the guard skips restoration for exactly that
+    provider+key so genuine deletes are never "restored".
+    """
+    if not isinstance(old_config, dict) or not isinstance(new_config, dict):
+        return
+    old_providers = old_config.get("providers") or {}
+    new_providers = new_config.get("providers") or {}
+    if not isinstance(old_providers, dict) or not isinstance(new_providers, dict):
+        return
+    deletion = new_config.get("_deleted_connection") or {}
+    if not isinstance(deletion, dict):
+        deletion = {}
+    del_provider = deletion.get("provider")
+    del_api_key = str(deletion.get("api_key") or "")
+    del_identity = ("key", del_api_key) if del_api_key else None
+
+    for prov_id, old_prov in old_providers.items():
+        if not isinstance(old_prov, dict):
+            continue
+        new_prov = new_providers.get(prov_id)
+        if not isinstance(new_prov, dict):
+            # Whole-provider removal is a deliberate user action
+            # (deleteActiveProvider) — out of this guard's surgical scope.
+            continue
+        old_conns = old_prov.get("connections")
+        if not isinstance(old_conns, list) or not old_conns:
+            continue
+        body_conns = new_prov.get("connections")
+        if not isinstance(body_conns, list):
+            # Stale client that predates the connections feature for this
+            # provider: the body has the provider but no connections list.
+            body_conns = []
+            new_prov["connections"] = body_conns
+
+        # Pass 1 — api_keys emptied by a stale client (blank-key Edit Provider
+        # signature). Runs first so a refilled key also matches in pass 2
+        # instead of looking like a removed connection.
+        restored_keys = 0
+        old_by_name = {
+            str(c.get("name") or ""): c
+            for c in old_conns
+            if isinstance(c, dict) and c.get("name")
+        }
+        for idx, body_conn in enumerate(body_conns):
+            if not isinstance(body_conn, dict) or str(body_conn.get("api_key") or ""):
+                continue
+            source = old_by_name.get(str(body_conn.get("name") or ""))
+            if source is None and idx < len(old_conns):
+                positional = old_conns[idx]
+                source = positional if isinstance(positional, dict) else None
+            if source is not None and str(source.get("api_key") or ""):
+                body_conn["api_key"] = source["api_key"]
+                restored_keys += 1
+        if restored_keys:
+            print(
+                f"[CONFIG-GUARD] provider={prov_id} restored {restored_keys} "
+                "emptied api_key(s) (stale client save)",
+                flush=True,
+            )
+
+        # Pass 2 — whole connections the server has that the body lacks.
+        restored = [
+            old_conn
+            for old_conn in old_conns
+            if _connection_identity(old_conn) is not None
+            and _connection_identity(old_conn) not in {_connection_identity(c) for c in body_conns}
+            and not (prov_id == del_provider and _connection_identity(old_conn) == del_identity)
+        ]
+        if restored:
+            # Server list first (authoritative), then genuinely-new body-only
+            # connections appended in body order.
+            merged = list(old_conns)
+            seen = {_connection_identity(c) for c in merged}
+            seen.discard(None)
+            for body_conn in body_conns:
+                identity = _connection_identity(body_conn)
+                if identity is None or identity not in seen:
+                    merged.append(body_conn)
+            new_prov["connections"] = merged
+            print(
+                f"[CONFIG-GUARD] provider={prov_id} restored "
+                f"{len(restored)} connections (stale client save)",
+                flush=True,
+            )
+
+
 @app.post("/api/config")
 async def update_config(request: Request):
     try:
@@ -2023,6 +2147,13 @@ async def update_config(request: Request):
             for k in _preserve_keys:
                 if k not in new_prov and k in old_prov:
                     new_prov[k] = old_prov[k]
+
+        # Connections merge guard (lost-update protection, 2026-08-25): a
+        # stale tab's full-config POST must not delete connections another
+        # tab added. See _apply_connections_stale_save_guard for the incident.
+        _apply_connections_stale_save_guard(config, new_config)
+        # The opt-out flag is transport-only; never persist it to config.yaml.
+        new_config.pop("_deleted_connection", None)
 
         # Preserve live ErrorPrevention state so frontend auto-saves don't wipe it
         if "error_prevention_state" in config:

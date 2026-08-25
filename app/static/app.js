@@ -717,6 +717,11 @@ async function saveConfig() {
         return false;
     } finally {
         _autoSaveInFlight = false;
+        // One-shot transport flag for the backend connections merge guard
+        // (stale-save protection, app/main.py update_config). It rides along
+        // on exactly the POST that deletes a connection, then is stripped —
+        // never persists into config.yaml or leaks into a later save.
+        delete globalConfig._deleted_connection;
         // If something mutated during the in-flight POST, save the latest snapshot once.
         if (_autoSaveDirty) {
             _autoSaveDirty = false;
@@ -2067,7 +2072,19 @@ window.deleteActiveProvider = () => {
 
 window.deleteConnection = async (idx) => {
     if (confirm('Delete this connection?')) {
-        globalConfig.providers[activeProviderId].connections.splice(idx, 1);
+        const prov = globalConfig.providers[activeProviderId];
+        const removed = prov.connections[idx];
+        // Flag the intentional delete so the backend stale-save guard
+        // (_apply_connections_stale_save_guard) does not "restore" this
+        // connection on the very save that is supposed to remove it.
+        // saveConfig strips the flag after the POST completes.
+        if (removed) {
+            globalConfig._deleted_connection = {
+                provider: activeProviderId,
+                api_key: removed.api_key || '',
+            };
+        }
+        prov.connections.splice(idx, 1);
         await saveConfig();
         renderActiveTab();
     }
