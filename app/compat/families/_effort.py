@@ -86,7 +86,14 @@ def claude_modern_thinking(f_val: str, thinking_suffix: Any) -> Tuple[Dict[str, 
 
 
 def apply_gpt5_reasoning_controls(payload: dict, effort, mode, context) -> dict:
-    """Apply explicit GPT-5 reasoning controls without ever emitting effort=auto."""
+    """Apply explicit GPT-5 reasoning controls without ever emitting effort=auto.
+
+    `ultra` is OpenAI's Codex/ChatGPT-only multi-agent orchestration mode and has
+    NO REST wire parameter. The deepest reasoning the API exposes for GPT-5.6 is
+    reasoning_effort='max', so any inbound 'ultra' is coerced to 'max' rather than
+    emitted as an invalid value (research 2026-08-25; see app/static/app.js
+    getThinkingSpec gpt-5.6 branch, which keeps 'ultra' out of the selectable UI).
+    """
     explicit_effort = str(effort or "").lower() not in ("auto", "none", "off", "")
     valid_mode = mode if mode in ("standard", "pro") else None
     valid_context = context if context in ("auto", "current_turn", "all_turns") else None
@@ -94,12 +101,14 @@ def apply_gpt5_reasoning_controls(payload: dict, effort, mode, context) -> dict:
         return payload
 
     if explicit_effort:
-        payload["reasoning_effort"] = str(effort).lower()
+        raw_effort = str(effort).lower()
+        payload["reasoning_effort"] = "max" if raw_effort == "ultra" else raw_effort
     reasoning = payload.get("reasoning", {})
     if not isinstance(reasoning, dict):
         reasoning = {}
     if explicit_effort:
-        reasoning["effort"] = str(effort).lower()
+        raw_effort = str(effort).lower()
+        reasoning["effort"] = "max" if raw_effort == "ultra" else raw_effort
     else:
         reasoning.pop("effort", None)
     if valid_mode:

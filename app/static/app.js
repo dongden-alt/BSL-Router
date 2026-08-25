@@ -1380,9 +1380,11 @@ function getThinkingSpec(modelId) {
     //             confirmed); 'max' is Sol-only.
     //   mode    — standard/pro ('pro' added ~+24% depth at max); Sol+Terra only.
     //   context — auto/current_turn/all_turns (cross-turn reasoning reuse).
-    // 'ultra' is intentionally absent: the probe proved it is NOT a wire param
-    // (client-side multi-agent orchestration only). Tier is matched by the
-    // sol/terra/luna token so reseller variants like -pro20x resolve correctly.
+    // 'ultra' is intentionally absent from the UI: the probe proved it is NOT a
+    // wire param (client-side multi-agent orchestration only). The backend still
+    // coerces any inbound 'ultra' to 'max' (the deepest real API tier) for safety,
+    // so a literal ultra request is never emitted as an invalid value. Tier is
+    // matched by the sol/terra/luna token so reseller variants like -pro20x resolve.
     if (/gpt-?5\.6/.test(id)) {
         const context = ['auto','current_turn','all_turns'];
         if (/sol/.test(id))   return { effort: ['off','minimal','low','medium','high','xhigh','max'], mode: ['standard','pro'], context };
