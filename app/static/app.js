@@ -2525,6 +2525,10 @@ function showKiroModeSelector() {
         title: 'Connect Kiro AI',
         body: `<div style="display:flex;flex-direction:column;gap:10px;padding:8px;">
             <p style="margin:0 0 4px;font-size:14px;color:var(--text-muted);">Choose your authentication method</p>
+            <button id="kiro-mode-import-ide" class="btn btn-outline" type="button" style="display:flex;flex-direction:column;gap:4px;padding:13px;text-align:left;">
+                <span style="font-weight:600;font-size:14px;">Import from Kiro IDE (recommended)</span>
+                <span style="font-size:12px;opacity:.8;">Log in to the Kiro app first, then click — reads your local Kiro session. No token refresh, no security flags.</span>
+            </button>
             <button id="kiro-mode-builder" class="btn btn-outline" type="button" style="display:flex;flex-direction:column;gap:4px;padding:13px;text-align:left;">
                 <span style="font-weight:600;font-size:14px;">AWS Builder ID</span>
                 <span style="font-size:12px;opacity:.8;">Recommended for most users. Free AWS account required.</span>
@@ -2547,6 +2551,20 @@ function showKiroModeSelector() {
             </button>
         </div>`
     });
+    modal.content.querySelector('#kiro-mode-import-ide').onclick = async () => {
+        // reuse the modal: show a spinner state like startNativeTokenImport does
+        modal.content.innerHTML = `<div style="text-align:center;padding:24px;font-size:14px;color:var(--text-muted);">Reading the local Kiro session…</div>`;
+        try {
+            const result = await oauthResponseData(await fetch('/api/oauth/kiro/import-ide', { method: 'POST' }), 'Could not import from Kiro IDE');
+            if (!result.success || !result.connection) throw new Error(oauthErrorMessage(result, 'Kiro IDE import failed.'));
+            await completeOAuthConnection('kiro', result.connection, modal);
+        } catch (error) {
+            if (modal.overlay.isConnected) {
+                modal.content.innerHTML = `<div style="text-align:center;padding:18px 8px;color:var(--danger);font-size:14px;line-height:1.5;"></div>`;
+                modal.content.firstElementChild.textContent = error.message || 'Could not import from Kiro IDE.';
+            }
+        }
+    };
     modal.content.querySelector('#kiro-mode-builder').onclick = () => { modal.close(); startDeviceCodeFlow('kiro', new URLSearchParams({ auth_method: 'builder-id' })); };
     modal.content.querySelector('#kiro-mode-idc').onclick = () => renderKiroForm(modal, 'idc');
     modal.content.querySelector('#kiro-mode-api-key').onclick = () => renderKiroForm(modal, 'api-key');

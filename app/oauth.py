@@ -1825,6 +1825,20 @@ async def kiro_api_key(request: Request):
     return {"success": True, "connection": await _save_kiro_tokens(raw, "api_key", "API Key")}
 
 
+@oauth_router.post("/kiro/import-ide")
+async def kiro_import_ide():
+    """Import Kiro auth directly from the IDE's SSO cache — zero network calls.
+
+    Reads ~/.aws/sso/cache/kiro-auth-token.json offline so importing right after
+    a Kiro IDE login never triggers Kiro's anti-abuse refresh monitoring.
+    The access token is used as-is; refresh happens later via the normal
+    connection refresh path (OIDC clientId/secret when available).
+    """
+    raw = _kiro_token_from_sso_cache({})
+    auth_method = str(raw.get("_authMethod") or "social")
+    return {"success": True, "connection": await _save_kiro_tokens(raw, auth_method, "Kiro IDE")}
+
+
 @oauth_router.get("/kiro/auto-import")
 async def kiro_auto_import():
     cache_dir = Path.home() / ".aws" / "sso" / "cache"
