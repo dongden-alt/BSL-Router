@@ -6463,7 +6463,12 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # This is a secondary defense alongside response_format injection.
     # GAP-2b: IntentDriven is a BSL addition NOT in 9Router. Gate off for
     # Gemini-path requests so the payload matches 9Router exactly.
-    if t_cfg.get("output_intent_driven", False) and not client_wants_gemini:
+    # GAP-2c (2026-08-25): codex payloads are already converted to the Responses
+    # wire (input/instructions) at this point. The intent block injects a
+    # top-level `system` key and then folds it into a CREATED `messages` list —
+    # Codex rejects `messages` with 400 "Unsupported parameter: messages"
+    # (evidence: News-LLM > codex/gpt-5.6-terra 400 at 412ms, 2026-08-25).
+    if t_cfg.get("output_intent_driven", False) and not client_wants_gemini and provider_name != 'codex':
         try:
             intent = _detect_output_intent(internal_request.messages)
             if intent:
@@ -10247,6 +10252,12 @@ def _fold_top_level_system_into_messages(payload: dict) -> dict:
         return payload
     messages = payload.get("messages")
     if not isinstance(messages, list):
+        # Responses wire (codex): fold system into instructions instead of
+        # creating a messages list — Responses payloads must never carry `messages`.
+        if "input" in payload and "messages" not in payload:
+            instructions = str(payload.get("instructions") or "").strip()
+            payload["instructions"] = (instructions + "\n" + text).strip() if instructions else text
+            return payload
         messages = []
         payload["messages"] = messages
     for msg in messages:
