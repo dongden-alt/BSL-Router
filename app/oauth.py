@@ -1567,6 +1567,18 @@ def _cursor_token_from_state_db(config: dict[str, Any]) -> dict[str, Any]:
     return {"accessToken": access_token, "machineId": machine_id if isinstance(machine_id, str) else None, "expiresIn": expires_in}
 
 
+# NOTE: dedicated /kiro/import must stay ABOVE the generic /{provider}/import route
+# — FastAPI matches in registration order (route shadowing fix 2026-08-25).
+@oauth_router.post("/kiro/import")
+async def kiro_import_refresh_token(request: Request):
+    body = await _json_body(request)
+    refresh_token = _required_string(body, "refreshToken").strip()
+    if not refresh_token.startswith("aorAAAAAG"):
+        raise HTTPException(status_code=400, detail="Invalid token format. Token should start with aorAAAAAG...")
+    raw = await _kiro_refresh_token(refresh_token)
+    return {"success": True, "connection": await _save_kiro_tokens(raw, "imported", "Imported")}
+
+
 @oauth_router.post("/{provider}/import")
 async def import_token(provider: str):
     provider, entry = _provider_or_404(provider)
@@ -1811,16 +1823,6 @@ async def kiro_api_key(request: Request):
     profile = next((p for p in profiles if isinstance(p, dict) and str(p.get("arn") or p.get("profileArn") or "").split(":")[3:4] == [region]), profiles[0] if profiles else {})
     raw = {"access_token": api_key, "expires_in": 31536000, "profile_arn": profile.get("arn") or profile.get("profileArn"), "_region": region}
     return {"success": True, "connection": await _save_kiro_tokens(raw, "api_key", "API Key")}
-
-
-@oauth_router.post("/kiro/import")
-async def kiro_import_refresh_token(request: Request):
-    body = await _json_body(request)
-    refresh_token = _required_string(body, "refreshToken").strip()
-    if not refresh_token.startswith("aorAAAAAG"):
-        raise HTTPException(status_code=400, detail="Invalid token format. Token should start with aorAAAAAG...")
-    raw = await _kiro_refresh_token(refresh_token)
-    return {"success": True, "connection": await _save_kiro_tokens(raw, "imported", "Imported")}
 
 
 @oauth_router.get("/kiro/auto-import")
