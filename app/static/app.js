@@ -2551,6 +2551,19 @@ function showKiroModeSelector() {
             </button>
         </div>`
     });
+    // 9router-style auto-detect: probe the local Kiro SSO cache as soon as the
+    // modal opens. On a hit, restyle the Import-from-IDE button as a green
+    // "detected" banner so the user connects with one click. Fail-open — manual
+    // buttons remain available if the probe misses or errors.
+    (async () => {
+        try {
+            const probe = await oauthResponseData(await fetch('/api/oauth/kiro/auto-import'), 'Kiro auto-detect failed');
+            const btn = modal.content.querySelector('#kiro-mode-import-ide');
+            if (!probe?.found || !btn || !modal.overlay.isConnected) return;
+            btn.innerHTML = `<span style="font-weight:600;font-size:14px;color:var(--success);">Kiro session detected (${escapeOAuthHtml(probe.source || 'local cache')}) — click to connect</span><span style="font-size:12px;opacity:.8;">One click. No token refresh, no security flags.</span>`;
+            btn.style.borderColor = 'var(--success)';
+        } catch { /* fail-open: manual buttons remain */ }
+    })();
     modal.content.querySelector('#kiro-mode-import-ide').onclick = async () => {
         // reuse the modal: show a spinner state like startNativeTokenImport does
         modal.content.innerHTML = `<div style="text-align:center;padding:24px;font-size:14px;color:var(--text-muted);">Reading the local Kiro session…</div>`;
