@@ -53,9 +53,19 @@ def test_custom_profile():
 
 
 def test_kiro_hardcoded_block_still_applies():
+    # External-IdP connections (authMethod set) still get the TokenType header…
+    headers = {}
+    _inject_provider_headers(headers, "kiro", {"provider_data": {"authMethod": "external_idp"}}, {})
+    assert headers["TokenType"] == "EXTERNAL_IDP"
+    # …auth_method at the connection root works too
+    headers = {}
+    _inject_provider_headers(headers, "kiro", {"auth_method": "external_idp"}, {})
+    assert headers["TokenType"] == "EXTERNAL_IDP"
+    # …but social/Builder-ID tokens must NOT get it — the gateway 403s them
+    # (empirically verified against live kiro gateway 2026-08-25).
     headers = {}
     _inject_provider_headers(headers, "kiro", {}, {})
-    assert headers["TokenType"] == "EXTERNAL_IDP"
+    assert "TokenType" not in headers
 
 
 def test_provider_config_none_is_default():

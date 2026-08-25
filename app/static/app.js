@@ -2542,13 +2542,13 @@ function showKiroModeSelector() {
         title: 'Connect Kiro AI',
         body: `<div style="display:flex;flex-direction:column;gap:10px;padding:8px;">
             <p style="margin:0 0 4px;font-size:14px;color:var(--text-muted);">Choose your authentication method</p>
-            <button id="kiro-mode-import-ide" class="btn btn-outline" type="button" style="display:flex;flex-direction:column;gap:4px;padding:13px;text-align:left;">
-                <span style="font-weight:600;font-size:14px;">Import from Kiro IDE (recommended)</span>
-                <span style="font-size:12px;opacity:.8;">Log in to the Kiro app first, then click — reads your local Kiro session. No token refresh, no security flags.</span>
+            <button id="kiro-mode-builder" class="btn btn-primary" type="button" style="display:flex;flex-direction:column;gap:4px;padding:13px;text-align:left;">
+                <span style="font-weight:600;font-size:14px;">Login with Kiro — AWS Builder ID (recommended)</span>
+                <span style="font-size:12px;opacity:.85;">Device-code OAuth login, same as Grok/ChatGPT. Works without the Kiro IDE — approve once in your browser and you're in.</span>
             </button>
-            <button id="kiro-mode-builder" class="btn btn-outline" type="button" style="display:flex;flex-direction:column;gap:4px;padding:13px;text-align:left;">
-                <span style="font-weight:600;font-size:14px;">AWS Builder ID</span>
-                <span style="font-size:12px;opacity:.8;">Recommended for most users. Free AWS account required.</span>
+            <button id="kiro-mode-import-ide" class="btn btn-outline" type="button" style="display:flex;flex-direction:column;gap:4px;padding:13px;text-align:left;">
+                <span style="font-weight:600;font-size:14px;">Import from Kiro IDE</span>
+                <span style="font-size:12px;opacity:.8;">Reuses your local Kiro app session; auto-refreshes if stale. Use device login above if the IDE session is dead.</span>
             </button>
             <button id="kiro-mode-idc" class="btn btn-outline" type="button" style="display:flex;flex-direction:column;gap:4px;padding:13px;text-align:left;">
                 <span style="font-weight:600;font-size:14px;">AWS IAM Identity Center</span>

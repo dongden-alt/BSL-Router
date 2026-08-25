@@ -128,6 +128,7 @@ from app.compat.adapters import (
     build_response_headers as gemini_response_headers,
 )
 from app import kiro_adapter
+from app import kiro_eventstream
 from app import codex_adapter
 from app.model_discovery import discover_models, clear_discovery_cache
 import fnmatch
@@ -181,8 +182,19 @@ def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dic
     page) and Grok CLI loses x-grok-client-version (→ "version outdated" error).
     """
     # Kiro Enterprise: TokenType header for Microsoft SSO / Azure AD tokens.
+    # ONLY for external_idp (Microsoft SSO / CLIProxyAPI-imported) connections —
+    # kiro.dev social and Builder-ID tokens are REJECTED upstream with
+    # 403 "bearer token invalid" when this header is present (empirically
+    # confirmed 2026-08-25: identical token+body, 403 WITH header vs auth-pass
+    # WITHOUT). This was the root cause of the "kiro oauth still fails" bug.
     if provider_name == 'kiro':
-        headers["TokenType"] = "EXTERNAL_IDP"
+        _k_auth_method = str(
+            ((active_conn.get('provider_data') or {}).get('authMethod'))
+            or active_conn.get('auth_method')
+            or ''
+        ).strip().lower()
+        if _k_auth_method in ('external_idp', 'externalidp', 'external-idp', 'idp', 'azure', 'microsoft'):
+            headers["TokenType"] = "EXTERNAL_IDP"
 
     # Grok CLI: cli-chat-proxy.grok.com requires version headers.
     # Mirrors 9Router chunk 1882.js. Without x-grok-client-version, API returns:
@@ -6513,7 +6525,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             _buffer_enabled = _prov_sb.get("enabled", _buffer_enabled)
     # Skip for n>1 â€” streaming path only handles choices[0] (consistent).
     _has_n_gt_1 = isinstance(upstream_payload.get("n"), int) and upstream_payload["n"] > 1
-    _apply_stream_buffer = (not is_stream and _buffer_enabled and not _has_n_gt_1 and provider_name != 'codex')
+    # Kiro excluded: /generateAssistantResponse ALWAYS returns binary AWS
+    # event-stream frames (both stream and non-stream requests) — the text-SSE
+    # accumulator reads zero content from them (zombie_empty_response).
+    _apply_stream_buffer = (not is_stream and _buffer_enabled and not _has_n_gt_1 and provider_name not in ('codex', 'kiro'))
 
     # â”€â”€ Response Format Resilience â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Many "deep market" reverse-proxy sellers silently strip response_format
@@ -9261,11 +9276,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 ),
                 media_type="text/event-stream",
             )
-        # Kiro streaming egress: wrap raw upstream bytes through Kiro SSE→OpenAI SSE converter
+        # Kiro streaming egress: upstream speaks AWS event-stream BINARY
+        # (vnd.amazon.eventstream) in production; legacy captures/tests use
+        # text SSE. Auto-detect on first bytes and decode accordingly.
         if provider_name == 'kiro':
             _afz_sid = next_stream_id()
             return StreamingResponse(
-                afz_guard(kiro_adapter.kiro_raw_to_openai_sse(raw_upstream_guarded()), _afz_sid, deadline_s=0),
+                afz_guard(kiro_eventstream.eventstream_to_openai_sse_lines_with_fallback(raw_upstream_guarded()), _afz_sid, deadline_s=0),
                 media_type="text/event-stream",
             )
         # Codex streaming egress: wrap raw upstream bytes through Responses SSE→OpenAI SSE converter
@@ -9682,6 +9699,26 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 except Exception as _cx_err:
                     print(f"[Egress] Codex Responses->OpenAI pre-conversion failed (passthrough): {_cx_err}", flush=True)
 
+            # Kiro pre-conversion: gateway 200s are binary vnd.amazon.eventstream
+            # frames — resp.json() sees nothing and the zombie guard below would
+            # reclassify every healthy response as 504 zombie_empty_response.
+            # Decode FIRST (mirrors the codex pre-conversion above), then the
+            # standard guards inspect real OpenAI JSON.
+            _kiro_converted = False
+            if provider_name == 'kiro' and resp.status_code == 200:
+                try:
+                    _kiro_raw = await resp.aread()
+                    _kiro_decoded = kiro_eventstream.eventstream_to_openai_completion(_kiro_raw)
+                    if _kiro_decoded is not None:
+                        try:
+                            await resp.aclose()
+                        except Exception:
+                            pass
+                        resp = _SyntheticResponse(200, _kiro_decoded)
+                        _kiro_converted = True
+                except Exception as _k_err:
+                    print(f"[Egress] Kiro eventstream pre-conversion failed (passthrough): {_k_err}", flush=True)
+
             ttft = time.time() - start_time
             
             in_tokens = 0
@@ -9819,7 +9856,33 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 except Exception:
                     _normalized_json = None  # Fail-open: use raw resp
 
-            # â”€â”€ P3: S3 Anti-Stop Loop + S6 Quality Gate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # Egress conversion: Kiro upstream returns AWS CodeWhisperer JSON
+            # not OpenAI JSON. Convert so client sees standard OpenAI format.
+            # (_kiro_converted=True means pre-conversion already produced
+            # OpenAI JSON — converting again would strip the content.)
+            if provider_name == 'kiro' and resp.status_code == 200 and not _kiro_converted:
+                try:
+                    # Production gateway 200s are binary vnd.amazon.eventstream
+                    # frames, not JSON — try the event-stream decoder first.
+                    try:
+                        _kiro_raw = await resp.aread()
+                    except Exception:
+                        _kiro_raw = b""
+                    _kiro_decoded = None
+                    if _kiro_raw:
+                        _kiro_decoded = kiro_eventstream.eventstream_to_openai_completion(_kiro_raw)
+                    if _kiro_decoded is not None:
+                        _log_nonstream_success(_kiro_decoded)
+                        return JSONResponse(_kiro_decoded, status_code=200)
+                    # Fallback: legacy JSON body (older captures/tests)
+                    kiro_json = _normalized_json if _normalized_json is not None else resp.json()
+                    openai_json = kiro_adapter.kiro_nonstream_to_openai(kiro_json)
+                    _log_nonstream_success(openai_json)
+                    return JSONResponse(openai_json, status_code=200)
+                except Exception as e:
+                    print(f"[Egress] Kiro->OpenAI response conversion failed (passthrough): {e}")
+
+            # ── P3: S3 Anti-Stop Loop + S6 Quality Gate ─────────────────────────
             # S3: When upstream returns finish_reason="length" (max_tokens
             # truncation), send ONE continuation request appending the partial
             # output + a "CONTINUE" instruction. Concatenate results.
@@ -9835,7 +9898,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     # Use normalized json if available, else parse fresh
                     _working_json = _normalized_json if _normalized_json is not None else resp.json()
 
-                    # â”€â”€ S3: Anti-Stop Loop (finish_reason="length") â”€â”€
+                    # ── S3: Anti-Stop Loop (finish_reason="length") ──
                     if _anti_stop_enabled and is_length_truncated(_working_json):
                         _partial = _extract_assistant_text(_working_json)
                         _cont_payload = build_continuation_payload(upstream_payload, _partial)
@@ -9915,17 +9978,6 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                 print(f"[QualityGate] Retry HTTP {_retry_resp.status_code} (fail-open)", flush=True)
                 except Exception as _p3_err:
                     print(f"[P3 Quality] Error (fail-open): {_p3_err}", flush=True)
-
-            # Egress conversion: Kiro upstream returns AWS CodeWhisperer JSON
-            # not OpenAI JSON. Convert so client sees standard OpenAI format.
-            if provider_name == 'kiro' and resp.status_code == 200:
-                try:
-                    kiro_json = _normalized_json if _normalized_json is not None else resp.json()
-                    openai_json = kiro_adapter.kiro_nonstream_to_openai(kiro_json)
-                    _log_nonstream_success(openai_json)
-                    return JSONResponse(openai_json, status_code=200)
-                except Exception as e:
-                    print(f"[Egress] Kiro->OpenAI response conversion failed (passthrough): {e}")
 
             # Egress conversion: Codex upstream ALWAYS streams (store:false +
             # stream:true forced in the payload transform). For a non-stream

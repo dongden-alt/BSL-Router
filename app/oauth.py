@@ -1695,6 +1695,53 @@ async def _kiro_refresh_token(refresh_token: str, provider_data: dict[str, Any] 
     }
 
 
+async def _kiro_refresh_if_stale(raw: dict[str, Any]) -> dict[str, Any]:
+    """Return a FRESH kiro token dict, refreshing first when the cached one is dead.
+
+    No-op when the token is still valid (>120s left) or has no refreshToken —
+    this preserves the zero-network import guarantee for live IDE sessions.
+    When stale, ONE refresh runs (kiro.dev social path or AWS OIDC by
+    authMethod/clientId shape, exactly like _kiro_refresh_token's dispatch).
+    On refresh failure this raises 502 with an actionable message so callers
+    never persist a known-dead connection (2026-08-25: the
+    "bearer token invalid" trap when importing a months-old IDE cache).
+    """
+    try:
+        expires_in = int(raw.get("expires_in") or 0)
+    except (TypeError, ValueError):
+        expires_in = 0
+    refresh_token = raw.get("refresh_token")
+    if expires_in > 120 or not isinstance(refresh_token, str) or not refresh_token:
+        return raw
+    print(f"[OAuth] Kiro cached token stale ({expires_in}s left) — refreshing before save", flush=True)
+    try:
+        fresh = await _kiro_refresh_token(refresh_token, {
+            "clientId": raw.get("_clientId"),
+            "clientSecret": raw.get("_clientSecret"),
+            "region": raw.get("_region") or "us-east-1",
+            "authMethod": raw.get("_authMethod") or "social",
+            "startUrl": raw.get("_startUrl"),
+        })
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Kiro IDE session is expired and could not be refreshed ({exc.detail}). "
+                "Use 'Login with Kiro — AWS Builder ID' above instead: it works without the Kiro IDE."
+            ),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Kiro IDE session is expired and could not be refreshed ({exc}). "
+                "Use 'Login with Kiro — AWS Builder ID' above instead: it works without the Kiro IDE."
+            ),
+        ) from exc
+    fresh.setdefault("_startUrl", raw.get("_startUrl"))
+    return fresh
+
+
 async def _save_kiro_tokens(raw: dict[str, Any], auth_method: str, source: str) -> dict[str, Any]:
     raw["_authMethod"] = auth_method
     mapped = _map_kiro(raw)
@@ -1736,6 +1783,11 @@ async def try_auto_import_kiro() -> bool:
         return False
 
     try:
+        try:
+            raw_tokens = await _kiro_refresh_if_stale(raw_tokens)
+        except HTTPException as _stale_exc:
+            print(f"[OAuth] Kiro auto-import: cached token stale & refresh failed (fail-open): {_stale_exc.detail}", flush=True)
+            return False
         mapped = _map_kiro(raw_tokens)
         entry = OAUTH_PROVIDERS["kiro-import"]
         connection = await _complete_connection("kiro", entry, mapped)
@@ -1827,14 +1879,17 @@ async def kiro_api_key(request: Request):
 
 @oauth_router.post("/kiro/import-ide")
 async def kiro_import_ide():
-    """Import Kiro auth directly from the IDE's SSO cache — zero network calls.
+    """Import Kiro auth from the IDE's SSO cache, refreshing first when stale.
 
-    Reads ~/.aws/sso/cache/kiro-auth-token.json offline so importing right after
-    a Kiro IDE login never triggers Kiro's anti-abuse refresh monitoring.
-    The access token is used as-is; refresh happens later via the normal
-    connection refresh path (OIDC clientId/secret when available).
+    Reads ~/.aws/sso/cache/kiro-auth-token.json. A live session is saved as-is
+    (zero network calls, preserving the anti-abuse guarantee). A stale session
+    (>34-day-old caches caused the 2026-08-25 'bearer token invalid' trap) is
+    refreshed ONCE via kiro.dev before saving; if that refresh fails the route
+    returns 502 pointing at the device-code login instead of persisting a
+    known-dead connection.
     """
     raw = _kiro_token_from_sso_cache({})
+    raw = await _kiro_refresh_if_stale(raw)
     auth_method = str(raw.get("_authMethod") or "social")
     return {"success": True, "connection": await _save_kiro_tokens(raw, auth_method, "Kiro IDE")}
 

@@ -217,8 +217,15 @@ _KIRO_TO_OPENAI_EVENT = {
 
 
 def kiro_event_to_openai_chunk(event_name: str, data: dict) -> dict | None:
-    """Convert a single Kiro SSE event to an OpenAI chat.completion.chunk."""
-    if event_name == "codeWhispererResponseEvent":
+    """Convert a single Kiro SSE event to an OpenAI chat.completion.chunk.
+
+    Handles BOTH event naming families:
+    - codeWhispererResponseEvent / codeWhispererMetadataEvent (legacy text SSE)
+    - assistantResponseEvent / metadataEvent (production binary event-stream,
+      :event-type observed on live gateway 200s 2026-08-25)
+    """
+    _et = event_name or ""
+    if _et in ("codeWhispererResponseEvent", "assistantResponseEvent"):
         content = data.get("content", "")
         return {
             "id": f"chatcmpl-kiro-{id(data)}",
@@ -232,7 +239,7 @@ def kiro_event_to_openai_chunk(event_name: str, data: dict) -> dict | None:
             }]
         }
 
-    elif event_name == "codeWhispererMetadataEvent":
+    elif _et in ("codeWhispererMetadataEvent", "metadataEvent"):
         usage = data.get("usage", {})
         return {
             "id": f"chatcmpl-kiro-{id(data)}",
