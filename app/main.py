@@ -4369,6 +4369,188 @@ async def _bsl_agentic_ultra_dispatch(
         print(f"[bsl_agentic_ultra_route] obs persist failed: {_e}", flush=True)
     print(canonical_line, flush=True)
 
+    # ── Balanced orchestration loop (Blacksand Code port, 2026-08-25) ──────
+    # One client request -> N internal upstream calls (phase loop, lead + 1
+    # parallel member on commit boundaries, cap 22) -> one final response.
+    # Only engaged when agent_routes are configured; an empty matrix keeps the
+    # legacy single-chain dispatch below (fail-open, existing tests unaffected).
+    from app.middleware.blacksand_orchestrator import run_balanced
+    from app.middleware.bsl_agentic_ultra_router import _get_bsl_agentic_ultra_cfg
+
+    _ultra_cfg = _get_bsl_agentic_ultra_cfg(config)
+    if _ultra_cfg.get("agent_routes"):
+
+        async def execute_upstream(model_alias, messages, max_tokens, timeout):
+            """One internal upstream call for an orchestration phase.
+
+            REUSES the router's combo/alias resolution + translation + fallback
+            machinery via _process_chat_completion — no new raw HTTP. Internal
+            phases are ALWAYS non-streamed; transport fallback advances on the
+            same _RECOVERABLE statuses as the single-call path.
+            """
+            # Role chain: the alias's route cell fallbacks (reverse-lookup by
+            # primary), then the global last fallback.
+            _chain = [model_alias]
+            for _cell in (_ultra_cfg.get("agent_routes") or {}).values():
+                if isinstance(_cell, dict) and _cell.get("primary") == model_alias:
+                    for _slot in ("fallback_1", "fallback_2"):
+                        _v = _cell.get(_slot)
+                        if isinstance(_v, str) and _v:
+                            _chain.append(_v)
+                    break
+            _glf = _ultra_cfg.get("global_last_fallback")
+            if _glf:
+                _chain.append(_glf)
+            _seen_x = set()
+            _chain = [e for e in _chain if e and not (e in _seen_x or _seen_x.add(e))]
+            for _entry in _chain:
+                _phase_body = copy.deepcopy(body)
+                _phase_body["model"] = _entry
+                _phase_body["messages"] = messages
+                _phase_body["stream"] = False
+                _phase_body.pop("stream_options", None)
+                _phase_body.pop("tools", None)
+                _phase_body.pop("tool_choice", None)
+                if max_tokens:
+                    _phase_body["max_tokens"] = max_tokens
+                _phase_body["_bsl_original_model"] = "blacksand-agentic-ultra"
+                _res = await _process_chat_completion(_phase_body, request=request)
+                if isinstance(_res, JSONResponse) and _res.status_code in _RECOVERABLE:
+                    print(
+                        f"[BSLAgenticUltra] internal '{_entry}' returned HTTP "
+                        f"{_res.status_code}; advancing",
+                        flush=True,
+                    )
+                    continue
+                try:
+                    _data = _res.json() if hasattr(_res, "json") else {}
+                    _usage = _data.get("usage") or {}
+                    return {
+                        "text": _extract_assistant_text(_data) or "",
+                        "tokens_in": int(_usage.get("prompt_tokens") or 0),
+                        "tokens_out": int(_usage.get("completion_tokens") or 0),
+                    }
+                except Exception:
+                    return {"text": "", "tokens_in": 0, "tokens_out": 0}
+            return {"text": "", "tokens_in": 0, "tokens_out": 0}
+
+        _orch = None
+        try:
+            _orch = await run_balanced(
+                UniversalNormalizer.normalize_to_openai(body), config, execute_upstream
+            )
+        except Exception as _orch_exc:
+            print(
+                f"[BSLAgenticUltra] orchestration loop failed: {_orch_exc} "
+                f"— falling back to single chain",
+                flush=True,
+            )
+        if _orch is not None and _orch.final_text.strip():
+            for _t in _orch.trace:
+                print(
+                    f"[BSLAgenticUltra] phase {_t.phase_idx}/{_orch.phases_total} "
+                    f"role={_t.sub_role} model={_t.model} "
+                    f"boundary={_t.boundary or '-'}{' member' if _t.member else ''} "
+                    f"{_t.tokens_in}in/{_t.tokens_out}out {_t.ms:.0f}ms",
+                    flush=True,
+                )
+            _routing_hdrs = {
+                "X-BSL-Agentic-Ultra-Category": str(ultra_decision.category),
+                "X-BSL-Agentic-Ultra-Source": "balanced_orchestrator",
+                "X-BSL-Agentic-Ultra-Selected": "blacksand-agentic-ultra",
+                "X-BSL-Agentic-Ultra-Phases": str(_orch.phases_total),
+                "X-BSL-Agentic-Ultra-Capped": str(_orch.capped),
+                "X-BSL-Agentic-Ultra-Template": _orch.template_id,
+                "X-BSL-Agentic-Ultra-Degraded": ",".join(_orch.degraded)[:500],
+            }
+            _cid = f"chatcmpl-ultra-{int(time.time() * 1000)}"
+            if body.get("stream"):
+                # Internal phases already ran non-streamed; only the final
+                # synthesis output streams to the client as SSE deltas.
+                async def _ultra_sse():
+                    _pieces = [
+                        _orch.final_text[i : i + 200]
+                        for i in range(0, len(_orch.final_text), 200)
+                    ] or [""]
+                    for _piece in _pieces:
+                        yield (
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "id": _cid,
+                                    "object": "chat.completion.chunk",
+                                    "created": int(time.time()),
+                                    "model": "blacksand-agentic-ultra",
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {"content": _piece},
+                                            "finish_reason": None,
+                                        }
+                                    ],
+                                }
+                            )
+                            + "\n\n"
+                        ).encode("utf-8")
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "id": _cid,
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": "blacksand-agentic-ultra",
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {},
+                                        "finish_reason": "stop",
+                                    }
+                                ],
+                                "usage": {
+                                    "prompt_tokens": _orch.tokens_in,
+                                    "completion_tokens": _orch.tokens_out,
+                                    "total_tokens": _orch.tokens_in + _orch.tokens_out,
+                                },
+                            }
+                        )
+                        + "\n\n"
+                    ).encode("utf-8")
+                    yield b"data: [DONE]\n\n"
+
+                _ultra_sid = next_stream_id()
+                return StreamingResponse(
+                    afz_guard(_ultra_sse(), _ultra_sid, protocol="openai", deadline_s=0),
+                    media_type="text/event-stream",
+                    headers=_routing_hdrs,
+                )
+            return JSONResponse(
+                {
+                    "id": _cid,
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": "blacksand-agentic-ultra",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": _orch.final_text,
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": _orch.tokens_in,
+                        "completion_tokens": _orch.tokens_out,
+                        "total_tokens": _orch.tokens_in + _orch.tokens_out,
+                    },
+                },
+                status_code=200,
+                headers=_routing_hdrs,
+            )
+        # Empty final text → fall through to the legacy single-chain dispatch.
+
     for idx, entry in enumerate(ultra_chain):
         iter_body = copy.deepcopy(body)
         iter_body["model"] = entry

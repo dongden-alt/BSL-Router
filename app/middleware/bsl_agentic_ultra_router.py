@@ -3,8 +3,11 @@ BSL-Agentic-Ultra balanced router.
 
 Routing contract copied from Blacksand Code's balanced tier:
 Scout classification -> deterministic role selection -> one lead route with
-transport fallbacks. Orchestration decisions belong to the phase loop; model
-fallbacks never represent agent phases.
+transport fallbacks. This module stays a PER-ROLE RESOLVER (single role ->
+3-slot chain); the full multi-phase orchestration loop (phase templates,
+balanced expansion, parallel members, substance gate, synthesis) lives in
+app.middleware.blacksand_orchestrator. Model fallbacks never represent agent
+phases.
 """
 
 from dataclasses import dataclass, field
