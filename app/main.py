@@ -3119,9 +3119,9 @@ async def verify_key(request: Request):
 # models spawn dozens of overlapping upstream dials with 30s timeouts each —
 # enough to saturate the event loop and make the router appear dead (the
 # "must restart to work" report). Hard bounds make that impossible:
-#   - max 2 concurrent probes; extra arrivals get an immediate 429
+#   - max 3 concurrent probes; extra arrivals get an immediate 429
 #   - one 75s wall per probe; overrun cancels the probe and returns 504
-_MODEL_TEST_SEMAPHORE = asyncio.Semaphore(2)
+_MODEL_TEST_SEMAPHORE = asyncio.Semaphore(3)
 _MODEL_TEST_TIMEOUT_S = 75.0
 
 
@@ -3129,7 +3129,7 @@ _MODEL_TEST_TIMEOUT_S = 75.0
 async def test_model(request: Request):
     """Smoke-test a configured provider/model through BSL's normal routing path.
 
-    Guarded: see _MODEL_TEST_SEMAPHORE above. Returns 429 when 2 tests are
+    Guarded: see _MODEL_TEST_SEMAPHORE above. Returns 429 when 3 tests are
     already in flight, 504 when a probe exceeds _MODEL_TEST_TIMEOUT_S.
     """
     config = cs_get_config()
@@ -3144,7 +3144,7 @@ async def test_model(request: Request):
 
         if _MODEL_TEST_SEMAPHORE.locked():
             return JSONResponse(
-                {"ok": False, "error": "Another model test is still running — wait a moment and retry."},
+                {"ok": False, "error": "Model tests are still running — wait a moment and retry."},
                 status_code=429,
             )
 

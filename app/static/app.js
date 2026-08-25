@@ -1436,6 +1436,10 @@ function getThinkingSpec(modelId) {
     // Thinking is ALWAYS ON: upstream rejects disabled/missing thinking (code
     // 1210). Backend forces enabled + low/high/max even for off/auto settings.
     if (/glm-5\.3/.test(id)) return { effort: ['low','high','max'], mandatory: true };
+    // Ox Alpha (GLM-5.3 fingerprint, reseller-served); backend contract
+    // families/glm.py id "ox-alpha". 4-word vocab low/medium/high/max,
+    // default max, auto valid; xhigh coerces to max server-side so not offered.
+    if (/(?:x-preview-f-free|ox-alpha)$/.test(id)) return { effort: ['low','medium','high','max'] };
     // GLM-5.2.
     if (/glm-5\.2/.test(id)) return { effort: ['off','enable','low','high','max'] };
     // Qwen — TWO axes, both version-dependent. Checked BEFORE the generic
@@ -1587,11 +1591,12 @@ async function copyProviderModelId(idx) {
     }
 }
 
-let _modelTestInFlight = false;  // one Test at a time; backend 429s extras (2026-08-24)
+const MODEL_TEST_MAX_CONCURRENT = 3;  // up to 3 concurrent Tests; 4th blocked client-side, backend Semaphore(3) is the backstop (2026-08-25)
+let _modelTestInFlightCount = 0;
 
 async function testProviderModel(idx) {
-    if (_modelTestInFlight) {
-        showToast('A model test is already running — wait for it to finish', true);
+    if (_modelTestInFlightCount >= MODEL_TEST_MAX_CONCURRENT) {
+        showToast(MODEL_TEST_MAX_CONCURRENT + ' model tests already running - wait for one to finish', true);
         return;
     }
     const provider = globalConfig.providers[activeProviderId];
@@ -1602,7 +1607,7 @@ async function testProviderModel(idx) {
         return;
     }
     const routedModel = `${activeProviderId}/${modelId}`;
-    _modelTestInFlight = true;
+    _modelTestInFlightCount++;
     showToast(`Testing ${routedModel}...`);
     try {
         const resp = await fetch('/api/test-model', {
@@ -1621,7 +1626,7 @@ async function testProviderModel(idx) {
         console.error('Model test failed', err);
         showToast(`Test failed: ${err.message}`, true);
     } finally {
-        _modelTestInFlight = false;
+        _modelTestInFlightCount--;
     }
 }
 

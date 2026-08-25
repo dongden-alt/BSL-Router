@@ -157,12 +157,13 @@ def guarded_mod(monkeypatch):
             break
 
 
-def test_model_test_429_when_both_slots_held(guarded_mod):
+def test_model_test_429_when_all_slots_held(guarded_mod):
     mod = guarded_mod
 
     async def _scenario():
-        # Hold both slots in the SAME loop as the endpoint call (acquire is a
+        # Hold all 3 slots in the SAME loop as the endpoint call (acquire is a
         # coroutine — calling it without await never holds anything).
+        await mod._MODEL_TEST_SEMAPHORE.acquire()
         await mod._MODEL_TEST_SEMAPHORE.acquire()
         await mod._MODEL_TEST_SEMAPHORE.acquire()
         return await mod.test_model(_StubRequest({"provider": "prov1", "model": "m1"}))
@@ -173,6 +174,7 @@ def test_model_test_429_when_both_slots_held(guarded_mod):
     assert data["ok"] is False and "still running" in data["error"]
     # Release in the same loop
     async def _release():
+        mod._MODEL_TEST_SEMAPHORE.release()
         mod._MODEL_TEST_SEMAPHORE.release()
         mod._MODEL_TEST_SEMAPHORE.release()
     asyncio.run(_release())
