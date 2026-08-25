@@ -110,6 +110,7 @@ class StreamNormalizer:
         input_tokens = 0
         output_tokens = 0
         stop_reason = "end_turn"
+        reasoning_buffer = ""
 
         buffer = ""
         decoder = codecs.getincrementaldecoder("utf-8")()
@@ -377,6 +378,11 @@ class StreamNormalizer:
                             "delta": {"type": "text_delta", "text": text_content},
                         })
 
+                # Reasoning content delta (max-thinking models: effort max)
+                reasoning_content = delta.get("reasoning_content")
+                if reasoning_content:
+                    reasoning_buffer += reasoning_content
+
                 # Tool call delta (modern tool_calls or legacy function_call)
                 tool_calls = delta.get("tool_calls") or []
                 legacy_call = delta.get("function_call")
@@ -456,6 +462,26 @@ class StreamNormalizer:
         # promotion the buffered normalize_glm_tool_calls path performs.)
         if tool_blocks and stop_reason == "end_turn":
             stop_reason = "tool_use"
+
+        # Max-thinking streams can end with zero content blocks (only
+        # reasoning_content deltas). Emit the reasoning as the text block so
+        # Anthropic clients never see an empty content list.
+        if not tool_blocks and not text_block_started and reasoning_buffer:
+            yield self._encode_anthropic_event("content_block_start", {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            })
+            yield self._encode_anthropic_event("content_block_delta", {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": reasoning_buffer},
+            })
+            yield self._encode_anthropic_event("content_block_stop", {
+                "type": "content_block_stop",
+                "index": 0,
+            })
+            text_block_started = True
 
         if tool_blocks:
             # Repair (never reject) each tool call before emitting. A bad call

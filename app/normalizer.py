@@ -516,7 +516,15 @@ class UniversalNormalizer:
             })
 
         if not content_blocks:
-            content_blocks.append({"type": "text", "text": ""})
+            # Max-thinking upstreams (gpt-5.6 effort max via agentrouter/gorouter/
+            # seekai) can return empty content with the whole output in
+            # reasoning_content. Anthropic clients reject text:"" with no tool_use
+            # ("cannot both be empty") -- the reasoning IS the deliverable, emit it.
+            _reasoning = message.get("reasoning_content") or ""
+            if _reasoning:
+                content_blocks.append({"type": "text", "text": _reasoning})
+            else:
+                content_blocks.append({"type": "text", "text": ""})
 
         # Map finish_reason → Anthropic stop_reason
         finish = choice.get("finish_reason") if isinstance(choice, dict) else None

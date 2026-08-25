@@ -2912,6 +2912,15 @@ window.saveConnection = () => {
         if (isCustom) conn.base_url = url;
         if (proxyUrl) conn.proxy_url = proxyUrl;
         pConfig.connections.push(conn);
+        // Orphan-key coverage: extend every model's allow-list with the new index
+        const newIdx = pConfig.connections.length - 1;
+        (pConfig.models || []).forEach(m => {
+            if (!Array.isArray(m.connection_indexes)) return;
+            if (!m.connection_indexes.includes(newIdx)) {
+                m.connection_indexes.push(newIdx);
+                m.connection_indexes.sort((a, b) => a - b);
+            }
+        });
     }
     saveConfig();
     closeConnModal();
@@ -3117,6 +3126,16 @@ window.saveProviderModal = () => {
                     enabled: true
                 };
                 globalConfig.providers[id].connections.push(newConn);
+                // Orphan-key coverage: extend every model's allow-list with the new index
+                const prov = globalConfig.providers[id];
+                const newIdx = prov.connections.length - 1;
+                (prov.models || []).forEach(m => {
+                    if (!Array.isArray(m.connection_indexes)) return;
+                    if (!m.connection_indexes.includes(newIdx)) {
+                        m.connection_indexes.push(newIdx);
+                        m.connection_indexes.sort((a, b) => a - b);
+                    }
+                });
             } else {
                 // Blank key or same key => leave conn[0].api_key untouched.
                 globalConfig.providers[id].connections[0] = firstConn;

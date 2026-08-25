@@ -602,6 +602,25 @@ def load_config():
             if isinstance(_m, dict) and _m.get("connection_indexes") == [0]:
                 _m["connection_indexes"] = list(_all_enabled)
                 _dirty = True
+            # Orphan-key coverage (2026-08-26): keys are appended chronologically,
+            # but per-model connection_indexes froze at save time -- seekai had
+            # enabled keys [0,1,2] while every model pinned [0,1], so the newest
+            # key could never be picked in fallback OR round_robin mode. Append
+            # enabled indexes strictly greater than the model's current max so
+            # deliberate mid-list exclusions survive while newly appended keys
+            # become usable. Run inside the [0] expansion loop so freshly appended
+            # keys are always covered.
+            _orphan_added = False
+            _ci = _m.get("connection_indexes")
+            if isinstance(_ci, list) and _ci and all(isinstance(x, int) for x in _ci):
+                _top = max(_ci)
+                for _i in _all_enabled:
+                    if _i > _top and _i not in _ci:
+                        _ci.append(_i)
+                        _orphan_added = True
+                if _orphan_added:
+                    _ci.sort()
+                    _dirty = True
     if _dirty:
         _replace_runtime_config(config)
     # Initialize the connection-level circuit breaker from the loaded config.
