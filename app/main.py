@@ -130,6 +130,7 @@ from app.compat.adapters import (
 from app import kiro_adapter
 from app import kiro_eventstream
 from app import codex_adapter
+from app.chat-lane import glm as glm_chat-lane
 from app.model_discovery import discover_models, clear_discovery_cache
 import fnmatch
 
@@ -3154,6 +3155,106 @@ async def auth_status(request: Request):
     return JSONResponse({"auth_required": True, "authenticated": authenticated})
 
 
+# â”€â”€ GLM chat-lane Import Endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@app.post("/api/chat-lane/glm/import")
+async def chat-lane_glm_import(request: Request):
+    """Import a GLM (chatglm.cn) refresh_token as a ``glm-web`` provider.
+
+    Body: {refresh_token: str, name: str = ""}
+    Validates the token via GLM's /user/refresh endpoint (rejecting guest
+    accounts), then creates or updates a ``glm-web`` provider entry with the
+    refresh_token stored as an encrypted ``api_key``.
+    """
+    if _is_admin_auth_enabled():
+        session_token = request.cookies.get("bsl_admin_session")
+        if not _is_valid_admin_session(session_token):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body."}, status_code=400)
+
+    refresh_token = (body.get("refresh_token") or "").strip()
+    if not refresh_token:
+        return JSONResponse({"error": "refresh_token is required."}, status_code=422)
+
+    # Validate the token against GLM (also rejects guest accounts).
+    http_client = _get_client_for_proxy(None)
+    try:
+        result = await glm_chat-lane.refresh_access_token(http_client, refresh_token)
+    except glm_chat-lane.chat-laneAuthError as _ie:
+        return JSONResponse({"error": str(_ie)}, status_code=422)
+
+    # Guest-rejection safety net (the refresh function already rejects, but
+    # guard the explicit fields too per protocol facts).
+    if result.get("is_guest"):
+        return JSONResponse({"error": "GLM guest accounts are not supported."}, status_code=422)
+
+    from app.crypto import encrypt_value
+    enc_key = encrypt_value(refresh_token)
+    account_name = (body.get("name") or "").strip() or result.get("user_id", "") or "GLM account"
+
+    config = get_mutable_config()
+    providers = config.get("providers", {})
+
+    # Find an existing glm-web provider to update, else create one.
+    _existing_key = None
+    for pk, pv in providers.items():
+        if isinstance(pv, dict) and pv.get("format") == "glm-web":
+            _existing_key = pk
+            break
+
+    if _existing_key:
+        prov_entry = providers[_existing_key]
+        if not isinstance(prov_entry, dict):
+            prov_entry = {}
+        conns = prov_entry.get("connections", [])
+        if not isinstance(conns, list):
+            conns = []
+        # Append as a new connection (multi-account support).
+        conns.append({
+            "name": account_name,
+            "api_key": enc_key,
+            "enabled": True,
+        })
+        prov_entry["connections"] = conns
+        prov_entry["type"] = "custom"
+        prov_entry["format"] = "glm-web"
+    else:
+        prov_key = f"glm-web-{int(time.time() * 1000)}"
+        prov_entry = {
+            "type": "custom",
+            "format": "glm-web",
+            "connections": [
+                {"name": account_name, "api_key": enc_key, "enabled": True},
+            ],
+            "models": [
+                {
+                    "id": glm_chat-lane.DEFAULT_MODEL,
+                    "display_name": "GLM-5.1 (Web)",
+                    "enabled": True,
+                },
+            ],
+        }
+        providers[prov_key] = prov_entry
+
+    replace_config(config)
+    # Clear round-robin so the new connection is picked up cleanly.
+    ROUND_ROBIN_STATE.clear()
+    reset_provider_round_robin_state()
+
+    return JSONResponse({
+        "ok": True,
+        "account": {
+            "user_id": result.get("user_id", ""),
+            "name": account_name,
+            "is_guest": result.get("is_guest", False),
+        },
+    })
+
+
 # â”€â”€ System Shutdown Endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.post("/api/system/shutdown")
@@ -3282,7 +3383,7 @@ async def verify_key(request: Request):
 
         is_custom = provider_cfg.get("type") in ("custom", "image_custom", "video_custom") or not provider_cfg
         is_custom_text = (
-            effective_format in {"openai", "openai-responses", "anthropic", "gemini"}
+            effective_format in {"openai", "openai-responses", "anthropic", "gemini", "glm-web"}
             and is_custom
         )
         is_custom_image_video = (
@@ -6255,6 +6356,167 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     if not resolved_base_url:
         return JSONResponse({"error": f"No base URL configured for provider '{provider_name}'. Please set one in the admin panel."}, status_code=500)
 
+    # ── GLM web-backend (chatglm.cn) early dispatch ─────────────────────────
+    # Format ``glm-web``: the connection ``api_key`` is the encrypted
+    # refresh_token. BSL's normal OpenAI machinery does NOT apply — GLM speaks
+    # its own SSE protocol, so we branch out here with a dedicated httpx call.
+    if provider_config.get("format") == "glm-web":
+        # ``is_stream`` is normally derived much later in this function; the
+        # glm-web branch needs it early for error shaping and stream routing.
+        is_stream = bool(internal_request.stream)
+
+        _glm_refresh_token = active_conn.get("api_key", "")
+        if not _glm_refresh_token:
+            return JSONResponse(
+                {"error": f"Provider '{provider_name}' (glm-web) has no refresh_token configured."},
+                status_code=500,
+            )
+
+        # Build the rotation callback: when GLM rotates the refresh_token we
+        # re-encrypt it onto the connection and mark config dirty so it survives
+        # restart. A persist failure is logged but does NOT abort the request.
+        async def _glm_on_rotated(new_refresh: str) -> None:
+            try:
+                from app.crypto import encrypt_value
+                enc = encrypt_value(new_refresh)
+                conn_idx = _active_conn_index
+                cfg = get_mutable_config()
+                prov = cfg.get("providers", {}).get(provider_name)
+                if not isinstance(prov, dict):
+                    print("[GLM] rotation persist skipped: provider gone", flush=True)
+                    return
+                conns = prov.get("connections", [])
+                if isinstance(conns, list) and 0 <= conn_idx < len(conns):
+                    conns[conn_idx]["api_key"] = enc
+                    replace_config(cfg)
+                    print("[GLM] refresh_token rotated + persisted", flush=True)
+            except Exception as _rot_exc:
+                print(f"[GLM] refresh_token rotation persist failed (continuing in-memory): {_rot_exc}", flush=True)
+
+        try:
+            _glm_access_token = await glm_chat-lane._get_cached_access_token(
+                _glm_refresh_token,
+                _get_client_for_proxy(active_conn.get("proxy_url")),
+                on_refresh_token_rotated=_glm_on_rotated,
+            )
+        except glm_chat-lane.chat-laneAuthError as _ga_exc:
+            bench_leaf(config, provider_name, target_model, 401, str(_ga_exc), 0)
+            return JSONResponse(
+                {"error": f"GLM auth failed: {_ga_exc}"},
+                status_code=401,
+            )
+
+        _glm_chat_body = glm_chat-lane.build_chat_body(
+            internal_request.messages,
+            target_model,
+            reasoning_effort=body.get("reasoning_effort"),
+            web_search=body.get("web_search"),
+            deep_research=body.get("deep_research"),
+        )
+        _glm_hdrs = glm_chat-lane._sign_and_browser_headers(accept="text/event-stream")
+        _glm_hdrs["Authorization"] = f"Bearer {_glm_access_token}"
+
+        _glm_http = _get_client_for_proxy(active_conn.get("proxy_url"))
+        try:
+            _glm_resp = await asyncio.wait_for(
+                _glm_http.post(
+                    glm_chat-lane.CHATGLM_STREAM_URL,
+                    headers=_glm_hdrs,
+                    json=_glm_chat_body,
+                    timeout=httpx.Timeout(300.0, read=300.0),
+                    stream=True,
+                ),
+                timeout=305.0,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            raise TimeoutError("GLM upstream timed out (waited 305s)") from None
+        except Exception as _g_req_exc:
+            bench_leaf(config, provider_name, target_model, 502, str(_g_req_exc), 0)
+            raise
+
+        if _glm_resp.status_code != 200:
+            _g_err = await asyncio.wait_for(_glm_resp.aread(), timeout=5.0)
+            _g_text = _g_err.decode("utf-8", errors="replace")[:500] if _g_err else f"upstream_{_glm_resp.status_code}"
+            bench_leaf(config, provider_name, target_model, _glm_resp.status_code, _g_text, 0)
+            # Surface as OpenAI-shaped error so the combo fallback rail works.
+            if is_stream:
+                raise RuntimeError(f"GLM upstream {_glm_resp.status_code}: {_g_text[:200]}")
+            return JSONResponse(
+                {"error": {"message": f"GLM upstream {_glm_resp.status_code}: {_g_text[:200]}", "type": "proxy_error"}},
+                status_code=_glm_resp.status_code,
+            )
+
+        # Best-effort conversation cleanup (fire-and-forget).
+        _glm_cleanup = config.get("chat-lane", {}).get("cleanup_conversations", False) if isinstance(config.get("chat-lane"), dict) else False
+        _glm_conv_id = ""
+
+        if is_stream:
+            # Yield raw bytes from the upstream response; the glm_chat-lane
+            # converter (plugged into afz_guard above) turns them into OpenAI SSE.
+            async def _glm_chat-lane_raw_bytes():
+                nonlocal _glm_conv_id
+                try:
+                    async for _b in _glm_resp.aiter_bytes():
+                        # Sniff conversation_id from the first SSE event that carries it.
+                        if not _glm_conv_id:
+                            try:
+                                _dec = _b.decode("utf-8", errors="replace")
+                                for _ln in _dec.split("\n"):
+                                    if "conversation_id" in _ln and '"conversation_id"' in _ln:
+                                        _ev = json.loads(_ln.strip().lstrip("data:").strip() or "{}")
+                                        _glm_conv_id = _ev.get("conversation_id", "")
+                                        break
+                            except Exception:
+                                pass
+                        yield _b
+                finally:
+                    try:
+                        await _glm_resp.aclose()
+                    except Exception:
+                        pass
+                    # Fire-and-forget cleanup.
+                    if _glm_cleanup and _glm_conv_id:
+                        try:
+                            _del_hdrs = glm_chat-lane._sign_and_browser_headers(accept="application/json")
+                            _del_hdrs["Authorization"] = f"Bearer {_glm_access_token}"
+                            _del_body = {
+                                "assistant_id": _glm_chat_body.get("assistant_id", glm_chat-lane.DEFAULT_ASSISTANT_ID),
+                                "conversation_id": _glm_conv_id,
+                            }
+                            _glm_http2 = _get_client_for_proxy(active_conn.get("proxy_url"))
+                            await _glm_http2.post(
+                                glm_chat-lane.CHATGLM_DELETE_URL,
+                                headers=_del_hdrs,
+                                json=_del_body,
+                                timeout=httpx.Timeout(10.0, read=10.0),
+                            )
+                        except Exception as _cl_exc:
+                            print(f"[GLM] cleanup failed (non-blocking): {_cl_exc}", flush=True)
+
+            # The actual StreamingResponse return is handled by the egress branch
+            # above (provider_config.format == "glm-web" -> afz_guard of
+            # glm_chat-lane.glm_chat-lane_stream_to_openai_sse_lines). We stash the
+            # byte source on the request state so the egress branch can find it.
+            request.state._glm_chat-lane_raw_bytes = _glm_chat-lane_raw_bytes  # type: ignore[attr-defined]
+            # Fall through to the egress branch (return happens there).
+        else:
+            # Non-stream: buffer the SSE, aggregate into one completion object.
+            try:
+                async def _glm_byte_source():
+                    async for _b in _glm_resp.aiter_bytes():
+                        yield _b
+                _glm_completion = await glm_chat-lane.glm_chat-lane_stream_to_completion(_glm_byte_source())
+                await _glm_resp.aclose()
+                return JSONResponse(_glm_completion, status_code=200)
+            except Exception as _g_ns_exc:
+                print(f"[GLM] non-stream aggregation failed: {_g_ns_exc}", flush=True)
+                try:
+                    await _glm_resp.aclose()
+                except Exception:
+                    pass
+                bench_leaf(config, provider_name, target_model, 502, str(_g_ns_exc), 0)
+                raise
+
     # ── OAuth Token Refresh (systemic fix for recurring 401 loop) ────────
     # Every OAuth provider's access_token expires (~1h). Previously BSL used
     # the stored token blindly with no refresh, causing 401 loops. Now we
@@ -6619,7 +6881,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # Custom text providers store a canonical origin/prefix and use the
     # format-aware builder. Built-in provider defaults keep their existing paths.
     if provider_config.get("type") == "custom" and provider_config.get("format") in (
-        "openai", "openai-responses", "anthropic", "gemini"
+        "openai", "openai-responses", "anthropic", "gemini", "glm-web"
     ):
         try:
             _upstream_url = build_custom_text_upstream_url(
@@ -9356,6 +9618,15 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             _afz_sid = next_stream_id()
             return StreamingResponse(
                 afz_guard(kiro_eventstream.eventstream_to_openai_sse_lines_with_fallback(raw_upstream_guarded()), _afz_sid, deadline_s=0),
+                media_type="text/event-stream",
+            )
+        # GLM web-backend (chatglm.cn) streaming egress: the upstream speaks
+        # GLM's own SSE protocol (parts[] with logic_id dedup), not OpenAI SSE.
+        # Decode via the glm_chat-lane converter and emit standard OpenAI chunks.
+        if provider_config.get("format") == "glm-web":
+            _afz_sid = next_stream_id()
+            return StreamingResponse(
+                afz_guard(glm_chat-lane.glm_chat-lane_stream_to_openai_sse_lines(_glm_chat-lane_raw_bytes()), _afz_sid, deadline_s=0),
                 media_type="text/event-stream",
             )
         # Codex streaming egress: wrap raw upstream bytes through Responses SSE→OpenAI SSE converter
