@@ -3157,6 +3157,37 @@ async def auth_status(request: Request):
 
 # â”€â”€ GLM chat-lane Import Endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+@app.get("/api/chat-lane/glm/quota")
+async def chat-lane_glm_quota():
+    """Live points/quota for the first configured glm-web provider.
+
+    Calls chatglm.cn /user-api/user/point (falling back to /user/info) with the
+    stored refresh_token and returns the raw provider payload so the UI can
+    show left_score / token_usage_percent warnings.
+    """
+    config = get_mutable_config()
+    for pname, prov in (config.get("providers") or {}).items():
+        if isinstance(prov, dict) and prov.get("format") == "glm-web":
+            conns = prov.get("connections") or []
+            if not conns:
+                continue
+            rt = conns[0].get("api_key", "")
+            if not rt:
+                return JSONResponse(
+                    {"error": f"Provider '{pname}' has no refresh_token."},
+                    status_code=500,
+                )
+            try:
+                client = _get_client_for_proxy(conns[0].get("proxy_url"))
+                result = await glm_chat-lane.get_quota(client, rt)
+                return JSONResponse({"ok": True, "provider": pname, "quota": result})
+            except glm_chat-lane.chat-laneAuthError as exc:
+                return JSONResponse({"error": f"GLM auth failed: {exc}"}, status_code=401)
+            except Exception as exc:
+                return JSONResponse({"error": f"Quota lookup failed: {exc}"}, status_code=502)
+    return JSONResponse({"error": "No glm-web provider configured."}, status_code=404)
+
+
 @app.post("/api/chat-lane/glm/import")
 async def chat-lane_glm_import(request: Request):
     """Import a GLM (chatglm.cn) refresh_token as a ``glm-web`` provider.
