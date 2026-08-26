@@ -29,6 +29,7 @@ import unicodedata
 import yaml
 import json
 import time
+import uuid
 from datetime import datetime
 import secrets as _secrets
 import socket as _socket
@@ -132,6 +133,7 @@ from app import kiro_eventstream
 from app import codex_adapter
 from app.chat-lane import glm as glm_chat-lane
 from app.chat-lane import kimi as kimi_chat-lane
+from app.chat-lane import qwen_web as qwen_chat-lane
 from app.model_discovery import discover_models, clear_discovery_cache
 import fnmatch
 
@@ -3418,6 +3420,250 @@ async def chat-lane_kimi_import(request: Request):
 
 # â”€â”€ System Shutdown Endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+# ── Qwen web-backend import helpers ────────────────────────────────────────
+
+def _qwen_import_account(
+    account: dict,
+    config: dict,
+) -> dict:
+    """Validate and upsert one Qwen account onto the ``qwen-web`` provider.
+
+    Returns ``{name, expires_at_iso, days_left}`` on success or raises with a
+    descriptive error message. The caller persists ``config`` once via the
+    sanctioned ``_replace_runtime_config`` path.
+    """
+    from app.crypto import encrypt_value
+
+    token = (account.get("token") or "").strip()
+    cookies = (account.get("cookies") or "").strip()
+    ua = (account.get("ua") or "").strip()
+    name = (account.get("name") or "").strip()
+
+    if not token:
+        raise ValueError("token is required.")
+
+    # Structural + guest + expiry validation (local, no upstream call).
+    valid, err = qwen_chat-lane.validate_jwt(token)
+    if not valid:
+        raise ValueError(err)
+
+    # Safety net: call GET /api/v2/user/info with the Bearer token. We accept
+    # 200 + success:true; reject is_guest===true or email @guest.com.
+    try:
+        import httpx as _hx
+        _cli = _get_client_for_proxy(None)
+        _hdrs = qwen_chat-lane.browser_headers()
+        _hdrs["Authorization"] = f"Bearer {token}"
+        _resp = _cli.get(qwen_chat-lane.QWEN_USER_URL, headers=_hdrs, timeout=10.0)
+        if _resp.status_code == 200:
+            try:
+                _data = _resp.json()
+                _info = _data.get("data") or _data
+                if _info.get("is_guest") is True:
+                    raise ValueError("Guest account not allowed.")
+                _email = _info.get("email") or ""
+                if _email.endswith("@guest.com"):
+                    raise ValueError("Guest account (@guest.com) not allowed.")
+            except ValueError:
+                raise
+            except Exception:
+                pass  # non-fatal if the parse fails
+    except ValueError:
+        raise
+    except Exception:
+        pass  # network best-effort; local JWT validation is authoritative
+
+    exp = qwen_chat-lane.jwt_exp(token)
+    days_left = max(0, (exp - int(time.time())) // 86400) if exp else -1
+
+    if not name:
+        uid = qwen_chat-lane.jwt_user_id(token)
+        name = f"qwen-{uid[:8]}" if uid else f"qwen-{int(time.time())}"
+
+    enc_token = encrypt_value(token)
+    enc_cookies = encrypt_value(cookies) if cookies else ""
+
+    # POOL semantics: ONE provider keyed exactly "qwen-web"; connections[]
+    # holds MANY named entries. Update-by-name on re-import.
+    providers = config.get("providers", {})
+    prov_entry = providers.get("qwen-web")
+    if not isinstance(prov_entry, dict):
+        prov_entry = {
+            "type": "custom",
+            "format": "qwen-web",
+            "connections": [],
+            "models": list(qwen_chat-lane.MODELS),
+        }
+        providers["qwen-web"] = prov_entry
+
+    conns = prov_entry.get("connections", [])
+    if not isinstance(conns, list):
+        conns = []
+
+    # Upsert by name: replace existing entry with the same name.
+    replaced = False
+    for ci, conn in enumerate(conns):
+        if isinstance(conn, dict) and conn.get("name") == name:
+            conns[ci] = {
+                "name": name,
+                "enabled": True,
+                "api_key": enc_token,
+                "cookies": enc_cookies,
+                "ua": ua,
+            }
+            replaced = True
+            break
+
+    if not replaced:
+        conns.append({
+            "name": name,
+            "enabled": True,
+            "api_key": enc_token,
+            "cookies": enc_cookies,
+            "ua": ua,
+        })
+
+    prov_entry["connections"] = conns
+    prov_entry["type"] = "custom"
+    prov_entry["format"] = "qwen-web"
+    if not prov_entry.get("models"):
+        prov_entry["models"] = list(qwen_chat-lane.MODELS)
+
+    return {
+        "name": name,
+        "expires_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(exp)) if exp else "",
+        "days_left": days_left,
+    }
+
+
+@app.get("/api/chat-lane/qwen/quota")
+async def chat-lane_qwen_quota():
+    """Health/expiry view for every enabled qwen-web connection.
+
+    Decodes each connection's JWT ``exp`` claim locally (NO upstream call) and
+    returns [{name, expires_at_iso, days_left, expired}].
+    """
+    config = get_mutable_config()
+    prov = config.get("providers", {}).get("qwen-web")
+    if not isinstance(prov, dict):
+        return JSONResponse({"error": "No qwen-web provider configured."}, status_code=404)
+    conns = prov.get("connections") or []
+    if not conns:
+        return JSONResponse({"error": "No connections on the qwen-web provider."}, status_code=404)
+
+    result = []
+    for conn in conns:
+        if not isinstance(conn, dict) or not conn.get("enabled", True):
+            continue
+        token = conn.get("api_key", "")
+        if not token:
+            continue
+        exp = qwen_chat-lane.jwt_exp(token)
+        expired = bool(exp and exp <= int(time.time()))
+        result.append({
+            "name": conn.get("name", ""),
+            "expires_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(exp)) if exp else "",
+            "days_left": max(0, (exp - int(time.time())) // 86400) if exp else -1,
+            "expired": expired,
+        })
+    return JSONResponse({"ok": True, "connections": result})
+
+
+@app.post("/api/chat-lane/qwen/import")
+async def chat-lane_qwen_import(request: Request):
+    """Import one Qwen (chat.qwen.ai) JWT as a connection on the ``qwen-web``
+    provider.
+
+    Body: {token: str, cookies: str, ua: str = "", name: str = ""}
+    Validates the JWT structurally + guest-rejection, then upserts the named
+    connection on the single ``qwen-web`` provider. Persists via the sanctioned
+    ``_replace_runtime_config`` path only.
+    """
+    if _is_admin_auth_enabled():
+        session_token = request.cookies.get("bsl_admin_session")
+        if not _is_valid_admin_session(session_token):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body."}, status_code=400)
+
+    try:
+        config = get_mutable_config()
+        result = _qwen_import_account(body, config)
+    except ValueError as _ve:
+        return JSONResponse({"error": str(_ve)}, status_code=422)
+    except Exception as _ie:
+        return JSONResponse({"error": str(_ie)}, status_code=500)
+
+    # Sanctioned swap path (persist -> swap -> breaker reconfigure).
+    _replace_runtime_config(config)
+    ROUND_ROBIN_STATE.clear()
+    reset_provider_round_robin_state()
+
+    return JSONResponse({
+        "ok": True,
+        "name": result["name"],
+        "expires_at_iso": result["expires_at_iso"],
+        "days_left": result["days_left"],
+    })
+
+
+@app.post("/api/chat-lane/qwen/import/bulk")
+async def chat-lane_qwen_import_bulk(request: Request):
+    """Import up to 200 Qwen accounts in one request.
+
+    Body: {accounts: [{token, cookies, ua?, name?}, ...]}
+    Loops the single-import logic per account, collects results, and persists
+    ONCE at the end via the sanctioned ``_replace_runtime_config`` path.
+    Response: {ok, added: [names], failed: [{index, error}], total}.
+    """
+    if _is_admin_auth_enabled():
+        session_token = request.cookies.get("bsl_admin_session")
+        if not _is_valid_admin_session(session_token):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body."}, status_code=400)
+
+    accounts = body.get("accounts") or []
+    if not isinstance(accounts, list):
+        return JSONResponse({"error": "accounts must be a list."}, status_code=422)
+    if len(accounts) > 200:
+        return JSONResponse({"error": "Max 200 accounts per request."}, status_code=422)
+
+    config = get_mutable_config()
+    added: list[str] = []
+    failed: list[dict] = []
+
+    for idx, account in enumerate(accounts):
+        if not isinstance(account, dict):
+            failed.append({"index": idx, "error": "account must be an object."})
+            continue
+        try:
+            result = _qwen_import_account(account, config)
+            added.append(result["name"])
+        except ValueError as _ve:
+            failed.append({"index": idx, "error": str(_ve)})
+        except Exception as _ie:
+            failed.append({"index": idx, "error": str(_ie)})
+
+    # Persist ONCE at the end.
+    _replace_runtime_config(config)
+    ROUND_ROBIN_STATE.clear()
+    reset_provider_round_robin_state()
+
+    return JSONResponse({
+        "ok": True,
+        "added": added,
+        "failed": failed,
+        "total": len(accounts),
+    })
+
+
 @app.post("/api/system/shutdown")
 async def system_shutdown(request: Request):
     """Shutdown the BSL Router backend process safely.
@@ -3544,7 +3790,7 @@ async def verify_key(request: Request):
 
         is_custom = provider_cfg.get("type") in ("custom", "image_custom", "video_custom") or not provider_cfg
         is_custom_text = (
-            effective_format in {"openai", "openai-responses", "anthropic", "gemini", "glm-web", "kimi-web"}
+            effective_format in {"openai", "openai-responses", "anthropic", "gemini", "glm-web", "kimi-web", "qwen-web"}
             and is_custom
         )
         is_custom_image_video = (
@@ -6846,6 +7092,165 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 bench_leaf(config, provider_name, target_model, 502, str(_k_ns_exc), 0)
                 raise
 
+    # ── Qwen web-backend (chat.qwen.ai) early dispatch ───────────────────────
+    # Format ``qwen-web``: the connection ``api_key`` is the encrypted Qwen
+    # JWT, ``cookies`` is the encrypted cookie header string, ``ua`` is the
+    # stored browser User-Agent. Qwen speaks its own SSE protocol, so we branch
+    # out here with a dedicated httpx call.
+    if provider_config.get("format") == "qwen-web":
+        is_stream = bool(internal_request.stream)
+
+        _qwen_token = active_conn.get("api_key", "")
+        _qwen_cookies = active_conn.get("cookies", "")
+        _qwen_ua = active_conn.get("ua", "")
+
+        if not _qwen_token:
+            return JSONResponse(
+                {"error": f"Provider '{provider_name}' (qwen-web) has no token configured."},
+                status_code=500,
+            )
+
+        # Expired JWT (static ~30d token) — reject early with a re-login hint.
+        if qwen_chat-lane.jwt_exp(_qwen_token) and qwen_chat-lane.jwt_exp(_qwen_token) <= int(time.time()):
+            return JSONResponse(
+                {"error": "Qwen token expired (30d static) — re-login via tools/qwen_gh_login.py"},
+                status_code=401,
+            )
+
+        # Model mapping: strip -web and -thinking suffixes; -thinking forces
+        # feature_config.thinking_enabled inside build_chat_body.
+        _qwen_model, _ = qwen_chat-lane.map_model(target_model)
+
+        _qwen_chat_body = qwen_chat-lane.build_chat_body(
+            internal_request.messages,
+            target_model,
+        )
+
+        _qwen_hdrs = qwen_chat-lane.browser_headers(ua=_qwen_ua, cookies=_qwen_cookies)
+        _qwen_hdrs["Authorization"] = f"Bearer {_qwen_token}"
+        _qwen_hdrs["X-Request-Id"] = str(uuid.uuid4())
+
+        _qwen_http = _get_client_for_proxy(active_conn.get("proxy_url"))
+
+        # Step 1: create a fresh chat (single-turn mode).
+        _qwen_chat_id = ""
+        try:
+            _qwen_new_resp = await asyncio.wait_for(
+                _qwen_http.post(
+                    qwen_chat-lane.QWEN_NEW_CHAT_URL,
+                    headers=_qwen_hdrs,
+                    json={"title": "BSL", "models": [_qwen_model], "chat_type": "t2t"},
+                    timeout=httpx.Timeout(15.0, read=15.0),
+                ),
+                timeout=20.0,
+            )
+            if _qwen_new_resp.status_code == 200:
+                try:
+                    _qwen_chat_id = (_qwen_new_resp.json().get("data") or {}).get("id", "")
+                except Exception:
+                    pass
+        except Exception as _cn_exc:
+            print(f"[Qwen] create-chat failed (non-blocking, continuing): {_cn_exc}", flush=True)
+
+        _qwen_chat_body["chat_id"] = _qwen_chat_id
+
+        # Step 2: send the completion request.
+        completions_url = f"{qwen_chat-lane.QWEN_CHAT_URL}?chat_id={_qwen_chat_id}"
+        try:
+            _qwen_resp = await asyncio.wait_for(
+                _qwen_http.post(
+                    completions_url,
+                    headers={
+                        **_qwen_hdrs,
+                        "x-accel-buffering": "no",
+                    },
+                    json=_qwen_chat_body,
+                    timeout=httpx.Timeout(300.0, read=300.0),
+                    stream=True,
+                ),
+                timeout=305.0,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            raise TimeoutError("Qwen upstream timed out (waited 305s)") from None
+        except Exception as _q_req_exc:
+            bench_leaf(config, provider_name, target_model, 502, str(_q_req_exc), 0)
+            raise
+
+        # WAF / challenge detection: HTML response or aliyun_waf marker means
+        # cookies are stale — tell the user to re-run the collector.
+        if _qwen_resp.status_code != 200:
+            _q_err = await asyncio.wait_for(_qwen_resp.aread(), timeout=5.0)
+            _q_text = _q_err.decode("utf-8", errors="replace")[:500] if _q_err else f"upstream_{_qwen_resp.status_code}"
+            bench_leaf(config, provider_name, target_model, _qwen_resp.status_code, _q_text, 0)
+            if qwen_chat-lane._is_waf_challenge(_q_err or b""):
+                if is_stream:
+                    raise RuntimeError(f"Qwen WAF challenge (cookies stale): {_q_text[:200]}")
+                return JSONResponse(
+                    {"error": {"message": f"Qwen WAF challenge — cookies stale, re-run tools/qwen_gh_login.py ({_q_text[:200]})", "type": "proxy_error"}},
+                    status_code=502,
+                )
+            if is_stream:
+                raise RuntimeError(f"Qwen upstream {_qwen_resp.status_code}: {_q_text[:200]}")
+            return JSONResponse(
+                {"error": {"message": f"Qwen upstream {_qwen_resp.status_code}: {_q_text[:200]}", "type": "proxy_error"}},
+                status_code=_qwen_resp.status_code,
+            )
+
+        # Best-effort conversation cleanup (fire-and-forget).
+        _qwen_cleanup = config.get("chat-lane", {}).get("cleanup_conversations", False) if isinstance(config.get("chat-lane"), dict) else False
+
+        if is_stream:
+            # Yield raw bytes from the upstream response; the qwen_chat-lane
+            # converter (plugged into afz_guard above) turns them into OpenAI SSE.
+            async def _qwen_chat-lane_raw_bytes():
+                nonlocal _qwen_chat_id
+                try:
+                    async for _b in _qwen_resp.aiter_bytes():
+                        yield _b
+                finally:
+                    try:
+                        await _qwen_resp.aclose()
+                    except Exception:
+                        pass
+                    # Fire-and-forget cleanup.
+                    if _qwen_cleanup and _qwen_chat_id:
+                        try:
+                            _del_hdrs = qwen_chat-lane.browser_headers(ua=_qwen_ua, cookies=_qwen_cookies)
+                            _del_hdrs["Authorization"] = f"Bearer {_qwen_token}"
+                            _del_hdrs["Content-Type"] = "application/json"
+                            _qwen_http2 = _get_client_for_proxy(active_conn.get("proxy_url"))
+                            await _qwen_http2.delete(
+                                f"{qwen_chat-lane.QWEN_DELETE_URL}/{_qwen_chat_id}",
+                                headers=_del_hdrs,
+                                timeout=httpx.Timeout(10.0, read=10.0),
+                            )
+                        except Exception as _cl_exc:
+                            print(f"[Qwen] cleanup failed (non-blocking): {_cl_exc}", flush=True)
+
+            # The actual StreamingResponse return is handled by the egress branch
+            # below (provider_config.format == "qwen-web" -> afz_guard of
+            # qwen_chat-lane.qwen_web_stream_to_openai_sse_lines). We stash the byte
+            # source on the request state so the egress branch can find it.
+            request.state._qwen_chat-lane_raw_bytes = _qwen_chat-lane_raw_bytes  # type: ignore[attr-defined]
+            # Fall through to the egress branch (return happens there).
+        else:
+            # Non-stream: buffer the SSE, aggregate into one completion object.
+            try:
+                async def _qwen_byte_source():
+                    async for _b in _qwen_resp.aiter_bytes():
+                        yield _b
+                _qwen_completion = await qwen_chat-lane.qwen_web_stream_to_completion(_qwen_byte_source())
+                await _qwen_resp.aclose()
+                return JSONResponse(_qwen_completion, status_code=200)
+            except Exception as _q_ns_exc:
+                print(f"[Qwen] non-stream aggregation failed: {_q_ns_exc}", flush=True)
+                try:
+                    await _qwen_resp.aclose()
+                except Exception:
+                    pass
+                bench_leaf(config, provider_name, target_model, 502, str(_q_ns_exc), 0)
+                raise
+
     # ── OAuth Token Refresh (systemic fix for recurring 401 loop) ────────
     # Every OAuth provider's access_token expires (~1h). Previously BSL used
     # the stored token blindly with no refresh, causing 401 loops. Now we
@@ -9965,6 +10370,15 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             _afz_sid = next_stream_id()
             return StreamingResponse(
                 afz_guard(kimi_chat-lane.kimi_stream_to_openai_sse_lines(request.state._kimi_chat-lane_raw_bytes(), model=target_model), _afz_sid, deadline_s=0),
+                media_type="text/event-stream",
+            )
+        # Qwen web-backend (chat.qwen.ai) streaming egress: the upstream speaks
+        # plain SSE (not grpc-Web). Decode via the qwen_chat-lane converter and
+        # emit standard OpenAI chunks.
+        if provider_config.get("format") == "qwen-web":
+            _afz_sid = next_stream_id()
+            return StreamingResponse(
+                afz_guard(qwen_chat-lane.qwen_web_stream_to_openai_sse_lines(request.state._qwen_chat-lane_raw_bytes(), model=target_model), _afz_sid, deadline_s=0),
                 media_type="text/event-stream",
             )
         # Codex streaming egress: wrap raw upstream bytes through Responses SSE→OpenAI SSE converter

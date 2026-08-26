@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""Qwen (chat.qwen.ai) GitHub-OAuth session scraper.
+
+Headful Chrome automation via ``nodriver`` (no Playwright / camoufox
+dependency). Opens chat.qwen.ai in a persistent Chrome profile; if the page
+has no localStorage token, clicks "Continue with GitHub" and lets the user
+log in. Once localStorage["token"] holds a JWT, collects the token, all
+cookies for .qwen.ai, and the browser User-Agent, then POSTs them to the
+router's /api/chat-lane/qwen/import endpoint.
+
+Usage:
+    python tools/qwen_gh_login.py --profile data/qwen_profiles/<name>
+    python tools/qwen_gh_login.py --profile data/qwen_profiles/<name> --headless
+    python tools/qwen_gh_login.py --profile data/qwen_profiles/<name> --json-out path.json
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import sys
+import time
+from pathlib import Path
+from urllib.parse import urljoin
+
+# nodriver is the only third-party dependency; everything else is stdlib.
+import asyncio
+
+import nodriver
+
+QWEN_URL = "https://chat.qwen.ai"
+IMPORT_PATH = "/api/chat-lane/qwen/import"
+POLL_TIMEOUT_S = 180
+POLL_INTERVAL_S = 2
+
+
+def _b64url_decode(data: str) -> bytes:
+    rem = len(data) % 4
+    if rem:
+        data += "=" * (4 - rem)
+    return base64.urlsafe_b64decode(data)
+
+
+def _decode_jwt_exp(token: str) -> int:
+    parts = token.split(".")
+    if len(parts) != 3:
+        return 0
+    try:
+        raw = _b64url_decode(parts[1])
+        payload = json.loads(raw.decode("utf-8"))
+        return int(payload.get("exp") or 0)
+    except Exception:
+        return 0
+
+
+def _days_left(token: str) -> int:
+    exp = _decode_jwt_exp(token)
+    if not exp:
+        return -1
+    return max(0, (exp - int(time.time())) // 86400)
+
+
+def _save_error_screenshot(profile_dir: Path, page, message: str) -> None:
+    """Dump a screenshot to <profile>/error.png and print the message."""
+    error_dir = profile_dir
+    error_dir.mkdir(parents=True, exist_ok=True)
+    png_path = error_dir / "error.png"
+    try:
+        page.save(png_path)
+    except Exception:
+        pass
+    print(f"ERROR: {message}", file=sys.stderr)
+    print(f"  Screenshot saved to: {png_path}", file=sys.stderr)
+
+
+async def _collect(
+    profile_dir: Path,
+    *,
+    router: str,
+    conn_name: str | None,
+    json_out: Path | None,
+    headless: bool,
+) -> int:
+    """Run the collect flow. Returns 0 on success, 1 on failure."""
+    try:
+        browser = await nodriver.start(
+            headless=headless,
+            browser_args=[f"--user-data-dir={profile_dir}"],
+        )
+    except Exception as exc:
+        print(f"ERROR: failed to start browser: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        page = await browser.get(QWEN_URL)
+        # Wait for the SPA to settle.
+        await page.wait()
+        await page.sleep(3)
+
+        # Try to read the token from localStorage.
+        token = ""
+        try:
+            token = (await page.evaluate("localStorage.getItem('token')")) or ""
+        except Exception:
+            pass
+
+        # If no token, click the GitHub OAuth button.
+        if not token:
+            # Selector discovery at runtime: find an anchor/button whose text or
+            # href contains 'github' or 'oauth'.
+            clicked = False
+            try:
+                # Try known selectors first (chat.qwen.ai renders a GitHub button).
+                for sel in (
+                    'a[href*="github"]',
+                    'button[data-variant*="github" i]',
+                    '[class*="github"]',
+                ):
+                    try:
+                        el = await page.query_selector(sel, timeout=3)
+                        if el:
+                            await el.click()
+                            clicked = True
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            if not clicked:
+                # Fallback: scan all clickable elements.
+                try:
+                    els = await page.query_selector_all("a, button, [role=button]")
+                    for el in els:
+                        try:
+                            txt = (await el.get_text()).lower()
+                            href = await el.get_attribute("href") or ""
+                            if "github" in txt or "github" in href.lower() or "oauth" in txt:
+                                await el.click()
+                                clicked = True
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+            if not clicked:
+                _save_error_screenshot(
+                    profile_dir, page,
+                    "Could not find a GitHub OAuth button on the page. "
+                    "The page layout may have changed."
+                )
+                return 1
+
+            print("Clicked GitHub button — waiting for login + token...", flush=True)
+
+        # Poll localStorage until a JWT appears (or timeout).
+        deadline = time.time() + POLL_TIMEOUT_S
+        while time.time() < deadline:
+            try:
+                token = (await page.evaluate("localStorage.getItem('token')")) or ""
+            except Exception:
+                token = ""
+            if token and len(token.split(".")) == 3:
+                break
+            await page.sleep(POLL_INTERVAL_S)
+            print(".", end="", flush=True)
+
+        if not token or len(token.split(".")) != 3:
+            _save_error_screenshot(
+                profile_dir, page,
+                f"No JWT token found in localStorage after {POLL_TIMEOUT_S}s. "
+                "Please complete the GitHub login manually and retry."
+            )
+            return 1
+
+        print()  # newline after dots
+
+        # collect cookies via CDP (nodriver browser.cookies API).
+        # Include httpOnly ones — required: cnaui, aui, sca, xlly_s, cna,
+        # token, _bl_uid, x-ap where present.
+        cookies = await browser.cookies.get_all()
+        qwen_cookies = [c for c in cookies if c.domain and "qwen.ai" in c.domain]
+        cookie_header = "; ".join(f"{c.name}={c.value}" for c in qwen_cookies)
+
+        # Capture the browser's actual User-Agent.
+        ua = ""
+        try:
+            ua = (await page.evaluate("navigator.userAgent")) or ""
+        except Exception:
+            pass
+
+        name = (conn_name or "").strip()
+        if not name:
+            # Default name = "qwen-" + first 8 chars of the JWT id claim (sub).
+            try:
+                payload_raw = _b64url_decode(token.split(".")[1])
+                payload = json.loads(payload_raw.decode("utf-8"))
+                uid = payload.get("sub") or payload.get("id") or payload.get("user_id") or ""
+                name = f"qwen-{uid[:8]}" if uid else f"qwen-{int(time.time())}"
+            except Exception:
+                name = f"qwen-{int(time.time())}"
+
+        payload = {
+            "token": token,
+            "cookies": cookie_header,
+            "ua": ua,
+            "name": name,
+        }
+
+        # Print human summary.
+        exp = _decode_jwt_exp(token)
+        days = _days_left(token)
+        print(f"\ncollected account: {name}")
+        print(f"  Token expires : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(exp)) if exp else 'unknown'}")
+        print(f"  Days left     : {days}")
+        print(f"  Cookies       : {len(qwen_cookies)} entries ({len(cookie_header)} chars)")
+        print(f"  UA            : {ua[:80]}...")
+
+        # Try to POST to the router import endpoint.
+        router_base = router.rstrip("/")
+        import_url = urljoin(router_base, IMPORT_PATH)
+        posted = False
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(import_url, json=payload)
+                if resp.status_code in (200, 201):
+                    print(f"\nImported via router: {resp.json()}")
+                    posted = True
+                else:
+                    print(f"\nRouter returned HTTP {resp.status_code}: {resp.text[:300]}", file=sys.stderr)
+        except Exception as net_exc:
+            print(f"\nNetwork error posting to router ({import_url}): {net_exc}", file=sys.stderr)
+
+        # On network failure (or always if --json-out), write to file.
+        if json_out or not posted:
+            out_path = json_out or (profile_dir / f"{name}.json")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            print(f"Credentials written to: {out_path}")
+
+        return 0
+
+    finally:
+        try:
+            browser.stop()
+        except Exception:
+            pass
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="collect a Qwen (chat.qwen.ai) GitHub-OAuth token via a persistent Chrome profile.",
+    )
+    parser.add_argument(
+        "--profile",
+        required=True,
+        help="Persistent Chrome profile directory (e.g. data/qwen_profiles/alice).",
+    )
+    parser.add_argument(
+        "--name",
+        default=None,
+        help="Connection name for the router (default: auto-derived from JWT sub).",
+    )
+    parser.add_argument(
+        "--router",
+        default="http://localhost:6969",
+        help="BSL Router base URL (default: http://localhost:6969).",
+    )
+    parser.add_argument(
+        "--json-out",
+        default=None,
+        help="Also write credentials to this JSON file (fallback on network failure).",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run Chrome headless (useful for re-runs on warm profiles).",
+    )
+    args = parser.parse_args(argv)
+
+    profile_dir = Path(args.profile)
+    json_out = Path(args.json_out) if args.json_out else None
+
+    return asyncio_run(_collect(
+        profile_dir,
+        router=args.router,
+        conn_name=args.name,
+        json_out=json_out,
+        headless=args.headless,
+    ))
+
+
+def asyncio_run(coro):
+    """Run a coroutine — works on Py 3.12+ (no loop param) and older."""
+    try:
+        return asyncio.run(coro)
+    except TypeError:
+        # Python < 3.10: asyncio.run exists; for very old versions fall back.
+        import asyncio as _a
+        loop = _a.new_event_loop()
+        _a.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
