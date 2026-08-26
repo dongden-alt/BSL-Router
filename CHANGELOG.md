@@ -11,7 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.3] - 2026-08-25
+## [1.0.3] - 2026-08-26
+
+Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-key loss guards (orphan-key coverage), empty-content-block egress repair, live GitHub update check for the version pill, and an anchored compaction skip-regex that un-excludes GLM wire-format models.
 
 77 commits since 1.0.2 — combo-chain resilience overhaul (incl. never-stop retry), live quota indicators, official thinking-parameter parity across model families, the Ox Alpha contract, plus a post-tag wave: zero-network Kiro imports, `blacksand-agentic-ultra` orchestration, multi-key loss guards, and MITM supervisor cleanup.
 
@@ -185,13 +187,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 15 unused imports across 14 files (F401/F811 lint cleanup)
 - Redundant `quote_plus` redefinition in `oauth.py`
 
+### Fixed — post-tag wave (2026-08-26)
+- **New API keys never used** (fallback + round-robin): per-model `connection_indexes`
+  froze at save time — providers with appended keys (seekai, orcarouter, opencode-zen,
+  llm7-io, kilocode) could never reach the newest key. Load-time orphan-key pass now
+  extends every model's allow-list with enabled indexes beyond its max, and both UI
+  key-append sites update model indexes on save.
+- **`model output must contain either output text or tool calls`** on Anthropic-protocol
+  clients (agentrouter/gorouter/seekai max-thinking models): upstreams returned empty
+  `content` with the full output in `reasoning_content`, which both egress converters
+  dropped. Non-stream responses now fall back to `reasoning_content`; streaming
+  accumulates it and emits a text block at close.
+- **Kiro binary event-stream egress** — `vnd.amazon.eventstream` 200s decoded via a
+  dedicated decoder + `_SyntheticResponse` shim before the zombie guard; Kiro excluded
+  from the text-SSE stream buffer; stale IDE caches refresh once at import and preserve
+  `authMethod`/`clientId`/`clientSecret`/`region`; `TokenType: EXTERNAL_IDP` gated to
+  IdC auth methods (403 fix).
+- **Version pill never appearing** — `/api/version/check` hardcoded `hasUpdate:false`;
+  now performs a live GitHub releases check (default `dongden-alt/BSL-Router`,
+  overridable via `update.github_repo`) with a 5-minute cache; stale `bsl-router`
+  default slug corrected.
+- **Compaction never firing** — the skip-regex substring-matched `anthropic`, silently
+  excluding `glm-5.3-anthropic`-style wire-format models (the exact models compaction
+  targets). Regex now anchors on the leading family token; a startup eligibility line
+  (`[Compaction] eligibility: X/Y`) makes coverage observable.
+
 ---
 
 # 🇻🇳 Tiếng Việt
 
 ---
 
-## [1.0.3] - 2026-08-25
+## [1.0.3] - 2026-08-26
+
+Đợt sau tag (gộp vào release): egress eventstream nhị phân Kiro, bảo vệ mất key (orphan-key), sửa empty-content-block egress, kiểm tra cập nhật GitHub trực tiếp cho pill phiên bản, và neo lại regex skip của compaction để bỏ loại sai các model GLM.
 
 77 commit từ 1.0.2 — đại tu khả năng phục hồi combo-chain (kèm never-stop retry), chỉ báo quota trực tiếp, chuẩn hóa tham số thinking theo tài liệu chính thức cho mọi họ model, contract Ox Alpha, cùng đợt sau tag: nhập Kiro zero-network, orchestration `blacksand-agentic-ultra`, chống mất key đa tab, và dọn supervisor MITM.
 
@@ -328,3 +357,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loại ngoại lệ cùng cách khắc phục
 - 15 import không dùng trong 14 file (dọn lint F401/F811)
 - Khai báo trùng `quote_plus` trong `oauth.py`
+
+### Sửa Lỗi — đợt sau tag (2026-08-26)
+- **Key API mới không bao giờ được dùng** (fallback + round-robin): `connection_indexes`
+  theo model đóng băng từ lúc lưu — các provider thêm key (seekai, orcarouter,
+  opencode-zen, llm7-io, kilocode) không bao giờ dùng được key mới nhất. Pass orphan-key
+  lúc load giờ mở rộng allow-list mọi model với các index enabled vượt max, và cả 2 chỗ
+  thêm key trong UI cập nhật index khi lưu.
+- **`model output must contain either output text or tool calls`** trên client Anthropic
+  (agentrouter/gorouter/seekai ở effort max): upstream trả `content` rỗng với toàn bộ
+  output trong `reasoning_content`, cả 2 bộ chuyển đổi egress đều bỏ qua. Non-stream giờ
+  fallback sang `reasoning_content`; streaming tích luỹ và phát block text lúc kết thúc.
+- **Egress eventstream nhị phân Kiro** — 200 `vnd.amazon.eventstream` được giải mã bằng
+  decoder riêng + shim `_SyntheticResponse` trước zombie guard; Kiro loại khỏi stream
+  buffer text-SSE; cache IDE cũ refresh một lần khi import và giữ `authMethod`/
+  `clientId`/`clientSecret`/`region`; `TokenType: EXTERNAL_IDP` chỉ áp dụng cho IdC (sửa 403).
+- **Pill phiên bản không bao giờ hiện** — `/api/version/check` hardcode
+  `hasUpdate:false`; giờ kiểm tra GitHub releases trực tiếp (mặc định
+  `dongden-alt/BSL-Router`, ghi đè qua `update.github_repo`) với cache 5 phút; sửa slug
+  mặc định `bsl-router` cũ.
+- **Compaction không bao giờ chạy** — regex skip khớp substring `anthropic`, loại nhầm
+  các model dạng `glm-5.3-anthropic` (chính các model compaction nhắm tới). Regex giờ
+  neo theo token family đứng đầu; dòng khởi động (`[Compaction] eligibility: X/Y`)
+  giúp quan sát được độ phủ.
