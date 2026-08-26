@@ -3240,7 +3240,8 @@ async def chat-lane_glm_import(request: Request):
         }
         providers[prov_key] = prov_entry
 
-    replace_config(config)
+    # Sanctioned swap path (persist -> swap -> breaker reconfigure).
+    _replace_runtime_config(config)
     # Clear round-robin so the new connection is picked up cleanly.
     ROUND_ROBIN_STATE.clear()
     reset_provider_round_robin_state()
@@ -6388,7 +6389,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 conns = prov.get("connections", [])
                 if isinstance(conns, list) and 0 <= conn_idx < len(conns):
                     conns[conn_idx]["api_key"] = enc
-                    replace_config(cfg)
+                    # Sanctioned runtime swap path (persist -> swap -> breaker
+                    # reconfigure); direct replace_config() violates the
+                    # config-state contract test.
+                    _replace_runtime_config(cfg)
                     print("[GLM] refresh_token rotated + persisted", flush=True)
             except Exception as _rot_exc:
                 print(f"[GLM] refresh_token rotation persist failed (continuing in-memory): {_rot_exc}", flush=True)
