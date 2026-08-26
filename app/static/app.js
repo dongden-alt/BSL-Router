@@ -344,9 +344,100 @@ function _bslModelsOptgroupHTML(selectedValue) {
     return html;
 }
 
+// ── Web Chat (Chat2API clean-room) providers ──
+const chat-lane_PROVIDERS = {
+    'glm-web':  { label: 'GLM Web',  prov: 'glm',  badge: { label: 'GLW', color: '#7c3aed', bg: '#f5f3ff', border: '#ddd6fe' },
+                  fields: [{ id: 'refresh_token', type: 'textarea', ph: 'chatglm.cn refresh_token (DevTools \u2192 Local Storage \u2192 chatglm_refresh_token)' },
+                           { id: 'name', type: 'input', ph: 'Optional account name' }] },
+    'kimi-web': { label: 'Kimi Web', prov: 'kimi', badge: { label: 'KMW', color: '#0d9488', bg: '#f0fdfa', border: '#99f6e4' },
+                  fields: [{ id: 'token', type: 'textarea', ph: 'kimi.com JWT' },
+                           { id: 'name', type: 'input', ph: 'Optional account name' }] },
+    'qwen-web': { label: 'Qwen Web', prov: 'qwen', badge: { label: 'QWW', color: '#c2410c', bg: '#fff7ed', border: '#fed7aa' },
+                  fields: [{ id: 'token', type: 'textarea', ph: 'JWT from tools/qwen_gh_login.py' },
+                           { id: 'cookies', type: 'textarea', ph: 'Cookie header string (k=v; k=v) \u2014 WAF binds cookies to UA' },
+                           { id: 'ua', type: 'input', ph: 'Browser User-Agent captured with the cookies (recommended)' },
+                           { id: 'name', type: 'input', ph: 'Optional account name' }] },
+};
+
+// Card renderer for the per-format credential import UI.
+function renderchat-laneImportCard(format) {
+    const wc = chat-lane_PROVIDERS[format];
+    if (!wc) return '';
+    const fieldHtml = wc.fields.map(f => `
+        <div style="margin-bottom:10px;">
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;">${f.id === 'refresh_token' ? 'refresh_token' : f.id}${f.id === 'name' ? ' (optional)' : ''}</label>
+            ${f.type === 'textarea'
+                ? `<textarea id="wc-${f.id}" rows="3" placeholder="${f.ph}" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:8px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-color);color:var(--text-main);resize:vertical;"></textarea>`
+                : `<input id="wc-${f.id}" type="text" placeholder="${f.ph}" style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-color);color:var(--text-main);">`}
+        </div>`).join('');
+    return `
+    <div class="detail-card" style="border-radius:12px;border:1px solid var(--border-color);margin-bottom:24px;">
+        <div class="detail-card-header" style="padding-bottom:12px;">
+            <h2 style="font-size:15px;">Import Account \u00b7 ${wc.label}</h2>
+        </div>
+        <div style="padding:0 16px 16px;">
+            ${fieldHtml}
+            <div style="display:flex;align-items:center;gap:12px;">
+                <button class="btn btn-primary" onclick="importchat-laneAccount('${format}')">Import</button>
+                <span id="wc-status" style="font-size:12px;"></span>
+            </div>
+        </div>
+    </div>`;
+}
+
+async function importchat-laneAccount(format) {
+    const wc = chat-lane_PROVIDERS[format];
+    if (!wc) return;
+    const body = {};
+    wc.fields.forEach(f => {
+        const el = document.getElementById('wc-' + f.id);
+        if (el && el.value.trim()) body[f.id] = el.value.trim();
+    });
+    const statusEl = document.getElementById('wc-status');
+    try {
+        const res = await fetch('/api/chat-lane/' + wc.prov + '/import', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        if (statusEl) {
+            statusEl.textContent = '\u2713 imported' + (data.name ? ' as ' + data.name : '') +
+                (typeof data.expires_in_days === 'number' ? ' \u00b7 expires in ' + data.expires_in_days + 'd' : '');
+            statusEl.style.color = 'var(--success)';
+        }
+        showToast(wc.label + ' account imported');
+        await fetchConfig();
+        renderActiveTab();
+    } catch (err) {
+        if (statusEl) { statusEl.textContent = 'Import failed: ' + err.message; statusEl.style.color = 'var(--danger)'; }
+        showToast('Import failed: ' + err.message, true);
+    }
+}
+
+async function refreshchat-laneQuota() {
+    const p = globalConfig.providers[activeProviderId] || {};
+    const wc = chat-lane_PROVIDERS[p.format];
+    if (!wc) return;
+    showToast('Checking ' + wc.label + ' quota\u2026');
+    try {
+        const res = await fetch('/api/chat-lane/' + wc.prov + '/quota');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        console.log('[chat-lane quota]', data);
+        showToast(wc.label + ': ' + JSON.stringify(data).slice(0, 160));
+    } catch (err) {
+        showToast('Quota check failed: ' + err.message, true);
+    }
+}
+
 function getDisplayName(id) {
     if (globalConfig.providers && globalConfig.providers[id] && globalConfig.providers[id].name) {
         return globalConfig.providers[id].name;
+    }
+    const prov = globalConfig.providers && globalConfig.providers[id];
+    if (prov) {
+        const wc = chat-lane_PROVIDERS[prov.format];
+        if (wc) return wc.label;
     }
     return _providerNameCache[id] || id;
 }
@@ -1017,6 +1108,10 @@ function renderProviderFormatBadge(format) {
     if (f.includes('anthropic')) { label = 'ANT'; color = '#8b5cf6'; bg = '#f5f3ff'; border = '#ddd6fe'; }
     else if (f.includes('gemini')) { label = 'GEM'; color = '#2563eb'; bg = '#eff6ff'; border = '#bfdbfe'; }
     else if (f.includes('openai')) { label = 'OAI'; color = '#059669'; bg = '#ecfdf5'; border = '#a7f3d0'; }
+    const wc = chat-lane_PROVIDERS[format || ''];
+    if (wc) {
+        return `<span title="${wc.label} (web chat backend)" style="font-size:9px;line-height:1;font-weight:800;letter-spacing:0.35px;color:${wc.badge.color};background:${wc.badge.bg};border:1px solid ${wc.badge.border};border-radius:6px;padding:3px 5px;flex-shrink:0;">${wc.badge.label}</span>`;
+    }
     return `<span title="${format || 'custom'} compatible" style="font-size:9px;line-height:1;font-weight:800;letter-spacing:0.35px;color:${color};background:${bg};border:1px solid ${border};border-radius:6px;padding:3px 5px;flex-shrink:0;">${label}</span>`;
 }
 
@@ -1189,9 +1284,11 @@ function renderProviderDetail() {
         </div>
         <div class="detail-hero-right">
             ${!isCustom && !isOAuth ? `<a href="#" class="get-api-key-link">ðŸ”‘ Get API Key ${SVGS.link}</a>` : ''}
-            ${isCustom ? `<button class="btn btn-danger" onclick="deleteActiveProvider()">Delete Provider</button>` : ''}
+            ${isCustom ? `${chat-lane_PROVIDERS[p.format] ? `<button class="btn btn-outline" style="padding:6px 12px;margin-right:8px;" onclick="refreshchat-laneQuota()">Quota</button>` : ''}<button class="btn btn-danger" onclick="deleteActiveProvider()">Delete Provider</button>` : ''}
         </div>
     </div>
+
+    ${p.format && chat-lane_PROVIDERS[p.format] ? renderchat-laneImportCard(p.format) : ''}
 
     ${isOAuth ? `
     <div class="detail-card">
@@ -1265,7 +1362,7 @@ function renderProviderDetail() {
         <div class="detail-card-header" style="display:flex; justify-content:space-between; align-items:center; padding-bottom:12px;">
             <h2 style="font-size:15px;">Connections</h2>
             <div style="display:flex;align-items:center;gap:12px;">
-                <button class="btn btn-primary" style="padding:6px 12px;" onclick="openConnModal()">+ Add API Key</button>
+                ${chat-lane_PROVIDERS[p.format] ? '' : `<button class="btn btn-primary" style="padding:6px 12px;" onclick="openConnModal()">+ Add API Key</button>`}
                 <button class="btn btn-outline" style="font-size:12px;font-weight:600;padding:4px 12px;display:flex;align-items:center;gap:6px;">
                     <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                     Test Connection One-by-One

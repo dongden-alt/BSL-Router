@@ -134,6 +134,7 @@ from app import codex_adapter
 from app.chat-lane import glm as glm_chat-lane
 from app.chat-lane import kimi as kimi_chat-lane
 from app.chat-lane import qwen_web as qwen_chat-lane
+from app.chat-lane import toolbridge as chat-lane_toolbridge
 from app.model_discovery import discover_models, clear_discovery_cache
 import fnmatch
 
@@ -6816,8 +6817,11 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 status_code=401,
             )
 
+        _glm_msgs = chat-lane_toolbridge.prepare_messages(
+            internal_request.messages, body.get("tools"), body.get("tool_choice")
+        )
         _glm_chat_body = glm_chat-lane.build_chat_body(
-            internal_request.messages,
+            _glm_msgs,
             target_model,
             reasoning_effort=body.get("reasoning_effort"),
             web_search=body.get("web_search"),
@@ -6917,7 +6921,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         yield _b
                 _glm_completion = await glm_chat-lane.glm_chat-lane_stream_to_completion(_glm_byte_source())
                 await _glm_resp.aclose()
-                return JSONResponse(_glm_completion, status_code=200)
+                return JSONResponse(chat-lane_toolbridge.completion_with_tool_calls(_glm_completion), status_code=200)
             except Exception as _g_ns_exc:
                 print(f"[GLM] non-stream aggregation failed: {_g_ns_exc}", flush=True)
                 try:
@@ -6980,8 +6984,11 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 status_code=401,
             )
 
+        _kimi_msgs = chat-lane_toolbridge.prepare_messages(
+            internal_request.messages, body.get("tools"), body.get("tool_choice")
+        )
         _kimi_chat_body = kimi_chat-lane.build_chat_body(
-            internal_request.messages,
+            _kimi_msgs,
             target_model,
             reasoning_effort=body.get("reasoning_effort"),
             web_search=body.get("web_search"),
@@ -7082,7 +7089,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         yield _b
                 _kimi_completion = await kimi_chat-lane.kimi_stream_to_completion(_kimi_byte_source())
                 await _kimi_resp.aclose()
-                return JSONResponse(_kimi_completion, status_code=200)
+                return JSONResponse(chat-lane_toolbridge.completion_with_tool_calls(_kimi_completion), status_code=200)
             except Exception as _k_ns_exc:
                 print(f"[Kimi] non-stream aggregation failed: {_k_ns_exc}", flush=True)
                 try:
@@ -7121,8 +7128,11 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         # feature_config.thinking_enabled inside build_chat_body.
         _qwen_model, _ = qwen_chat-lane.map_model(target_model)
 
+        _qwen_msgs = chat-lane_toolbridge.prepare_messages(
+            internal_request.messages, body.get("tools"), body.get("tool_choice")
+        )
         _qwen_chat_body = qwen_chat-lane.build_chat_body(
-            internal_request.messages,
+            _qwen_msgs,
             target_model,
         )
 
@@ -7241,7 +7251,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         yield _b
                 _qwen_completion = await qwen_chat-lane.qwen_web_stream_to_completion(_qwen_byte_source())
                 await _qwen_resp.aclose()
-                return JSONResponse(_qwen_completion, status_code=200)
+                return JSONResponse(chat-lane_toolbridge.completion_with_tool_calls(_qwen_completion), status_code=200)
             except Exception as _q_ns_exc:
                 print(f"[Qwen] non-stream aggregation failed: {_q_ns_exc}", flush=True)
                 try:
@@ -10360,7 +10370,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         if provider_config.get("format") == "glm-web":
             _afz_sid = next_stream_id()
             return StreamingResponse(
-                afz_guard(glm_chat-lane.glm_chat-lane_stream_to_openai_sse_lines(_glm_chat-lane_raw_bytes()), _afz_sid, deadline_s=0),
+                afz_guard(chat-lane_toolbridge.stream_with_tool_calls(glm_chat-lane.glm_chat-lane_stream_to_openai_sse_lines(_glm_chat-lane_raw_bytes())), _afz_sid, deadline_s=0),
                 media_type="text/event-stream",
             )
         # Kimi web-backend (kimi.com) streaming egress: the upstream speaks
@@ -10369,7 +10379,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         if provider_config.get("format") == "kimi-web":
             _afz_sid = next_stream_id()
             return StreamingResponse(
-                afz_guard(kimi_chat-lane.kimi_stream_to_openai_sse_lines(request.state._kimi_chat-lane_raw_bytes(), model=target_model), _afz_sid, deadline_s=0),
+                afz_guard(chat-lane_toolbridge.stream_with_tool_calls(kimi_chat-lane.kimi_stream_to_openai_sse_lines(request.state._kimi_chat-lane_raw_bytes(), model=target_model)), _afz_sid, deadline_s=0),
                 media_type="text/event-stream",
             )
         # Qwen web-backend (chat.qwen.ai) streaming egress: the upstream speaks
@@ -10378,7 +10388,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         if provider_config.get("format") == "qwen-web":
             _afz_sid = next_stream_id()
             return StreamingResponse(
-                afz_guard(qwen_chat-lane.qwen_web_stream_to_openai_sse_lines(request.state._qwen_chat-lane_raw_bytes(), model=target_model), _afz_sid, deadline_s=0),
+                afz_guard(chat-lane_toolbridge.stream_with_tool_calls(qwen_chat-lane.qwen_web_stream_to_openai_sse_lines(request.state._qwen_chat-lane_raw_bytes(), model=target_model)), _afz_sid, deadline_s=0),
                 media_type="text/event-stream",
             )
         # Codex streaming egress: wrap raw upstream bytes through Responses SSE→OpenAI SSE converter
