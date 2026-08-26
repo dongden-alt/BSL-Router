@@ -40,17 +40,20 @@ COMPACTION_SKIP_PROVIDERS = frozenset({
 })
 
 # Regex matches on model ID string for additional safety.
+# Anchored to the start of the model id so that family tokens only fire when
+# they are the leading/proper token — e.g. `claude-opus-5` or `gpt-5.6-sol`
+# are skipped, but `glm-5.3-anthropic` (starts with glm) is compactable.
 # Covers:
 #   - claude-* / anthropic-*  : explicit prefix
 #   - opus* / sonnet* / haiku* : naked Claude family names used by proxies/custom providers
-#   - gpt-4* / gpt-5* / o1* / o3* / o4* / chatgpt-* : OpenAI family incl. reasoning aliases
+#   - gpt-4* / gpt-5* / chatgpt-* : OpenAI family
+#   - o1 / o3 / o4            : reasoning models
 #   - gemini* / vertex*        : Gemini family
 COMPACTION_SKIP_MODEL_RE = re.compile(
-    r"(claude|anthropic"
-    r"|opus[-\d]|sonnet[-\d]|haiku[-\d]"
-    r"|gpt-4|gpt-5|chatgpt|\bo1[-\s]|\bo1$|\bo3[-\s]|\bo3$|\bo4[-\s]|\bo4$"
-    r"|gemini|vertex)",
-    re.IGNORECASE
+    r"^(?:claude|anthropic|opus|sonnet|haiku"
+    r"|gpt-4|gpt-5|chatgpt|o1|o3|o4"
+    r"|gemini|vertex)[-/]?",
+    re.IGNORECASE,
 )
 
 # How many recent turns (user+assistant pairs) are always pinned — DEFAULT when

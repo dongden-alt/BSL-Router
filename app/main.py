@@ -627,6 +627,22 @@ def load_config():
     init_breaker(config)
     config = _validate_antigravity_integration_config(config)
     replace_config(config)
+    # Compaction eligibility observability (2026-08-26): the skip-regex bug
+    # silently excluded glm-*-anthropic models; make eligibility visible.
+    try:
+        from app.middleware.compaction import COMPACTION_SKIP_MODEL_RE
+        _total = _skip = 0
+        for _pid, _pcfg in (config.get("providers") or {}).items():
+            if not isinstance(_pcfg, dict):
+                continue
+            for _m in _pcfg.get("models", []):
+                if isinstance(_m, dict) and _m.get("enabled", True):
+                    _total += 1
+                    if COMPACTION_SKIP_MODEL_RE.search(_m.get("id", "")):
+                        _skip += 1
+        print(f"[Compaction] eligibility: {_total - _skip}/{_total} enabled models compactable (skip-regex anchored 2026-08-26)")
+    except Exception as _e:
+        print(f"[Compaction] eligibility report failed: {_e}")
 
 
 # Direct Antigravity integration deliberately owns its own mapping namespace.
@@ -1861,15 +1877,53 @@ def _read_version_file() -> str | None:
     except Exception:
         return None
 
+# Update check cache: avoid hammering GitHub from the sidebar probe
+_VERSION_CHECK_CACHE: dict = {"ts": 0.0, "payload": None}
+_VERSION_CHECK_CACHE_TTL = 300.0  # matches config update.auto_check_interval
+
 @app.get("/api/version/check")
 async def version_check():
     """Frontend auto-update probe. Returns current version + update status."""
+    import time as _time
     current = _read_version_file() or _git_version()
-    return {
+    now = _time.time()
+    if (
+        _VERSION_CHECK_CACHE["payload"] is not None
+        and now - _VERSION_CHECK_CACHE["ts"] < _VERSION_CHECK_CACHE_TTL
+    ):
+        payload = dict(_VERSION_CHECK_CACHE["payload"])
+        payload["currentVersion"] = current  # always fresh
+        return payload
+
+    payload = {
         "currentVersion": current,
-        "hasUpdate": False,       # No update source configured yet
-        "latestVersion": None,    # Will be populated when an update source is wired
+        "hasUpdate": False,
+        "latestVersion": None,
+        "releaseUrl": "",
+        "error": "",
     }
+    try:
+        cfg = cs_get_config().get("update", {}) or {}
+        github_repo = (cfg.get("github_repo") or "").strip() or "dongden-alt/BSL-Router"
+        if cfg.get("check_enabled", True) and github_repo:
+            resp = await http_client.get(
+                f"https://api.github.com/repos/{github_repo}/releases/latest",
+                timeout=10.0,
+                headers={"Accept": "application/vnd.github+json"},
+            )
+            if resp.status_code == 200:
+                latest = (resp.json().get("tag_name") or "").lstrip("v")
+                payload["latestVersion"] = latest or None
+                payload["hasUpdate"] = bool(latest) and _compare_versions(latest, current) > 0
+                payload["releaseUrl"] = resp.json().get("html_url", "")
+            else:
+                # 404 = no releases yet; not an error worth surfacing
+                payload["error"] = "" if resp.status_code == 404 else f"GitHub API {resp.status_code}"
+    except Exception as e:
+        payload["error"] = str(e)
+    _VERSION_CHECK_CACHE["ts"] = now
+    _VERSION_CHECK_CACHE["payload"] = dict(payload)
+    return dict(payload)
 
 @app.post("/api/version/update")
 async def trigger_update():
@@ -11253,7 +11307,7 @@ async def scan_keys_snapshot_endpoint(request: Request):
 # ── Auto-Update Endpoints ──────────────────────────────────────────────────────
 
 _BSL_VERSION_FILE = _os_module.path.join(_os_module.path.dirname(_os_module.path.abspath(__file__)), "..", "VERSION")
-_BSL_GITHUB_REPO = "bsl-router"
+_BSL_GITHUB_REPO = "dongden-alt/BSL-Router"
 
 
 def _get_bsl_version() -> str:
