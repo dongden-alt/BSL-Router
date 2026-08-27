@@ -359,6 +359,59 @@ const chat-lane_PROVIDERS = {
                            { id: 'name', type: 'input', ph: 'Optional account name' }] },
 };
 
+// ── List-view section: always visible, bootstrap-friendly ──
+function renderchat-laneSection() {
+    let cards = '';
+    for (const [fmt, wc] of Object.entries(chat-lane_PROVIDERS)) {
+        // Find the configured provider entry for this format (if any).
+        let provKey = null, connCount = 0;
+        for (const [k, p] of Object.entries(globalConfig.providers || {})) {
+            if (p && p.format === fmt) { provKey = k; connCount = (p.connections || []).length; break; }
+        }
+        const active = connCount > 0;
+        const name = provKey ? (getDisplayName(provKey) + (connCount > 1 ? ` (${connCount})` : '')) : wc.label;
+        const onclick = provKey ? `showProviderDetail('${provKey}')` : `openchat-laneImportModal('${fmt}')`;
+        cards += providerCard(provKey || fmt, name, _chat-laneIcon(fmt), active, onclick);
+    }
+    return `
+    <div class="provider-section">
+        <h3>Web Chat Providers</h3>
+        <div class="provider-grid">${cards}</div>
+    </div>`;
+}
+
+function _chat-laneIcon(fmt) {
+    const wc = chat-lane_PROVIDERS[fmt];
+    if (!wc) return letterIcon('W');
+    const b = wc.badge;
+    return `<div style="width:36px;height:36px;border-radius:9px;background:${b.bg};border:1px solid ${b.border};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:${b.color};">${b.label}</div>`;
+}
+
+function openchat-laneImportModal(format) {
+    const wc = chat-lane_PROVIDERS[format];
+    if (!wc) return;
+    const fieldHtml = wc.fields.map(f => `
+        <div style="margin-bottom:10px;">
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;">${f.id}${f.id === 'name' ? ' (optional)' : ''}</label>
+            ${f.type === 'textarea'
+                ? `<textarea id="wc-${f.id}" rows="3" placeholder="${f.ph}" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:8px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-color);color:var(--text-main);resize:vertical;"></textarea>`
+                : `<input id="wc-${f.id}" type="text" placeholder="${f.ph}" style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-color);color:var(--text-main);">`}
+        </div>`).join('');
+    const modal = showOAuthModal({
+        title: 'Import ' + wc.label + ' Account',
+        body: `<div style="padding:20px;max-width:460px;">${fieldHtml}
+            <div style="display:flex;align-items:center;gap:12px;">
+                <button class="btn btn-primary" id="wc-import-btn">Import</button>
+                <span id="wc-status" style="font-size:12px;"></span>
+            </div></div>`,
+    });
+    modal.content.querySelector('#wc-import-btn').onclick = async () => {
+        const btn = modal.content.querySelector('#wc-import-btn');
+        btn.disabled = true; btn.textContent = 'Importing…';
+        await importchat-laneAccount(format, modal);
+    };
+}
+
 // Card renderer for the per-format credential import UI.
 function renderchat-laneImportCard(format) {
     const wc = chat-lane_PROVIDERS[format];
@@ -385,7 +438,7 @@ function renderchat-laneImportCard(format) {
     </div>`;
 }
 
-async function importchat-laneAccount(format) {
+async function importchat-laneAccount(format, modal) {
     const wc = chat-lane_PROVIDERS[format];
     if (!wc) return;
     const body = {};
@@ -407,10 +460,13 @@ async function importchat-laneAccount(format) {
         }
         showToast(wc.label + ' account imported');
         await fetchConfig();
+        if (modal && modal.close) modal.close();
         renderActiveTab();
     } catch (err) {
         if (statusEl) { statusEl.textContent = 'Import failed: ' + err.message; statusEl.style.color = 'var(--danger)'; }
         showToast('Import failed: ' + err.message, true);
+        const btn = document.getElementById('wc-import-btn');
+        if (btn) { btn.disabled = false; btn.textContent = 'Import'; }
     }
 }
 
@@ -1068,6 +1124,10 @@ function renderProviderList() {
         html += providerCard(p.id, p.name, SVGS[p.id] || letterIcon(p.id), isActive, `showProviderDetail('${p.id}')`);
     });
     html += `</div></div>`;
+    
+    // ── Web Chat Providers (Chat2API clean-room backends) ──
+    // Cards exist even before any account is imported (fresh-install bootstrap).
+    html += renderchat-laneSection();
     
     html += renderSection('Image Providers', 'image', customImageCards, 'image');
     html += renderSection('Video Providers', 'video', customVideoCards, 'video');

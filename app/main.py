@@ -12214,6 +12214,20 @@ def _log_antigravity_ccpa_stage_failure(operation: str, stage: str, exc: Excepti
         f"[AntigravityCCPA] operation={operation} stage={stage} error={type(exc).__name__}",
         flush=True,
     )
+    try:
+        import os as _os
+        _os.makedirs(".brain/logs", exist_ok=True)
+        rec = {
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "operation": operation,
+            "stage": stage,
+            "error_type": type(exc).__name__,
+            "detail": str(exc)[:300],
+        }
+        with open(".brain/logs/ccpa_failures.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 async def _forward_antigravity_ccpa_control(request: Request, operation: str):
@@ -12260,6 +12274,9 @@ async def _forward_antigravity_ccpa_control(request: Request, operation: str):
         )
         stage = "upstream-send"
         upstream_response = await client.send(upstream_request, stream=True)
+        # Transport succeeded — the singleton pool is healthy. (A corrupted
+        # pool raises below; the except path recycles the client so the NEXT
+        # hourly poll gets a fresh pool instead of wedging 502 forever.)
         try:
             stage = "response-headers"
             upstream_headers = _antigravity_native_response_headers(upstream_response)
@@ -12288,6 +12305,16 @@ async def _forward_antigravity_ccpa_control(request: Request, operation: str):
         # Never include request data or headers here: Google credentials must not
         # reach process logs even when control-plane transport is unavailable.
         _log_antigravity_ccpa_stage_failure(operation, stage, exc)
+        if stage in ("request-build", "upstream-send"):
+            # Recycle the shared egress client after a transport-level failure:
+            # the historical failure mode on this box is a degraded keep-alive
+            # pool that wedges every subsequent connect until process restart.
+            # We drop references WITHOUT aclose(): another request may hold a
+            # healthy in-flight stream on this pool; keepalive expiry (30s)
+            # and GC reclaim the idle pool instead.
+            global google_egress_client, _ANTIGRAVITY_EGRESS_CLIENT
+            google_egress_client = None
+            _ANTIGRAVITY_EGRESS_CLIENT = None
         return _antigravity_ccpa_error(
             502,
             "UPSTREAM_UNAVAILABLE",
