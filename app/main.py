@@ -89,7 +89,10 @@ from app.antifreeze import (
 from app.compat import get_profile, is_anthropic_compatible, ToolLedger
 from app.middleware.response_format_guard import inject_json_instruction, has_response_format
 from app.middleware.glm_tools import normalize_glm_tool_calls, inject_glm_language_forcing
-from app.middleware.agentrouter_policy import agentrouter_nfkd_transcode
+from app.middleware.agentrouter_policy import (
+    _is_agentrouter_family,
+    agentrouter_nfkd_transcode,
+)
 from app.middleware.quality import (
     is_length_truncated,
     build_continuation_payload,
@@ -6659,49 +6662,53 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     except Exception as e:
         print(f"Efficiency middleware error (non-blocking): {e}")
 
-    # AgentRouter-only NFKD transcode (live 2026-08-22):
+    # AgentRouter-family NFKD transcode (live 2026-08-22; family-wide 2026-08-27):
     # AR returns 400 content-blocked on PRECOMPOSED Vietnamese codepoints
     # (U+1EA0..U+1EF9, U+0110/U+0111) anywhere in the request body. NFKD
     # decomposition rewrites those into base letter + combining mark, which AR
-    # accepts. Other providers are untouched. Transcode in place and log only
-    # when something actually changed.
+    # accepts. Covers the whole agentrouter* family (agentrouter, agentrouter-o).
+    # Other providers are untouched. Transcode in place and log only when
+    # something actually changed.
     try:
         _ar_changed, _ar_summary = agentrouter_nfkd_transcode(
             provider_name, internal_request.messages
         )
         # Also transcode the request-level system prompt (str or list of
-        # {type, text} content blocks) when present.
-        _ar_sys = getattr(internal_request, "system", None)
-        if _ar_sys is not None:
-            if isinstance(_ar_sys, str):
-                _n = unicodedata.normalize("NFKD", _ar_sys)
-                if _n != _ar_sys:
-                    internal_request.system = _n
-                    _ar_changed = True
-                    _ar_summary = "nfkd:sys"
-            elif isinstance(_ar_sys, list):
-                for block in _ar_sys:
-                    if isinstance(block, dict) and "text" in block:
-                        t = block["text"]
-                        if isinstance(t, str):
-                            n = unicodedata.normalize("NFKD", t)
-                            if n != t:
-                                block["text"] = n
+        # {type, text} content blocks) when present. SAME FAMILY GATE as the
+        # transcode above — before 2026-08-27 these blocks ran UNGATED for
+        # every provider, silently NFKD-mutating non-AR payloads.
+        if _is_agentrouter_family(provider_name):
+            _ar_sys = getattr(internal_request, "system", None)
+            if _ar_sys is not None:
+                if isinstance(_ar_sys, str):
+                    _n = unicodedata.normalize("NFKD", _ar_sys)
+                    if _n != _ar_sys:
+                        internal_request.system = _n
+                        _ar_changed = True
+                        _ar_summary = "nfkd:sys"
+                elif isinstance(_ar_sys, list):
+                    for block in _ar_sys:
+                        if isinstance(block, dict) and "text" in block:
+                            t = block["text"]
+                            if isinstance(t, str):
+                                n = unicodedata.normalize("NFKD", t)
+                                if n != t:
+                                    block["text"] = n
+                                    _ar_changed = True
+                                    _ar_summary = "nfkd:sys"
+            # Transcode tool description strings when tools are present.
+            _ar_tools = getattr(internal_request, "tools", None)
+            if _ar_tools is not None:
+                for tool in _ar_tools:
+                    if isinstance(tool, dict):
+                        f = tool.get("function") or tool
+                        d = f.get("description")
+                        if isinstance(d, str):
+                            n = unicodedata.normalize("NFKD", d)
+                            if n != d:
+                                f["description"] = n
                                 _ar_changed = True
-                                _ar_summary = "nfkd:sys"
-        # Transcode tool description strings when tools are present.
-        _ar_tools = getattr(internal_request, "tools", None)
-        if _ar_tools is not None:
-            for tool in _ar_tools:
-                if isinstance(tool, dict):
-                    f = tool.get("function") or tool
-                    d = f.get("description")
-                    if isinstance(d, str):
-                        n = unicodedata.normalize("NFKD", d)
-                        if n != d:
-                            f["description"] = n
-                            _ar_changed = True
-                            _ar_summary = "nfkd:tools"
+                                _ar_summary = "nfkd:tools"
         if _ar_changed:
             print(
                 f"[AgentRouter-VN] NFKD transcoded {provider_name}/{target_model} {_ar_summary}",

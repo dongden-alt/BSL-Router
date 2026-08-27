@@ -149,3 +149,56 @@ def test_nfkd_object_with_content_attr():
     changed, summary = agentrouter_nfkd_transcode("agentrouter", [msg])
     assert changed is True
     assert not _has_precomposed_vn(msg.content)
+
+
+# ---------------------------------------------------------------------------
+# agentrouter* family gating (2026-08-27): agentrouter-o must be covered too.
+# ---------------------------------------------------------------------------
+from app.middleware.agentrouter_policy import _is_agentrouter_family
+
+
+def test_family_gate_covers_agentrouter_and_siblings():
+    assert _is_agentrouter_family("agentrouter") is True
+    assert _is_agentrouter_family("AgentRouter") is True  # case-insensitive
+    assert _is_agentrouter_family("agentrouter-o") is True
+    assert _is_agentrouter_family("AgentRouter-O") is True
+    assert _is_agentrouter_family("agentrouter-pro") is True
+
+
+def test_family_gate_excludes_others():
+    assert _is_agentrouter_family("agentrouter2") is False  # suffix, not sibling
+    assert _is_agentrouter_family("myagentrouter") is False  # prefix, not family
+    assert _is_agentrouter_family("agent") is False
+    assert _is_agentrouter_family("") is False
+    assert _is_agentrouter_family(None) is False
+
+
+def test_skip_gate_now_covers_agentrouter_o():
+    msgs = [{"role": "user", "content": "Hệ thống quản trị biên tập tin tức"}]
+    hit, reason = agentrouter_should_skip_for_vietnamese("agentrouter-o", msgs)
+    assert hit is True
+    hit2, _ = agentrouter_should_skip_for_vietnamese("agentrouter", msgs)
+    assert hit2 is True
+
+
+def test_skip_gate_still_ignores_other_providers():
+    msgs = [{"role": "user", "content": "Hệ thống quản trị biên tập tin tức"}]
+    hit, _ = agentrouter_should_skip_for_vietnamese("vsllm-a", msgs)
+    assert hit is False
+
+
+def test_nfkd_transcode_now_covers_agentrouter_o():
+    msgs = [{"role": "user", "content": "Tin tức bóng đá"}]
+    changed, summary = agentrouter_nfkd_transcode("agentrouter-o", msgs)
+    assert changed is True
+    assert summary.startswith("nfkd:")
+    # message must now be decomposed (base letter + combining marks)
+    assert msgs[0]["content"] != "Tin tức bóng đá"
+
+
+def test_nfkd_transcode_ignores_other_providers():
+    original = "Tin tức bóng đá"
+    msgs = [{"role": "user", "content": original}]
+    changed, _ = agentrouter_nfkd_transcode("vsllm-a", msgs)
+    assert changed is False
+    assert msgs[0]["content"] == original

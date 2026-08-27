@@ -59,6 +59,17 @@ _VN_PHRASES = (
 _PROVIDER = "agentrouter"
 
 
+def _is_agentrouter_family(provider_name: str) -> bool:
+    """True for agentrouter and any agentrouter-* sibling (e.g. agentrouter-o).
+
+    Both gates used exact == "agentrouter"; agentrouter-o (the Anthropic-
+    format sibling of the same agentrouter.org upstream) 400s on the SAME
+    precomposed-VN content block, so the policy must cover the whole family.
+    """
+    p = str(provider_name or "").lower()
+    return p == _PROVIDER or p.startswith(_PROVIDER + "-")
+
+
 def _extract_text_blobs(obj: Any, out: List[str], depth: int = 0) -> None:
     if depth > 12 or obj is None:
         return
@@ -113,7 +124,7 @@ def agentrouter_should_skip_for_vietnamese(
     messages: Sequence[Any],
 ) -> Tuple[bool, str]:
     """True when provider is agentrouter and outbound text looks Vietnamese."""
-    if str(provider_name or "").lower() != _PROVIDER:
+    if not _is_agentrouter_family(provider_name):
         return False, ""
     text = _message_text(messages)
     return detect_vietnamese_content(text)
@@ -125,11 +136,13 @@ def agentrouter_nfkd_transcode(provider_name: str, messages: Sequence[Any]) -> T
     agentrouter.org 400s content-blocked on PRECOMPOSED Vietnamese codepoints
     (U+1EA0..U+1EF9, U+0110/U+0111) anywhere in the request body. NFKD
     decomposition rewrites those into base letter + combining mark, which AR
-    accepts. Other providers are untouched.
+    accepts. The whole agentrouter* family (agentrouter, agentrouter-o, ...)
+    shares the upstream and the block, so all are covered. Other providers
+    are untouched.
 
     Returns (changed, summary) for logging. Never raises.
     """
-    if str(provider_name or "").lower() != _PROVIDER:
+    if not _is_agentrouter_family(provider_name):
         return False, ""
 
     changed = False
