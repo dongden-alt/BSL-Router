@@ -492,7 +492,11 @@ async function startchat-lanecollect(wc, modal) {
     logEl.style.display = 'block'; logEl.textContent = 'Starting collector…';
     try {
         const res = await fetch('/api/chat-lane/' + wc.prov + '/collect', { method: 'POST' });
-        const data = await res.json();
+        const raw = await res.text();
+        let data;
+        try { data = JSON.parse(raw); } catch (e) {
+            throw new Error('HTTP ' + res.status + (raw ? ' — ' + raw.slice(0, 120) : ''));
+        }
         if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
         const pollProv = data.prov || wc.prov;
         const prefix = 'Chrome window should open on the router machine.\nLog in there if asked.\n\n';

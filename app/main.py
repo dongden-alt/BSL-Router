@@ -3701,9 +3701,23 @@ _collect_LOG_DIR = _Path(".brain/logs/chat-lane_collect")
 
 
 def _is_local_request(request: Request) -> bool:
-    """True when the caller is on this machine (collect spawns a local Chrome)."""
-    client = request.client.host if request.client else ""
-    return client in ("127.0.0.1", "::1", "localhost")
+    """True when the caller is on this machine (collect spawns a local Chrome).
+
+    Dual-stack listeners report IPv4 loopback clients as IPv4-mapped IPv6
+    (``::ffff:127.0.0.1``), so unwrap ``ipv4_mapped`` before the loopback
+    check — plain string matching 403'd real localhost callers (live 2026-08-27).
+    """
+    import ipaddress as _ipa
+
+    client = (request.client.host if request.client else "") or ""
+    try:
+        ip = _ipa.ip_address(client.split("%")[0])
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped is not None:
+            ip = mapped
+        return ip.is_loopback
+    except ValueError:
+        return client in ("127.0.0.1", "::1", "localhost")
 
 
 @app.post("/api/chat-lane/{prov}/collect")
@@ -3742,14 +3756,33 @@ async def chat-lane_collect_start(prov: str, request: Request):
     _collect_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _collect_LOG_DIR / f"{prov}-{int(time.time() * 1000)}.log"
 
-    proc = _sp.Popen(
-        [str(root / ".venv" / "Scripts" / "python.exe"), str(script),
-         "--profile", str(profile_dir), "--json-out", str(log_path.with_suffix(".json"))],
-        cwd=str(root),
-        stdout=_sp.open(str(log_path), "w", encoding="utf-8", errors="replace"),
-        stderr=_sp.STDOUT,
-        creationflags=_sp.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
-    )
+    # Point the collector back at THIS instance over IPv4 (staging runs on
+    # alternate ports, and 127.0.0.1 avoids the child re-resolving localhost).
+    router_url = f"http://127.0.0.1:{request.url.port or 6969}"
+
+    # NOTE: use the builtin open() here. `subprocess.open` does not exist and
+    # raised AttributeError -> HTTP 500 on every collect (live bug 2026-08-27).
+    log_fh = open(str(log_path), "w", encoding="utf-8", errors="replace")
+    try:
+        proc = _sp.Popen(
+            [str(root / ".venv" / "Scripts" / "python.exe"), str(script),
+             "--profile", str(profile_dir),
+             "--router", router_url,
+             "--json-out", str(log_path.with_suffix(".json"))],
+            cwd=str(root),
+            stdout=log_fh,
+            stderr=_sp.STDOUT,
+            creationflags=_sp.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+        )
+    except Exception as exc:  # spawn failure must not surface as a bare 500
+        log_fh.close()
+        print(f"[chat-lanecollect] spawn failed for {prov}: {exc!r}", flush=True)
+        return JSONResponse({"error": f"Failed to launch collector: {exc}"}, status_code=500)
+    finally:
+        # The child inherited its own handle; drop the parent's copy so the log
+        # is flushed/closed deterministically and the fd is not leaked.
+        if not log_fh.closed:
+            log_fh.close()
 
     _collect_RUNS[prov] = {
         "proc": proc,
