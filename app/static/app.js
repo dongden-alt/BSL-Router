@@ -364,20 +364,35 @@ function renderchat-laneSection() {
     let cards = '';
     for (const [fmt, wc] of Object.entries(chat-lane_PROVIDERS)) {
         // Find the configured provider entry for this format (if any).
-        let provKey = null, connCount = 0;
+        let provKey = null, connCount = 0, models = [];
         for (const [k, p] of Object.entries(globalConfig.providers || {})) {
-            if (p && p.format === fmt) { provKey = k; connCount = (p.connections || []).length; break; }
+            if (p && p.format === fmt) {
+                provKey = k; connCount = (p.connections || []).length;
+                models = Array.isArray(p.models) ? p.models.filter(m => m && m.enabled !== false) : [];
+                break;
+            }
         }
         const active = connCount > 0;
         const name = provKey ? (getDisplayName(provKey) + (connCount > 1 ? ` (${connCount})` : '')) : wc.label;
-        const onclick = provKey ? `showProviderDetail('${provKey}')` : `openchat-laneImportModal('${fmt}')`;
+        const onclick = provKey ? `showProviderDetail('${provKey}')` : `openchat-laneAddAccountModal('${fmt}')`;
         cards += providerCard(provKey || fmt, name, _chat-laneIcon(fmt), active, onclick);
+        // Model chips under each card (parity with the OAuth provider rows).
+        if (models.length) cards += _chat-laneModelChips(models);
     }
     return `
     <div class="provider-section">
         <h3>Web Chat Providers</h3>
-        <div class="provider-grid">${cards}</div>
+        <div class="provider-grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));align-items:start;">${cards}</div>
     </div>`;
+}
+
+function _chat-laneModelChips(models) {
+    const chips = models.slice(0, 6).map(m => {
+        const label = (m.display_name || m.id || '').toString();
+        return `<span title="${m.id || ''}" style="display:inline-block;padding:2px 8px;margin:2px 4px 2px 0;border-radius:10px;font-size:11px;background:var(--bg-body);border:1px solid var(--border-color);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;">${label}</span>`;
+    }).join('');
+    const extra = models.length > 6 ? `<span style="display:inline-block;padding:2px 8px;margin:2px 0;font-size:11px;color:var(--text-muted);">+${models.length - 6} more</span>` : '';
+    return `<div style="grid-column:1/-1;margin:-6px 0 10px 4px;">${chips}${extra}</div>`;
 }
 
 function _chat-laneIcon(fmt) {
@@ -387,29 +402,228 @@ function _chat-laneIcon(fmt) {
     return `<div style="width:36px;height:36px;border-radius:9px;background:${b.bg};border:1px solid ${b.border};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:${b.color};">${b.label}</div>`;
 }
 
-function openchat-laneImportModal(format) {
+// ── Add Account modal (3 tabs: Browser collect / Bulk / Manual) ──
+let _wccollectTimer = null;
+
+function openchat-laneAddAccountModal(format) {
     const wc = chat-lane_PROVIDERS[format];
     if (!wc) return;
-    const fieldHtml = wc.fields.map(f => `
-        <div style="margin-bottom:10px;">
-            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;">${f.id}${f.id === 'name' ? ' (optional)' : ''}</label>
-            ${f.type === 'textarea'
-                ? `<textarea id="wc-${f.id}" rows="3" placeholder="${f.ph}" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:8px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-color);color:var(--text-main);resize:vertical;"></textarea>`
-                : `<input id="wc-${f.id}" type="text" placeholder="${f.ph}" style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-color);color:var(--text-main);">`}
-        </div>`).join('');
+    const manualHtml = _chat-laneManualFieldsHtml(wc);
     const modal = showOAuthModal({
-        title: 'Import ' + wc.label + ' Account',
-        body: `<div style="padding:20px;max-width:460px;">${fieldHtml}
-            <div style="display:flex;align-items:center;gap:12px;">
-                <button class="btn btn-primary" id="wc-import-btn">Import</button>
+        title: 'Add Account · ' + wc.label,
+        body: `<div style="padding:20px;max-width:520px;">
+        <div style="display:flex;gap:4px;border-bottom:1px solid var(--border-color);margin-bottom:16px;">
+            <button class="btn" id="wc-tab-browser" style="border-radius:8px 8px 0 0;padding:8px 14px;font-size:13px;font-weight:600;">Browser</button>
+            <button class="btn" id="wc-tab-bulk" style="border-radius:8px 8px 0 0;padding:8px 14px;font-size:13px;">Bulk</button>
+            <button class="btn" id="wc-tab-manual" style="border-radius:8px 8px 0 0;padding:8px 14px;font-size:13px;">Manual</button>
+        </div>
+        <div id="wc-pane-browser" style="display:none;">
+            <div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:12px;">
+                Opens a Chrome window on the router machine using a saved profile.
+                First run: log in once. Later runs: fully automatic — token/cookies are
+                collected and imported with no login.
+            </div>
+            <button class="btn btn-primary" id="wc-collect-btn" style="padding:10px 18px;border-radius:8px;">Run Browser collect</button>
+            <div id="wc-collect-log" style="margin-top:12px;max-height:180px;overflow-y:auto;background:var(--bg-color);border:1px solid var(--border-color);border-radius:8px;padding:10px;font-family:monospace;font-size:11px;color:var(--text-muted);white-space:pre-wrap;display:none;"></div>
+        </div>
+        <div id="wc-pane-bulk" style="display:none;">
+            <div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:12px;">
+                Select one or more files: <b>.json</b> pool files (array of accounts, or
+                {name: token} map) or <b>.txt</b> (one credential per line${wc.prov === 'qwen' ? '; Qwen rows: token<TAB>cookies<TAB>ua' : ''}).
+            </div>
+            <input type="file" id="wc-bulk-files" multiple accept=".json,.txt,.csv" style="font-size:12px;margin-bottom:10px;">
+            <div id="wc-bulk-preview" style="max-height:200px;overflow-y:auto;border:1px solid var(--border-color);border-radius:8px;display:none;"></div>
+            <div style="display:flex;align-items:center;gap:12px;margin-top:12px;">
+                <button class="btn btn-primary" id="wc-bulk-import-btn" style="padding:10px 18px;border-radius:8px;" disabled>Import N accounts</button>
+                <span id="wc-bulk-status" style="font-size:12px;"></span>
+            </div>
+        </div>
+        <div id="wc-pane-manual">
+            ${manualHtml}
+            <div style="display:flex;align-items:center;gap:12px;margin-top:4px;">
+                <button class="btn btn-primary" id="wc-import-btn" style="padding:10px 18px;border-radius:8px;">Import</button>
                 <span id="wc-status" style="font-size:12px;"></span>
-            </div></div>`,
+            </div>
+        </div>
+        </div>`,
     });
-    modal.content.querySelector('#wc-import-btn').onclick = async () => {
-        const btn = modal.content.querySelector('#wc-import-btn');
+    const $ = id => modal.content.querySelector('#' + id);
+    const tabs = { browser: $('wc-tab-browser'), bulk: $('wc-tab-bulk'), manual: $('wc-tab-manual') };
+    const panes = { browser: $('wc-pane-browser'), bulk: $('wc-pane-bulk'), manual: $('wc-pane-manual') };
+    const setActiveTab = name => {
+        for (const [k, btn] of Object.entries(tabs)) {
+            btn.style.borderBottom = k === name ? '2px solid var(--brand-color)' : 'none';
+            btn.style.fontWeight = k === name ? '600' : '400';
+            panes[k].style.display = k === name ? 'block' : 'none';
+        }
+        if (name !== 'browser' && _wccollectTimer) { clearInterval(_wccollectTimer); _wccollectTimer = null; }
+    };
+    tabs.browser.onclick = () => setActiveTab('browser');
+    tabs.bulk.onclick = () => setActiveTab('bulk');
+    tabs.manual.onclick = () => setActiveTab('manual');
+    setActiveTab('browser');
+    $('wc-collect-btn').onclick = () => startchat-lanecollect(wc, modal);
+    $('wc-bulk-files').onchange = () => chat-laneBulkPreview(wc, modal);
+    $('wc-bulk-import-btn').onclick = () => chat-laneBulkImport(wc, modal);
+    $('wc-import-btn').onclick = async () => {
+        const btn = $('wc-import-btn');
         btn.disabled = true; btn.textContent = 'Importing…';
         await importchat-laneAccount(format, modal);
     };
+}
+
+// Old entry point kept as alias so any stale call sites still work.
+function openchat-laneImportModal(format) { openchat-laneAddAccountModal(format); }
+
+function _chat-laneManualFieldsHtml(wc) {
+    return wc.fields.map(f => `
+        <div style="margin-bottom:10px;">
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;">${f.id === 'refresh_token' ? 'refresh_token' : f.id}${f.id === 'name' ? ' (optional)' : ''}</label>
+            ${f.type === 'textarea'
+                ? `<textarea id="wc-${f.id}" rows="3" placeholder="${f.ph}" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:8px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-color);color:var(--text-main);resize:vertical;"></textarea>`
+                : `<input id="wc-${f.id}" type="text" placeholder="${f.ph}" style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-color);color:var(--text-main);">`}
+        </div>`).join('');
+}
+
+async function startchat-lanecollect(wc, modal) {
+    const logEl = modal.content.querySelector('#wc-collect-log');
+    const btn = modal.content.querySelector('#wc-collect-btn');
+    btn.disabled = true; btn.textContent = 'collecting…';
+    logEl.style.display = 'block'; logEl.textContent = 'Starting collector…';
+    try {
+        const res = await fetch('/api/chat-lane/' + wc.prov + '/collect', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        const pollProv = data.prov || wc.prov;
+        const prefix = 'Chrome window should open on the router machine.\nLog in there if asked.\n\n';
+        logEl.textContent = prefix;
+        _wccollectTimer = setInterval(async () => {
+            try {
+                const sr = await fetch('/api/chat-lane/collectors/status?prov=' + pollProv);
+                const sd = await sr.json();
+                if (sd.running) {
+                    logEl.textContent = prefix + (sd.tail || '');
+                } else {
+                    clearInterval(_wccollectTimer); _wccollectTimer = null;
+                    if (sd.result === 'ok') {
+                        logEl.textContent += '\n✓ collect complete — account imported.';
+                        showToast(wc.label + ' account imported');
+                        await fetchConfig();
+                        if (modal && modal.close) modal.close();
+                        renderActiveTab();
+                    } else {
+                        logEl.textContent += '\n✗ ' + (sd.result || 'collect failed');
+                        btn.disabled = false; btn.textContent = 'Run Browser collect';
+                    }
+                }
+                logEl.scrollTop = logEl.scrollHeight;
+            } catch (e) { /* transient poll failure — keep polling */ }
+        }, 2000);
+    } catch (err) {
+        logEl.textContent += '\n✗ ' + err.message;
+        btn.disabled = false; btn.textContent = 'Run Browser collect';
+    }
+}
+
+async function chat-laneBulkPreview(wc, modal) {
+    const filesEl = modal.content.querySelector('#wc-bulk-files');
+    const prevEl = modal.content.querySelector('#wc-bulk-preview');
+    const btn = modal.content.querySelector('#wc-bulk-import-btn');
+    const statusEl = modal.content.querySelector('#wc-bulk-status');
+    btn.disabled = true; statusEl.textContent = '';
+    const files = Array.from(filesEl.files || []);
+    if (!files.length) { prevEl.style.display = 'none'; return; }
+    const rows = [];
+    for (const file of files) {
+        const text = await file.text();
+        try { rows.push(..._parsechat-lanePool(text, wc.prov, file.name)); }
+        catch (e) { statusEl.textContent = '✗ ' + file.name + ': ' + e.message; return; }
+    }
+    if (!rows.length) { statusEl.textContent = '✗ No valid rows found in selected files.'; return; }
+    modal._wcBulkRows = rows;
+    const rowsHtml = rows.slice(0, 50).map((r, i) =>
+        `<tr><td style="padding:3px 8px;font-size:11px;">${i + 1}</td><td style="padding:3px 8px;font-size:11px;font-family:monospace;">${(r.name || '').toString().slice(0, 24)}</td><td style="padding:3px 8px;font-size:11px;font-family:monospace;">${(r.token || '').toString().slice(0, 24)}…</td></tr>`
+    ).join('');
+    prevEl.style.display = 'block';
+    prevEl.innerHTML = `<table style="width:100%;border-collapse:collapse;">
+        <thead><tr><th style="text-align:left;padding:3px 8px;font-size:11px;">#</th><th style="text-align:left;padding:3px 8px;font-size:11px;">Name</th><th style="text-align:left;padding:3px 8px;font-size:11px;">Token</th></tr></thead>
+        <tbody>${rowsHtml}</tbody></table>` +
+        (rows.length > 50 ? `<div style="padding:6px 8px;font-size:11px;color:var(--text-muted);">…and ${rows.length - 50} more</div>` : '');
+    btn.textContent = `Import ${rows.length} account${rows.length > 1 ? 's' : ''}`;
+    btn.disabled = false;
+}
+
+function _parsechat-lanePool(text, prov, fileName) {
+    const rows = [];
+    if (fileName.toLowerCase().endsWith('.json') || text.trim().startsWith('[') || text.trim().startsWith('{')) {
+        let data;
+        try { data = JSON.parse(text); } catch (e) { throw new Error('invalid JSON'); }
+        if (Array.isArray(data)) {
+            for (const item of data) {
+                if (typeof item === 'string') rows.push({ token: item });
+                else if (item && typeof item === 'object') {
+                    const tok = item.token || item.refresh_token || item.access_token || '';
+                    if (!tok) continue;
+                    rows.push({ token: tok, cookies: item.cookies || '', ua: item.ua || item.user_agent || '', name: item.name || item.label || '' });
+                }
+            }
+        } else if (data && typeof data === 'object') {
+            // {name: token} map — also accept {accounts: [...]} wrapper.
+            if (Array.isArray(data.accounts)) {
+                for (const item of data.accounts) {
+                    const tok = (item && (item.token || item.refresh_token || item.access_token)) || '';
+                    if (!tok) continue;
+                    rows.push({ token: tok, cookies: item.cookies || '', ua: item.ua || item.user_agent || '', name: item.name || item.label || '' });
+                }
+            } else {
+                for (const [name, tok] of Object.entries(data)) {
+                    if (typeof tok !== 'string' || !tok) continue;
+                    rows.push({ token: tok, name });
+                }
+            }
+        }
+    } else {
+        // Line-based txt: token-only, or TAB/| separated token\tcookies\tua[\tname].
+        for (const raw of text.split(/\r?\n/)) {
+            const line = raw.trim();
+            if (!line || line.startsWith('#')) continue;
+            const parts = line.split(/\t|\|/).map(s => s.trim());
+            if (parts.length === 1) rows.push({ token: parts[0] });
+            else if (parts.length >= 2) rows.push({ token: parts[0], cookies: parts[1], ua: parts[2] || '', name: parts[3] || '' });
+        }
+    }
+    return rows;
+}
+
+async function chat-laneBulkImport(wc, modal) {
+    const rows = modal._wcBulkRows || [];
+    const btn = modal.content.querySelector('#wc-bulk-import-btn');
+    const statusEl = modal.content.querySelector('#wc-bulk-status');
+    if (!rows.length) return;
+    btn.disabled = true; btn.textContent = 'Importing…';
+    try {
+        const accounts = rows.map(r => (wc.prov === 'glm')
+            ? { refresh_token: r.token, name: r.name }
+            : { token: r.token, cookies: r.cookies || '', ua: r.ua || '', name: r.name });
+        const res = await fetch('/api/chat-lane/' + wc.prov + '/import/bulk', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accounts }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        const okN = (data.added || []).length, failN = (data.failed || []).length;
+        statusEl.textContent = `✓ ${okN} imported` + (failN ? ` · ✗ ${failN} failed` : '');
+        statusEl.style.color = failN ? 'var(--danger)' : 'var(--success)';
+        if (failN) console.warn('chat-lane bulk import failures:', data.failed);
+        showToast(`Imported ${okN} of ${data.total || rows.length} ${wc.label} accounts`);
+        await fetchConfig();
+        renderActiveTab();
+    } catch (err) {
+        statusEl.textContent = '✗ ' + err.message;
+        statusEl.style.color = 'var(--danger)';
+    } finally {
+        btn.disabled = false; btn.textContent = `Import ${rows.length} account${rows.length > 1 ? 's' : ''}`;
+    }
 }
 
 // Card renderer for the per-format credential import UI.

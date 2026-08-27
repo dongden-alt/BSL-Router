@@ -3670,6 +3670,324 @@ async def chat-lane_qwen_import_bulk(request: Request):
     })
 
 
+# ── chat-lane browser-collect orchestration (2026-08-27) ────────────────────────
+# Spawns tools/{glm,kimi,qwen}_login.py with a persistent Chrome profile via
+# nodriver. The collector POSTs collected credentials to the import endpoint
+# itself; the router here only launches it and streams its log to the UI.
+
+_collectors: dict[str, dict] = {
+    "glm": {
+        "script": "glm_login.py",
+        "profile_dir": "data/glm_profiles",
+        "label": "GLM",
+    },
+    "kimi": {
+        "script": "kimi_login.py",
+        "profile_dir": "data/kimi_profiles",
+        "label": "Kimi",
+    },
+    "qwen": {
+        "script": "qwen_gh_login.py",
+        "profile_dir": "data/qwen_profiles",
+        "label": "Qwen",
+    },
+}
+
+# prov -> {"proc": Popen, "log_path": Path, "started": ts, "finished": ts|None,
+#          "result": "ok"|"error"|None, "tail": [lines]}
+_collect_RUNS: dict[str, dict] = {}
+from pathlib import Path as _Path
+_collect_LOG_DIR = _Path(".brain/logs/chat-lane_collect")
+
+
+def _is_local_request(request: Request) -> bool:
+    """True when the caller is on this machine (collect spawns a local Chrome)."""
+    client = request.client.host if request.client else ""
+    return client in ("127.0.0.1", "::1", "localhost")
+
+
+@app.post("/api/chat-lane/{prov}/collect")
+async def chat-lane_collect_start(prov: str, request: Request):
+    """Spawn the browser collector for a web provider (localhost only)."""
+    if _is_admin_auth_enabled():
+        session_token = request.cookies.get("bsl_admin_session")
+        if not _is_valid_admin_session(session_token):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    meta = _collectors.get(prov)
+    if not meta:
+        return JSONResponse({"error": f"Unknown web provider '{prov}'."}, status_code=404)
+
+    if not _is_local_request(request):
+        return JSONResponse(
+            {"error": "Browser collect only works from the router machine (localhost)."},
+            status_code=403,
+        )
+
+    run = _collect_RUNS.get(prov)
+    if run and run.get("proc") and run["proc"].poll() is None:
+        return JSONResponse(
+            {"error": f"A {meta['label']} collect is already running."},
+            status_code=409,
+        )
+
+    import subprocess as _sp
+
+    root = _Path(__file__).resolve().parent.parent
+    script = root / "tools" / meta["script"]
+    if not script.exists():
+        return JSONResponse({"error": f"collector script missing: tools/{meta['script']}"}, status_code=500)
+
+    profile_dir = root / meta["profile_dir"] / "default"
+    _collect_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _collect_LOG_DIR / f"{prov}-{int(time.time() * 1000)}.log"
+
+    proc = _sp.Popen(
+        [str(root / ".venv" / "Scripts" / "python.exe"), str(script),
+         "--profile", str(profile_dir), "--json-out", str(log_path.with_suffix(".json"))],
+        cwd=str(root),
+        stdout=_sp.open(str(log_path), "w", encoding="utf-8", errors="replace"),
+        stderr=_sp.STDOUT,
+        creationflags=_sp.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+    )
+
+    _collect_RUNS[prov] = {
+        "proc": proc,
+        "log_path": log_path,
+        "started": time.time(),
+        "finished": None,
+        "result": None,
+        "tail": [],
+    }
+    print(f"[chat-lanecollect] spawned {prov} collector PID {proc.pid} -> {log_path}", flush=True)
+    return JSONResponse({"ok": True, "prov": prov, "pid": proc.pid})
+
+
+@app.get("/api/chat-lane/collectors/status")
+async def chat-lane_collectors_status(prov: str = ""):
+    """Polling endpoint for the UI: {running, result, tail} per provider."""
+    if not prov:
+        return JSONResponse({"runs": {p: {"running": bool(r.get("proc") and r["proc"].poll() is None),
+                                          "result": r.get("result")}
+                                      for p, r in _collect_RUNS.items()}})
+    run = _collect_RUNS.get(prov)
+    if not run:
+        return JSONResponse({"running": False, "result": None, "tail": []})
+
+    # Drain new log lines into the tail ring buffer (max 40 lines).
+    try:
+        with open(run["log_path"], "r", encoding="utf-8", errors="replace") as fh:
+            lines = [ln.rstrip("\n") for ln in fh.readlines()]
+        run["tail"] = lines[-40:]
+    except Exception:
+        pass
+
+    alive = run["proc"].poll() is None
+    if not alive and run.get("finished") is None:
+        run["finished"] = time.time()
+        run["result"] = "ok" if run["proc"].returncode == 0 else "error"
+        print(f"[chat-lanecollect] {prov} finished rc={run['proc'].returncode}", flush=True)
+
+    return JSONResponse({
+        "running": alive,
+        "result": run.get("result"),
+        "tail": run.get("tail", []),
+    })
+
+
+@app.post("/api/chat-lane/glm/import/bulk")
+async def chat-lane_glm_import_bulk(request: Request):
+    """Import up to 200 GLM accounts in one request.
+
+    Body: {accounts: [{refresh_token, name?}, ...]}
+    Validates each token via GLM's refresh endpoint, appends connections to the
+    ``glm-web`` provider, persists ONCE at the end.
+    Response: {ok, added: [names], failed: [{index, error}], total}.
+    """
+    if _is_admin_auth_enabled():
+        session_token = request.cookies.get("bsl_admin_session")
+        if not _is_valid_admin_session(session_token):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body."}, status_code=400)
+
+    accounts = body.get("accounts") or []
+    if not isinstance(accounts, list):
+        return JSONResponse({"error": "accounts must be a list."}, status_code=422)
+    if len(accounts) > 200:
+        return JSONResponse({"error": "Max 200 accounts per request."}, status_code=422)
+
+    from app.crypto import encrypt_value
+
+    config = get_mutable_config()
+    providers = config.get("providers", {})
+    added: list[str] = []
+    failed: list[dict] = []
+
+    # Find or create the glm-web provider entry once.
+    _existing_key = None
+    for pk, pv in providers.items():
+        if isinstance(pv, dict) and pv.get("format") == "glm-web":
+            _existing_key = pk
+            break
+    if _existing_key:
+        prov_entry = providers[_existing_key]
+        conns = prov_entry.get("connections") if isinstance(prov_entry, dict) else None
+        if not isinstance(conns, list):
+            conns = []
+    else:
+        _existing_key = f"glm-web-{int(time.time() * 1000)}"
+        prov_entry = {
+            "type": "custom",
+            "format": "glm-web",
+            "connections": [],
+            "models": [
+                {"id": glm_chat-lane.DEFAULT_MODEL, "display_name": "GLM-5.1 (Web)", "enabled": True},
+            ],
+        }
+        providers[_existing_key] = prov_entry
+        conns = prov_entry["connections"]
+
+    http_client = _get_client_for_proxy(None)
+    for idx, account in enumerate(accounts):
+        if not isinstance(account, dict):
+            failed.append({"index": idx, "error": "account must be an object."})
+            continue
+        refresh_token = (account.get("refresh_token") or "").strip()
+        if not refresh_token:
+            failed.append({"index": idx, "error": "refresh_token is required."})
+            continue
+        try:
+            result = await glm_chat-lane.refresh_access_token(http_client, refresh_token)
+            if result.get("is_guest"):
+                raise ValueError("GLM guest accounts are not supported.")
+            account_name = (account.get("name") or "").strip() or result.get("user_id", "") or f"glm-{idx}"
+            conns.append({
+                "name": account_name,
+                "api_key": encrypt_value(refresh_token),
+                "enabled": True,
+            })
+            added.append(account_name)
+        except ValueError as _ve:
+            failed.append({"index": idx, "error": str(_ve)})
+        except Exception as _ie:
+            failed.append({"index": idx, "error": str(_ie)})
+
+    prov_entry["connections"] = conns
+    prov_entry["type"] = "custom"
+    prov_entry["format"] = "glm-web"
+
+    _replace_runtime_config(config)
+    ROUND_ROBIN_STATE.clear()
+    reset_provider_round_robin_state()
+
+    return JSONResponse({
+        "ok": True,
+        "added": added,
+        "failed": failed,
+        "total": len(accounts),
+    })
+
+
+@app.post("/api/chat-lane/kimi/import/bulk")
+async def chat-lane_kimi_import_bulk(request: Request):
+    """Import up to 200 Kimi accounts in one request.
+
+    Body: {accounts: [{token, name?}, ...]}
+    Validates each token via Kimi's refresh endpoint, appends connections to
+    the ``kimi-web`` provider, persists ONCE at the end.
+    Response: {ok, added: [names], failed: [{index, error}], total}.
+    """
+    if _is_admin_auth_enabled():
+        session_token = request.cookies.get("bsl_admin_session")
+        if not _is_valid_admin_session(session_token):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body."}, status_code=400)
+
+    accounts = body.get("accounts") or []
+    if not isinstance(accounts, list):
+        return JSONResponse({"error": "accounts must be a list."}, status_code=422)
+    if len(accounts) > 200:
+        return JSONResponse({"error": "Max 200 accounts per request."}, status_code=422)
+
+    from app.crypto import encrypt_value
+
+    config = get_mutable_config()
+    providers = config.get("providers", {})
+    added: list[str] = []
+    failed: list[dict] = []
+
+    _existing_key = None
+    for pk, pv in providers.items():
+        if isinstance(pv, dict) and pv.get("format") == "kimi-web":
+            _existing_key = pk
+            break
+    if _existing_key:
+        prov_entry = providers[_existing_key]
+        conns = prov_entry.get("connections") if isinstance(prov_entry, dict) else None
+        if not isinstance(conns, list):
+            conns = []
+    else:
+        _existing_key = f"kimi-web-{int(time.time() * 1000)}"
+        prov_entry = {
+            "type": "custom",
+            "format": "kimi-web",
+            "connections": [],
+            "models": [
+                {"id": kimi_chat-lane.DEFAULT_MODEL, "display_name": "Kimi K2.6 (Web)", "enabled": True},
+            ],
+        }
+        providers[_existing_key] = prov_entry
+        conns = prov_entry["connections"]
+
+    http_client = _get_client_for_proxy(None)
+    for idx, account in enumerate(accounts):
+        if not isinstance(account, dict):
+            failed.append({"index": idx, "error": "account must be an object."})
+            continue
+        token = (account.get("token") or "").strip()
+        if not token:
+            failed.append({"index": idx, "error": "token is required."})
+            continue
+        try:
+            result = await kimi_chat-lane.refresh_access_token(http_client, token)
+            if not result.get("user_id") and not result.get("access_token"):
+                raise ValueError("Kimi token validation returned no credentials.")
+            account_name = (account.get("name") or "").strip() or result.get("user_id", "") or f"kimi-{idx}"
+            conns.append({
+                "name": account_name,
+                "api_key": encrypt_value(token),
+                "enabled": True,
+            })
+            added.append(account_name)
+        except ValueError as _ve:
+            failed.append({"index": idx, "error": str(_ve)})
+        except Exception as _ie:
+            failed.append({"index": idx, "error": str(_ie)})
+
+    prov_entry["connections"] = conns
+    prov_entry["type"] = "custom"
+    prov_entry["format"] = "kimi-web"
+
+    _replace_runtime_config(config)
+    ROUND_ROBIN_STATE.clear()
+    reset_provider_round_robin_state()
+
+    return JSONResponse({
+        "ok": True,
+        "added": added,
+        "failed": failed,
+        "total": len(accounts),
+    })
+
+
 @app.post("/api/system/shutdown")
 async def system_shutdown(request: Request):
     """Shutdown the BSL Router backend process safely.
