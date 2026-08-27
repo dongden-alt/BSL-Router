@@ -24,6 +24,7 @@ import argparse
 import os
 import socket
 import sys
+import time
 
 
 def make_dualstack_socket(port: int) -> socket.socket:
@@ -65,6 +66,31 @@ def main() -> None:
         f"[DualStack] listening on [::]:{args.port} (IPv6+IPv4, V6ONLY=0)",
         flush=True,
     )
+
+    # SPAWN-SIDE AUDIT (2026-08-27): mystery spawns at 15:25/15:44/16:09/16:11/
+    # 16:19 went through NO logged endpoint. Record who our parent is at every
+    # start so the next unexplained spawn is attributable from this file alone.
+    try:
+        import subprocess as _sp
+        _audit = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".brain", "logs", "restart_audit.log")
+        os.makedirs(os.path.dirname(_audit), exist_ok=True)
+        _ppid = os.getppid()
+        try:
+            _pcmd = _sp.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-CimInstance Win32_Process -Filter 'ProcessId={_ppid}').CommandLine"],
+                capture_output=True, text=True, timeout=8,
+            ).stdout.strip()
+        except Exception:
+            _pcmd = "(lookup failed)"
+        with open(_audit, "a", encoding="utf-8") as _fh:
+            _fh.write(
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} SPAWN pid={os.getpid()} ppid={_ppid} "
+                f"parent_cmd={(_pcmd or '(empty — parent already exited)')[:180]}\n"
+            )
+    except Exception as _audit_exc:
+        print(f"[DualStack] spawn audit failed: {_audit_exc!r}", flush=True)
+
     server.run(sockets=[sock])
 
 
