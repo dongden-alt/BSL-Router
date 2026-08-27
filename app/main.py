@@ -3498,7 +3498,37 @@ async def chat-lane_kimi_import(request: Request):
 
 # ── Qwen web-backend import helpers ────────────────────────────────────────
 
-def _qwen_import_account(
+
+def _qwen_display_name(model_id: str) -> str:
+    """Human display name for a qwen-web model id (adds Thinking variant)."""
+    base = model_id[:-len("-thinking")] if model_id.endswith("-thinking") else model_id
+    parts = base.split("-")
+    pretty = " ".join(p.upper() if p in ("max", "plus", "flash") else (p[:1].upper() + p[1:]) for p in parts)
+    suffix = " Thinking" if model_id.endswith("-thinking") else ""
+    return f"{pretty}{suffix} (Web)"
+
+
+async def _qwen_models_for_provider() -> list[dict]:
+    """Build the provider model list from live discovery + thinking variants.
+
+    chat.qwen.ai exposes /api/models publicly (no auth). On failure, fall back
+    to the static MODELS list so the provider is still usable offline.
+    """
+    try:
+        ids = await qwen_chat-lane.discover_models()
+    except Exception:
+        ids = []
+    base_ids = [i for i in ids if not i.endswith("-thinking") and not i.endswith("-web")]
+    if not base_ids:
+        return list(qwen_chat-lane.MODELS)
+    models: list[dict] = []
+    for mid in base_ids:
+        models.append({"id": mid, "display_name": _qwen_display_name(mid), "enabled": True})
+        models.append({"id": f"{mid}-thinking", "display_name": _qwen_display_name(f"{mid}-thinking"), "enabled": True})
+    return models
+
+
+async def _qwen_import_account(
     account: dict,
     config: dict,
 ) -> dict:
@@ -3568,7 +3598,7 @@ def _qwen_import_account(
             "type": "custom",
             "format": "qwen-web",
             "connections": [],
-            "models": list(qwen_chat-lane.MODELS),
+            "models": await _qwen_models_for_provider(),
         }
         providers["qwen-web"] = prov_entry
 
@@ -3667,7 +3697,7 @@ async def chat-lane_qwen_import(request: Request):
 
     try:
         config = get_mutable_config()
-        result = _qwen_import_account(body, config)
+        result = await _qwen_import_account(body, config)
     except ValueError as _ve:
         return JSONResponse({"error": str(_ve)}, status_code=422)
     except Exception as _ie:
@@ -3720,7 +3750,7 @@ async def chat-lane_qwen_import_bulk(request: Request):
             failed.append({"index": idx, "error": "account must be an object."})
             continue
         try:
-            result = _qwen_import_account(account, config)
+            result = await _qwen_import_account(account, config)
             added.append(result["name"])
         except ValueError as _ve:
             failed.append({"index": idx, "error": str(_ve)})
@@ -7287,6 +7317,25 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         if _active_conn_index is not None:
             _kc.setdefault(provider_name, []).append(_active_conn_index)
         _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
+        # Auth-dead fail-fast (2026-08-27): when EVERY connection on this
+        # provider has already been tried and rejected with 401, retrying the
+        # chain (or infinite-retry) just burns the client's timeout budget and
+        # surfaces as a confusing 504. Short-circuit to the real error.
+        if status_code == 401 and active_chain is not None:
+            _tried_on_prov = set(_kc.get(provider_name) or [])
+            _prov_conn_count = len(
+                ((config.get("providers", {}).get(provider_name) or {}).get("connections")) or []
+            )
+            if _prov_conn_count and _tried_on_prov and len(_tried_on_prov) >= _prov_conn_count:
+                print(
+                    f"[chat-laneFailover] {provider_name}: all {_prov_conn_count} connection(s) "
+                    f"rejected with 401 — fail-fast (no chain retry / no infinite retry)",
+                    flush=True,
+                )
+                return JSONResponse(
+                    {"error": {"message": f"chat-lane upstream auth failed for {provider_name}/{target_model}: {err_text[:200]}", "type": "proxy_error", "code": 401}},
+                    status_code=401,
+                )
         if active_chain and _next_idx < len(active_chain):
             print(
                 f"[chat-laneFailover] {provider_name}/{target_model} status={status_code} "
@@ -7672,6 +7721,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         _qwen_http = _get_client_for_proxy(active_conn.get("proxy_url"))
 
         # Step 1: create a fresh chat (single-turn mode).
+        # Fail-closed (2026-08-27): Qwen reports auth errors as HTTP 200 +
+        # {"success": false, "data": {"code": "unauthorized", ...}} — the old
+        # code only checked status_code and continued with chat_id="", which
+        # made completions return an empty 200 (fake OK) when the session died.
         _qwen_chat_id = ""
         try:
             _qwen_new_resp = await asyncio.wait_for(
@@ -7683,13 +7736,38 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 ),
                 timeout=20.0,
             )
-            if _qwen_new_resp.status_code == 200:
-                try:
-                    _qwen_chat_id = (_qwen_new_resp.json().get("data") or {}).get("id", "")
-                except Exception:
-                    pass
         except Exception as _cn_exc:
-            print(f"[Qwen] create-chat failed (non-blocking, continuing): {_cn_exc}", flush=True)
+            bench_leaf(config, provider_name, target_model, 502, f"create-chat transport: {_cn_exc}", 0)
+            return await _wc_failover(502, f"Qwen create-chat failed: {_cn_exc}")
+
+        _qwen_new_err = qwen_chat-lane.upstream_error_from_http200(_qwen_new_resp)
+        if _qwen_new_err is not None or _qwen_new_resp.status_code != 200:
+            _qwen_new_body = ""
+            try:
+                _qwen_new_body = _qwen_new_resp.text[:300]
+            except Exception:
+                pass
+            _qwen_new_status = _qwen_new_resp.status_code if _qwen_new_resp.status_code != 200 else 502
+            _qwen_new_code, _qwen_new_details = _qwen_new_err or ("", "")
+            print(
+                f"[Qwen] create-chat rejected: http={_qwen_new_resp.status_code} "
+                f"code={_qwen_new_code!r} details={_qwen_new_details!r} body={_qwen_new_body!r}",
+                flush=True,
+            )
+            bench_leaf(config, provider_name, target_model, _qwen_new_status, f"create-chat: {_qwen_new_code} {_qwen_new_details}", 0)
+            if _qwen_new_code in ("unauthorized", "Unauthorized") or _qwen_new_status == 401:
+                return await _wc_failover(401, f"Qwen session expired/invalid ({_qwen_new_code}) — re-run tools/qwen_gh_login.py to collect a fresh token")
+            return await _wc_failover(_qwen_new_status, f"Qwen create-chat failed ({_qwen_new_code or _qwen_new_status}): {_qwen_new_details or _qwen_new_body}")
+
+        try:
+            _qwen_chat_id = (_qwen_new_resp.json().get("data") or {}).get("id", "")
+        except Exception:
+            _qwen_chat_id = ""
+        if not _qwen_chat_id:
+            # 200 + success but no id — malformed upstream response, do not
+            # continue with an empty chat_id (it poisons the completions call).
+            bench_leaf(config, provider_name, target_model, 502, "create-chat: no chat id in response", 0)
+            return await _wc_failover(502, "Qwen create-chat returned no chat id")
 
         _qwen_chat_body["chat_id"] = _qwen_chat_id
 
@@ -7727,6 +7805,26 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             if qwen_chat-lane._is_waf_challenge(_q_err or b""):
                 return await _wc_failover(502, f"Qwen WAF challenge (cookies stale): {_q_text[:200]}")
             return await _wc_failover(_qwen_resp.status_code, f"Qwen upstream {_qwen_resp.status_code}: {_q_text[:200]}")
+
+        # Fail-closed (2026-08-27): a 200 with a JSON body (not text/event-stream)
+        # is an upstream error envelope — typically {"success": false,
+        # "data": {"code": "unauthorized", ...}} when the session died. Yielding
+        # those bytes into the SSE converter produced an empty 200 completion
+        # (fake OK). Sniff the content-type and a body prefix before streaming.
+        _qwen_ct = (_qwen_resp.headers.get("content-type") or "").lower()
+        if "application/json" in _qwen_ct:
+            _q_json_err_body = ""
+            try:
+                _q_json_err_body = (await asyncio.wait_for(_qwen_resp.aread(), timeout=10.0)).decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            await _qwen_resp.aclose()
+            _q_json_code, _q_json_details = qwen_chat-lane.parse_error_envelope(_q_json_err_body)
+            print(f"[Qwen] completions returned JSON (not SSE): code={_q_json_code!r} details={_q_json_details!r} body={_q_json_err_body[:300]!r}", flush=True)
+            bench_leaf(config, provider_name, target_model, 401 if _q_json_code in ("unauthorized", "Unauthorized") else 502, f"{_q_json_code} {_q_json_details}", 0)
+            if _q_json_code in ("unauthorized", "Unauthorized"):
+                return await _wc_failover(401, f"Qwen session expired/invalid ({_q_json_code}) — re-run tools/qwen_gh_login.py to collect a fresh token")
+            return await _wc_failover(502, f"Qwen completions returned JSON error ({_q_json_code}): {_q_json_details or _q_json_err_body[:200]}")
 
         # Best-effort conversation cleanup (fire-and-forget).
         _qwen_cleanup = config.get("chat-lane", {}).get("cleanup_conversations", False) if isinstance(config.get("chat-lane"), dict) else False
