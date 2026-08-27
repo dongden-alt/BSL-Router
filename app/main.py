@@ -7373,14 +7373,18 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
         _glm_http = _get_client_for_proxy(active_conn.get("proxy_url"))
         try:
+            # httpx: post() takes no stream kwarg (Chat2API port bug) — build
+            # the request, then send it with stream=True (same pattern as the
+            # images path) so the SSE body can be consumed incrementally.
+            _glm_req = _glm_http.build_request(
+                "POST",
+                glm_chat-lane.CHATGLM_STREAM_URL,
+                headers=_glm_hdrs,
+                json=_glm_chat_body,
+                timeout=httpx.Timeout(300.0, read=300.0),
+            )
             _glm_resp = await asyncio.wait_for(
-                _glm_http.post(
-                    glm_chat-lane.CHATGLM_STREAM_URL,
-                    headers=_glm_hdrs,
-                    json=_glm_chat_body,
-                    timeout=httpx.Timeout(300.0, read=300.0),
-                    stream=True,
-                ),
+                _glm_http.send(_glm_req, stream=True),
                 timeout=305.0,
             )
         except (asyncio.TimeoutError, TimeoutError):
@@ -7529,14 +7533,16 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
         _kimi_http = _get_client_for_proxy(active_conn.get("proxy_url"))
         try:
+            # httpx: post() takes no stream kwarg — build then send(stream=True).
+            _kimi_req = _kimi_http.build_request(
+                "POST",
+                kimi_chat-lane.KIMI_CHAT_URL,
+                headers=_kimi_hdrs,
+                content=kimi_chat-lane.encode_grpc_frame(_kimi_chat_body),
+                timeout=httpx.Timeout(300.0, read=300.0),
+            )
             _kimi_resp = await asyncio.wait_for(
-                _kimi_http.post(
-                    kimi_chat-lane.KIMI_CHAT_URL,
-                    headers=_kimi_hdrs,
-                    content=kimi_chat-lane.encode_grpc_frame(_kimi_chat_body),
-                    timeout=httpx.Timeout(300.0, read=300.0),
-                    stream=True,
-                ),
+                _kimi_http.send(_kimi_req, stream=True),
                 timeout=305.0,
             )
         except (asyncio.TimeoutError, TimeoutError):
@@ -7690,17 +7696,19 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         # Step 2: send the completion request.
         completions_url = f"{qwen_chat-lane.QWEN_CHAT_URL}?chat_id={_qwen_chat_id}"
         try:
+            # httpx: post() takes no stream kwarg — build then send(stream=True).
+            _qwen_req = _qwen_http.build_request(
+                "POST",
+                completions_url,
+                headers={
+                    **_qwen_hdrs,
+                    "x-accel-buffering": "no",
+                },
+                json=_qwen_chat_body,
+                timeout=httpx.Timeout(300.0, read=300.0),
+            )
             _qwen_resp = await asyncio.wait_for(
-                _qwen_http.post(
-                    completions_url,
-                    headers={
-                        **_qwen_hdrs,
-                        "x-accel-buffering": "no",
-                    },
-                    json=_qwen_chat_body,
-                    timeout=httpx.Timeout(300.0, read=300.0),
-                    stream=True,
-                ),
+                _qwen_http.send(_qwen_req, stream=True),
                 timeout=305.0,
             )
         except (asyncio.TimeoutError, TimeoutError):
