@@ -1090,11 +1090,12 @@ async function saveConfig() {
         return false;
     } finally {
         _autoSaveInFlight = false;
-        // One-shot transport flag for the backend connections merge guard
-        // (stale-save protection, app/main.py update_config). It rides along
-        // on exactly the POST that deletes a connection, then is stripped —
-        // never persists into config.yaml or leaks into a later save.
+        // One-shot transport flags for the backend connections merge guard
+        // (stale-save protection, app/main.py update_config). They ride along
+        // on exactly the POST that deletes a connection/provider, then are
+        // stripped — never persist into config.yaml or leak into a later save.
         delete globalConfig._deleted_connection;
+        delete globalConfig._deleted_provider;
         // If something mutated during the in-flight POST, save the latest snapshot once.
         if (_autoSaveDirty) {
             _autoSaveDirty = false;
@@ -2451,6 +2452,11 @@ window.removeModel = (idx) => {
 
 window.deleteActiveProvider = () => {
     if (confirm('Delete this custom provider?')) {
+        // Flag the intentional delete so the backend stale-save guard
+        // (_apply_connections_stale_save_guard) does not "restore" this
+        // provider on the very save that is supposed to remove it.
+        // Mirrors the _deleted_connection opt-out for deleteConnection.
+        globalConfig._deleted_provider = { id: activeProviderId };
         delete globalConfig.providers[activeProviderId];
         backToList();
     }

@@ -527,6 +527,40 @@ def _replace_runtime_config(new_config: dict) -> None:
     No mirror to forget - there is no mirror. The module-level `config` global
     is deleted; every reader takes a fresh snapshot via `config = cs_get_config()`.
     """
+    # Stale-snapshot protection (2026-08-27): server-side holders of OLD config
+    # snapshots (AEP error_prevention's self.config, OAuth rotation callbacks)
+    # commit through here. Without this guard, an AEP auto-disable firing from a
+    # startup-era snapshot silently WIPED providers imported later (observed:
+    # qwen-web import erased minutes later by an AEP commit). Providers present
+    # in the LIVE master but missing from the incoming snapshot are restored,
+    # unless the caller explicitly flags deletion via _deleted_provider.
+    if isinstance(new_config, dict):
+        _deletion = new_config.pop("_deleted_provider", None)
+        new_config.pop("_deleted_connection", None)
+        try:
+            _live = cs_get_config()
+            _live_prov = (_live or {}).get("providers") or {}
+            _new_prov = new_config.setdefault("providers", {})
+            if isinstance(_live_prov, dict) and isinstance(_new_prov, dict):
+                for _pid, _pconf in _live_prov.items():
+                    if _pid in _new_prov or not isinstance(_pconf, dict):
+                        continue
+                    _conns = _pconf.get("connections")
+                    if not (isinstance(_conns, list) and _conns):
+                        continue
+                    if isinstance(_deletion, dict) and _deletion.get("id") == _pid:
+                        continue
+                    _new_prov[_pid] = _pconf
+                    print(
+                        f"[CONFIG-GUARD] runtime swap restored provider={_pid} "
+                        "(missing from caller snapshot - stale-view protection)",
+                        flush=True,
+                    )
+        except Exception as _guard_err:
+            print(
+                f"[CONFIG-GUARD] stale-snapshot guard failed (proceeding): {_guard_err}",
+                flush=True,
+            )
     _persist_config_snapshot(new_config)
     replace_config(new_config)
     reconfigure_breaker(cs_get_config())
@@ -2170,8 +2204,28 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
             continue
         new_prov = new_providers.get(prov_id)
         if not isinstance(new_prov, dict):
-            # Whole-provider removal is a deliberate user action
-            # (deleteActiveProvider) — out of this guard's surgical scope.
+            # A provider that exists server-side but is MISSING from the
+            # client's POST is almost certainly a stale save (the client
+            # loaded config before the import endpoint added the provider).
+            # Previously this was treated as a "deliberate deletion" and
+            # skipped — which meant any autosave from a stale tab wiped
+            # freshly-imported web providers (qwen-web/glm-web/kimi-web).
+            # Fix (2026-08-27): restore the provider UNLESS the client
+            # explicitly signals deletion via _deleted_provider (mirrors
+            # the _deleted_connection opt-out pattern).
+            deleted_provider = new_config.get("_deleted_provider")
+            if isinstance(deleted_provider, dict) and deleted_provider.get("id") == prov_id:
+                continue  # genuine deleteActiveProvider — let it through
+            old_conns_check = old_prov.get("connections")
+            if isinstance(old_conns_check, list) and old_conns_check:
+                # Provider has live connections — restore it wholesale.
+                new_providers[prov_id] = old_prov
+                print(
+                    f"[CONFIG-GUARD] provider={prov_id} was missing from "
+                    "client save — restored (stale-tab protection for "
+                    "server-imported providers)",
+                    flush=True,
+                )
             continue
         old_conns = old_prov.get("connections")
         if not isinstance(old_conns, list) or not old_conns:
@@ -2262,8 +2316,9 @@ async def update_config(request: Request):
         # stale tab's full-config POST must not delete connections another
         # tab added. See _apply_connections_stale_save_guard for the incident.
         _apply_connections_stale_save_guard(config, new_config)
-        # The opt-out flag is transport-only; never persist it to config.yaml.
-        new_config.pop("_deleted_connection", None)
+        # The opt-out flags (_deleted_connection/_deleted_provider) are popped
+        # inside _replace_runtime_config, which must still see them to honor
+        # genuine deletions in its stale-snapshot guard.
 
         # Preserve live ErrorPrevention state so frontend auto-saves don't wipe it
         if "error_prevention_state" in config:
