@@ -1957,7 +1957,7 @@ async def update_status():
     return _update_state
 
 @app.post("/api/version/restart")
-async def restart_server():
+async def restart_server(request: Request):
     """Restart the BSL Router server process — gracefully.
 
     GRACEFUL RESTART (2026-08-24): the old implementation killed the process
@@ -1973,6 +1973,21 @@ async def restart_server():
     """
     import subprocess as _sp
     import threading as _th
+
+    # AUDIT (2026-08-27): mystery restarts/disconnects today could not be
+    # traced once the dying process took its access log with it. Record WHO
+    # called this endpoint to .brain/logs/restart_audit.log (append-only).
+    try:
+        _audit = _Path(".brain/logs/restart_audit.log")
+        _audit.parent.mkdir(parents=True, exist_ok=True)
+        _ua = request.headers.get("user-agent", "?")
+        with open(_audit, "a", encoding="utf-8") as _fh:
+            _fh.write(
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} RESTART client="
+                f"{request.client.host if request.client else '?'} ua={_ua[:80]}\n"
+            )
+    except Exception:
+        pass
 
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     _venv_python = os.path.join(_root, ".venv", "Scripts", "python.exe")
@@ -4028,6 +4043,20 @@ async def system_shutdown(request: Request):
     Only kills the current Python process (uvicorn worker). Does NOT
     touch sibling applications, MITM proxy, or any other processes.
     """
+    # AUDIT (2026-08-27): same rationale as the restart endpoint — record
+    # WHO stopped the backend, so a later "it came back" can be paired with
+    # the shutdown caller.
+    try:
+        _audit = _Path(".brain/logs/restart_audit.log")
+        _audit.parent.mkdir(parents=True, exist_ok=True)
+        _ua = request.headers.get("user-agent", "?")
+        with open(_audit, "a", encoding="utf-8") as _fh:
+            _fh.write(
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} SHUTDOWN client="
+                f"{request.client.host if request.client else '?'} ua={_ua[:80]}\n"
+            )
+    except Exception:
+        pass
     # Verify admin session if auth is enabled
     if _is_admin_auth_enabled():
         session_token = request.cookies.get("bsl_admin_session")
