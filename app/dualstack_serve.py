@@ -142,6 +142,36 @@ def main() -> None:
     parser.add_argument("--log-level", default="info")
     args, _unknown = parser.parse_known_args()
 
+    # B1 SUPERVISION GATE (2026-08-27): the UI auto_restart toggle was dead
+    # code — its gate lived in app/main.py's __main__, a path production
+    # never takes (bslrouter.ps1 and /api/version/restart both spawn THIS
+    # module). Honor config.watchdog.auto_restart here instead. The env guard
+    # prevents fork-bombing: a supervised child must serve, never re-enter
+    # supervision. Config is read raw (yaml only, no app.main import) so the
+    # parent stays tiny and independent.
+    if os.environ.get("BSL_SUPERVISED") != "1":
+        try:
+            import yaml
+            _cfg_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "config.yaml",
+            )
+            with open(_cfg_path, "r", encoding="utf-8") as _fh:
+                _cfg = yaml.safe_load(_fh) or {}
+            if (_cfg.get("watchdog") or {}).get("auto_restart") is True:
+                from app.watchdog import run_supervised
+                run_supervised(port=args.port)
+                return
+        except FileNotFoundError:
+            pass  # no config.yaml — serve unsupervised
+        except Exception as _e:
+            # Never let a console-encoding error (cp1252 vs non-ASCII, live
+            # incident 2026-08-27) crash the process — ASCII-only message.
+            try:
+                print(f"[DualStack] supervision gate failed ({type(_e).__name__}) - serving unsupervised", flush=True)
+            except Exception:
+                pass
+
     import uvicorn
 
     config = uvicorn.Config("app.main:app", log_level=args.log_level)
