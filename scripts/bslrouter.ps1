@@ -277,7 +277,29 @@ function Start-App {
     # launching uvicorn. Without this, a zombie from a prior crash or unclean
     # shutdown silently blocks the new server -- port stays occupied, new process
     # fails to bind, admin UI never comes up.
+    #
+    # IDEMPOTENCE GATE (2026-08-27 restart-loop postmortem): agents kept
+    # "repairing" a HEALTHY router by running `bslrouter start`, which killed
+    # the live listener and respawned -- two agents doing this in a loop caused
+    # the endless restarts. Now `start` first asks the router if it is alive;
+    # a healthy router makes start a NO-OP unless -ForceKill is passed.
     $stalePids = @(Get-ListenerPids $Port)
+    if ($stalePids.Count -gt 0 -and -not $ForceKill) {
+        $healthy = $false
+        try {
+            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v1/models" `
+                -Headers @{ Authorization = 'Bearer REDACTED-BSL-ADMIN-KEY' } `
+                -UseBasicParsing -TimeoutSec 4
+            $healthy = ($resp.StatusCode -eq 200)
+        } catch {
+            $healthy = $false
+        }
+        if ($healthy) {
+            Write-Ok "Router already healthy on :$Port (PID $($stalePids[0])). Start is a no-op. Use -ForceKill or `restart` to force."
+            return
+        }
+        Write-Warn "Listener on :$Port failed health check -- treating as stale."
+    }
     if ($stalePids.Count -gt 0) {
         Write-Warn "Stale listener(s) on :$Port -- killing before restart: $(Format-ListenerOwners $stalePids)"
         foreach ($stalePid in $stalePids) {
