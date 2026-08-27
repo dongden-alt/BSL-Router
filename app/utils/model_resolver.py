@@ -208,6 +208,34 @@ def resolve_active_connection(
     return _pick_connection(provider_config, model_id, provider_name, breaker, exclude_indexes)
 
 
+def untried_connection_count(config, provider_name: str, model_id: str, exclude_indexes=None) -> int:
+    """Count eligible connections for (provider, model) NOT in exclude_indexes.
+
+    KEY FAILOVER FIX (2026-08-27): key-rotation room. > 0 means the request can
+    still rotate to a sibling key on this leaf. Mirrors _pick_connection's
+    eligibility exactly (enabled + connection_indexes); the breaker is applied
+    later by the picker itself, so it is intentionally not consulted here.
+    """
+    provider_config = config.get("providers", {}).get(provider_name) if isinstance(config, dict) else None
+    if not isinstance(provider_config, dict):
+        return 0
+    connections = provider_config.get("connections") or []
+    enabled = {
+        i for i, c in enumerate(connections)
+        if isinstance(c, dict) and c.get("enabled", True)
+    }
+    if not enabled:
+        return 0
+    meta = _get_model_meta(provider_config, model_id)
+    indexes = None
+    if meta is not None:
+        raw = meta.get("connection_indexes")
+        if isinstance(raw, list) and raw and all(isinstance(x, int) for x in raw):
+            indexes = set(raw)
+    eligible = enabled if indexes is None else (enabled & indexes)
+    return len(eligible - set(exclude_indexes or ()))
+
+
 # ─── Internal helpers ─────────────────────────────────────────────────────────
 
 def _get_combo_aliases(config: Dict[str, Any]) -> set:

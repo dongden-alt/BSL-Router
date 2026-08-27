@@ -6553,19 +6553,40 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         import app.error_prevention as ep
         banned, ban_type, remaining = ep.check_ban(config, provider_name, target_model)
         if banned:
-            if ban_type == "disabled":
-                detail = "auto-disabled after repeated failures (re-enable manually in the admin panel)"
-                retry_after = None
-            else:
-                mins = int((remaining or 0) // 60) + 1
-                detail = f"temporarily unavailable ({ban_type}), retry in ~{mins} min"
-                retry_after = int(remaining or 0)
-            headers = {"Retry-After": str(retry_after)} if retry_after else {}
-            return JSONResponse(
-                {"error": f"Model '{target_model}' is {detail}.", "ban_type": ban_type},
-                status_code=503,
-                headers=headers,
-            )
+            # KEY FAILOVER FIX (2026-08-27): the ban is keyed provider+model but
+            # the triggering failure usually describes ONE key. On a retry frame
+            # where THIS request already failed keys on the leaf and sibling
+            # keys remain eligible, rotate to the next key instead of 503ing
+            # (resolve_active_connection's exclude_indexes handles the skip).
+            _rotate_key_instead = False
+            if _retry_state:
+                try:
+                    _tried_here = (_retry_state.get('tried_conns') or {}).get(provider_name) or ()
+                    if _tried_here:
+                        from app.utils.model_resolver import untried_connection_count as _untried
+                        if _untried(config, provider_name, target_model, set(_tried_here)) > 0:
+                            _rotate_key_instead = True
+                            print(
+                                f"[KeyFailover] {provider_name}/{target_model}: leaf banned but "
+                                f"{len(set(_tried_here))} key(s) tried and siblings remain — rotating key",
+                                flush=True,
+                            )
+                except Exception:
+                    pass
+            if not _rotate_key_instead:
+                if ban_type == "disabled":
+                    detail = "auto-disabled after repeated failures (re-enable manually in the admin panel)"
+                    retry_after = None
+                else:
+                    mins = int((remaining or 0) // 60) + 1
+                    detail = f"temporarily unavailable ({ban_type}), retry in ~{mins} min"
+                    retry_after = int(remaining or 0)
+                headers = {"Retry-After": str(retry_after)} if retry_after else {}
+                return JSONResponse(
+                    {"error": f"Model '{target_model}' is {detail}.", "ban_type": ban_type},
+                    status_code=503,
+                    headers=headers,
+                )
     except Exception as _ep_err:
         print(f"[ErrorPrevention] ban check failed (non-blocking): {_ep_err}")
         
@@ -6768,6 +6789,46 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # Format ``glm-web``: the connection ``api_key`` is the encrypted
     # refresh_token. BSL's normal OpenAI machinery does NOT apply — GLM speaks
     # its own SSE protocol, so we branch out here with a dedicated httpx call.
+    # ── chat-lane multi-key failover (KEY FAILOVER FIX 2026-08-27) ──
+    # The glm/kimi/qwen-web early-dispatch branches sit ABOVE every generic-rail
+    # fallback catch site, so their failures must drive key/chain failover
+    # themselves. Mirrors the 14 downstream sites: mark this conn tried
+    # (request-scoped), advance the chain snapshot, never terminal-error while
+    # a sibling key or later chain entry remains (never-stop wrap on
+    # exhaustion per the 2026-08-24 directive). bench_leaf stays at each
+    # failure site for leaf health on OTHER requests.
+    async def _wc_failover(status_code: int, err_text: str):
+        _kc = dict((_retry_state or {}).get('tried_conns') or {})
+        if _active_conn_index is not None:
+            _kc.setdefault(provider_name, []).append(_active_conn_index)
+        _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
+        if active_chain and _next_idx < len(active_chain):
+            print(
+                f"[chat-laneFailover] {provider_name}/{target_model} status={status_code} "
+                f"conn_idx={_active_conn_index} marked tried — advancing to chain entry {_next_idx}",
+                flush=True,
+            )
+            return await _process_chat_completion(
+                body, client_wants_anthropic, client_wants_gemini,
+                _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': None, 'tried_conns': _kc},
+                request=request,
+            )
+        if _combo_infinite_retry_enabled(config):
+            _backoff, _wrap = _combo_restart_or_give_up(
+                original_model or model, _retry_state, active_chain,
+                original_model, _cache_breakpoints, request,
+                reason="chat-lane_leaf_exhausted",
+            )
+            await asyncio.sleep(_backoff)
+            return await _process_chat_completion(
+                body, client_wants_anthropic, client_wants_gemini,
+                _retry_state=_wrap, request=request,
+            )
+        return JSONResponse(
+            {"error": {"message": f"chat-lane upstream failed for {provider_name}/{target_model}: {err_text[:200]}", "type": "proxy_error", "code": status_code}},
+            status_code=status_code if 400 <= status_code < 600 else 502,
+        )
+
     if provider_config.get("format") == "glm-web":
         # ``is_stream`` is normally derived much later in this function; the
         # glm-web branch needs it early for error shaping and stream routing.
@@ -6775,10 +6836,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
         _glm_refresh_token = active_conn.get("api_key", "")
         if not _glm_refresh_token:
-            return JSONResponse(
-                {"error": f"Provider '{provider_name}' (glm-web) has no refresh_token configured."},
-                status_code=500,
-            )
+            bench_leaf(config, provider_name, target_model, 500, "no_refresh_token", 0)
+            return await _wc_failover(500, "connection has no refresh_token configured")
 
         # Build the rotation callback: when GLM rotates the refresh_token we
         # re-encrypt it onto the connection and mark config dirty so it survives
@@ -6812,10 +6871,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             )
         except glm_chat-lane.chat-laneAuthError as _ga_exc:
             bench_leaf(config, provider_name, target_model, 401, str(_ga_exc), 0)
-            return JSONResponse(
-                {"error": f"GLM auth failed: {_ga_exc}"},
-                status_code=401,
-            )
+            return await _wc_failover(401, f"GLM auth failed: {_ga_exc}")
 
         _glm_msgs = chat-lane_toolbridge.prepare_messages(
             internal_request.messages, body.get("tools"), body.get("tool_choice")
@@ -6843,22 +6899,17 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 timeout=305.0,
             )
         except (asyncio.TimeoutError, TimeoutError):
-            raise TimeoutError("GLM upstream timed out (waited 305s)") from None
+            bench_leaf(config, provider_name, target_model, 504, "upstream timeout after 305s", 0)
+            return await _wc_failover(504, "GLM upstream timed out (waited 305s)")
         except Exception as _g_req_exc:
             bench_leaf(config, provider_name, target_model, 502, str(_g_req_exc), 0)
-            raise
+            return await _wc_failover(502, f"GLM transport error: {_g_req_exc}")
 
         if _glm_resp.status_code != 200:
             _g_err = await asyncio.wait_for(_glm_resp.aread(), timeout=5.0)
             _g_text = _g_err.decode("utf-8", errors="replace")[:500] if _g_err else f"upstream_{_glm_resp.status_code}"
             bench_leaf(config, provider_name, target_model, _glm_resp.status_code, _g_text, 0)
-            # Surface as OpenAI-shaped error so the combo fallback rail works.
-            if is_stream:
-                raise RuntimeError(f"GLM upstream {_glm_resp.status_code}: {_g_text[:200]}")
-            return JSONResponse(
-                {"error": {"message": f"GLM upstream {_glm_resp.status_code}: {_g_text[:200]}", "type": "proxy_error"}},
-                status_code=_glm_resp.status_code,
-            )
+            return await _wc_failover(_glm_resp.status_code, f"GLM upstream {_glm_resp.status_code}: {_g_text[:200]}")
 
         # Best-effort conversation cleanup (fire-and-forget).
         _glm_cleanup = config.get("chat-lane", {}).get("cleanup_conversations", False) if isinstance(config.get("chat-lane"), dict) else False
@@ -6929,7 +6980,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 except Exception:
                     pass
                 bench_leaf(config, provider_name, target_model, 502, str(_g_ns_exc), 0)
-                raise
+                return await _wc_failover(502, f"GLM non-stream aggregation failed: {_g_ns_exc}")
 
     # ── Kimi web-backend (kimi.com) early dispatch ──────────────────────────
     # Format ``kimi-web``: the connection ``api_key`` is the encrypted Kimi JWT
@@ -6942,10 +6993,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
         _kimi_token = active_conn.get("api_key", "")
         if not _kimi_token:
-            return JSONResponse(
-                {"error": f"Provider '{provider_name}' (kimi-web) has no token configured."},
-                status_code=500,
-            )
+            bench_leaf(config, provider_name, target_model, 500, "no_token", 0)
+            return await _wc_failover(500, "connection has no token configured")
 
         # Build the rotation callback: when Kimi rotates the refresh_token we
         # re-encrypt it onto the connection and mark config dirty so it survives
@@ -6979,10 +7028,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             )
         except kimi_chat-lane.chat-laneAuthError as _ka_exc:
             bench_leaf(config, provider_name, target_model, 401, str(_ka_exc), 0)
-            return JSONResponse(
-                {"error": f"Kimi auth failed: {_ka_exc}"},
-                status_code=401,
-            )
+            return await _wc_failover(401, f"Kimi auth failed: {_ka_exc}")
 
         _kimi_msgs = chat-lane_toolbridge.prepare_messages(
             internal_request.messages, body.get("tools"), body.get("tool_choice")
@@ -7009,22 +7055,17 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 timeout=305.0,
             )
         except (asyncio.TimeoutError, TimeoutError):
-            raise TimeoutError("Kimi upstream timed out (waited 305s)") from None
+            bench_leaf(config, provider_name, target_model, 504, "upstream timeout after 305s", 0)
+            return await _wc_failover(504, "Kimi upstream timed out (waited 305s)")
         except Exception as _k_req_exc:
             bench_leaf(config, provider_name, target_model, 502, str(_k_req_exc), 0)
-            raise
+            return await _wc_failover(502, f"Kimi transport error: {_k_req_exc}")
 
         if _kimi_resp.status_code != 200:
             _k_err = await asyncio.wait_for(_kimi_resp.aread(), timeout=5.0)
             _k_text = _k_err.decode("utf-8", errors="replace")[:500] if _k_err else f"upstream_{_kimi_resp.status_code}"
             bench_leaf(config, provider_name, target_model, _kimi_resp.status_code, _k_text, 0)
-            # Surface as OpenAI-shaped error so the combo fallback rail works.
-            if is_stream:
-                raise RuntimeError(f"Kimi upstream {_kimi_resp.status_code}: {_k_text[:200]}")
-            return JSONResponse(
-                {"error": {"message": f"Kimi upstream {_kimi_resp.status_code}: {_k_text[:200]}", "type": "proxy_error"}},
-                status_code=_kimi_resp.status_code,
-            )
+            return await _wc_failover(_kimi_resp.status_code, f"Kimi upstream {_kimi_resp.status_code}: {_k_text[:200]}")
 
         # Best-effort conversation cleanup (fire-and-forget).
         _kimi_cleanup = config.get("chat-lane", {}).get("cleanup_conversations", False) if isinstance(config.get("chat-lane"), dict) else False
@@ -7097,7 +7138,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 except Exception:
                     pass
                 bench_leaf(config, provider_name, target_model, 502, str(_k_ns_exc), 0)
-                raise
+                return await _wc_failover(502, f"Kimi non-stream aggregation failed: {_k_ns_exc}")
 
     # ── Qwen web-backend (chat.qwen.ai) early dispatch ───────────────────────
     # Format ``qwen-web``: the connection ``api_key`` is the encrypted Qwen
@@ -7112,17 +7153,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         _qwen_ua = active_conn.get("ua", "")
 
         if not _qwen_token:
-            return JSONResponse(
-                {"error": f"Provider '{provider_name}' (qwen-web) has no token configured."},
-                status_code=500,
-            )
+            bench_leaf(config, provider_name, target_model, 500, "no_token", 0)
+            return await _wc_failover(500, "connection has no token configured")
 
-        # Expired JWT (static ~30d token) — reject early with a re-login hint.
+        # Expired JWT (static ~30d token) — try sibling keys/chains before
+        # surfacing the re-login hint.
         if qwen_chat-lane.jwt_exp(_qwen_token) and qwen_chat-lane.jwt_exp(_qwen_token) <= int(time.time()):
-            return JSONResponse(
-                {"error": "Qwen token expired (30d static) — re-login via tools/qwen_gh_login.py"},
-                status_code=401,
-            )
+            bench_leaf(config, provider_name, target_model, 401, "token expired (30d static)", 0)
+            return await _wc_failover(401, "Qwen token expired (30d static) — re-login via tools/qwen_gh_login.py")
 
         # Model mapping: strip -web and -thinking suffixes; -thinking forces
         # feature_config.thinking_enabled inside build_chat_body.
@@ -7181,10 +7219,11 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 timeout=305.0,
             )
         except (asyncio.TimeoutError, TimeoutError):
-            raise TimeoutError("Qwen upstream timed out (waited 305s)") from None
+            bench_leaf(config, provider_name, target_model, 504, "upstream timeout after 305s", 0)
+            return await _wc_failover(504, "Qwen upstream timed out (waited 305s)")
         except Exception as _q_req_exc:
             bench_leaf(config, provider_name, target_model, 502, str(_q_req_exc), 0)
-            raise
+            return await _wc_failover(502, f"Qwen transport error: {_q_req_exc}")
 
         # WAF / challenge detection: HTML response or aliyun_waf marker means
         # cookies are stale — tell the user to re-run the collector.
@@ -7193,18 +7232,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             _q_text = _q_err.decode("utf-8", errors="replace")[:500] if _q_err else f"upstream_{_qwen_resp.status_code}"
             bench_leaf(config, provider_name, target_model, _qwen_resp.status_code, _q_text, 0)
             if qwen_chat-lane._is_waf_challenge(_q_err or b""):
-                if is_stream:
-                    raise RuntimeError(f"Qwen WAF challenge (cookies stale): {_q_text[:200]}")
-                return JSONResponse(
-                    {"error": {"message": f"Qwen WAF challenge — cookies stale, re-run tools/qwen_gh_login.py ({_q_text[:200]})", "type": "proxy_error"}},
-                    status_code=502,
-                )
-            if is_stream:
-                raise RuntimeError(f"Qwen upstream {_qwen_resp.status_code}: {_q_text[:200]}")
-            return JSONResponse(
-                {"error": {"message": f"Qwen upstream {_qwen_resp.status_code}: {_q_text[:200]}", "type": "proxy_error"}},
-                status_code=_qwen_resp.status_code,
-            )
+                return await _wc_failover(502, f"Qwen WAF challenge (cookies stale): {_q_text[:200]}")
+            return await _wc_failover(_qwen_resp.status_code, f"Qwen upstream {_qwen_resp.status_code}: {_q_text[:200]}")
 
         # Best-effort conversation cleanup (fire-and-forget).
         _qwen_cleanup = config.get("chat-lane", {}).get("cleanup_conversations", False) if isinstance(config.get("chat-lane"), dict) else False
@@ -7259,7 +7288,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 except Exception:
                     pass
                 bench_leaf(config, provider_name, target_model, 502, str(_q_ns_exc), 0)
-                raise
+                return await _wc_failover(502, f"Qwen non-stream aggregation failed: {_q_ns_exc}")
 
     # ── OAuth Token Refresh (systemic fix for recurring 401 loop) ────────
     # Every OAuth provider's access_token expires (~1h). Previously BSL used

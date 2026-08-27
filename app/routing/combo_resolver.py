@@ -445,6 +445,22 @@ def advance_combo_retry(
         banned, _, _ = _ep.check_ban(config, cand_provider, cand_model)
         if not banned:
             break
+        # KEY FAILOVER FIX (2026-08-27): the leaf-level ban is keyed
+        # provider+model, but the failure that triggered it usually describes
+        # ONE key. When THIS request has already dialed keys on the leaf and
+        # eligible sibling keys remain, do NOT skip it - the recursive frame
+        # rotates to the next key via resolve_active_connection(
+        # exclude_indexes=tried). Skipping here defeated multi-key failover
+        # entirely (the "only the first key is ever used" regression). Leaves
+        # banned by OTHER requests keep the historical skip.
+        try:
+            _tried = (_retry_state.get("tried_conns") or {}).get(cand_provider) or ()
+            if _tried:
+                from app.utils.model_resolver import untried_connection_count as _untried
+                if _untried(config, cand_provider, cand_model, set(_tried)) > 0:
+                    break
+        except Exception:
+            pass  # fail-open to the historical skip behaviour
         print(f"[Combo] {combo_alias} > skipping banned leaf {cand_provider}/{cand_model} [{idx+1}/{len(stable_chain)}]", flush=True)
         idx += 1
 
