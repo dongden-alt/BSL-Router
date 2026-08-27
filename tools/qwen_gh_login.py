@@ -246,17 +246,20 @@ async def _collect(
     browser_args: list[str] = []
     effective_dir = profile_dir
     cleanup_dir: Path | None = None
+    inject_token = ""
 
     if mode == "mybrowser":
-        # REAL-BROWSER-TAB FLOW (mirrors the router's grok/kiro/chatgpt OAuth
-        # UX): if the user's real Chrome has no Qwen token yet, open
-        # chat.qwen.ai as a TAB in their RUNNING Chrome (their GitHub session
-        # is right there) and wait until the token shows up in the real
-        # profile's storage — then snapshot + collect. No second login window
-        # asking for credentials.
-        if _sniff_qwen_token_live():
-            print("Qwen session already present in your real Chrome.", flush=True)
-        else:
+        # REAL-BROWSER TOKEN-INJECTION FLOW (v3, 2026-08-27): cookie snapshots
+        # are worthless on Chrome 127+ (app-bound encryption invalidates
+        # copied cookies — root cause of the 'empty/clean browser' failures).
+        # But the Qwen JWT sits in localStorage as PLAINTEXT, which we can
+        # sniff from the real Chrome. Flow: read token from real Chrome
+        # (opening a tab in the user's browser to complete login if needed)
+        # -> open a CLEAN collect browser -> inject the JWT into
+        # chat.qwen.ai's localStorage -> the site logs itself in and sets
+        # fresh WAF cookies itself.
+        token_live = _sniff_qwen_token_live()
+        if not token_live:
             import webbrowser
             webbrowser.open(QWEN_URL)
             print("Opened chat.qwen.ai as a tab in YOUR Chrome.", flush=True)
@@ -265,25 +268,25 @@ async def _collect(
             deadline = time.time() + POLL_TIMEOUT_S
             while time.time() < deadline:
                 time.sleep(POLL_INTERVAL_S)
-                if _sniff_qwen_token_live():
+                token_live = _sniff_qwen_token_live()
+                if token_live:
                     break
                 print(".", end="", flush=True)
             print(flush=True)
-            if not _sniff_qwen_token_live():
+            if not token_live:
                 print(
                     f"ERROR: no Qwen token appeared in your browser after "
                     f"{POLL_TIMEOUT_S}s. Did the login complete in the tab?",
                     file=sys.stderr,
                 )
                 return 1
-        tmp = Path(tempfile.mkdtemp(prefix="bsl-qwen-mybrowser-"))
+        else:
+            print("Found Qwen token in your real Chrome.", flush=True)
+        inject_token = token_live
+        tmp = Path(tempfile.mkdtemp(prefix="bsl-qwen-collect-"))
         cleanup_dir = tmp
-        err = _make_skeleton_profile(tmp)
-        if err:
-            print(f"ERROR: {err}", file=sys.stderr)
-            return 1
         effective_dir = tmp
-        print(f"Using snapshot of your real Chrome profile -> {tmp}", flush=True)
+        print("Opening collect browser (clean profile + token injection)...", flush=True)
     elif mode == "incognito":
         tmp = Path(tempfile.mkdtemp(prefix="bsl-qwen-incognito-"))
         cleanup_dir = tmp
@@ -308,6 +311,22 @@ async def _collect(
         # Wait for the SPA to settle.
         await page.wait()
         await page.sleep(3)
+
+        # TOKEN INJECTION (mybrowser): plant the JWT sniffed from the user's
+        # real Chrome into this clean browser's localStorage on the qwen.ai
+        # origin, then reload — the site sees a valid session, logs in and
+        # sets fresh WAF cookies itself.
+        if inject_token:
+            try:
+                await page.evaluate(
+                    f"localStorage.setItem('token', {json.dumps(inject_token)})"
+                )
+                print("Token injected into collect browser — reloading...", flush=True)
+                page = await browser.get(QWEN_URL)
+                await page.wait()
+                await page.sleep(3)
+            except Exception as exc:
+                print(f"WARN: token injection failed: {exc}", file=sys.stderr)
 
         # Try to read the token from localStorage.
         token = ""
