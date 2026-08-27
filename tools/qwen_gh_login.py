@@ -18,6 +18,8 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
+import re
 import shutil
 import sys
 import tempfile
@@ -76,6 +78,51 @@ def _copy_locked_file(src: Path, dst: Path) -> bool:
         return False
 
 
+def _sniff_qwen_token_live(user_data: Path | None = None) -> str:
+    """Best-effort scan of the REAL Chrome Local Storage for a qwen JWT.
+
+    Reads the leveldb files raw (VSS fallback for files Chrome holds locked)
+    and looks for a JWT in a file that also mentions qwen.ai. Used ONLY to
+    detect that the user finished logging in inside their own browser; the
+    authoritative token read happens afterwards via CDP on the snapshot.
+    """
+    ud = user_data or _chrome_user_data_dir()
+    if not ud:
+        return ""
+    lsdb = ud / "Default" / "Local Storage" / "leveldb"
+    if not lsdb.exists():
+        return ""
+    pat = re.compile(rb"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
+    try:
+        files = sorted(lsdb.iterdir())
+    except Exception:
+        return ""
+    for f in files:
+        if not f.is_file():
+            continue
+        try:
+            data = f.read_bytes()
+        except PermissionError:
+            fd, tmpname = tempfile.mkstemp(prefix="bsl-ldb-")
+            os.close(fd)
+            tmp = Path(tmpname)
+            ok = _copy_locked_file(f, tmp)
+            data = tmp.read_bytes() if ok and tmp.exists() else b""
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+            if not data:
+                continue
+        except Exception:
+            continue
+        if b"qwen.ai" in data:
+            m = pat.search(data)
+            if m:
+                return m.group(0).decode("ascii", "ignore")
+    return ""
+
+
 def _make_skeleton_profile(dest: Path) -> str:
     """Copy a minimal 'skeleton' of the REAL Chrome profile into dest.
 
@@ -102,16 +149,23 @@ def _make_skeleton_profile(dest: Path) -> str:
         shutil.copy2(ls_src, dest / _CHROME_LOCALSTATE_REL)
         if ck_src.exists():
             (dest / "Default" / "Network").mkdir(parents=True, exist_ok=True)
-            ck_dst = dest / "Default" / "Network" / "Cookies"
-            try:
-                shutil.copy2(ck_src, ck_dst)
-            except PermissionError:
-                if not _copy_locked_file(ck_src, ck_dst):
-                    return (
-                        "real Chrome is running and its cookie DB is locked. "
-                        "Either close Chrome first, or run the router elevated "
-                        "(VSS shadow copy)."
-                    )
+            # Cookies AND Cookies-wal: Chrome stages recent cookie writes in
+            # the SQLite WAL — copying only the main DB yields a logged-OUT
+            # snapshot (live bug 2026-08-27: popup asked for login).
+            for rel in ("Cookies", "Cookies-wal"):
+                src_f = src / "Default" / "Network" / rel
+                if not src_f.exists():
+                    continue
+                dst_f = dest / "Default" / "Network" / rel
+                try:
+                    shutil.copy2(src_f, dst_f)
+                except PermissionError:
+                    if not _copy_locked_file(src_f, dst_f) and rel == "Cookies":
+                        return (
+                            "real Chrome is running and its cookie DB is locked. "
+                            "Either close Chrome first, or run the router elevated "
+                            "(VSS shadow copy)."
+                        )
         if lsdb_src.exists():
             dst_lsdb = dest / "Default" / "Local Storage" / "leveldb"
             dst_lsdb.mkdir(parents=True, exist_ok=True)
@@ -194,6 +248,34 @@ async def _collect(
     cleanup_dir: Path | None = None
 
     if mode == "mybrowser":
+        # REAL-BROWSER-TAB FLOW (mirrors the router's grok/kiro/chatgpt OAuth
+        # UX): if the user's real Chrome has no Qwen token yet, open
+        # chat.qwen.ai as a TAB in their RUNNING Chrome (their GitHub session
+        # is right there) and wait until the token shows up in the real
+        # profile's storage — then snapshot + collect. No second login window
+        # asking for credentials.
+        if _sniff_qwen_token_live():
+            print("Qwen session already present in your real Chrome.", flush=True)
+        else:
+            import webbrowser
+            webbrowser.open(QWEN_URL)
+            print("Opened chat.qwen.ai as a tab in YOUR Chrome.", flush=True)
+            print("Finish the login there (GitHub is already signed in — one click).", flush=True)
+            print("Waiting for the Qwen token", end="", flush=True)
+            deadline = time.time() + POLL_TIMEOUT_S
+            while time.time() < deadline:
+                time.sleep(POLL_INTERVAL_S)
+                if _sniff_qwen_token_live():
+                    break
+                print(".", end="", flush=True)
+            print(flush=True)
+            if not _sniff_qwen_token_live():
+                print(
+                    f"ERROR: no Qwen token appeared in your browser after "
+                    f"{POLL_TIMEOUT_S}s. Did the login complete in the tab?",
+                    file=sys.stderr,
+                )
+                return 1
         tmp = Path(tempfile.mkdtemp(prefix="bsl-qwen-mybrowser-"))
         cleanup_dir = tmp
         err = _make_skeleton_profile(tmp)
