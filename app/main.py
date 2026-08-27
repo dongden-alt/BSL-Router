@@ -1973,7 +1973,6 @@ async def restart_server():
 
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     _venv_python = os.path.join(_root, ".venv", "Scripts", "python.exe")
-    _main_module = "app.main:app"
     _port = 6969  # canonical; config-derived port is read at startup
 
     _waiting = active_stream_count()
@@ -2001,7 +2000,10 @@ async def restart_server():
         _time.sleep(1.0)
         # Launch new uvicorn process in detached mode
         _sp.Popen(
-            [_venv_python, "-m", "uvicorn", _main_module, "--host", "0.0.0.0", "--port", str(_port)],
+            # DUAL-STACK FIX (2026-08-27): bind [::] with IPV6_V6ONLY=0 so both
+            # ::1 (Windows localhost-first) and 127.0.0.1 clients are served by
+            # ONE socket. --host 0.0.0.0 left IPv6 clients ECONNREFUSED.
+            [_venv_python, "-m", "app.dualstack_serve", "--port", str(_port)],
             cwd=_root,
             creationflags=_sp.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             close_fds=True,

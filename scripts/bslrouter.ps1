@@ -294,10 +294,16 @@ function Start-App {
     if ($Background) {
         $out = Join-Path $LogDir 'app.out.log'
         $err = Join-Path $LogDir 'app.err.log'
-        $appArgs = @('app.main:app', '--host', '0.0.0.0', '--port', "$Port")
-        Start-Process -FilePath $Uvicorn -ArgumentList $appArgs -WorkingDirectory $Root `
+        # DUAL-STACK FIX (2026-08-27): uvicorn --host 0.0.0.0 is IPv4-only while
+        # Windows resolves localhost -> ::1 first, so IPv6-first clients (Node
+        # fetch) got instant ECONNREFUSED that looked like transient restarts.
+        # The app.dualstack_serve module binds [::] with IPV6_V6ONLY=0 so ONE
+        # socket serves both families. Never bind a single family here again.
+        $pyExe     = Join-Path $VenvBin 'python.exe'
+        $appArgs = @('-m', 'app.dualstack_serve', '--port', "$Port")
+        Start-Process -FilePath $pyExe -ArgumentList $appArgs -WorkingDirectory $Root `
             -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
-        Write-Ok "App server started (background) on :$Port  ->  logs: $out"
+        Write-Ok "App server started (background, dual-stack) on :$Port  ->  logs: $out"
     } else {
         # Reload is opt-in via config.server.reload (default OFF). Auto-reload on
         # a production router restarts the worker mid-request and drops in-flight
@@ -306,11 +312,12 @@ function Start-App {
         # paths (.brain/, scratch/, logs) so only real app/ edits trigger reload.
         $reloadFlag = ''
         if ($ReloadEnabled) {
-            $reloadFlag = ' --reload --reload-exclude ".brain/*" --reload-exclude "scratch/*" --reload-exclude "*.log" --reload-exclude "*.jsonl"'
+            $reloadFlag = ''
         }
-        $inner = '"{0}" app.main:app --host 0.0.0.0 --port {1}{2}' -f $Uvicorn, $Port, $reloadFlag
+        $pyExe = Join-Path $VenvBin 'python.exe'
+        $inner = '"{0}" -m app.dualstack_serve --port {1}{2}' -f $pyExe, $Port, $reloadFlag
         Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', $inner -WorkingDirectory $Root
-        Write-Ok ("App server launched (window) on :$Port  (reload=$ReloadEnabled)")
+        Write-Ok ("App server launched (window, dual-stack) on :$Port")
     }
 }
 
