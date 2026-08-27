@@ -27,7 +27,16 @@ break the proxy path. The breaker is an optimization, not a gate.
 import time
 from typing import Dict, Any, Optional, Tuple, List
 
-# ── Non-penalizing error markers ────────────────────────────────────────
+# ── Dim-triggering error types ────────────────────────────────────────────
+# A key flagged with one of these is "dimmed" in the admin UI: the whole row
+# goes muted because the account itself is unusable (drained/rate-limited or
+# auth-dead), not because of a transient server fault. The dim persists until
+# the FIRST of: (a) a successful probe/request returns the state to CLOSED,
+# (b) the admin toggles the key off→on (reset_connection), or (c) router
+# restart (all breaker state is in-memory by design).
+DIM_ERROR_TYPES = ("rate_limit", "auth")
+
+# ── Non-penalizing error markers ────────────────────────────────────────────
 # These error strings in stats["error"] must NEVER count toward breaker
 # failure counts. They represent client-side behavior, not upstream faults.
 NON_PENALIZING_MARKERS = (
@@ -199,6 +208,14 @@ class CircuitBreaker:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.state: Dict[str, Dict[str, Any]] = {}
+        # Dimmed keys: key="{provider}/{conn_index}" → epoch seconds when the
+        # dim started. Deliberately SEPARATE from self.state so it survives
+        # nothing except process lifetime — restart clears it (requirement).
+        self.dim: Dict[str, float] = {}
+        # Last selection per key: key="{provider}/{conn_index}" →
+        # {"ts": epoch, "model": model_id}. Powers the admin UI's "which key
+        # is serving right now" indicator. In-memory, lost on restart.
+        self.last_used: Dict[str, Dict[str, Any]] = {}
 
     @property
     def settings(self) -> Dict[str, Any]:
@@ -245,6 +262,10 @@ class CircuitBreaker:
 
     def _key(self, provider: str, model: str, conn_index: int) -> str:
         return f"{provider}/{model}/{conn_index}"
+
+    @staticmethod
+    def _dim_key(provider: str, conn_index: int) -> str:
+        return f"{provider}/{conn_index}"
 
     def _get_or_init(self, key: str) -> Dict[str, Any]:
         if key not in self.state:
@@ -376,6 +397,9 @@ class CircuitBreaker:
                 entry["consecutive_failures"] = 0
                 entry["last_success_time"] = now
                 entry["total_successes"] += 1
+                # A live success un-dims the key: the account demonstrably
+                # works again (requirement: dim clears on whatever comes first).
+                self.dim.pop(self._dim_key(provider, conn_index), None)
                 # If this was a HALF_OPEN probe and it succeeded, the CLOSED
                 # transition above already handles recovery.
                 return
@@ -392,6 +416,9 @@ class CircuitBreaker:
                 entry["state"] = "OPEN"
                 entry["opened_at"] = now
                 entry["open_until"] = now + self.recovery_timeout
+                # Dim the key in the admin UI — the account is unusable, so
+                # the whole row should read as "set aside" until recovered.
+                self.dim.setdefault(self._dim_key(provider, conn_index), now)
                 print(
                     f"[CircuitBreaker] OPEN ({classification}) {key} for "
                     f"{self.recovery_timeout}s",
@@ -476,6 +503,79 @@ class CircuitBreaker:
             entry["state"] = "CLOSED"
             entry["consecutive_failures"] = 0
             entry["open_until"] = 0.0
+        self.dim.clear()
+
+    def reset_connection(self, provider: str, conn_index: int) -> None:
+        """Forget every breaker entry + dim for one key (admin toggle off→on).
+
+        The user explicitly re-armed the key, so accumulated failure state and
+        the UI dim must not linger: the next request gets a clean slate. All
+        (provider, model, *) state keys are removed because a connection can
+        participate in many models.
+        """
+        try:
+            idx = int(conn_index)
+        except (TypeError, ValueError):
+            return
+        prefix = f"{provider}/"
+        suffix = f"/{idx}"
+        doomed = [
+            k for k in self.state
+            if k.startswith(prefix) and k.endswith(suffix)
+        ]
+        for k in doomed:
+            del self.state[k]
+        self.dim.pop(self._dim_key(provider, idx), None)
+        self.last_used.pop(self._dim_key(provider, idx), None)
+
+    def record_selection(
+        self, provider: str, model: str, conn_index: int
+    ) -> None:
+        """Remember which key a request was dispatched on (active-key indicator).
+
+        Called at selection time, before the upstream response arrives, so the
+        indicator shows the key IN USE even for long streaming requests. The
+        recorded timestamp doubles as "last used" once the request finishes.
+        Fail-open: never raise into the proxy path.
+        """
+        try:
+            self.last_used[self._dim_key(provider, int(conn_index))] = {
+                "ts": time.time(),
+                "model": model,
+            }
+        except Exception:
+            pass
+
+    def status_extras(self) -> Dict[str, Any]:
+        """Dim + last-used payloads for /api/breaker/status (UI consumption)."""
+        now = time.time()
+        dim_entries = []
+        for dk, since in self.dim.items():
+            try:
+                provider, idx = dk.rsplit("/", 1)
+                dim_entries.append({
+                    "provider": provider,
+                    "conn_index": int(idx),
+                    "since": round(float(since), 1),
+                    "age_seconds": round(max(0.0, now - float(since)), 1),
+                })
+            except Exception:
+                continue
+        used_entries = []
+        for dk, info in self.last_used.items():
+            try:
+                provider, idx = dk.rsplit("/", 1)
+                ts = float(info.get("ts", 0.0))
+                used_entries.append({
+                    "provider": provider,
+                    "conn_index": int(idx),
+                    "ts": round(ts, 1),
+                    "age_seconds": round(max(0.0, now - ts), 1),
+                    "model": info.get("model"),
+                })
+            except Exception:
+                continue
+        return {"dimmed": dim_entries, "last_used": used_entries}
 
 
 # ── Module-level singleton ──────────────────────────────────────────────

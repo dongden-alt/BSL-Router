@@ -1176,26 +1176,58 @@ async function refreshBreakerBadges() {
         const res = await fetch('/api/breaker/status');
         const data = await res.json();
         if (currentView !== 'detail') return; // navigated away mid-fetch
-        // Remove old badges first
-        document.querySelectorAll('[data-breaker-badge]').forEach(el => el.remove());
-        if (!data.enabled || !Array.isArray(data.connections)) return;
-        // Worst state per conn index across models for THIS provider
-        const worst = {};
-        for (const c of data.connections) {
-            if (c.provider !== activeProviderId) continue;
-            const prev = worst[c.conn_index];
-            if (!prev || prev.state !== 'OPEN') worst[c.conn_index] = c; // OPEN outranks all
-        }
-        // Attach badges to each connection row (rows are in DOM order = conn index)
-        const rows = document.querySelectorAll('.connection-row');
-        rows.forEach((row, idx) => {
-            const b = worst[idx];
-            const label = _fmtCooldownLabel(b);
-            if (!label) return;
-            const meta = row.querySelector('div[style*="flex-direction:column"][style*="gap:8px"]') || row.querySelector('.conn-key')?.parentElement?.querySelector('div[style*="gap:8px"]');
-            const host = meta || row.querySelector('div');
-            if (host) host.insertAdjacentHTML('beforeend', label);
+
+        // Rows are in DOM order = connection index for this provider.
+        const rows = Array.from(document.querySelectorAll('.connection-row'));
+
+        // ── Dim: rate-limited / quota-drained / auth-dead keys go full-row
+        // muted. Applied regardless of data.enabled so a dim set just before
+        // a config save persists. Cleared by success, toggle off→on, restart.
+        const dimmedSet = new Set(
+            (Array.isArray(data.dimmed) ? data.dimmed : [])
+                .filter(d => d.provider === activeProviderId)
+                .map(d => Number(d.conn_index))
+        );
+        rows.forEach((row, idx) => row.classList.toggle('key-dimmed', dimmedSet.has(idx)));
+
+        // ── Live: which key is serving right now? Pick the most-recently-used
+        // connection within the live window and badge it.
+        rows.forEach(row => {
+            row.querySelectorAll('[data-live-badge]').forEach(el => el.remove());
         });
+        const LIVE_WINDOW_MS = 30000;
+        let liveIdx = null, newestTs = 0;
+        for (const u of (Array.isArray(data.last_used) ? data.last_used : [])) {
+            if (u.provider !== activeProviderId) continue;
+            if (Number(u.age_seconds) * 1000 < LIVE_WINDOW_MS && Number(u.ts) > newestTs) {
+                newestTs = Number(u.ts);
+                liveIdx = Number(u.conn_index);
+            }
+        }
+        if (liveIdx !== null && rows[liveIdx]) {
+            const host = rows[liveIdx].querySelector('[data-quota-slot]') || rows[liveIdx].querySelector('div');
+            if (host) host.insertAdjacentHTML('afterbegin',
+                `<span data-live-badge="1" class="key-live-badge" title="This key is serving traffic right now"><span class="pulse"></span>▶ live</span>`);
+        }
+
+        // ── Cooldown badges (existing behaviour, only when breaker enabled).
+        document.querySelectorAll('[data-breaker-badge]').forEach(el => el.remove());
+        if (data.enabled && Array.isArray(data.connections)) {
+            const worst = {};
+            for (const c of data.connections) {
+                if (c.provider !== activeProviderId) continue;
+                const prev = worst[c.conn_index];
+                if (!prev || prev.state !== 'OPEN') worst[c.conn_index] = c; // OPEN outranks all
+            }
+            rows.forEach((row, idx) => {
+                const b = worst[idx];
+                const label = _fmtCooldownLabel(b);
+                if (!label) return;
+                const meta = row.querySelector('div[style*="flex-direction:column"][style*="gap:8px"]') || row.querySelector('.conn-key')?.parentElement?.querySelector('div[style*="gap:8px"]');
+                const host = meta || row.querySelector('div');
+                if (host) host.insertAdjacentHTML('beforeend', label);
+            });
+        }
     } catch { /* fail-open: badges are informational only */ }
     _breakerBadgeTimer = setInterval(refreshBreakerBadges, 15000);
 }
@@ -2484,8 +2516,21 @@ window.deleteConnection = async (idx) => {
 
 window.toggleConnection = async (idx, enabled) => {
     globalConfig.providers[activeProviderId].connections[idx].enabled = enabled;
+    // Re-arming a key clears its breaker failures + UI dim (2026-08-28):
+    // the user explicitly wants this key back in rotation, so a leftover
+    // rate-limit OPEN or dim must not shadow the very next request.
+    if (enabled) {
+        try {
+            await fetch('/api/breaker/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider: activeProviderId, conn_index: idx }),
+            });
+        } catch { /* fail-open: reset is cosmetic */ }
+    }
     await saveConfig();
     renderActiveTab();
+    refreshBreakerBadges();
 };
 
 window.toggleProviderRoundRobin = async (enabled) => {

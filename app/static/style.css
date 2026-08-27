@@ -1243,3 +1243,44 @@ input:checked + .slider:before { transform: translateX(16px); }
         text-align: center;
     }
 }
+
+/* ── Key health visuals (2026-08-28) ─────────────────────────────────────
+   .key-dimmed  — full-row mute for a rate-limited / quota-drained / auth-dead
+                  key. Stays until: a successful request un-dims it, the user
+                  toggles the key off→on (POST /api/breaker/reset), or restart.
+   .key-live-badge — pulsing "▶ live" marker on the key currently serving. */
+.connection-row {
+    transition: opacity .3s ease, filter .3s ease;
+}
+.connection-row.key-dimmed {
+    opacity: 0.42;
+    filter: grayscale(0.65);
+}
+.connection-row.key-dimmed:hover {
+    opacity: 0.7;
+}
+.key-live-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    color: #059669;
+    background: #ecfdf5;
+    border: 1px solid #a7f3d0;
+    padding: 2px 7px;
+    border-radius: 12px;
+    white-space: nowrap;
+}
+.key-live-badge .pulse {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #10b981;
+    animation: keyLivePulse 1.2s ease-in-out infinite;
+}
+@keyframes keyLivePulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.3; transform: scale(0.75); }
+}

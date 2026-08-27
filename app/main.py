@@ -7246,6 +7246,16 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         else:
             return JSONResponse({"error": f"Provider {provider_name} has no active connections"}, status_code=500)
 
+    # Active-key tracking: remember which connection this request was
+    # dispatched on so the admin UI can show which key is serving now.
+    # Recorded at selection time (before upstream answers) so long streams
+    # stay visible while in-flight. Fail-open: never affect the proxy path.
+    if _breaker is not None and _active_conn_index is not None:
+        try:
+            _breaker.record_selection(provider_name, target_model, _active_conn_index)
+        except Exception:
+            pass
+
     # Resolve base_url â€” connection base_url â†’ provider base_url â†’ PROVIDER_DEFAULT_URLS
     resolved_base_url = (active_conn.get('base_url') or '').rstrip('/')
     if not resolved_base_url:
@@ -13013,9 +13023,42 @@ async def get_breaker_status_endpoint():
                     })
                 except Exception:
                     continue
-        return JSONResponse({"enabled": bool(_b is not None and _b.enabled), "connections": entries})
+        return JSONResponse({
+            "enabled": bool(_b is not None and _b.enabled),
+            "connections": entries,
+            # Dim + active-key indicator payloads (2026-08-28): the UI dims
+            # rate-limited/quota-dead/auth-dead keys until a real success,
+            # a toggle off→on, or restart clears them; last_used powers the
+            # "▶ live" marker showing which key is serving right now.
+            **(_b.status_extras() if _b is not None else {"dimmed": [], "last_used": []}),
+        })
     except Exception as _e:
         return JSONResponse({"enabled": False, "connections": [], "error": str(_e)})
+
+
+@app.post("/api/breaker/reset")
+async def post_breaker_reset_endpoint(request: Request):
+    """Clear breaker state + UI dim for one connection (admin key toggle off→on).
+
+    Body: {"provider": str, "conn_index": int}. The user explicitly re-armed
+    the key, so its accumulated failures and dim must not linger. Fail-open:
+    any error returns {"reset": false} rather than breaking the admin save.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    provider = body.get("provider")
+    conn_index = body.get("conn_index")
+    try:
+        from app.circuit_breaker import get_breaker
+        _b = get_breaker()
+        if _b is None or provider is None or conn_index is None:
+            return JSONResponse({"reset": False})
+        _b.reset_connection(str(provider), conn_index)
+        return JSONResponse({"reset": True, "provider": str(provider), "conn_index": conn_index})
+    except Exception as _e:
+        return JSONResponse({"reset": False, "error": str(_e)})
 
 
 # ── Per-key live quota remaining (one-api / new-api billing) ─────────────
