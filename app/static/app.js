@@ -427,8 +427,8 @@ function openchat-laneAddAccountModal(format) {
             <div style="margin-bottom:12px;">
                 <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;">Mode</label>
                 <select id="wc-collect-mode" style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-color);color:var(--text-main);">
-                    <option value="profile" selected>Saved profile — reuse logins saved on this machine</option>
-                    <option value="mybrowser">My browser — snapshot of my real Chrome (instant if already logged in)</option>
+                    <option value="profile">Saved profile — reuse logins saved on this machine</option>
+                    <option value="mybrowser" selected>My browser — snapshot of my real Chrome (instant if already logged in)</option>
                     <option value="incognito">Incognito — new GitHub/Qwen account loop</option>
                 </select>
                 <div id="wc-collect-mode-hint" style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5;"></div>
@@ -477,10 +477,10 @@ function openchat-laneAddAccountModal(format) {
     if (modeSel) {
         const hints = {
             profile: 'Uses the saved profile under data/qwen_profiles/default. Log in once here; later runs are automatic.',
-            mybrowser: 'Copies a lightweight snapshot (cookies + session) of your REAL Chrome profile. If you are already logged into Qwen in Chrome, the collect completes with zero logins. Nothing is written back to your real profile.',
+            mybrowser: 'Copies a lightweight snapshot (cookies + session) of your REAL Chrome. Chrome must be CLOSED first (it locks its cookie database while running). If you are already logged into Qwen in Chrome, the collect completes with zero logins. Nothing is written back to your real profile.',
             incognito: 'Opens a fresh incognito window. Loop: create/login GitHub account → login Qwen with GitHub → session-tokened automatically → window closes. Repeat for each new account.',
         };
-        modeHint.textContent = hints.profile;
+        modeHint.textContent = hints.mybrowser;
         modeSel.onchange = () => { modeHint.textContent = hints[modeSel.value] || ''; };
     }
     $('wc-collect-btn').onclick = () => startchat-lanecollect(wc, modal);

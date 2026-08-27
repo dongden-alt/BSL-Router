@@ -42,14 +42,38 @@ _CHROME_COOKIES_REL = Path("Network/Cookies")
 
 
 def _chrome_user_data_dir() -> Path | None:
-    """Locate the user's real Chrome user-data dir (standard install)."""
+    """Locate the user's real Chrome user-data dir (standard install).
+
+    Standard layout: %LOCALAPPDATA%\\Google\\Chrome\\User Data — 'User Data'
+    is the user-data-dir root that contains 'Local State' and 'Default\\'.
+    """
     cands = [
+        Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data",
         Path.home() / "AppData" / "Local" / "Google" / "Chrome",
     ]
     for c in cands:
         if (c / _CHROME_LOCALSTATE_REL).exists():
             return c
     return None
+
+
+def _copy_locked_file(src: Path, dst: Path) -> bool:
+    """Copy a file that Chrome holds an exclusive lock on.
+
+    Plain copy fails with PermissionError while Chrome runs. ``esentutl /y
+    /vss`` copies via Volume Shadow Copy — needs elevation, which the
+    collector child inherits from the (elevated) router process.
+    """
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            ["esentutl", "/y", str(src), "/d", str(dst), "/vss"],
+            capture_output=True, timeout=30,
+        )
+        return r.returncode == 0 and dst.exists()
+    except Exception:
+        return False
 
 
 def _make_skeleton_profile(dest: Path) -> str:
@@ -78,13 +102,26 @@ def _make_skeleton_profile(dest: Path) -> str:
         shutil.copy2(ls_src, dest / _CHROME_LOCALSTATE_REL)
         if ck_src.exists():
             (dest / "Default" / "Network").mkdir(parents=True, exist_ok=True)
-            shutil.copy2(ck_src, dest / "Default" / "Network" / "Cookies")
+            ck_dst = dest / "Default" / "Network" / "Cookies"
+            try:
+                shutil.copy2(ck_src, ck_dst)
+            except PermissionError:
+                if not _copy_locked_file(ck_src, ck_dst):
+                    return (
+                        "real Chrome is running and its cookie DB is locked. "
+                        "Either close Chrome first, or run the router elevated "
+                        "(VSS shadow copy)."
+                    )
         if lsdb_src.exists():
             dst_lsdb = dest / "Default" / "Local Storage" / "leveldb"
             dst_lsdb.mkdir(parents=True, exist_ok=True)
             for f in lsdb_src.iterdir():
-                if f.is_file():
+                if not f.is_file():
+                    continue
+                try:
                     shutil.copy2(f, dst_lsdb / f.name)
+                except PermissionError:
+                    _copy_locked_file(f, dst_lsdb / f.name)  # best effort
         return ""
     except PermissionError as exc:
         return (
