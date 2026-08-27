@@ -18,7 +18,9 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import urljoin
@@ -32,6 +34,65 @@ QWEN_URL = "https://chat.qwen.ai"
 IMPORT_PATH = "/api/chat-lane/qwen/import"
 POLL_TIMEOUT_S = 180
 POLL_INTERVAL_S = 2
+
+# Windows Chrome stores per-profile data under LocalAppData; the cookie DB and
+# the encryption key material (Local State) live in these two relative paths.
+_CHROME_LOCALSTATE_REL = Path("Local State")
+_CHROME_COOKIES_REL = Path("Network/Cookies")
+
+
+def _chrome_user_data_dir() -> Path | None:
+    """Locate the user's real Chrome user-data dir (standard install)."""
+    cands = [
+        Path.home() / "AppData" / "Local" / "Google" / "Chrome",
+    ]
+    for c in cands:
+        if (c / _CHROME_LOCALSTATE_REL).exists():
+            return c
+    return None
+
+
+def _make_skeleton_profile(dest: Path) -> str:
+    """Copy a minimal 'skeleton' of the REAL Chrome profile into dest.
+
+    Returns "" on success, or an error message explaining why the snapshot
+    failed. Chrome 127+ app-bound encryption means only chrome.exe can decrypt
+    the cookie DB, but it CAN when given a copied Local State + Network/Cookies.
+    The Qwen JWT lives in localStorage, so we must also copy the Local Storage
+    leveldb folder. Copying just these (not the multi-GB profile) gives the
+    spawned Chrome the user's real qwen.ai session WITHOUT touching the live
+    profile (no lock conflict with an already-running Chrome).
+    """
+    src = _chrome_user_data_dir()
+    if not src:
+        return "real Chrome user-data dir not found (standard install expected)"
+    try:
+        ls_src = src / _CHROME_LOCALSTATE_REL
+        ck_src = src / _CHROME_COOKIES_REL
+        lsdb_src = src / "Default" / "Local Storage" / "leveldb"
+        if not ls_src.exists():
+            return "real Chrome 'Local State' not found"
+        if not ck_src.exists() and not lsdb_src.exists():
+            return "real Chrome has neither Cookies nor Local Storage — not logged in?"
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ls_src, dest / _CHROME_LOCALSTATE_REL)
+        if ck_src.exists():
+            (dest / "Default" / "Network").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ck_src, dest / "Default" / "Network" / "Cookies")
+        if lsdb_src.exists():
+            dst_lsdb = dest / "Default" / "Local Storage" / "leveldb"
+            dst_lsdb.mkdir(parents=True, exist_ok=True)
+            for f in lsdb_src.iterdir():
+                if f.is_file():
+                    shutil.copy2(f, dst_lsdb / f.name)
+        return ""
+    except PermissionError as exc:
+        return (
+            f"cannot copy real Chrome data (file locked: {exc.filename or exc}). "
+            "Close Chrome windows for qwen.ai or use incognito mode."
+        )
+    except Exception as exc:
+        return f"skeleton snapshot failed: {exc}"
 
 
 def _b64url_decode(data: str) -> bytes:
@@ -80,15 +141,47 @@ async def _collect(
     conn_name: str | None,
     json_out: Path | None,
     headless: bool,
+    mode: str = "profile",
 ) -> int:
-    """Run the collect flow. Returns 0 on success, 1 on failure."""
+    """Run the collect flow. Returns 0 on success, 1 on failure.
+
+    Modes:
+      * ``profile``   — classic persistent profile (saved logins survive).
+      * ``mybrowser`` — skeleton snapshot of the user's REAL Chrome profile;
+                        if you are logged into Qwen there, collect is instant.
+      * ``incognito`` — fresh throwaway profile for the new-account loop
+                        (login GitHub here -> login Qwen -> collect -> close).
+    """
+    browser_args: list[str] = []
+    effective_dir = profile_dir
+    cleanup_dir: Path | None = None
+
+    if mode == "mybrowser":
+        tmp = Path(tempfile.mkdtemp(prefix="bsl-qwen-mybrowser-"))
+        cleanup_dir = tmp
+        err = _make_skeleton_profile(tmp)
+        if err:
+            print(f"ERROR: {err}", file=sys.stderr)
+            return 1
+        effective_dir = tmp
+        print(f"Using snapshot of your real Chrome profile -> {tmp}", flush=True)
+    elif mode == "incognito":
+        tmp = Path(tempfile.mkdtemp(prefix="bsl-qwen-incognito-"))
+        cleanup_dir = tmp
+        effective_dir = tmp
+        browser_args = ["--incognito"]
+        print("Fresh incognito window — log in with GitHub, then Qwen; "
+              "the collector will pick the token up automatically.", flush=True)
+
     try:
         browser = await nodriver.start(
             headless=headless,
-            browser_args=[f"--user-data-dir={profile_dir}"],
+            browser_args=[f"--user-data-dir={effective_dir}"] + browser_args,
         )
     except Exception as exc:
         print(f"ERROR: failed to start browser: {exc}", file=sys.stderr)
+        if cleanup_dir:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
         return 1
 
     try:
@@ -247,6 +340,11 @@ async def _collect(
             browser.stop()
         except Exception:
             pass
+        if cleanup_dir:
+            try:
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+            except Exception:
+                pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -278,6 +376,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Run Chrome headless (useful for re-runs on warm profiles).",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["profile", "mybrowser", "incognito"],
+        default="profile",
+        help=(
+            "profile: saved persistent profile (default). "
+            "mybrowser: snapshot of your REAL Chrome profile (instant if you "
+            "are logged into Qwen there). "
+            "incognito: fresh window for adding a NEW GitHub/Qwen account."
+        ),
+    )
     args = parser.parse_args(argv)
 
     profile_dir = Path(args.profile)
@@ -289,6 +398,7 @@ def main(argv: list[str] | None = None) -> int:
         conn_name=args.name,
         json_out=json_out,
         headless=args.headless,
+        mode=args.mode,
     ))
 
 

@@ -3737,11 +3737,34 @@ def _is_local_request(request: Request) -> bool:
 
 @app.post("/api/chat-lane/{prov}/collect")
 async def chat-lane_collect_start(prov: str, request: Request):
-    """Spawn the browser collector for a web provider (localhost only)."""
+    """Spawn the browser collector for a web provider (localhost only).
+
+    Body may carry ``mode``: ``profile`` (default — saved persistent profile),
+    ``mybrowser`` (skeleton snapshot of the user's real Chrome; qwen only) or
+    ``incognito`` (fresh window for a new GitHub/Qwen account; qwen only).
+    """
     if _is_admin_auth_enabled():
         session_token = request.cookies.get("bsl_admin_session")
         if not _is_valid_admin_session(session_token):
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    mode = "profile"
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if isinstance(body, dict):
+            mode = str(body.get("mode") or "profile").strip().lower() or "profile"
+    except Exception:
+        mode = "profile"
+    if mode not in ("profile", "mybrowser", "incognito"):
+        return JSONResponse({"error": f"Invalid mode '{mode}'."}, status_code=400)
+    if mode != "profile" and prov != "qwen":
+        return JSONResponse(
+            {"error": f"mode '{mode}' is only supported for qwen for now."},
+            status_code=400,
+        )
 
     meta = _collectors.get(prov)
     if not meta:
@@ -3778,12 +3801,15 @@ async def chat-lane_collect_start(prov: str, request: Request):
     # NOTE: use the builtin open() here. `subprocess.open` does not exist and
     # raised AttributeError -> HTTP 500 on every collect (live bug 2026-08-27).
     log_fh = open(str(log_path), "w", encoding="utf-8", errors="replace")
+    collect_cmd = [str(root / ".venv" / "Scripts" / "python.exe"), str(script),
+                   "--profile", str(profile_dir),
+                   "--router", router_url,
+                   "--json-out", str(log_path.with_suffix(".json"))]
+    if mode != "profile":
+        collect_cmd += ["--mode", mode]
     try:
         proc = _sp.Popen(
-            [str(root / ".venv" / "Scripts" / "python.exe"), str(script),
-             "--profile", str(profile_dir),
-             "--router", router_url,
-             "--json-out", str(log_path.with_suffix(".json"))],
+            collect_cmd,
             cwd=str(root),
             stdout=log_fh,
             stderr=_sp.STDOUT,
