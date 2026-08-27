@@ -1580,8 +1580,11 @@ function renderProviderDetail() {
     const isCustom = p.type === 'custom' || p.type === 'image_custom' || p.type === 'video_custom';
     const displayName = getDisplayName(activeProviderId);
     const isOAuth = p.type === 'oauth';
+    const ischat-lane = !!(p.format && chat-lane_PROVIDERS[p.format]);
     const connCount = p.connections ? p.connections.length : 0;
-    const oauthStatusText = connCount > 0 ? `${connCount} Token${connCount > 1 ? 's' : ''} Connected` : 'Not Connected';
+    const oauthStatusText = connCount > 0
+        ? `${connCount} ${ischat-lane ? 'Account' : 'Token'}${connCount > 1 ? 's' : ''} Connected`
+        : 'Not Connected';
 
     return `
     <div class="detail-hero">
@@ -1589,7 +1592,7 @@ function renderProviderDetail() {
             <div class="p-icon-box" style="width:52px;height:52px;background:transparent;border:1px solid var(--border-color);">${svgIcon}</div>
             <div>
                 <h1 class="detail-title">${displayName}</h1>
-                <div class="detail-conn-count">${isOAuth ? oauthStatusText : `${connCount} connection${connCount !== 1 ? 's' : ''}`}</div>
+                <div class="detail-conn-count">${isOAuth || ischat-lane ? oauthStatusText : `${connCount} connection${connCount !== 1 ? 's' : ''}`}</div>
             </div>
         </div>
         <div class="detail-hero-right">
@@ -1598,12 +1601,12 @@ function renderProviderDetail() {
         </div>
     </div>
 
-    ${p.format && chat-lane_PROVIDERS[p.format] ? renderchat-laneImportCard(p.format) : ''}
+    ${!ischat-lane && p.format && chat-lane_PROVIDERS[p.format] ? renderchat-laneImportCard(p.format) : ''}
 
-    ${isOAuth ? `
+    ${isOAuth || ischat-lane ? `
     <div class="detail-card">
         <div class="detail-card-header">
-            <h2>${OAUTH_FLOW_TYPES[activeProviderId] === 'device_code' ? 'Device Code Authentication' : 'OAuth Integration'}</h2>
+            <h2>${ischat-lane ? 'Web Chat Accounts' : (OAUTH_FLOW_TYPES[activeProviderId] === 'device_code' ? 'Device Code Authentication' : 'OAuth Integration')}</h2>
             ${connCount > 0 ? `<span style="font-size:12px;font-weight:600;color:var(--success);">${oauthStatusText}</span>` : ''}
         </div>
         ${connCount > 0 ? p.connections.map((conn, idx) => `
@@ -1624,7 +1627,7 @@ function renderProviderDetail() {
                         <span style="display:flex; align-items:center; gap:4px; font-size:11px; font-weight:600; color:${conn.enabled !== false ? 'var(--success)' : 'var(--text-muted)'}; background:${conn.enabled !== false ? '#ecfdf5' : '#f3f4f6'}; padding:2px 6px; border-radius:12px;">
                             <div style="width:6px;height:6px;background:${conn.enabled !== false ? 'var(--success)' : 'var(--text-muted)'};border-radius:50%;"></div> ${conn.enabled !== false ? 'active' : 'disabled'}
                         </span>
-                        <span style="font-size:11px; background:#f3f4f6; color:var(--text-muted); padding:2px 6px; border-radius:4px; font-weight:500;">OAuth</span>
+                        <span style="font-size:11px; background:#f3f4f6; color:var(--text-muted); padding:2px 6px; border-radius:4px; font-weight:500;">${isOAuth ? 'OAuth' : 'Web'}</span>
                         <div data-quota-slot="${idx}" style="display:flex; align-items:center; gap:6px;"></div>
 
                     </div>
@@ -1644,11 +1647,11 @@ function renderProviderDetail() {
         <div style="padding: ${connCount > 0 ? '16px 0 8px' : '24px 0'}; display:flex; flex-direction:column; align-items:center; gap: 16px;">
             ${connCount === 0 ? `<div style="width: 48px; height: 48px; color: var(--text-main);">${svgIcon}</div>
             <div style="font-size: 14px; color: var(--text-muted); text-align:center;">
-                ${OAUTH_FLOW_TYPES[activeProviderId] === 'device_code' ? `Authenticate with ${displayName} using a device code — no API key needed.` : `Connect your ${displayName} account to import context securely without API keys.`}
+                ${ischat-lane ? `Open a browser window with your ${displayName} session — the account is collected automatically.` : (OAUTH_FLOW_TYPES[activeProviderId] === 'device_code' ? `Authenticate with ${displayName} using a device code — no API key needed.` : `Connect your ${displayName} account to import context securely without API keys.`)}
             </div>` : ''}
             <div style="display:flex;gap:12px;">
-                <button class="btn btn-primary" onclick="openOAuthTokenModal()" style="font-size:14px; padding: 10px 24px;">
-                    ${connCount > 0 ? '+ Add Another Token' : `Connect with ${displayName}`}
+                <button class="btn btn-primary" ${ischat-lane ? `onclick="openchat-laneAddAccountModal('${p.format}')"` : 'onclick="openOAuthTokenModal()"'} style="font-size:14px; padding: 10px 24px;">
+                    ${connCount > 0 ? (ischat-lane ? '+ Add Another Account' : '+ Add Another Token') : `Connect with ${displayName}`}
                 </button>
                 ${connCount > 0 ? '' : ''}
             </div>
