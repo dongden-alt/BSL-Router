@@ -23,6 +23,18 @@ import pytest
 import app.watchdog as wd
 
 
+@pytest.fixture(autouse=True)
+def _silence_watchdog_log(monkeypatch):
+    """G6 (2026-08-28): never write to the REAL .brain/logs/watchdog.log.
+
+    These tests drive the real run_supervised loop with subprocess/health
+    mocked — but _log() itself still opened and appended to the production
+    log file, seeding it with fake crash-loops (PID 12345) that poisoned
+    crash forensics. Silence it for every test in this module.
+    """
+    monkeypatch.setattr(wd, "_log", lambda msg: None)
+
+
 class FakeChild:
     """Mimics subprocess.Popen for the supervisor loop."""
 

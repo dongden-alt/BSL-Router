@@ -12229,9 +12229,23 @@ async def images_generations(request: Request):
     provider_config = config.get("providers", {}).get(provider_name)
     _format = provider_config.get('format', 'openai-image')
     
-    active_conn, _ = resolve_active_connection(config, provider_name, target_model)
+    # G1 (2026-08-28): image paths were breaker-blind: no selection tracking,
+    # no outcome reporting, and the resolver never saw the breaker, so OPEN
+    # keys kept being picked. Mirror the chat-path contract.
+    _breaker = get_breaker()
+    active_conn, _active_conn_index = resolve_active_connection(
+        config, provider_name, target_model, breaker=_breaker,
+    )
     if not active_conn:
         active_conn = {}  # preserve fallback behavior for PROVIDER_DEFAULT_URLS
+        _active_conn_index = None
+    # Active-key tracking: remember which key serves this request so the admin
+    # UI can show the live badge (fail-open, never affects the proxy path).
+    if _breaker is not None and _active_conn_index is not None:
+        try:
+            _breaker.record_selection(provider_name, target_model, _active_conn_index)
+        except Exception:
+            pass
     resolved_base_url = (active_conn.get('base_url') or PROVIDER_DEFAULT_URLS.get(provider_name, '')).rstrip('/')
     client = _get_client_for_proxy(active_conn.get("proxy_url"))
 
@@ -12271,6 +12285,25 @@ async def images_generations(request: Request):
 
     req = client.build_request("POST", upstream_url, headers=_strip_bsl_identity_headers(headers), json=upstream_payload)
     resp = await client.send(req)
+    # Breaker outcome for the initial call (fail-open): rate-limited or dead
+    # image keys now OPEN + dim in the admin UI instead of failing invisibly.
+    if _breaker is not None and _active_conn_index is not None:
+        try:
+            if resp.status_code != 200:
+                try:
+                    _err_snip = resp.text[:400]
+                except Exception:
+                    _err_snip = ""
+                _breaker.record_outcome(
+                    provider_name, target_model, _active_conn_index,
+                    resp.status_code, _err_snip,
+                )
+            else:
+                _breaker.record_outcome(
+                    provider_name, target_model, _active_conn_index, 200, "",
+                )
+        except Exception:
+            pass
     if resp.status_code != 200:
         return Response(content=resp.content, status_code=resp.status_code,
                         media_type=resp.headers.get("content-type", "application/json"))
@@ -12283,6 +12316,16 @@ async def images_generations(request: Request):
             return JSONResponse({"error": "Qwen did not return a task_id", "raw": init_data}, status_code=502)
         result = await _poll_qwen_task(client, resolved_base_url, task_id, headers)
         if "error" in result:
+            # Async task failed after a 200 initial accept: count as a real
+            # failure so the key dims / cools down (fail-open).
+            if _breaker is not None and _active_conn_index is not None:
+                try:
+                    _breaker.record_outcome(
+                        provider_name, target_model, _active_conn_index, 502,
+                        str(result.get("error"))[:400],
+                    )
+                except Exception:
+                    pass
             return JSONResponse(result, status_code=502)
         return JSONResponse(result)
 
@@ -12316,9 +12359,23 @@ async def videos_generations(request: Request):
     provider_config = config.get("providers", {}).get(provider_name)
     _format = provider_config.get('format', 'openai-video')
     
-    active_conn, _ = resolve_active_connection(config, provider_name, target_model)
+    # G1 (2026-08-28): video paths were breaker-blind: no selection tracking,
+    # no outcome reporting, and the resolver never saw the breaker, so OPEN
+    # keys kept being picked. Mirror the chat-path contract.
+    _breaker = get_breaker()
+    active_conn, _active_conn_index = resolve_active_connection(
+        config, provider_name, target_model, breaker=_breaker,
+    )
     if not active_conn:
         active_conn = {}  # preserve fallback behavior for PROVIDER_DEFAULT_URLS
+        _active_conn_index = None
+    # Active-key tracking: remember which key serves this request so the admin
+    # UI can show the live badge (fail-open, never affects the proxy path).
+    if _breaker is not None and _active_conn_index is not None:
+        try:
+            _breaker.record_selection(provider_name, target_model, _active_conn_index)
+        except Exception:
+            pass
     resolved_base_url = (active_conn.get('base_url') or PROVIDER_DEFAULT_URLS.get(provider_name, '')).rstrip('/')
     client = _get_client_for_proxy(active_conn.get("proxy_url"))
 
@@ -12344,6 +12401,25 @@ async def videos_generations(request: Request):
 
     req = client.build_request("POST", upstream_url, headers=_strip_bsl_identity_headers(headers), json=upstream_payload)
     resp = await client.send(req)
+    # Breaker outcome for the initial call (fail-open): rate-limited or dead
+    # video keys now OPEN + dim in the admin UI instead of failing invisibly.
+    if _breaker is not None and _active_conn_index is not None:
+        try:
+            if resp.status_code != 200:
+                try:
+                    _err_snip = resp.text[:400]
+                except Exception:
+                    _err_snip = ""
+                _breaker.record_outcome(
+                    provider_name, target_model, _active_conn_index,
+                    resp.status_code, _err_snip,
+                )
+            else:
+                _breaker.record_outcome(
+                    provider_name, target_model, _active_conn_index, 200, "",
+                )
+        except Exception:
+            pass
     if resp.status_code != 200:
         return Response(content=resp.content, status_code=resp.status_code,
                         media_type=resp.headers.get("content-type", "application/json"))
@@ -12356,6 +12432,16 @@ async def videos_generations(request: Request):
             return JSONResponse({"error": "Veo did not return an operation name", "raw": init_data}, status_code=502)
         result = await _poll_veo_lro(client, resolved_base_url, operation_name, headers)
         if "error" in result:
+            # LRO failed after a 200 initial accept: count as a real failure
+            # so the key dims / cools down (fail-open).
+            if _breaker is not None and _active_conn_index is not None:
+                try:
+                    _breaker.record_outcome(
+                        provider_name, target_model, _active_conn_index, 502,
+                        str(result.get("error"))[:400],
+                    )
+                except Exception:
+                    pass
             return JSONResponse(result, status_code=502)
         return JSONResponse(result)
 

@@ -376,6 +376,13 @@ class CircuitBreaker:
         - rate_limit: immediate OPEN
         - other errors: increment; OPEN if threshold reached
         """
+        # DIM LIFECYCLE (audit G5): this early-return means the dim can only
+        # be SET while the breaker is enabled. Displaying an already-set dim
+        # in the admin UI does NOT require the breaker (status_extras reports
+        # dimmed regardless), so a dim set just before the user disables the
+        # breaker stays visible until cleared by: a successful request
+        # through the key, an admin toggle off→on (reset_connection), or a
+        # router restart.
         if not self.enabled:
             return
 
