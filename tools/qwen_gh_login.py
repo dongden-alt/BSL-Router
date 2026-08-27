@@ -234,8 +234,12 @@ async def _collect(
         except Exception:
             pass
 
-        # If no token, click the GitHub OAuth button.
-        if not token:
+        # If no token, click the GitHub OAuth button — EXCEPT in mybrowser mode,
+        # where the window carries the user's REAL session: the user completes
+        # any needed click there (GitHub is already logged in via the snapshot),
+        # so auto-clicking a guessed button is wrong (caused the 'no GitHub
+        # OAuth button' failure on the real-profile layout).
+        if not token and mode != "mybrowser":
             # Selector discovery at runtime: find an anchor/button whose text or
             # href contains 'github' or 'oauth'.
             clicked = False
