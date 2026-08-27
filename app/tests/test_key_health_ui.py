@@ -21,6 +21,7 @@ from __future__ import annotations
 import time
 
 from app.circuit_breaker import CircuitBreaker
+from app.utils.model_resolver import resolve_active_connection
 
 
 def _breaker(enabled: bool = True, threshold: int = 3, recovery: int = 30) -> CircuitBreaker:
@@ -187,3 +188,50 @@ def test_status_extras_shape():
     assert set(d.keys()) == {"provider", "conn_index", "since", "age_seconds"}
     u = extras["last_used"][0]
     assert set(u.keys()) == {"provider", "conn_index", "ts", "age_seconds", "model"}
+
+
+# ── 9. Real-breaker integration: resolve_active_connection + CircuitBreaker ──
+# (Hy3 re-audit + GLM cross-check, 2026-08-28: every test above asserts
+# breaker internals directly, and the pre-existing resolver tests use STUB
+# breakers. These lock the end-to-end chain a real 429 travels:
+#   record_outcome → state=OPEN → filter_healthy_connections → resolver skips
+
+
+def _resolver_cfg():
+    """Two-key provider, no models metadata (legacy path: all keys eligible)."""
+    return {
+        "providers": {
+            P: {
+                "connections": [
+                    {"api_key": "k0"},
+                    {"api_key": "k1"},
+                ],
+            },
+        },
+    }
+
+
+def test_resolver_skips_open_key_real_breaker():
+    b = _breaker()  # enabled, threshold 3, recovery 30
+    b.record_outcome(P, M, 0, 429, "rate limited")  # key 0 → OPEN + dim
+    conn, idx = resolve_active_connection(_resolver_cfg(), P, M, breaker=b)
+    assert idx == 1  # OPEN key skipped, sibling picked
+
+
+def test_resolver_top_first_when_breaker_disabled():
+    b = _breaker(enabled=False)
+    b.record_outcome(P, M, 0, 429, "rate limited")  # no-op when disabled
+    conn, idx = resolve_active_connection(_resolver_cfg(), P, M, breaker=b)
+    assert idx == 0  # breaker inert → deterministic top-first
+
+
+def test_resolver_readmits_key_after_recovery_timeout():
+    # recovery=0 → open_until == now → expired on the next is_open() check,
+    # which transitions OPEN → HALF_OPEN and lets the probe flow.
+    b = _breaker(recovery=0)
+    b.record_outcome(P, M, 0, 429, "rate limited")
+    # Dim display LAGS recovery by design: it only clears on a real success
+    # (or admin reset) — the resolver has already readmitted the key.
+    assert len(b.status_extras()["dimmed"]) == 1
+    conn, idx = resolve_active_connection(_resolver_cfg(), P, M, breaker=b)
+    assert idx == 0  # HALF_OPEN probe allowed, top-first wins
