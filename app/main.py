@@ -7252,7 +7252,12 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         resolved_base_url = (provider_config.get('base_url') or '').rstrip('/')
     if not resolved_base_url:
         resolved_base_url = PROVIDER_DEFAULT_URLS.get(provider_name, '').rstrip('/')
-    if not resolved_base_url:
+    # chat-lane formats (glm-web/kimi-web/qwen-web) early-dispatch below with
+    # their own hard-coded backend URLs — a missing base_url must NOT be a
+    # hard error for them (live bug 2026-08-27: every qwen-web chat 500'd
+    # with "No base URL configured" before ever reaching the qwen dispatch).
+    _is_chat-lane_format = provider_config.get("format") in ("glm-web", "kimi-web", "qwen-web")
+    if not resolved_base_url and not _is_chat-lane_format:
         return JSONResponse({"error": f"No base URL configured for provider '{provider_name}'. Please set one in the admin panel."}, status_code=500)
 
     # ── GLM web-backend (chatglm.cn) early dispatch ─────────────────────────

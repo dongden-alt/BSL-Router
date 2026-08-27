@@ -286,7 +286,7 @@ async def _collect(
         tmp = Path(tempfile.mkdtemp(prefix="bsl-qwen-collect-"))
         cleanup_dir = tmp
         effective_dir = tmp
-        print("Opening collect browser (clean profile + token injection)...", flush=True)
+        print("collecting headless (no window will appear)...", flush=True)
     elif mode == "incognito":
         tmp = Path(tempfile.mkdtemp(prefix="bsl-qwen-incognito-"))
         cleanup_dir = tmp
@@ -295,9 +295,15 @@ async def _collect(
         print("Fresh incognito window — log in with GitHub, then Qwen; "
               "the collector will pick the token up automatically.", flush=True)
 
+    # ZERO-WINDOW collect (2026-08-27): mybrowser mode must NEVER show a
+    # visible window. The token is sniffed from the user's real Chrome (no
+    # window); the collect browser below runs HEADLESS — it injects the JWT,
+    # the site logs itself in and sets fresh WAF cookies, we collect them via
+    # CDP, import, and exit. The user sees nothing.
+    _force_headless = headless or mode == "mybrowser"
     try:
         browser = await nodriver.start(
-            headless=headless,
+            headless=_force_headless,
             browser_args=[f"--user-data-dir={effective_dir}"] + browser_args,
         )
     except Exception as exc:
