@@ -79,12 +79,20 @@ def test_lock_stale_dead_holder_broken(free_port):
 _SVR_SRC = r"""
 import http.server, os, sys
 port = int(sys.argv[1]); lock = sys.argv[2]
-srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), http.server.BaseHTTPRequestHandler)
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+    def log_message(self, *a):
+        pass
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
 with open(lock, "w") as f:
     f.write(str(os.getpid()))
 sys.stderr.write("READY\n"); sys.stderr.flush()
 srv.serve_forever()
 """
+
+
+_HOLDER_PROCS: list = []
 
 
 def _spawn_healthy_holder(port: int) -> subprocess.Popen:
@@ -93,6 +101,7 @@ def _spawn_healthy_holder(port: int) -> subprocess.Popen:
         [sys.executable, "-c", _SVR_SRC, str(port), lock],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
+    _HOLDER_PROCS.append(proc)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if _lock_path(port).exists() and ds._probe_health(port):
@@ -102,6 +111,17 @@ def _spawn_healthy_holder(port: int) -> subprocess.Popen:
         time.sleep(0.2)
     proc.kill()
     raise RuntimeError("holder never became healthy")
+
+
+@pytest.fixture(autouse=True)
+def _kill_leaked_holders():
+    yield
+    for p in _HOLDER_PROCS:
+        try:
+            p.kill()
+        except Exception:
+            pass
+    _HOLDER_PROCS.clear()
 
 
 def test_lock_duplicate_stands_down_vs_healthy_holder(free_port):
