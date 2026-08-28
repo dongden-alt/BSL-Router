@@ -2482,7 +2482,7 @@ window.removeModel = (idx) => {
     renderActiveTab();
 };
 
-window.deleteActiveProvider = () => {
+window.deleteActiveProvider = async () => {
     if (confirm('Delete this custom provider?')) {
         // Flag the intentional delete so the backend stale-save guard
         // (_apply_connections_stale_save_guard) does not "restore" this
@@ -2490,6 +2490,12 @@ window.deleteActiveProvider = () => {
         // Mirrors the _deleted_connection opt-out for deleteConnection.
         globalConfig._deleted_provider = { id: activeProviderId };
         delete globalConfig.providers[activeProviderId];
+        // FIX 2026-08-28: actually persist the deletion. Previously this
+        // handler only mutated local state and called backToList() — the
+        // _deleted_provider flag never reached the backend, so the provider
+        // reappeared on the next config load. saveConfig() strips the flag
+        // after the POST completes (one-shot transport).
+        await saveConfig();
         backToList();
     }
 };

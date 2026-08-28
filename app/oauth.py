@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import copy
 import errno
 import hashlib
 import html
@@ -1124,14 +1125,35 @@ def _save_connection(provider: str, flow_type: str, access_token: str, refresh_t
         "auth_method": flow_type, "provider_data": provider_data, "enabled": True,
         "imported_at": datetime.now(timezone.utc).isoformat(),
     }
-    connections.append(connection)
+    # FIX 2026-08-28 (duplicate OAuth keys): upsert by email instead of
+    # blind-append. Every re-auth of the same account used to add a new
+    # connection (user observed 2x Kiro, 4x Grok tokens for one identity).
+    # Replace-in-place keeps pool order and avoids manual cleanup.
+    _replaced_at = -1
+    _prev_snapshot = None
+    if email:
+        for _i, _c in enumerate(connections):
+            if isinstance(_c, dict) and _c.get("email") == email:
+                # Preserve the original id when replacing so external
+                # references (breaker state, rotation) stay coherent.
+                _prev_snapshot = copy.deepcopy(_c)
+                connection["id"] = _c.get("id") or connection_id
+                connections[_i] = connection
+                _replaced_at = _i
+                break
+    if _replaced_at < 0:
+        connections.append(connection)
     try:
         main_app._replace_runtime_config(config)
     except OSError as exc:
-        connections.pop()
+        if _replaced_at < 0:
+            connections.pop()
+        elif _prev_snapshot is not None:
+            # Restore the replaced snapshot entry so memory matches disk.
+            connections[_replaced_at] = _prev_snapshot
         print(f"[OAuth] failed to persist {provider} connection: {exc}", flush=True)
         raise HTTPException(status_code=500, detail="Could not save OAuth connection to config.yaml") from exc
-    return {"id": connection_id, "provider": provider, "email": email, "displayName": display_name or email or f"{provider} Account"}
+    return {"id": connection["id"], "provider": provider, "email": email, "displayName": display_name or email or f"{provider} Account"}
 
 
 async def _complete_connection(provider: str, entry: dict[str, Any], tokens: dict[str, Any]) -> dict[str, Any]:
