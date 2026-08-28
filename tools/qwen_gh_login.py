@@ -497,12 +497,84 @@ async def _collect(
             )
             return 1
 
+        # FIX 2026-08-28 (x5sec mint): perform a REAL completion from inside
+        # the page before collecting cookies. Cookies captured after only a
+        # page load lack the Aliyun x5sec anti-bot token — the router's first
+        # POST then gets WAF-punished (RGV587 slider captcha). An actual
+        # /api/v2/chat/completions call from the page mints x5sec and proves
+        # the session end-to-end. Best-effort: on failure we still collect
+        # (better than nothing) but print a loud warning.
+        _wu_ok = False
+        try:
+            _wu_js = """
+(async () => {
+  const r = await fetch('/api/v2/chat/completions', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      stream: false, version: '2.1', chat_id: '', chat_mode: 'normal',
+      model: 'qwen3.8-max', parent_id: null,
+      messages: [{
+        fid: crypto.randomUUID(), parentId: null, childrenIds: [],
+        role: 'user', content: 'hi', user_action: 'chat', files: [],
+        timestamp: Math.floor(Date.now() / 1000), models: ['qwen3.8-max'],
+        chat_type: 't2t',
+        feature_config: {thinking_enabled: false, output_schema: 'phase',
+                         research_mode: 'normal', thinking_format: 'summary',
+                         auto_search: false},
+        extra: {meta: {subChatType: 't2t'}}, sub_chat_type: 't2t', parent_id: null,
+      }],
+      timestamp: Math.floor(Date.now() / 1000) + 1,
+    }),
+  });
+  return JSON.stringify({status: r.status, ct: r.headers.get('content-type') || ''});
+})()
+"""
+            _wu_raw = await page.evaluate(_wu_js, return_by_value=True)
+            # nodriver may hand back a RemoteObject wrapper or a plain string.
+            _wu_str = ""
+            try:
+                _wu_str = _wu_raw if isinstance(_wu_raw, str) else json.loads(
+                    getattr(_wu_raw, "value", None) or "null"
+                )
+            except Exception:
+                _wu_str = ""
+            if not isinstance(_wu_str, str):
+                _wu_str = str(_wu_raw)
+            try:
+                _wu = json.loads(_wu_str) if _wu_str else {}
+            except Exception:
+                _wu = {}
+            _wu_status = int((_wu or {}).get("status") or 0)
+            _wu_ct = str((_wu or {}).get("ct") or "")
+            print(f"Warm-up completion: status={_wu_status} ct={_wu_ct[:40]}", flush=True)
+            _wu_ok = _wu_status == 200 and (
+                "text/event-stream" in _wu_ct or ("json" not in _wu_ct[:12] and _wu_ct != "")
+            )
+            await page.sleep(1.5)  # let cookies settle
+        except Exception as _wu_exc:
+            print(f"WARN: warm-up completion failed (collecting anyway): {_wu_exc}", flush=True)
+        if not _wu_ok:
+            print(
+                "WARN: warm-up completion did not confirm SSE/JSON stream — collected "
+                "cookies may lack x5sec and get WAF-punished on first POST.",
+                flush=True,
+            )
+
         # collect cookies via CDP (nodriver browser.cookies API).
         # Include httpOnly ones — required: cnaui, aui, sca, xlly_s, cna,
         # token, _bl_uid, x-ap where present.
         cookies = await browser.cookies.get_all()
         qwen_cookies = [c for c in cookies if c.domain and "qwen.ai" in c.domain]
         cookie_header = "; ".join(f"{c.name}={c.value}" for c in qwen_cookies)
+        _has_x5sec = any(c.name == "x5sec" for c in qwen_cookies)
+        print(f"Cookie collect: {len(qwen_cookies)} entries, x5sec={'YES' if _has_x5sec else 'NO'}", flush=True)
+        if not _has_x5sec:
+            print(
+                "WARN: no x5sec cookie after warm-up — Aliyun will likely challenge "
+                "the router's first POST. Re-run collect if chat fails with RGV587.",
+                flush=True,
+            )
 
         # Capture the browser's actual User-Agent.
         ua = ""

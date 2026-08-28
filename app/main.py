@@ -7336,6 +7336,22 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     {"error": {"message": f"chat-lane upstream auth failed for {provider_name}/{target_model}: {err_text[:200]}", "type": "proxy_error", "code": 401}},
                     status_code=401,
                 )
+        # FIX 2026-08-28 (WAF hammer, round 2): the 429 status mapping alone did
+        # NOT stop the never-stop wrap — the chain still exhausted and wrapped
+        # (pass 7->8 observed after restart), hammering the Aliyun punish and
+        # deepening the block. A WAF slider/captcha punish (RGV587/x5sec) is
+        # sticky per cookies+IP: every retry refreshes it. Fail-fast exactly
+        # like the 401 auth-dead path above.
+        if status_code == 429 and ("RGV587" in err_text or "WAF" in err_text or "x5sec" in err_text or "captcha" in err_text.lower()):
+            print(
+                f"[chat-laneFailover] {provider_name}/{target_model}: WAF punish (429) — "
+                "fail-fast (retrying deepens the block)",
+                flush=True,
+            )
+            return JSONResponse(
+                {"error": {"message": f"chat-lane upstream WAF-punished for {provider_name}/{target_model}: {err_text[:200]} The Aliyun block is sticky — stop sending, wait 10+ min, then re-collect via the login tool.", "type": "proxy_error", "code": 429}},
+                status_code=429,
+            )
         if active_chain and _next_idx < len(active_chain):
             print(
                 f"[chat-laneFailover] {provider_name}/{target_model} status={status_code} "
