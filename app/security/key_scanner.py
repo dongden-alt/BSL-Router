@@ -98,9 +98,19 @@ def _is_private_ip(hostname: str) -> bool:
     """Check if hostname is a private/loopback IP."""
     try:
         ip = ipaddress.ip_address(hostname)
-        return ip.is_private or ip.is_loopback or ip.is_link_local
+        return ip.is_private or ip.is_link_local
     except ValueError:
         return hostname in ("localhost", "0.0.0.0")
+
+
+def _is_loopback(hostname: str) -> bool:
+    """Check if hostname is loopback (self-hosted gateway on this machine)."""
+    if hostname in ("localhost", "0.0.0.0"):
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def _check_url_spoofing(base_url: str) -> Optional[str]:
@@ -174,10 +184,27 @@ def scan_single_key(api_key: str, base_url: str, provider_format: str) -> list[F
                 ))
 
     # 4. Local network exfil check (only for cloud API formats)
+    # Loopback (localhost/127.0.0.1/::1/0.0.0.0) = self-hosted gateway on this
+    # machine: traffic never leaves the host (Chat2API, LM Studio, Ollama), so
+    # it only warns. LAN-private addresses are real network destinations and
+    # stay blocked.
     cloud_formats = {"openai", "openai-responses", "anthropic", "gemini",
                      "openai-image", "openai-video"}
     if provider_format in cloud_formats:
-        if _is_private_ip(host):
+        if _is_loopback(host):
+            findings.append(Finding(
+                severity="warn",
+                category="local_network_exfil",
+                provider="",
+                connection="",
+                message=f"base_url points to loopback (self-hosted gateway): {host}",
+                detail=(
+                    f"Provider format '{provider_format}' is normally a cloud API, "
+                    f"but base_url {host} is loopback - traffic stays on this "
+                    f"machine (e.g. Chat2API / LM Studio / Ollama gateways)."
+                ),
+            ))
+        elif _is_private_ip(host):
             findings.append(Finding(
                 severity="block",
                 category="local_network_exfil",

@@ -48,11 +48,21 @@ class TestScanSingleKey:
         assert len(blocks) > 0
         assert blocks[0].category == "credential_query_leak"
 
-    def test_local_network_exfil(self):
-        findings = scan_single_key("sk-test", "http://127.0.0.1:8080/v1", "openai")
+    def test_local_network_exfil_lan_ip_still_blocks(self):
+        findings = scan_single_key("sk-test", "http://192.168.1.50:8080/v1", "openai")
         blocks = [f for f in findings if f.severity == "block"]
         assert len(blocks) > 0
         assert any(f.category == "local_network_exfil" for f in blocks)
+
+    def test_loopback_gateway_warns_not_blocks(self):
+        # Self-hosted gateways (Chat2API :6970, LM Studio, Ollama) on loopback
+        # never leave the machine - warn only, so /api/verify-key passes them.
+        for url in ("http://localhost:6970", "http://127.0.0.1:6970/v1"):
+            findings = scan_single_key("sk-test", url, "openai")
+            blocks = [f for f in findings if f.severity == "block"]
+            warns = [f for f in findings if f.severity == "warn"]
+            assert blocks == [], f"loopback {url} must not block: {blocks}"
+            assert any(f.category == "local_network_exfil" for f in warns), url
 
     def test_insecure_http(self):
         findings = scan_single_key("sk-test", "http://api.example.com/v1", "openai")
