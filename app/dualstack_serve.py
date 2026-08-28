@@ -99,6 +99,30 @@ def _probe_health(port: int) -> bool:
         return False
 
 
+def _probe_health_dual(port: int) -> bool:
+    """True if EITHER stack (IPv4 127.0.0.1 or IPv6 [::1]) answers /health.
+
+    KEY FIX 2026-08-29 (split-brain socket, live incident 04:20): after a
+    Windows network-stack hiccup (sleep/resume, interface bounce) the IPv6
+    accept path on the dual-stack listening socket can die while the
+    IPv4-mapped path keeps serving fine — the [::1]-only self-probe failed
+    3/3 while real ::ffff:127.0.0.1 requests streamed 200 OK, so the
+    watchdog killed a HEALTHY router. A router is dead only when BOTH
+    stacks are unreachable for the full failure window.
+    """
+    for host in ("127.0.0.1", "[::1]"):
+        try:
+            req = urllib.request.Request(
+                f"http://{host}:{port}/health", method="GET"
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if 200 <= resp.status < 300:
+                    return True
+        except Exception:
+            continue
+    return False
+
+
 def acquire_instance_lock(port: int, intended_successor: bool = False,
                           max_wait_s: float = 150.0) -> bool:
     """Win the single-instance lock for serving ``:port``.
@@ -231,14 +255,7 @@ def _self_health_watchdog(port: int, interval_s: float = 10.0, max_failures: int
     failures = 0
     while True:
         time.sleep(interval_s)
-        try:
-            req = urllib.request.Request(
-                f"http://[::1]:{port}/health", method="GET"
-            )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                ok = 200 <= resp.status < 300
-        except Exception:
-            ok = False
+        ok = _probe_health_dual(port)
         if ok:
             failures = 0
             continue

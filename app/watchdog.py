@@ -85,14 +85,22 @@ def _log(msg: str) -> None:
 
 
 def _health_check(port: int) -> bool:
-    """Return True if the router answered the public O(1) /health with 200."""
-    try:
-        import httpx
-        url = f"http://127.0.0.1:{port}/health"
-        resp = httpx.Client(timeout=HEALTH_PROBE_TIMEOUT_S).get(url)
-        return resp.status_code == 200
-    except Exception:
-        return False
+    """Return True if the router answered /health from EITHER stack.
+
+    KEY FIX 2026-08-29 (split-brain socket, incident 04:20): probing only
+    127.0.0.1 declared a router dead while its IPv6 path still served
+    ::1 clients fine. A router is down only when BOTH stacks are silent.
+    """
+    for host in ("127.0.0.1", "[::1]"):
+        try:
+            import httpx
+            url = f"http://{host}:{port}/health"
+            resp = httpx.Client(timeout=HEALTH_PROBE_TIMEOUT_S).get(url)
+            if resp.status_code == 200:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _wait_for_port(port: int, host: str = "127.0.0.1",
