@@ -37,6 +37,139 @@ import urllib.request
 _BIND_RETRY_TOTAL_S = 120.0
 _BIND_RETRY_STEP_S = 2.0
 
+# Single-instance lock (KEY FIX 2026-08-28, restart fork-bomb regression):
+# POST /api/version/restart spawns a fresh dualstack_serve without the
+# BSL_SUPERVISED flag, so the spawn re-enters the supervision gate and
+# becomes a SECOND supervisor while the old lineage is still draining —
+# two lineages then fight over one exclusive port for minutes (live
+# incident 18:19-18:21: 15 spawns from 13 different parents, WinError 64
+# accept-loop deaths, kill/respawn ping-pong). Every serving process must
+# now win an exclusive lock file before binding.
+_LOCK_RETRY_STEP_S = 2.0
+
+
+def _audit_line(line: str) -> None:
+    """Append-only forensic line to .brain/logs/restart_audit.log."""
+    try:
+        _audit = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            ".brain", "logs", "restart_audit.log",
+        )
+        os.makedirs(os.path.dirname(_audit), exist_ok=True)
+        with open(_audit, "a", encoding="utf-8") as _fh:
+            _fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
+    except Exception:
+        pass
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if `pid` is a live process (Windows-safe, access-denied = alive)."""
+    if pid <= 0:
+        return False
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    try:
+        import ctypes
+        SYNCHRONIZE = 0x00100000
+        kernel32 = ctypes.windll.kernel32
+        h = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if not h:
+            # ERROR_ACCESS_DENIED means an elevated process IS alive.
+            return kernel32.GetLastError() == 5
+        try:
+            WAIT_TIMEOUT = 0x102
+            return kernel32.WaitForSingleObject(h, 0) == WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception:
+        return False
+
+
+def _probe_health(port: int) -> bool:
+    """Cheap /health probe against an existing router on this port."""
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
+def acquire_instance_lock(port: int, intended_successor: bool = False,
+                          max_wait_s: float = 150.0) -> bool:
+    """Win the single-instance lock for serving ``:port``.
+
+    Returns True when THIS process owns the lock and may bind.
+    Returns False when a healthy owner already exists and we must stand
+    down (exit 0) — the duplicate dissolves instead of fighting the port.
+
+    Rules per holder state:
+      - holder PID dead                      -> break stale lock, take over
+      - holder alive + healthy (/health 200):
+          intended successor (restart flow)  -> WAIT out the holder's drain
+            window (GRACEFUL_RESTART_MAX_WAIT_S=120s + slack); the old
+            holder exits after draining, then we take over
+          anyone else (duplicate spawn)      -> stand down immediately
+      - holder alive + NOT healthy (draining/zombie) -> wait for death up
+        to max_wait_s; at deadline give up (exit nonzero upstream)
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    lock_path = os.path.join(root, ".brain", "logs", f"router-{port}.lock")
+    deadline = time.monotonic() + max_wait_s
+    waited = 0.0
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+            os.close(fd)
+            if intended_successor:
+                # Once we own the lock we are THE router — future respawns of
+                # this lineage must behave as normal duplicates again.
+                os.environ.pop("BSL_INTENDED_SUCCESSOR", None)
+            _audit_line(
+                f"LOCK_ACQUIRED pid={os.getpid()} port={port} "
+                f"successor={intended_successor} waited={waited:.0f}s"
+            )
+            return True
+        except FileExistsError:
+            holder_pid = 0
+            try:
+                with open(lock_path, "r", encoding="ascii") as fh:
+                    holder_pid = int((fh.read() or "0").strip() or "0")
+            except (OSError, ValueError):
+                holder_pid = 0
+            if holder_pid == os.getpid():
+                return True  # already ours (re-entry)
+            if not _pid_alive(holder_pid):
+                try:
+                    os.unlink(lock_path)
+                    _audit_line(f"LOCK_STALE_BROKEN pid={os.getpid()} dead_holder={holder_pid}")
+                except OSError:
+                    pass
+                continue
+            if _probe_health(port):
+                if not intended_successor:
+                    _audit_line(
+                        f"LOCK_STANDOWN pid={os.getpid()} healthy_holder={holder_pid}"
+                    )
+                    return False
+                # Successor: holder is draining (healthy now, exiting soon).
+            else:
+                # Holder alive but sick: zombie/dying — wait it out.
+                pass
+            if time.monotonic() >= deadline:
+                _audit_line(
+                    f"LOCK_TIMEOUT pid={os.getpid()} holder={holder_pid} "
+                    f"successor={intended_successor}"
+                )
+                return False
+            time.sleep(_LOCK_RETRY_STEP_S)
+            waited += _LOCK_RETRY_STEP_S
+
 
 def make_dualstack_socket(port: int, retry_total_s: float = _BIND_RETRY_TOTAL_S) -> socket.socket:
     """Create a dual-stack (IPv4+IPv6) listening socket on ``[::]:port``.
@@ -159,6 +292,24 @@ def main() -> None:
             with open(_cfg_path, "r", encoding="utf-8") as _fh:
                 _cfg = yaml.safe_load(_fh) or {}
             if (_cfg.get("watchdog") or {}).get("auto_restart") is True:
+                # SINGLE-INSTANCE PRE-GATE (2026-08-28 fork-bomb fix): never
+                # create a SECOND supervision lineage while a healthy router
+                # already answers /health — a duplicate supervisor is exactly
+                # what made restarts fight over the port. Intended successors
+                # (restart flow) skip this gate: the old holder is still
+                # healthy during its drain window.
+                if (os.environ.get("BSL_INTENDED_SUCCESSOR") != "1"
+                        and _probe_health(args.port)):
+                    _audit_line(
+                        f"GATE_STANDOWN pid={os.getpid()} "
+                        f"reason=healthy_router_already_running"
+                    )
+                    print(
+                        "[DualStack] healthy router already serving — standing down "
+                        "(no duplicate supervision)",
+                        flush=True,
+                    )
+                    return
                 from app.watchdog import run_supervised
                 run_supervised(port=args.port)
                 return
@@ -176,6 +327,18 @@ def main() -> None:
 
     config = uvicorn.Config("app.main:app", log_level=args.log_level)
     server = uvicorn.Server(config)
+
+    # SINGLE-INSTANCE LOCK (2026-08-28 fork-bomb fix): exactly ONE serving
+    # process may bind this port. Duplicates stand down before touching the
+    # socket; intended successors wait out the old holder's drain window.
+    _intended = os.environ.get("BSL_INTENDED_SUCCESSOR") == "1"
+    if not acquire_instance_lock(args.port, intended_successor=_intended):
+        print(
+            "[DualStack] another instance owns this port — standing down",
+            flush=True,
+        )
+        return  # exit 0: a watchdog parent reads this as "stand down" too
+
     sock = make_dualstack_socket(args.port)
     print(
         f"[DualStack] listening on [::]:{args.port} (IPv6+IPv4, V6ONLY=0)",
@@ -218,7 +381,16 @@ def main() -> None:
     except Exception as _audit_exc:
         print(f"[DualStack] spawn audit failed: {_audit_exc!r}", flush=True)
 
-    server.run(sockets=[sock])
+    try:
+        server.run(sockets=[sock])
+    finally:
+        # Release the single-instance lock so an immediate respawn wins it
+        # without stale-break heuristics.
+        try:
+            _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            os.unlink(os.path.join(_root, ".brain", "logs", f"router-{args.port}.lock"))
+        except OSError:
+            pass
     print(
         "[DualStack] server.run returned — exiting so supervisor can restart cleanly",
         flush=True,

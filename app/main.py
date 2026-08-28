@@ -2050,13 +2050,23 @@ async def restart_server(request: Request):
                 flush=True,
             )
         _time.sleep(1.0)
-        # Launch new uvicorn process in detached mode
+        # Launch new uvicorn process in detached mode.
+        # SUCCESSOR PROTOCOL (2026-08-28 fork-bomb fix): mark the spawn so it
+        # (a) passes the supervision pre-gate (the old holder is still healthy
+        # while draining) and (b) waits out OUR drain window in the instance
+        # lock instead of standing down. Without this, the spawn re-entered
+        # supervision and became a SECOND supervisor — the fork-bomb that
+        # made restarts fight over :6969 for minutes.
+        _env = os.environ.copy()
+        _env["BSL_INTENDED_SUCCESSOR"] = "1"
+        _env.pop("BSL_SUPERVISED", None)
         _sp.Popen(
             # DUAL-STACK FIX (2026-08-27): bind [::] with IPV6_V6ONLY=0 so both
             # ::1 (Windows localhost-first) and 127.0.0.1 clients are served by
             # ONE socket. --host 0.0.0.0 left IPv6 clients ECONNREFUSED.
             [_venv_python, "-m", "app.dualstack_serve", "--port", str(_port)],
             cwd=_root,
+            env=_env,
             creationflags=_sp.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             close_fds=True,
         )
@@ -3555,12 +3565,22 @@ async def _qwen_import_account(
 
     # Safety net: call GET /api/v2/user/info with the Bearer token. We accept
     # 200 + success:true; reject is_guest===true or email @guest.com.
+    # EVENT-LOOP SAFETY (ROOT-CAUSE FIX 2026-08-28 restart regression):
+    # this used to be a SYNC httpx call inside an async handler. While Aliyun
+    # WAF challenged the request (10-30s), the whole event loop froze: /health
+    # probes timed out, the self-health watchdog hit 3 consecutive failures
+    # and os._exit(3)'d the router — "auto restart with no restart command".
+    # Every import = one stall; bulk import multiplied them. Run it in the
+    # thread pool so the loop stays responsive.
     try:
         import httpx as _hx
+        import asyncio as _aio
         _cli = _get_client_for_proxy(None)
         _hdrs = qwen_chat-lane.browser_headers()
         _hdrs["Authorization"] = f"Bearer {token}"
-        _resp = _cli.get(qwen_chat-lane.QWEN_USER_URL, headers=_hdrs, timeout=10.0)
+        _resp = await _aio.to_thread(
+            _cli.get, qwen_chat-lane.QWEN_USER_URL, headers=_hdrs, timeout=10.0
+        )
         if _resp.status_code == 200:
             try:
                 _data = _resp.json()
