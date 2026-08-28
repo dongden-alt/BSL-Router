@@ -133,8 +133,10 @@ def test_lock_duplicate_stands_down_vs_healthy_holder(free_port):
         assert ds.acquire_instance_lock(free_port, intended_successor=False,
                                         max_wait_s=10.0) is False
         assert time.monotonic() - t0 < 5.0
-        # Lock still owned by the holder.
-        assert int(_lock_path(free_port).read_text()) == holder.pid
+        # Lock still owned by a live holder process (Popen.pid may differ
+        # from the child's os.getpid() via the venv launcher shim on Windows).
+        _held = int(_lock_path(free_port).read_text())
+        assert _held != os.getpid() and ds._pid_alive(_held)
     finally:
         holder.kill(); holder.wait(timeout=5)
         _clear_lock(free_port)
