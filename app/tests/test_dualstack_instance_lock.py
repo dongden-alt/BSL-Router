@@ -20,7 +20,7 @@ import pytest
 
 from app import dualstack_serve as ds
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(ds.__file__).resolve().parent.parent  # same root the module uses
 LOCK_DIR = ROOT / ".brain" / "logs"
 
 
