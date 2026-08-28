@@ -7821,9 +7821,17 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             await _qwen_resp.aclose()
             _q_json_code, _q_json_details = qwen_chat-lane.parse_error_envelope(_q_json_err_body)
             print(f"[Qwen] completions returned JSON (not SSE): code={_q_json_code!r} details={_q_json_details!r} body={_q_json_err_body[:300]!r}", flush=True)
-            bench_leaf(config, provider_name, target_model, 401 if _q_json_code in ("unauthorized", "Unauthorized") else 502, f"{_q_json_code} {_q_json_details}", 0)
+            # FIX 2026-08-28 (WAF hammer): FAIL_SYS_USER_VALIDATE / RGV587_ERROR
+            # is Aliyun's slider-challenge response. Returning 502 here fed the
+            # never-stop combo retry (pass 8 -> 16 -> 20 observed), hammering
+            # the WAF and deepening the block. Map it to 429 (rate-limited) so
+            # the failover treats it as backoff-able, not retry-immediately.
+            _q_waf_hit = "RGV587" in (_q_json_err_body or "") or "FAIL_SYS_USER_VALIDATE" in (_q_json_err_body or "")
+            bench_leaf(config, provider_name, target_model, 429 if _q_waf_hit else (401 if _q_json_code in ("unauthorized", "Unauthorized") else 502), f"{_q_json_code} {_q_json_details}", 0)
             if _q_json_code in ("unauthorized", "Unauthorized"):
                 return await _wc_failover(401, f"Qwen session expired/invalid ({_q_json_code}) — re-run tools/qwen_gh_login.py to collect a fresh token")
+            if _q_waf_hit:
+                return await _wc_failover(429, "Qwen WAF slider challenge (RGV587) — cookies/UA rejected; re-collect with a real-Chrome UA, wait before retrying")
             return await _wc_failover(502, f"Qwen completions returned JSON error ({_q_json_code}): {_q_json_details or _q_json_err_body[:200]}")
 
         # Best-effort conversation cleanup (fire-and-forget).

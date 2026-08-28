@@ -363,9 +363,16 @@ async def _collect(
     # CDP, import, and exit. The user sees nothing.
     _force_headless = headless or mode == "mybrowser"
     try:
+        # FIX 2026-08-28 (WAF UA bind): force a REAL Chrome UA — the headless
+        # browser's default HeadlessChrome UA gets cookies that Aliyun WAF blocks
+        # on sight. Cookies minted under this UA are usable by the router as-is.
+        _REAL_CHROME_UA = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+        )
         browser = await nodriver.start(
             headless=_force_headless,
-            browser_args=[f"--user-data-dir={effective_dir}"] + browser_args,
+            browser_args=[f"--user-data-dir={effective_dir}", f"--user-agent={_REAL_CHROME_UA}"] + browser_args,
         )
     except Exception as exc:
         print(f"ERROR: failed to start browser: {exc}", file=sys.stderr)
