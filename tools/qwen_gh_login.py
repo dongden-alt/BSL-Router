@@ -212,6 +212,18 @@ def _days_left(token: str) -> int:
     return max(0, (exp - int(time.time())) // 86400)
 
 
+def _sniffed_token_expired(token: str) -> bool:
+    """FIX 2026-08-28: True when the JWT exists but its exp has passed.
+
+    Used by the mybrowser flow so a stale token in the real Chrome is treated
+    as absent (re-login) instead of being injected and re-exported forever.
+    Unparseable tokens return False — the caller's structural checks handle
+    those separately.
+    """
+    exp = _decode_jwt_exp(token)
+    return bool(exp) and exp <= int(time.time())
+
+
 def _save_error_screenshot(profile_dir: Path, page, message: str) -> None:
     """Dump a screenshot to <profile>/error.png and print the message."""
     error_dir = profile_dir
@@ -281,7 +293,45 @@ async def _collect(
                 )
                 return 1
         else:
-            print("Found Qwen token in your real Chrome.", flush=True)
+            # FIX 2026-08-28 (dead-token loop): a sniffed token whose exp has
+            # passed is worthless — injecting it makes the site log out and the
+            # collect re-exports the SAME dead token (import then 422s with
+            # "Token has expired"). Treat an expired token as absent so the
+            # user is prompted to re-login in their real Chrome instead.
+            if _sniffed_token_expired(token_live):
+                print(
+                    "Qwen token in your real Chrome is EXPIRED — need a fresh login.",
+                    flush=True,
+                )
+                token_live = ""
+                import webbrowser
+                webbrowser.open(QWEN_URL)
+                print("Opened chat.qwen.ai as a tab in YOUR Chrome.", flush=True)
+                print(
+                    "Sign OUT (avatar menu) then sign IN again (GitHub) — the "
+                    "old token must be replaced.",
+                    flush=True,
+                )
+                print("Waiting for the fresh Qwen token", end="", flush=True)
+                deadline = time.time() + POLL_TIMEOUT_S
+                while time.time() < deadline:
+                    time.sleep(POLL_INTERVAL_S)
+                    candidate = _sniff_qwen_token_live()
+                    if candidate and not _sniffed_token_expired(candidate):
+                        token_live = candidate
+                        break
+                    print(".", end="", flush=True)
+                print(flush=True)
+                if not token_live:
+                    print(
+                        f"ERROR: no FRESH Qwen token appeared in your browser "
+                        f"after {POLL_TIMEOUT_S}s. The old token is expired — "
+                        "complete the sign-out/sign-in at chat.qwen.ai first.",
+                        file=sys.stderr,
+                    )
+                    return 1
+            else:
+                print("Found Qwen token in your real Chrome.", flush=True)
         inject_token = token_live
         tmp = Path(tempfile.mkdtemp(prefix="bsl-qwen-collect-"))
         cleanup_dir = tmp
@@ -416,6 +466,18 @@ async def _collect(
             return 1
 
         print()  # newline after dots
+
+        # FIX 2026-08-28 (dead-token loop): refuse to export an expired token.
+        # The import endpoint 422s on it and the account never shows up in the
+        # UI — fail loudly here with actionable instructions instead.
+        if _sniffed_token_expired(token):
+            _save_error_screenshot(
+                profile_dir, page,
+                "collected Qwen token is EXPIRED. In YOUR Chrome, open "
+                "chat.qwen.ai, sign out, sign back in (GitHub), then re-run "
+                "this collect.",
+            )
+            return 1
 
         # collect cookies via CDP (nodriver browser.cookies API).
         # Include httpOnly ones — required: cnaui, aui, sca, xlly_s, cna,

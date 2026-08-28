@@ -1328,6 +1328,10 @@ function renderProviderList() {
     for (const [key, p] of Object.entries(globalConfig.providers)) {
         if (p.type === 'custom' || p.type === 'image_custom' || p.type === 'video_custom') {
             if (p.hidden && !isEditingVisibility) continue;
+            // FIX 2026-08-28 (dual display): chat-lane-format providers (qwen-web,
+            // glm-web, kimi-web) are rendered by renderchat-laneSection() — never
+            // duplicate them into Custom Text Providers.
+            if (p.type === 'custom' && chat-lane_PROVIDERS[p.format]) continue;
             const isActive = p.connections && p.connections.length > 0;
             const card = providerCard(key, getDisplayName(key), SVGS[key] || letterIcon(key), isActive, `showProviderDetail('${key}')`);
             
