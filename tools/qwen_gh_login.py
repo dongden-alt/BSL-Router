@@ -97,6 +97,9 @@ def _sniff_qwen_token_live(user_data: Path | None = None) -> str:
         files = sorted(lsdb.iterdir())
     except Exception:
         return ""
+    # FIX 2026-08-28: accumulators for the freshest non-expired token scan.
+    _now = int(time.time())
+    _best_token, _best_exp = "", 0
     for f in files:
         if not f.is_file():
             continue
@@ -116,11 +119,19 @@ def _sniff_qwen_token_live(user_data: Path | None = None) -> str:
                 continue
         except Exception:
             continue
-        if b"qwen.ai" in data:
-            m = pat.search(data)
-            if m:
-                return m.group(0).decode("ascii", "ignore")
-    return ""
+        if b"qwen.ai" not in data:
+            continue
+        # FIX 2026-08-28 (stale-first-match): leveldb keeps OLD token entries
+        # alongside the new one after a re-login. The previous first-match
+        # logic kept returning an EXPIRED token, so the 180s login-wait always
+        # timed out even though the user had signed in. Scan ALL JWTs and keep
+        # the FRESHEST NON-EXPIRED one instead.
+        for m in pat.finditer(data):
+            tok = m.group(0).decode("ascii", "ignore")
+            exp = _decode_jwt_exp(tok)
+            if exp and exp > _now and exp > _best_exp:
+                _best_token, _best_exp = tok, exp
+    return _best_token
 
 
 def _make_skeleton_profile(dest: Path) -> str:
