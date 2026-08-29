@@ -3,7 +3,7 @@
 WHY: uvicorn ``--host 0.0.0.0`` binds IPv4-only, while Windows resolves
 ``localhost`` to ``::1`` first. IPv6-first clients (Node fetch, some Python
 stacks) then get an instant ECONNREFUSED that looks like a "transient router
-restart" â€” it is not; the probe never reaches the server. ``--host ::`` alone
+restart" — it is not; the probe never reaches the server. ``--host ::`` alone
 is ALSO wrong on Windows (default IPV6_V6ONLY=1 makes it IPv6-only, killing
 every 127.0.0.1 client, verified on staging 2026-08-27).
 
@@ -41,7 +41,7 @@ _BIND_RETRY_STEP_S = 2.0
 # Single-instance lock (KEY FIX 2026-08-28, restart fork-bomb regression):
 # POST /api/version/restart spawns a fresh dualstack_serve without the
 # BSL_SUPERVISED flag, so the spawn re-enters the supervision gate and
-# becomes a SECOND supervisor while the old lineage is still draining â€”
+# becomes a SECOND supervisor while the old lineage is still draining —
 # two lineages then fight over one exclusive port for minutes (live
 # incident 18:19-18:21: 15 spawns from 13 different parents, WinError 64
 # accept-loop deaths, kill/respawn ping-pong). Every serving process must
@@ -128,7 +128,7 @@ def _probe_health_dual(port: int) -> bool:
     KEY FIX 2026-08-29 (split-brain socket, live incident 04:20): after a
     Windows network-stack hiccup (sleep/resume, interface bounce) the IPv6
     accept path on the dual-stack listening socket can die while the
-    IPv4-mapped path keeps serving fine â€” the [::1]-only self-probe failed
+    IPv4-mapped path keeps serving fine — the [::1]-only self-probe failed
     3/3 while real ::ffff:127.0.0.1 requests streamed 200 OK, so the
     watchdog killed a HEALTHY router. A router is dead only when BOTH
     stacks are unreachable for the full failure window.
@@ -152,7 +152,7 @@ def acquire_instance_lock(port: int, intended_successor: bool = False,
 
     Returns True when THIS process owns the lock and may bind.
     Returns False when a healthy owner already exists and we must stand
-    down (exit 0) â€” the duplicate dissolves instead of fighting the port.
+    down (exit 0) — the duplicate dissolves instead of fighting the port.
 
     Rules per holder state:
       - holder PID dead                      -> break stale lock, take over
@@ -174,7 +174,7 @@ def acquire_instance_lock(port: int, intended_successor: bool = False,
             os.write(fd, str(os.getpid()).encode("ascii"))
             os.close(fd)
             if intended_successor:
-                # Once we own the lock we are THE router â€” future respawns of
+                # Once we own the lock we are THE router — future respawns of
                 # this lineage must behave as normal duplicates again.
                 os.environ.pop("BSL_INTENDED_SUCCESSOR", None)
             _audit_line(
@@ -206,7 +206,7 @@ def acquire_instance_lock(port: int, intended_successor: bool = False,
                     return False
                 # Successor: holder is draining (healthy now, exiting soon).
             else:
-                # Holder alive but sick: zombie/dying â€” wait it out.
+                # Holder alive but sick: zombie/dying — wait it out.
                 pass
             if time.monotonic() >= deadline:
                 _audit_line(
@@ -232,7 +232,7 @@ def make_dualstack_socket(port: int, retry_total_s: float = _BIND_RETRY_TOTAL_S)
             # Core of the fix: allow the IPv6 socket to accept IPv4-mapped clients.
             s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
         except OSError:
-            # Very old kernels â€” degrade to whatever the OS default is.
+            # Very old kernels — degrade to whatever the OS default is.
             pass
         if os.name == "nt":
             # Windows: SO_REUSEADDR allows port hijacking by another process;
@@ -257,7 +257,7 @@ def make_dualstack_socket(port: int, retry_total_s: float = _BIND_RETRY_TOTAL_S)
             if time.monotonic() >= deadline:
                 raise
             print(
-                f"[DualStack] bind busy on [::]:{port} ({e!r}) â€” "
+                f"[DualStack] bind busy on [::]:{port} ({e!r}) — "
                 f"retrying up to {retry_total_s:.0f}s total (zombie holder?)",
                 flush=True,
             )
@@ -271,7 +271,7 @@ def make_dualstack_socket(port: int, retry_total_s: float = _BIND_RETRY_TOTAL_S)
 def _self_health_watchdog(port: int, interval_s: float = 10.0, max_failures: int = 3) -> None:
     """Daemon thread: probe ``/health``; ``os._exit(3)`` after N consecutive misses.
 
-    ``os._exit`` bypasses finally/atexit â€” intentional, the event loop may
+    ``os._exit`` bypasses finally/atexit — intentional, the event loop may
     be wedged while the socket is still held, and we need the OS to reap
     the port so the respawn (with bind-retry) can recover it.
 
@@ -351,7 +351,7 @@ def _self_health_watchdog(port: int, interval_s: float = 10.0, max_failures: int
                 pass
             print(
                 f"[DualStack] watchdog: {max_failures} consecutive health failures "
-                f"({reason}) â€” exiting",
+                f"({reason}) — exiting",
                 flush=True,
             )
             os._exit(3)
@@ -366,7 +366,7 @@ def _install_accept_loop_guard() -> bool:
     socket, and never re-arms ``self._proactor.accept(sock)``. One aborted
     inbound connection permanently deafens the router; the self-health
     watchdog then ``os._exit(3)``s and the supervisor respawns into the same
-    trap until it gives up â€” total ``:6969`` outage.
+    trap until it gives up — total ``:6969`` outage.
 
     The patch wraps the inner ``loop`` callback of ``_start_serving``. When
     ``f.result()`` raises ``OSError`` and the socket is still valid, the
@@ -376,7 +376,7 @@ def _install_accept_loop_guard() -> bool:
     Safeguards:
       - No-op on non-Windows / non-Proactor loops (loop type guard).
       - Idempotent (re-install is a safe no-op).
-      - If ``sock.fileno() == -1`` the socket is genuinely gone â€” fall back
+      - If ``sock.fileno() == -1`` the socket is genuinely gone — fall back
         to the original ``sock.close()`` behaviour rather than spinning.
       - Burst guard: ``_ACCEPT_GUARD_BURST`` re-arms within
         ``_ACCEPT_GUARD_WINDOW_S`` per socket. If exceeded, the guard sets
@@ -388,7 +388,7 @@ def _install_accept_loop_guard() -> bool:
     global _accept_guard_exhausted
 
     # No-op on non-Windows / non-Proactor loops.
-    # NOTE: BaseProactorEventLoop is NOT exported on the `asyncio` package â€”
+    # NOTE: BaseProactorEventLoop is NOT exported on the `asyncio` package —
     # it lives in asyncio.proactor_events. Referencing asyncio.BaseProactorEventLoop
     # raises AttributeError and crashed every child on boot (rc=1, 2026-08-29 15:23).
     try:
@@ -452,7 +452,7 @@ def _install_accept_loop_guard() -> bool:
                 f = self._proactor.accept(sock)
             except OSError as exc:
                 if sock.fileno() == -1:
-                    # Socket genuinely gone â€” original behaviour.
+                    # Socket genuinely gone — original behaviour.
                     if self._debug:
                         _logger_debug and _logger_debug(
                             "Accept failed on socket %r", sock, exc_info=True
@@ -469,7 +469,7 @@ def _install_accept_loop_guard() -> bool:
                 count = len(stamps)
                 total[key] = total.get(key, 0) + 1
                 if count > _ACCEPT_GUARD_BURST:
-                    # F8-B: budget exhausted. Do NOT close the listening socket â€”
+                    # F8-B: budget exhausted. Do NOT close the listening socket —
                     # closing it IS the failure mode we exist to prevent, and doing
                     # so here reproduced the original outage exactly (verified
                     # 2026-08-29 17:13: count reached 50, guard closed the socket,
@@ -478,7 +478,7 @@ def _install_accept_loop_guard() -> bool:
                     # Instead: flag exhaustion so the self-health watchdog owns the
                     # decision to exit, and keep re-arming. A hot spin is bounded by
                     # the fact that each re-arm requires a real failed AcceptEx
-                    # completion â€” we are not looping without work.
+                    # completion — we are not looping without work.
                     global _accept_guard_exhausted
                     if not _accept_guard_exhausted:
                         _accept_guard_exhausted = True
@@ -489,7 +489,7 @@ def _install_accept_loop_guard() -> bool:
                         )
                         print(
                             f"[DualStack] accept-loop guard: burst budget exhausted "
-                            f"({count} re-arms in {_ACCEPT_GUARD_WINDOW_S}s) â€” still "
+                            f"({count} re-arms in {_ACCEPT_GUARD_WINDOW_S}s) — still "
                             f"serving, watchdog will decide",
                             flush=True,
                         )
@@ -500,7 +500,7 @@ def _install_accept_loop_guard() -> bool:
                 try:
                     f = self._proactor.accept(sock)
                 except Exception:
-                    # Re-arm itself failed â€” fall back to original.
+                    # Re-arm itself failed — fall back to original.
                     if self._debug:
                         _logger_debug and _logger_debug(
                             "Accept re-arm failed on socket %r", sock,
@@ -537,7 +537,7 @@ def _install_accept_loop_guard() -> bool:
                 # CRITICAL: register the re-armed future HERE. The `else:` clause
                 # below only runs when NO exception occurred, so a future re-armed
                 # inside this handler would otherwise never get its done-callback
-                # attached â€” the accept loop would stop just as silently as the
+                # attached — the accept loop would stop just as silently as the
                 # bug we are fixing, only now with a log line claiming success.
                 self._accept_futures[sock.fileno()] = f
                 f.add_done_callback(loop)
@@ -566,7 +566,7 @@ def main() -> None:
     args, _unknown = parser.parse_known_args()
 
     # B1 SUPERVISION GATE (2026-08-27): the UI auto_restart toggle was dead
-    # code â€” its gate lived in app/main.py's __main__, a path production
+    # code — its gate lived in app/main.py's __main__, a path production
     # never takes (bslrouter.ps1 and /api/version/restart both spawn THIS
     # module). Honor config.watchdog.auto_restart here instead. The env guard
     # prevents fork-bombing: a supervised child must serve, never re-enter
@@ -584,7 +584,7 @@ def main() -> None:
             if (_cfg.get("watchdog") or {}).get("auto_restart") is True:
                 # SINGLE-INSTANCE PRE-GATE (2026-08-28 fork-bomb fix): never
                 # create a SECOND supervision lineage while a healthy router
-                # already answers /health â€” a duplicate supervisor is exactly
+                # already answers /health — a duplicate supervisor is exactly
                 # what made restarts fight over the port. Intended successors
                 # (restart flow) skip this gate: the old holder is still
                 # healthy during its drain window.
@@ -595,7 +595,7 @@ def main() -> None:
                         f"reason=healthy_router_already_running"
                     )
                     print(
-                        "[DualStack] healthy router already serving â€” standing down "
+                        "[DualStack] healthy router already serving — standing down "
                         "(no duplicate supervision)",
                         flush=True,
                     )
@@ -604,10 +604,10 @@ def main() -> None:
                 run_supervised(port=args.port)
                 return
         except FileNotFoundError:
-            pass  # no config.yaml â€” serve unsupervised
+            pass  # no config.yaml — serve unsupervised
         except Exception as _e:
             # Never let a console-encoding error (cp1252 vs non-ASCII, live
-            # incident 2026-08-27) crash the process â€” ASCII-only message.
+            # incident 2026-08-27) crash the process — ASCII-only message.
             try:
                 print(f"[DualStack] supervision gate failed ({type(_e).__name__}) - serving unsupervised", flush=True)
             except Exception:
@@ -624,7 +624,7 @@ def main() -> None:
     _intended = os.environ.get("BSL_INTENDED_SUCCESSOR") == "1"
     if not acquire_instance_lock(args.port, intended_successor=_intended):
         print(
-            "[DualStack] another instance owns this port â€” standing down",
+            "[DualStack] another instance owns this port — standing down",
             flush=True,
         )
         return  # exit 0: a watchdog parent reads this as "stand down" too
@@ -666,7 +666,7 @@ def main() -> None:
         with open(_audit, "a", encoding="utf-8") as _fh:
             _fh.write(
                 f"{time.strftime('%Y-%m-%d %H:%M:%S')} SPAWN pid={os.getpid()} ppid={_ppid} "
-                f"parent_cmd={(_pcmd or '(empty â€” parent already exited)')[:180]}\n"
+                f"parent_cmd={(_pcmd or '(empty — parent already exited)')[:180]}\n"
             )
     except Exception as _audit_exc:
         print(f"[DualStack] spawn audit failed: {_audit_exc!r}", flush=True)
@@ -695,7 +695,7 @@ def main() -> None:
         except OSError:
             pass
     print(
-        "[DualStack] server.run returned â€” exiting so supervisor can restart cleanly",
+        "[DualStack] server.run returned — exiting so supervisor can restart cleanly",
         flush=True,
     )
 

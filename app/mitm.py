@@ -31,7 +31,7 @@ except ImportError:
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.yaml")
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # CRITICAL ARCHITECTURE NOTE (root-cause fix 2026-07-09):
 #
 # The Windows hosts file redirects the cloudcode domains -> 127.0.0.1, so ALL
@@ -49,7 +49,7 @@ _CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.yaml")
 # external DNS server (8.8.8.8/1.1.1.1) and point the pass-through connection at
 # that IP, while preserving the Host header and TLS SNI so Google's frontend
 # serves the correct certificate and routes the request.
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 # The chat verbs are matched against the query-stripped path (see request()).
 
@@ -258,7 +258,7 @@ def _resolve_real_ip(host: str):
         if fallback:
             logging.warning(f"[BSL MITM] External DNS unavailable; using validated real IP {host} -> {fallback}")
             return fallback
-        logging.error("[BSL MITM] dnspython not installed â€” cannot pass-through auth traffic.")
+        logging.error("[BSL MITM] dnspython not installed — cannot pass-through auth traffic.")
         return None
 
     try:
@@ -356,7 +356,7 @@ class BSLRouterMitm:
           -high, etc.) to base model names. The suffix is stripped and the base
           name is matched exactly against mapping keys.
         Returns the configured target (e.g. 'Deepseek-V4-Pro') or None.
-        No prefix/fuzzy matching is performed â€” only exact key matches."""
+        No prefix/fuzzy matching is performed — only exact key matches."""
         if not model_id:
             return None
         mappings = (
@@ -500,12 +500,12 @@ class BSLRouterMitm:
 
         _bsl_debug(f"  host={host!r} managed={managed} path={base_path!r} is_chat={is_chat} route_class={route_class}")
         if is_chat:
-            # â”€â”€ HIJACK: real model-completion call â†’ route into BSL Router â”€â”€
+            # ── HIJACK: real model-completion call → route into BSL Router ──
             # 9router pipeline: resolve alias at MITM level before forwarding.
-            # Mirrors Yc() in 9router â€” parse body, rewrite model, POST to router.
+            # Mirrors Yc() in 9router — parse body, rewrite model, POST to router.
             alias = None
             try:
-                # â”€â”€ Extract model identifier â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Extract model identifier ──────────────────────────────
                 # Gemini format (Antigravity IDE): model is in the URL path
                 #   /v1beta/models/gemini-2.5-pro:streamGenerateContent
                 # OpenAI format: model is in the JSON body field "model"
@@ -580,7 +580,7 @@ class BSLRouterMitm:
             flow.request.port = port
             return
 
-        # â”€â”€ PASS-THROUGH: non-Antigravity domains (Copilot, Kiro, etc) â”€â”€
+        # ── PASS-THROUGH: non-Antigravity domains (Copilot, Kiro, etc) ──
         real_ip = _resolve_real_ip(host)
         if not real_ip or not _is_safe_real_upstream_ip(real_ip):
             logging.error(f"[BSL MITM] Blocking pass-through for {host}{base_path}: no safe real upstream IP")
@@ -656,9 +656,9 @@ class BSLRouterMitm:
             except Exception:
                 return
 
-    # â”€â”€ Target domains: every hostname the hosts-file redirect points at us.
+    # ── Target domains: every hostname the hosts-file redirect points at us.
     # Used in server_connect to intercept BEFORE mitmproxy resolves via OS DNS
-    # (which would return 127.0.0.1 â†’ recursive loop). Mirrors 9router's Pn() pattern.
+    # (which would return 127.0.0.1 → recursive loop). Mirrors 9router's Pn() pattern.
     _TARGET_DOMAINS = {
         "daily-cloudcode-pa.googleapis.com",
         "cloudcode-pa.googleapis.com",
@@ -721,7 +721,7 @@ class BSLRouterMitm:
             if host not in self._TARGET_DOMAINS:
                 return
 
-            # â”€â”€ Antigravity: route ALL connections to BSL Router â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Antigravity: route ALL connections to BSL Router ──────────────
             self.load_config()
             mitm_config = self.config.get("mitm", {})
             bsl_port = self.config.get("server", {}).get("port", 6969)
@@ -742,7 +742,7 @@ class BSLRouterMitm:
                     pass
                 return
 
-            # â”€â”€ All other managed domains: resolve real IP via 8.8.8.8 â”€â”€â”€â”€â”€â”€â”€
+            # ── All other managed domains: resolve real IP via 8.8.8.8 ───────
             real_ip = _resolve_real_ip(host)
             if real_ip and _is_safe_real_upstream_ip(real_ip):
                 logging.info(
@@ -751,7 +751,7 @@ class BSLRouterMitm:
                 server.address = (real_ip, port)
             else:
                 logging.error(
-                    f"[BSL MITM] server_connect: no safe real IP for {host} â€” blocking"
+                    f"[BSL MITM] server_connect: no safe real IP for {host} — blocking"
                 )
                 server.error = mitm_flow.Error(
                     f"BSL MITM: no safe real upstream IP for {host}"
@@ -763,7 +763,7 @@ class BSLRouterMitm:
         """Skip TLS for BSL Router targets; fix SNI for real Google IP pass-throughs.
 
         When server_connect routed the connection to 127.0.0.1:6969 (BSL Router),
-        mitmproxy would normally try a TLS handshake â€” but BSL Router is plain
+        mitmproxy would normally try a TLS handshake — but BSL Router is plain
         HTTP.  We skip TLS by setting ssl_established on the server connection.
 
         For real Google IPs (pass-through), copy the client SNI so Google's
@@ -773,7 +773,7 @@ class BSLRouterMitm:
             server = tls_start.conn
             addr = getattr(server, "address", None) or getattr(getattr(tls_start.context, "server", None), "address", None)
 
-            # Real Google IP â€” restore client SNI so Google routes correctly.
+            # Real Google IP — restore client SNI so Google routes correctly.
             client = tls_start.context.client
             client_sni = getattr(client, "sni", None)
             if client_sni and (server.sni is None or _is_ip(str(server.sni))):

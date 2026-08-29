@@ -7,8 +7,8 @@ but on next restart the antigravity provider vanished and its models 404'd.
 This was misread upstream as an "expired OAuth token".
 
 Guarantees under test:
-  1. ATOMIC â€” a good snapshot round-trips to disk intact (temp+os.replace).
-  2. NEVER-WIPE â€” an empty/degenerate snapshot must NOT clobber an existing
+  1. ATOMIC — a good snapshot round-trips to disk intact (temp+os.replace).
+  2. NEVER-WIPE — an empty/degenerate snapshot must NOT clobber an existing
      non-empty config.yaml.
 """
 import os
@@ -113,7 +113,7 @@ def test_transient_sharing_violation_is_retried(tmp_path, monkeypatch):
 
 
 def test_permanent_replace_failure_is_reported_loudly(tmp_path, monkeypatch, capsys):
-    """If every retry fails, say so â€” a dropped config write is data loss."""
+    """If every retry fails, say so — a dropped config write is data loss."""
     monkeypatch.chdir(tmp_path)
     with open("config.yaml", "w", encoding="utf-8") as f:
         yaml.dump(_good_config(), f)

@@ -85,7 +85,7 @@ from app.antifreeze import (
     STREAM_HARD_DEADLINE_SECONDS,
 )
 
-# â”€â”€ Agent Compatibility Layer (Phase 2-7) â”€â”€
+# ── Agent Compatibility Layer (Phase 2-7) ──
 from app.compat import get_profile, is_anthropic_compatible, ToolLedger
 from app.middleware.response_format_guard import inject_json_instruction, has_response_format
 from app.middleware.glm_tools import normalize_glm_tool_calls, inject_glm_language_forcing
@@ -332,7 +332,7 @@ GEMINI_EGRESS_TTFT_TIMEOUT = 0.0
 # High-latency providers + thinking models need 90s.
 HEADER_WAIT_TIMEOUT = 300.0  # Raised from 90s: reasoning-heavy models (e.g. GLM-5.3 effort:max with 100k+ token context) legitimately think >90s before the first byte; a 90s bound killed healthy streams and the client saw a spurious "network issue" disconnect.
 
-# â”€â”€ Unified Mode-Split Timeout Policy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Unified Mode-Split Timeout Policy ─────────────────────────────────────────
 # Derived from production log analysis (console_logs.jsonl, n=6749 end events).
 # Stream: progress-based (TTFT + stall). Non-stream: generation budget only.
 # "Fail on no-progress, not on long-thinking."
@@ -561,7 +561,7 @@ def _replace_runtime_config(new_config: dict) -> None:
     replace_config(new_config)
     reconfigure_breaker(cs_get_config())
 
-# Default base URLs per provider â€” base only, NO path suffix.
+# Default base URLs per provider — base only, NO path suffix.
 # Backend URL builder appends /messages (anthropic fmt) or /chat/completions (openai fmt).
 # Special providers (kiro, ollama) have their path handled explicitly in the URL builder.
 PROVIDER_DEFAULT_URLS = {
@@ -716,7 +716,7 @@ _ANTIGRAVITY_NATIVE_HOSTS = frozenset({
     "cloudcode-pa.googleapis.com",
 })
 _ANTIGRAVITY_INTEGRATION_LOCK = asyncio.Lock()
-# Lazy singleton â€” built on first use so startup import order doesn't matter.
+# Lazy singleton — built on first use so startup import order doesn't matter.
 _ANTIGRAVITY_EGRESS_CLIENT: Optional[httpx.AsyncClient] = None
 google_egress_client: Optional[httpx.AsyncClient] = None
 
@@ -1408,7 +1408,7 @@ def _resolve_namespaced_model(model: str):
     config = cs_get_config()
     if not isinstance(model, str) or "/" not in model:
         return None, None
-    # Pass 1: exact match against published IDs â€” globally unambiguous.
+    # Pass 1: exact match against published IDs — globally unambiguous.
     for prov_id, prov_data in config.get("providers", {}).items():
         # Hidden providers are admin-only (visible via /api/config); their
         # models must not resolve through the public namespaced catalog.
@@ -1480,7 +1480,7 @@ _POOL_RETRIES = 2
 async def _conn_trace_hook(response: "httpx.Response") -> None:
     """Opt-in instrumentation (tools.conn_trace). Logs the client-side socket
     (local addr:port) per upstream response so a burst of failures can be checked
-    for SAME-socket reuse â€” the signature of keep-alive pool poisoning."""
+    for SAME-socket reuse — the signature of keep-alive pool poisoning."""
     config = cs_get_config()
     try:
         if not (config or {}).get("tools", {}).get("conn_trace", False):
@@ -1547,7 +1547,7 @@ def _dump_upstream_failure(provider, model, url, headers, payload, status, err_t
     """Diagnostic (gated by tools.conn_trace): on an upstream 4xx, dump the EXACT
     outbound request (auth redacted) to .brain/logs/upstream_failures.jsonl so a
     real Antigravity payload can be diffed byte-for-byte against a known-good
-    probe. Fail-open â€” never breaks the request path."""
+    probe. Fail-open — never breaks the request path."""
     config = cs_get_config()
     try:
         if not (config or {}).get("tools", {}).get("conn_trace", False):
@@ -1682,7 +1682,7 @@ async def lifespan(app: FastAPI):
     # Without this the Usage tab reads an empty DB (table never created) while
     # append_usage_event() fails silently (fail-open design). Idempotent.
     obs.init_usage_store()
-    # â”€â”€ AEP ephemeral ban restore (Part 2b) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── AEP ephemeral ban restore (Part 2b) ───────────────────────────────────
     # Re-hydrate still-live short cooldowns from the sidecar so a router restart
     # does not immediately re-select a leaf that was benched seconds earlier.
     # Expired entries self-prune inside the loader.
@@ -1693,7 +1693,7 @@ async def lifespan(app: FastAPI):
             print(f"[BSL Startup] Restored {_restored} live AEP cooldown(s) from sidecar.", flush=True)
     except Exception as _aep_err:
         print(f"[BSL Startup] AEP sidecar restore skipped (non-blocking): {_aep_err}", flush=True)
-    # â”€â”€ Hosts hijack reconcile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Hosts hijack reconcile ──────────────────────────
     # INVARIANT: the intercept hijack exists iff a verified BSL MITM listener is
     # alive. This block used to ADD the hijack whenever antigravity_integration
     # .enabled was true -- but MITM no longer auto-starts (launcher default is
@@ -1725,7 +1725,7 @@ async def lifespan(app: FastAPI):
     # Solves both the Node.js 5-minute timeout drops AND keep-alive pool
     # corruption via transport-level retries + bounded keepalive expiry.
     http_client = _build_hardened_client()
-    # Start MITM watchdog â€” auto-restarts mitmdump if desired_running=True and it crashes.
+    # Start MITM watchdog — auto-restarts mitmdump if desired_running=True and it crashes.
     watchdog_task = asyncio.create_task(_mitm_watchdog_loop())
 
     # ── Periodic log rotation ───────────────────────────────────────────────
@@ -1760,7 +1760,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="BSL Router", lifespan=lifespan)
 app.include_router(oauth_router)
 
-# â”€â”€ Admin Auth (Session Store) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Admin Auth (Session Store) ──────────────────────────────
 # In-memory session store: token -> {"created": float, "expires": float}
 # Service restart clears all sessions, forcing re-authentication.
 _admin_sessions: Dict[str, dict] = {}
@@ -2346,7 +2346,7 @@ async def update_config(request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-# â”€â”€ BSL Matrix UI API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── BSL Matrix UI API ─────────────────────────────────────────────────────────
 
 @app.get("/api/bsl-matrix/state")
 async def bsl_matrix_state():
@@ -2638,7 +2638,7 @@ async def antigravity_integration_start_full():
     # Step 2: Restore hosts entries (single owner: _sync_antigravity_hosts)
     hosts_note = await asyncio.to_thread(_sync_antigravity_hosts, True)
 
-    # Step 3: Start MITM â€” delegate to existing endpoint (handles lock + kill + verify)
+    # Step 3: Start MITM — delegate to existing endpoint (handles lock + kill + verify)
     mitm_resp = await mitm_start()
     mitm_payload: dict = {}
     try:
@@ -2670,7 +2670,7 @@ async def antigravity_integration_start_full():
 @app.post("/api/antigravity-integration/stop-full")
 async def antigravity_integration_stop_full():
     """Combined: stop MITM + set enabled=False."""
-    # Step 1: Stop MITM â€” delegate to existing endpoint (handles lock + verify)
+    # Step 1: Stop MITM — delegate to existing endpoint (handles lock + verify)
     mitm_resp = await mitm_stop(force=True)
     mitm_note: str
     try:
@@ -2893,7 +2893,7 @@ async def clear_logs():
         print(f"[Observability] clear_logs disk truncate failed: {_e}", flush=True)
     return JSONResponse({"status": "Logs cleared", "cleared": {"console": _cleared_console}})
 
-# â”€â”€â”€ Auto Error Prevention â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Auto Error Prevention ──────────────────────────────────────────────────
 
 import app.error_prevention as ep
 
@@ -3067,7 +3067,7 @@ async def reset_breaker():
 
 
 
-# â”€â”€â”€ Canonical Model Pricing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Canonical Model Pricing ─────────────────────────────────────────────────
 # File-backed canonical pricing registry + offline detector. The detector maps
 # every configured provider model to a single canonical family (collapsing
 # variants like gpt-5.5 / gpt-5.5-pro20x / gpt-5.5-pro20x-openai-compact into
@@ -3166,7 +3166,7 @@ async def pricing_detect():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-# â”€â”€ Admin Auth Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Admin Auth Endpoints ────────────────────────────────────
 
 @app.post("/api/auth/login")
 async def auth_login(request: Request):
@@ -3178,7 +3178,7 @@ async def auth_login(request: Request):
         return JSONResponse({"error": "Invalid request body"}, status_code=400)
     
     if not _is_admin_auth_enabled():
-        # Protection not enabled â€” consider authenticated
+        # Protection not enabled — consider authenticated
         return JSONResponse({"authenticated": True, "auth_required": False})
     
     if not _validate_admin_password(password):
@@ -3601,7 +3601,7 @@ async def _test_antigravity_model(provider: str, model: str):
 
 
 
-# â”€â”€â”€ MITM Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── MITM Status ──────────────────────────────────────────────────────────────
 
 import os as _os
 import subprocess as _subprocess
@@ -3820,7 +3820,7 @@ async def mitm_status():
         **validated,
     })
 
-# â”€â”€â”€ Hosts File Auto-Edit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Hosts File Auto-Edit ─────────────────────────────────────────────────────
 
 HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts" if _platform.system() == "Windows" else "/etc/hosts"
 
@@ -3916,7 +3916,7 @@ async def edit_hosts(request: Request):
         action = body.get("action", "add")  # "add" | "remove"
 
         IDE_DOMAINS = {
-            "antigravity": ["daily-cloudcode-pa.googleapis.com"],  # auth domain cloudcode-pa MUST NOT be intercepted â€” breaks login
+            "antigravity": ["daily-cloudcode-pa.googleapis.com"],  # auth domain cloudcode-pa MUST NOT be intercepted — breaks login
             "copilot":     ["api.individual.githubcopilot.com"],
             "kiro":        ["runtime.us-east-1.kiro.dev", "q.us-east-1.amazonaws.com", "codewhisperer.us-east-1.amazonaws.com"],
         }
@@ -3928,7 +3928,7 @@ async def edit_hosts(request: Request):
             with open(HOSTS_PATH, "r") as f:
                 lines = f.readlines()
         except PermissionError:
-            return JSONResponse({"ok": False, "error": "Permission denied â€” run BSL Router as Administrator to edit hosts file."}, status_code=403)
+            return JSONResponse({"ok": False, "error": "Permission denied — run BSL Router as Administrator to edit hosts file."}, status_code=403)
 
         BSL_TAG = "# bsl-router"
         modified = False
@@ -3956,12 +3956,12 @@ async def edit_hosts(request: Request):
                 f.writelines(lines)
             return JSONResponse({"ok": True, "domains": domains, "action": action})
         except PermissionError:
-            return JSONResponse({"ok": False, "error": "Permission denied â€” run BSL Router as Administrator."}, status_code=403)
+            return JSONResponse({"ok": False, "error": "Permission denied — run BSL Router as Administrator."}, status_code=403)
 
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
-# â”€â”€â”€ MITM Process Lifecycle (verified via bslrouter.ps1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── MITM Process Lifecycle (verified via bslrouter.ps1) ──────────────────────
 
 _MITM_LAUNCH_TIMEOUT_SECONDS = 45
 _MITM_VERIFY_TIMEOUT_SECONDS = 8.0
@@ -4276,7 +4276,7 @@ async def mitm_stop(force: bool = False):
             verified = await asyncio.to_thread(_mitm_runtime_status)
             return _stage_error("kill_failed", str(exc), verified)
 
-# â”€â”€â”€ Cloudflare Tunnel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Cloudflare Tunnel ────────────────────────────────────────────────────────
 
 _tunnel_process = None
 _tunnel_url: str = ""
@@ -4328,7 +4328,7 @@ async def tunnel_status():
     running = _tunnel_process is not None and _tunnel_process.poll() is None
     return JSONResponse({"running": running, "url": _tunnel_url if running else ""})
 
-# â”€â”€â”€ Tailscale â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Tailscale ────────────────────────────────────────────────────────────────
 
 @app.get("/api/tunnel/tailscale/status")
 async def tailscale_status():
@@ -5221,7 +5221,7 @@ def _extract_usage_tokens(usage: dict) -> tuple[int, int, int]:
     if _prompt:
         # OpenAI shape: prompt_tokens is already inclusive of cache.
         # Truthy gate (not `is not None`): prompt_tokens=0 means "nothing
-        # processed" or a format artifact â€” fall through to the Anthropic fold,
+        # processed" or a format artifact — fall through to the Anthropic fold,
         # which correctly handles both cases instead of zeroing out input_tokens.
         _in = _prompt
     else:
@@ -5318,7 +5318,7 @@ async def _accumulate_sse_stream(
     _thinking_info=None,
 ):
     """Shared SSE accumulator (module-level so integration tests bind to the REAL
-    production parser â€” eliminating mirror drift). Drains an SSE stream to [DONE],
+    production parser — eliminating mirror drift). Drains an SSE stream to [DONE],
     parses dual-format (Anthropic/OpenAI) chunks, assembles one OpenAI-shaped dict.
     Raises httpx.HTTPStatusError on mid-stream accumulation failure."""
     _a_cp: list[str] = []
@@ -5628,7 +5628,7 @@ class _SyntheticResponse:
         return self._text
 
     async def aclose(self):
-        pass  # No-op â€” no underlying stream to close.
+        pass  # No-op — no underlying stream to close.
 
 
 class _ComboFallbackNeeded(Exception):
@@ -6272,13 +6272,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # Overwrite model name for the upstream request
     internal_request.model = target_model
 
-    # Scout.docs_parser â€” extract and conditionally summarize document attachments
+    # Scout.docs_parser — extract and conditionally summarize document attachments
     try:
         internal_request = await parse_documents(internal_request, http_client, config)
     except Exception as e:
         print(f"Docs Parser Scout error (non-blocking): {e}")
 
-    # Scout.vision â€” polyfill vision capability for text-only models
+    # Scout.vision — polyfill vision capability for text-only models
     try:
         internal_request = await polyfill_vision(internal_request, http_client, config)
 
@@ -6294,7 +6294,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         print(f"Vision Scout error (non-blocking): {e}")
 
 
-    # Middleware.compaction â€” Context Budget Guard (skip: anthropic/openai/gemini)
+    # Middleware.compaction — Context Budget Guard (skip: anthropic/openai/gemini)
     # GAP-2c: Compaction is a BSL addition NOT in 9Router. Its model URL is also
     # currently broken. Gate it off for Gemini-path requests to match 9Router.
     if not client_wants_gemini:
@@ -6306,7 +6306,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # Task Complexity Router removed — max_tokens is set by the token budget
     # (default 65535 floor when budget is off). Simplified per user directive.
 
-    # Middleware.efficiency â€” Opus-style turn consolidation + tool batching
+    # Middleware.efficiency — Opus-style turn consolidation + tool batching
     try:
         _model_id = internal_request.model or ""
         internal_request.messages = inject_turn_consolidation(internal_request.messages, _model_id)
@@ -6453,7 +6453,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         except Exception:
             pass
 
-    # Resolve base_url â€” connection base_url â†’ provider base_url â†’ PROVIDER_DEFAULT_URLS
+    # Resolve base_url — connection base_url → provider base_url → PROVIDER_DEFAULT_URLS
     resolved_base_url = (active_conn.get('base_url') or '').rstrip('/')
     if not resolved_base_url:
         resolved_base_url = (provider_config.get('base_url') or '').rstrip('/')
@@ -6501,8 +6501,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # Grok loses version headers on retry, causing silent fallback failures.
     _inject_provider_headers(headers, provider_name, active_conn, provider_config)
     
-    # â”€â”€ Phase 2: Provider Profile Registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # Resolve provider profile from the registry â€” replaces hardcoded
+    # ── Phase 2: Provider Profile Registry ──────────────────────
+    # Resolve provider profile from the registry — replaces hardcoded
     # if/else provider_name branches with declarative profiles.
     _profile = get_profile(provider_name, provider_config)
     _is_anthropic_fmt = is_anthropic_compatible(_profile)
@@ -6606,7 +6606,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     if combo_thinking_override:
         thinking_suffix = str(combo_thinking_override).lower()
 
-    # Thinking config actually applied â€” recorded on every request log entry so
+    # Thinking config actually applied — recorded on every request log entry so
     # the console shows which reasoning knobs a call ran with. For gpt-5.6-sol
     # and similar this includes reasoning_mode / reasoning_context in addition
     # to effort. Fail-open: logging must never break routing.
@@ -6626,7 +6626,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # re-declaring a local regex.
     is_qwen = matches_contract(f_val, "qwen")
     
-    # â”€â”€ max_tokens budget â”€â”€
+    # ── max_tokens budget ──
     # Two modes:
     # 1. Budget OFF (default): floor = 65535 — every request gets at least
     #    65535 tokens. 65535 (not 65536) because Qwen API hard-caps at 65535;
@@ -6735,7 +6735,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 current_b = upstream_payload["thinking"].get("budget_tokens", 0)
                 if current_b > squeeze_target:
                     upstream_payload["thinking"]["budget_tokens"] = squeeze_target
-                    print(f"[ThinkingSqueeze] Capped budget_tokens {current_b} â†’ {squeeze_target} (input ~{input_token_estimate} tokens)")
+                    print(f"[ThinkingSqueeze] Capped budget_tokens {current_b} → {squeeze_target} (input ~{input_token_estimate} tokens)")
             # Gemini native: generationConfig.thinkingConfig.thinkingBudget
             _gc = upstream_payload.get("generationConfig")
             if isinstance(_gc, dict):
@@ -6748,7 +6748,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # -----------------------------------------
     # -----------------------------------------
 
-    # â”€â”€ Output Intent-Driven Format Enforcement â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Output Intent-Driven Format Enforcement ──────────────────
     # When enabled, scans the last user message for explicit output format
     # directives (JSON, table, code, bullet list, etc.) and injects a system
     # prompt augmentation to strictly enforce the detected format.
@@ -6785,13 +6785,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     _cont_state = {"used": False}
     _detector = StreamTruncationDetector(f_val, enabled=_stream_anti_stop)
 
-    # â”€â”€ Stream-Then-Buffer: 524 Mitigation Gate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Stream-Then-Buffer: 524 Mitigation Gate ──────────────────
     # Non-streaming requests to Cloudflare-fronted upstreams (vsllm/744000)
     # die with HTTP 524 at ~100s because zero bytes flow during buffered
     # generation. When enabled, BSL transparently rewrites the upstream call
     # to stream:true, accumulates SSE chunks, and returns a single assembled
-    # JSON â€” keeping bytes flowing to defeat Cloudflare's idle timer.
-    # Design triangulated: GLM â†’ Kimi adversarial â†’ Opus audit â†’ GLM concede.
+    # JSON — keeping bytes flowing to defeat Cloudflare's idle timer.
+    # Design triangulated: GLM → Kimi adversarial → Opus audit → GLM concede.
     # Corrections baked in: (1) stream_options.include_usage for vLLM usage;
     # (2) non-mutating payload copy (S3/S6 read upstream_payload); (3) drain
     # to [DONE] (usage chunk arrives AFTER finish_reason); (4) n>1 skip;
@@ -6803,14 +6803,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         _prov_sb = _sb_cfg["providers"].get(provider_name)
         if isinstance(_prov_sb, dict):
             _buffer_enabled = _prov_sb.get("enabled", _buffer_enabled)
-    # Skip for n>1 â€” streaming path only handles choices[0] (consistent).
+    # Skip for n>1 — streaming path only handles choices[0] (consistent).
     _has_n_gt_1 = isinstance(upstream_payload.get("n"), int) and upstream_payload["n"] > 1
     # Kiro excluded: /generateAssistantResponse ALWAYS returns binary AWS
     # event-stream frames (both stream and non-stream requests) — the text-SSE
     # accumulator reads zero content from them (zombie_empty_response).
     _apply_stream_buffer = (not is_stream and _buffer_enabled and not _has_n_gt_1 and provider_name not in ('codex', 'kiro'))
 
-    # â”€â”€ Response Format Resilience â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Response Format Resilience ──────────────────────────────
     # Many "deep market" reverse-proxy sellers silently strip response_format
     # even though they accept it without error. Inject a JSON instruction into
     # the system prompt as a fallback so the model still produces structured output.
@@ -6877,7 +6877,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     _oauth_401_retried = False
 
     # Reusable request builder. Serializes deterministically (sort_keys) so any
-    # rebuild â€” e.g. the thinking-degradation retry below â€” keeps byte-for-byte
+    # rebuild — e.g. the thinking-degradation retry below — keeps byte-for-byte
     # stable prefixes for implicit prompt caching.
     def _build_req(payload_dict: dict):
         return client.build_request(
@@ -6895,7 +6895,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     except UnicodeEncodeError as _ue_err:
         print(
             f"[Combo Fallback] '{model}' Unicode serialization error for "
-            f"{target_model}/{provider_name}: {_ue_err} â€” advancing",
+            f"{target_model}/{provider_name}: {_ue_err} — advancing",
             flush=True,
         )
         _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
@@ -6924,7 +6924,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             status_code=400,
         )
 
-    # â”€â”€ Outbound forensics (GATED) â€” diff MITM path vs direct path â”€â”€
+    # ── Outbound forensics (GATED) — diff MITM path vs direct path ──
     # Captures the EXACT bytes sent upstream so we can diff the failing MITM
     # (client=gemini) path against the working direct path for the same model.
     # This was the evidence that ended the 1210 guessing loop.
@@ -6992,7 +6992,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         # so this 20s bound never dominates for them; it only rescues the
         # non-Gemini single-model stream path (raw_upstream) that has no other
         # per-connection deadline. Body/reasoning latency after headers is NOT
-        # bounded here â€” that stays owned by the stall watchdog.
+        # bounded here — that stays owned by the stall watchdog.
         _hw_timeout = max(1.0, min(HEADER_WAIT_TIMEOUT, _chain_budget_remaining()))
         try:
             _resp = await asyncio.wait_for(
@@ -7055,7 +7055,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 if is_thinking_param_rejection(_resp.status_code, _rej_text):
                     print(
                         f"[ThinkingFallback] '{target_model}/{provider_name}' rejected thinking params "
-                        f"(400, stream) â€” retrying once with stripped payload",
+                        f"(400, stream) — retrying once with stripped payload",
                         flush=True,
                     )
                     # Open replacement BEFORE closing original so a raise leaves
@@ -7198,7 +7198,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         # fallback or ttft_stall attempt logs with a fresh random id).
         _orig_request_id = (_retry_state.get("orig_request_id") if _retry_state else None) or request_id
     
-    # â”€â”€ Streaming Status Peek â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Streaming Status Peek ─────────────────────────────────
     # Keep the pre-header probe for OpenAI and Anthropic streams so upstream
     # failures can be returned before their SSE sockets open. Gemini bypasses it:
     # gemini_egress_stream emits its heartbeat before awaiting upstream headers
@@ -7209,7 +7209,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             # RC6: bound the pre-header wait for OpenAI/Anthropic combo streams.
             # On timeout, re-raise as a transport error so the existing
             # `except Exception as _probe_err` handler below benches this leaf
-            # and advances the combo chain â€” exactly the dead-leaf path.
+            # and advances the combo chain — exactly the dead-leaf path.
             try:
                 _probe_resp = await asyncio.wait_for(
                     client.send(req, stream=True),
@@ -7306,7 +7306,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     return _recursed
                 if _chain_budget_remaining() <= 0:
                     print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
-                # No more entries (or payload error) â€” build error response in the appropriate format
+                # No more entries (or payload error) — build error response in the appropriate format
                 print(
                     f"[AFZ-TRACE] CHAIN EXHAUSTED idx={_next_idx} len={len(active_chain) if active_chain else 0} "
                     f"client={client_label} stream={is_stream} status={_probe_resp.status_code} rid={request_id}",
@@ -7423,7 +7423,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             )
             _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
             if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
-                print(f"[Combo Fallback] '{model}' stream network error for {target_model}/{provider_name}: {_probe_err} â€” advancing to entry {_next_idx}")
+                print(f"[Combo Fallback] '{model}' stream network error for {target_model}/{provider_name}: {_probe_err} — advancing to entry {_next_idx}")
                 # MULTI-KEY FAILOVER: mark this leaf's connection as tried
                 # so the recursive frame doesn't re-dial the same drained key.
                 _kc = dict((_retry_state or {}).get('tried_conns') or {})
@@ -7444,7 +7444,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         # Gemini egress: Antigravity client wants Gemini SSE; upstream is OpenAI-format.
         convert_gemini_egress = client_wants_gemini
         # Reverse egress: OpenAI client (/v1/chat/completions) but upstream is
-        # Anthropic-compatible (GLM/Kimi/MiniMax). Convert Anthropic SSE â†’ OpenAI SSE.
+        # Anthropic-compatible (GLM/Kimi/MiniMax). Convert Anthropic SSE → OpenAI SSE.
         convert_anthropic_to_openai_egress = (
             not client_wants_anthropic and not client_wants_gemini and _is_anthropic_fmt
         )
@@ -7453,7 +7453,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         async def _client_disconnected() -> bool:
             # Null-safe client-abort probe. Returns False when no Request is
             # threaded in (e.g. internal probe callers) or when the ASGI probe
-            # raises. A client abort is a non-penalizing event â€” it must never
+            # raises. A client abort is a non-penalizing event — it must never
             # be treated as an upstream failure.
             if request is None:
                 return False
@@ -9834,7 +9834,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     _send_err_str = str(_send_err)
                     print(
                         f"[Combo Fallback] '{model}' non-stream unexpected error for "
-                        f"{target_model}/{provider_name}: {_send_err_str} â€” advancing",
+                        f"{target_model}/{provider_name}: {_send_err_str} — advancing",
                         flush=True,
                     )
                     # Always emit an END entry so the dashboard PENDING row resolves.
@@ -9882,14 +9882,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             "error": {
                                 "code": 502,
                                 "message": f"All combo chain entries exhausted for '{model}'. "
-                                           f"Last: unexpected error â€” {_send_err_str}",
+                                           f"Last: unexpected error — {_send_err_str}",
                                 "status": "COMBO_EXHAUSTED",
                             }
                         },
                         status_code=502,
                     )
 
-            # â”€â”€ Thinking-Degradation Retry (reseller channel-roulette) â”€â”€
+            # ── Thinking-Degradation Retry (reseller channel-roulette) ──
             # OAuth 401-Retry (non-streaming path)
             # If the upstream rejects with 401, the token may have expired between
             # our pre-check and the actual send. Force-refresh and retry ONCE.
@@ -10041,7 +10041,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     )
                     print(
                         f"[Combo Fallback] '{model}' non-stream zombie for "
-                        f"{target_model}/{provider_name}: {error_msg} â€” advancing",
+                        f"{target_model}/{provider_name}: {error_msg} — advancing",
                         flush=True,
                     )
                     resp = _SyntheticResponse(504, {"error": error_msg})
@@ -10070,7 +10070,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 combo=_combo_label,
             )
 
-            # â”€â”€ Combo Fallback: Non-Streaming Retry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Combo Fallback: Non-Streaming Retry ──────────────────────
             # On upstream errors, advance to the next combo chain entry.
             # 524 = Cloudflare origin timeout (HTML body, not a transport err).
             # 408 = Request Timeout from upstream gateway.
@@ -10082,7 +10082,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
                 if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
                     _fb_code = 504 if _is_zombie else resp.status_code
-                    print(f"[Combo Fallback] '{model}' non-stream {_fb_code} for {target_model}/{provider_name} â€” advancing to entry {_next_idx}")
+                    print(f"[Combo Fallback] '{model}' non-stream {_fb_code} for {target_model}/{provider_name} — advancing to entry {_next_idx}")
                     # MULTI-KEY FAILOVER: mark this leaf's connection as tried
                     # so the recursive frame doesn't re-dial the same drained key.
                     _kc = dict((_retry_state or {}).get('tried_conns') or {})
@@ -10122,7 +10122,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         resp = _SyntheticResponse(502, {"error": _raw_start[:200]})
                 except Exception:
                     pass
-            # GLM Tool-Call Normalizer (P2.1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # GLM Tool-Call Normalizer (P2.1) ───────────────────────
             # GLM models sometimes emit tool calls as <tool_call> XML blocks in
             # content text instead of structured tool_calls arrays. Normalize
             # BEFORE egress conversion so Anthropic/Gemini/raw paths all benefit.
@@ -10205,7 +10205,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         if _cont_payload is not None:
                             print(
                                 f"[AntiStop] '{target_model}/{provider_name}' hit length limit "
-                                f"({len(_partial)} chars) â€” sending continuation",
+                                f"({len(_partial)} chars) — sending continuation",
                                 flush=True,
                             )
                             if _apply_stream_buffer:
@@ -10229,7 +10229,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             else:
                                 print(f"[AntiStop] Continuation HTTP {_cont_resp.status_code} (fail-open)", flush=True)
 
-                    # â”€â”€ S6: Quality Gate (suspicious truncation) â”€â”€
+                    # ── S6: Quality Gate (suspicious truncation) ──
                     elif _quality_gate_enabled:
                         _orig_mt = int(upstream_payload.get("max_tokens", 0) or 0)
                         _should_retry, _new_mt = should_retry_with_higher_budget(_working_json, _orig_mt)
@@ -10247,7 +10247,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             print(
                                 f"[QualityGate] '{target_model}/{provider_name}' suspicious truncation "
                                 f"(finish={_extract_finish_reason(_working_json)}, tokens={_extract_usage(_working_json)['completion_tokens']}) "
-                                f"â€” retrying with max_tokens={_new_mt}",
+                                f"— retrying with max_tokens={_new_mt}",
                                 flush=True,
                             )
                             if _apply_stream_buffer:
@@ -10264,7 +10264,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                         _normalized_json = _retry_json  # Replace with better response
                                         _response_mutated = True
                                         print(
-                                            f"[QualityGate] Retry improved output ({_orig_len} â†’ {_retry_len} chars)",
+                                            f"[QualityGate] Retry improved output ({_orig_len} → {_retry_len} chars)",
                                             flush=True,
                                         )
                                     else:
@@ -10352,7 +10352,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     )
 
             # Reverse egress: OpenAI client (/v1/chat/completions) but upstream is
-            # Anthropic-compatible (GLM/Kimi/MiniMax). Convert Anthropic JSON â†’ OpenAI JSON.
+            # Anthropic-compatible (GLM/Kimi/MiniMax). Convert Anthropic JSON → OpenAI JSON.
             if (not client_wants_anthropic and not client_wants_gemini
                     and _is_anthropic_fmt and resp.status_code == 200
                     and not isinstance(resp, _SyntheticResponse)):
@@ -10419,14 +10419,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 thinking=thinking_info,
                 combo=_combo_label,
             )
-            # â”€â”€ Combo Fallback: Non-Streaming Network Error Retry â”€â”€â”€â”€â”€
+            # ── Combo Fallback: Non-Streaming Network Error Retry ─────
             # On network exceptions (timeout, connection reset, DNS), advance
             # to the next combo chain entry if available.
             if (active_chain
                     and not isinstance(e, (json.JSONDecodeError, ValueError, KeyError, TypeError))):
                 _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
                 if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
-                    print(f"[Combo Fallback] '{model}' non-stream network error for {target_model}/{provider_name}: {e} â€” advancing to entry {_next_idx}")
+                    print(f"[Combo Fallback] '{model}' non-stream network error for {target_model}/{provider_name}: {e} — advancing to entry {_next_idx}")
                     # MULTI-KEY FAILOVER: mark this leaf's connection as tried
                     # so the recursive frame doesn't re-dial the same drained key.
                     _kc = dict((_retry_state or {}).get('tried_conns') or {})
@@ -10448,7 +10448,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 )
             return JSONResponse({"error": str(e)}, status_code=500)
 
-# â”€â”€â”€ Output Intent Detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Output Intent Detection ─────────────────────────────────────────────
 
 import re as _re_intent
 
@@ -10614,7 +10614,7 @@ async def _poll_qwen_task(
 ) -> dict:
     """Poll DashScope async task until SUCCEEDED/FAILED. Returns OpenAI-compatible image response."""
     poll_url = f"{base_url}/tasks/{task_id}"
-    # Strip the async header â€” it shouldn't be sent on poll requests
+    # Strip the async header — it shouldn't be sent on poll requests
     poll_headers = {k: v for k, v in headers.items() if k != "X-DashScope-Async"}
     attempts = max_wait // 3
     for _ in range(attempts):
@@ -10662,7 +10662,7 @@ async def _poll_veo_lro(
             return data.get("response", data)
     return {"error": f"Veo LRO timed out after {max_wait}s (operation={operation_name})"}
 
-# â”€â”€â”€ End of Polling Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── End of Polling Helpers ───────────────────────────────────────────────────
 
 @app.post("/api/providers/{provider_id}/discover-models")
 async def discover_provider_models(provider_id: str):
@@ -10849,7 +10849,7 @@ async def images_generations(request: Request):
     provider_name = None
     target_model = model
 
-    # Public namespaced catalog ID (e.g. "ckey.vn/...") â†’ internal provider + raw.
+    # Public namespaced catalog ID (e.g. "ckey.vn/...") → internal provider + raw.
     if isinstance(model, str) and "/" in model:
         _ns_provider, _ns_model = _resolve_namespaced_model(model)
         if _ns_provider:
@@ -10968,7 +10968,7 @@ async def images_generations(request: Request):
         return Response(content=resp.content, status_code=resp.status_code,
                         media_type=resp.headers.get("content-type", "application/json"))
 
-    # Qwen async: initial response is a task ID â€” poll until the image is ready
+    # Qwen async: initial response is a task ID — poll until the image is ready
     if _format == "qwen-image":
         init_data = resp.json()
         task_id = init_data.get("output", {}).get("task_id")
@@ -11084,7 +11084,7 @@ async def videos_generations(request: Request):
         return Response(content=resp.content, status_code=resp.status_code,
                         media_type=resp.headers.get("content-type", "application/json"))
 
-    # Gemini Veo: LRO â€” initial response has operation name, must poll until done
+    # Gemini Veo: LRO — initial response has operation name, must poll until done
     if _format == "gemini-video":
         init_data = resp.json()
         operation_name = init_data.get("name")
@@ -11112,7 +11112,7 @@ async def videos_generations(request: Request):
 @app.post("/gemini/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await request.json()
-    # â”€â”€ 9router "Chain" ingress â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 9router "Chain" ingress ───────────────────────────────────────────────
     # When 9router owns :443 and its chat brain is redirected to BSL via
     # MITM_ROUTER_BASE=http://localhost:6969, 9router POSTs the intercepted Cloud
     # Code / Gemini envelope HERE (its interceptor hardcodes the path to
@@ -11175,7 +11175,7 @@ async def anthropic_messages(request: Request):
     config = cs_get_config()
     body = await request.json()
 
-    # â”€â”€ Claude Code Alias Resolution â”€â”€
+    # ── Claude Code Alias Resolution ──
     # Maps Claude Code's hardcoded model names (claude-sonnet-*, claude-opus-*, etc)
     # to BSL combo/provider models defined in config.yaml.
     # This endpoint is only hit by Claude Code (no other client sends Anthropic format).
@@ -11205,13 +11205,13 @@ def _should_probe_stream_status(is_stream: bool, active_chain: list, client_want
     """
     return bool(is_stream and active_chain and len(active_chain) >= 1 and not client_wants_gemini)
 
-# â”€â”€â”€ Antigravity (Google Cloud Code / Gemini private API) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Antigravity (Google Cloud Code / Gemini private API) ─────────────────────
 # Phase 5B-1: `v1internal:generateContent` / `:streamGenerateContent`. The path
 # uses Google's private Cloud Code RPC verb (NOT public v1beta). Detection and
 # conversion live in app/compat/adapters/gemini.py; this route is a thin wrapper
-# that unwraps the Cloud Code envelope, normalizes the model, converts Geminiâ†’
+# that unwraps the Cloud Code envelope, normalizes the model, converts Gemini→
 # OpenAI, then dispatches to _process_chat_completion with client_wants_gemini
-# so the egress converts OpenAIâ†’Gemini on the way back. See spec Â§1/Â§2.
+# so the egress converts OpenAI→Gemini on the way back. See spec Â§1/Â§2.
 @app.post("/v1internal:generateContent")
 @app.post("/v1internal:streamGenerateContent")
 @app.post("/v1beta/models/{model}:generateContent")
@@ -11297,7 +11297,7 @@ async def antigravity_generate(request: Request, model: str = None):
                 "direct integration is disabled",
             )
 
-    # Unmapped slot â€” no MITM alias, no config mapping â€” native pass-through.
+    # Unmapped slot — no MITM alias, no config mapping — native pass-through.
     if not mapping_target:
         raw_model = body.get("model") or model or ""
         source_model = raw_model if isinstance(raw_model, str) and raw_model else "<unknown>"
@@ -11327,7 +11327,7 @@ async def antigravity_generate(request: Request, model: str = None):
 
         # 9router pipeline: inject thinking for -thinking model targets.
         # pix4k and similar providers require this param; Antigravity IDE never sends it.
-        # Use 'adaptive' â€” lets the model choose depth, accepted by pix4k + Anthropic.
+        # Use 'adaptive' — lets the model choose depth, accepted by pix4k + Anthropic.
         if mapping_target.lower().endswith("-thinking") and "thinking" not in openai_body:
             openai_body["thinking"] = {"type": "adaptive"}
 
@@ -11361,7 +11361,7 @@ async def antigravity_generate(request: Request, model: str = None):
             client_wants_gemini=True,
             request=request,
         )
-        # Mapped BSL route failed â€” return error directly as SSE.
+        # Mapped BSL route failed — return error directly as SSE.
         # Do NOT fall back to native Google: the user explicitly mapped this slot
         # to BSL, so the correct UX is a fast BSL error, not a slow/hanging Google
         # round-trip that may have no valid credential anyway.
@@ -11427,7 +11427,7 @@ async def antigravity_generate(request: Request, model: str = None):
             )
         return JSONResponse(_exc_payload, status_code=500)
 
-# â”€â”€â”€ Antigravity CCPA control-plane gateway â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Antigravity CCPA control-plane gateway ───────────────────────────────────
 # The cloud_code_endpoint must also serve authenticated bootstrap, entitlement,
 # and model-discovery RPCs. Inference stays on the exact routes above so it can
 # continue through BSL's model mapping; this narrow route forwards only other
@@ -11589,7 +11589,7 @@ async def antigravity_ccpa_control_proxy(request: Request, operation: str):
     return await _forward_antigravity_ccpa_control(request, operation)
 
 
-# â”€â”€â”€ Antigravity auth/bootstrap handshake â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Antigravity auth/bootstrap handshake ─────────────────────────────────────
 # Exact inference routes remain local. This CCPA control-plane gateway forwards
 # only other /v1internal:* POST operations to an allowlisted Google origin, so
 # cloud_code_endpoint preserves authentication, quota, and model-discovery RPCs.
@@ -12011,8 +12011,8 @@ if __name__ == "__main__":
     port = config.get("server", {}).get("port", 6969)
     host = config.get("server", {}).get("host", "0.0.0.0")
     # Reload is opt-in via config.server.reload (default OFF). Auto-reload on a
-    # production router is a footgun: any file save â€” an agent editing app/
-    # sources, or churn under .brain/ (task specs, logs, jsonl) â€” restarts the
+    # production router is a footgun: any file save — an agent editing app/
+    # sources, or churn under .brain/ (task specs, logs, jsonl) — restarts the
     # worker mid-request and drops in-flight streams (including the inference
     # stream of an agent that routes through this very router). When reload IS
     # enabled for dev, exclude high-churn non-source paths so only real app/
