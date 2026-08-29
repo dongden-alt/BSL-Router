@@ -3,7 +3,7 @@
 WHY: uvicorn ``--host 0.0.0.0`` binds IPv4-only, while Windows resolves
 ``localhost`` to ``::1`` first. IPv6-first clients (Node fetch, some Python
 stacks) then get an instant ECONNREFUSED that looks like a "transient router
-restart" — it is not; the probe never reaches the server. ``--host ::`` alone
+restart" â€” it is not; the probe never reaches the server. ``--host ::`` alone
 is ALSO wrong on Windows (default IPV6_V6ONLY=1 makes it IPv6-only, killing
 every 127.0.0.1 client, verified on staging 2026-08-27).
 
@@ -21,6 +21,7 @@ All three spawn sites route through here:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import errno
 import os
 import socket
@@ -40,12 +41,34 @@ _BIND_RETRY_STEP_S = 2.0
 # Single-instance lock (KEY FIX 2026-08-28, restart fork-bomb regression):
 # POST /api/version/restart spawns a fresh dualstack_serve without the
 # BSL_SUPERVISED flag, so the spawn re-enters the supervision gate and
-# becomes a SECOND supervisor while the old lineage is still draining —
+# becomes a SECOND supervisor while the old lineage is still draining â€”
 # two lineages then fight over one exclusive port for minutes (live
 # incident 18:19-18:21: 15 spawns from 13 different parents, WinError 64
 # accept-loop deaths, kill/respawn ping-pong). Every serving process must
 # now win an exclusive lock file before binding.
 _LOCK_RETRY_STEP_S = 2.0
+
+# Accept-loop guard (KEY FIX 2026-08-29, WinError 64 deaf-router).
+# CPython's ProactorEventLoop closes the LISTENING socket on ANY OSError
+# from AcceptEx and never re-arms the accept, permanently deafening the
+# router. The guard rewrites the inner accept callback to re-arm on the
+# SAME socket instead. See _install_accept_loop_guard().
+_ACCEPT_GUARD_BURST = 50          # max re-arms per socket within the window
+_ACCEPT_GUARD_WINDOW_S = 1.0      # rolling window for burst counting
+# Chosen 50 re-arms per 1.0s: far above normal traffic noise, far below a tight
+# spin. Exceeding it means the listener is genuinely wedged, not merely hit by an
+# aborted connection, so the guard stands down and lets the watchdog recover.
+_accept_guard_exhausted = False   # set True when the guard stands down (F8-B)
+_ACCEPT_GUARD_LOG_EVERY = 500     # audit every Nth resurrection after the first 3
+# Monotonic timestamp of the guard's most recent successful re-arm. The
+# self-health watchdog runs in a DAEMON THREAD, where
+# asyncio.get_event_loop() raises RuntimeError ("There is no current event
+# loop in thread ...") — so the watchdog cannot inspect the loop's
+# _accept_futures to learn whether the listener is still bound. This
+# heartbeat is the cross-thread-safe substitute: a plain float assignment is
+# atomic under the GIL, needs no lock, and tells the watchdog whether the
+# guard is actively keeping the listener alive right now.
+_accept_guard_last_rearm = 0.0
 
 
 def _audit_line(line: str) -> None:
@@ -105,7 +128,7 @@ def _probe_health_dual(port: int) -> bool:
     KEY FIX 2026-08-29 (split-brain socket, live incident 04:20): after a
     Windows network-stack hiccup (sleep/resume, interface bounce) the IPv6
     accept path on the dual-stack listening socket can die while the
-    IPv4-mapped path keeps serving fine — the [::1]-only self-probe failed
+    IPv4-mapped path keeps serving fine â€” the [::1]-only self-probe failed
     3/3 while real ::ffff:127.0.0.1 requests streamed 200 OK, so the
     watchdog killed a HEALTHY router. A router is dead only when BOTH
     stacks are unreachable for the full failure window.
@@ -129,7 +152,7 @@ def acquire_instance_lock(port: int, intended_successor: bool = False,
 
     Returns True when THIS process owns the lock and may bind.
     Returns False when a healthy owner already exists and we must stand
-    down (exit 0) — the duplicate dissolves instead of fighting the port.
+    down (exit 0) â€” the duplicate dissolves instead of fighting the port.
 
     Rules per holder state:
       - holder PID dead                      -> break stale lock, take over
@@ -151,7 +174,7 @@ def acquire_instance_lock(port: int, intended_successor: bool = False,
             os.write(fd, str(os.getpid()).encode("ascii"))
             os.close(fd)
             if intended_successor:
-                # Once we own the lock we are THE router — future respawns of
+                # Once we own the lock we are THE router â€” future respawns of
                 # this lineage must behave as normal duplicates again.
                 os.environ.pop("BSL_INTENDED_SUCCESSOR", None)
             _audit_line(
@@ -183,7 +206,7 @@ def acquire_instance_lock(port: int, intended_successor: bool = False,
                     return False
                 # Successor: holder is draining (healthy now, exiting soon).
             else:
-                # Holder alive but sick: zombie/dying — wait it out.
+                # Holder alive but sick: zombie/dying â€” wait it out.
                 pass
             if time.monotonic() >= deadline:
                 _audit_line(
@@ -209,7 +232,7 @@ def make_dualstack_socket(port: int, retry_total_s: float = _BIND_RETRY_TOTAL_S)
             # Core of the fix: allow the IPv6 socket to accept IPv4-mapped clients.
             s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
         except OSError:
-            # Very old kernels — degrade to whatever the OS default is.
+            # Very old kernels â€” degrade to whatever the OS default is.
             pass
         if os.name == "nt":
             # Windows: SO_REUSEADDR allows port hijacking by another process;
@@ -234,7 +257,7 @@ def make_dualstack_socket(port: int, retry_total_s: float = _BIND_RETRY_TOTAL_S)
             if time.monotonic() >= deadline:
                 raise
             print(
-                f"[DualStack] bind busy on [::]:{port} ({e!r}) — "
+                f"[DualStack] bind busy on [::]:{port} ({e!r}) â€” "
                 f"retrying up to {retry_total_s:.0f}s total (zombie holder?)",
                 flush=True,
             )
@@ -248,9 +271,16 @@ def make_dualstack_socket(port: int, retry_total_s: float = _BIND_RETRY_TOTAL_S)
 def _self_health_watchdog(port: int, interval_s: float = 10.0, max_failures: int = 3) -> None:
     """Daemon thread: probe ``/health``; ``os._exit(3)`` after N consecutive misses.
 
-    ``os._exit`` bypasses finally/atexit — intentional, the event loop may
+    ``os._exit`` bypasses finally/atexit â€” intentional, the event loop may
     be wedged while the socket is still held, and we need the OS to reap
     the port so the respawn (with bind-retry) can recover it.
+
+    F8-B: with the accept-loop guard (F8-A) in place, a single WinError 64
+    is now recoverable in-process, so the watchdog gives the guard a chance
+    before exiting. It reads the guard's monotonic re-arm heartbeat rather
+    than inspecting the event loop, because this function runs in a daemon
+    thread where ``asyncio.get_event_loop()`` raises ``RuntimeError``. The
+    exit reasons are logged distinctly so the paths stay separable.
     """
     failures = 0
     while True:
@@ -265,6 +295,46 @@ def _self_health_watchdog(port: int, interval_s: float = 10.0, max_failures: int
             flush=True,
         )
         if failures >= max_failures:
+            # F8-B: distinguish the two last-resort paths.
+            #   - guard_active: the guard re-armed the listener very recently,
+            #     so the fault is the recoverable WinError-64 class. Give it one
+            #     more interval before pulling the plug.
+            #   - no_guard_activity: nothing is re-arming (guard never installed,
+            #     or the loop is genuinely wedged). Exit promptly.
+            #
+            # We deliberately do NOT introspect the event loop here. This runs in
+            # a daemon thread where asyncio.get_event_loop() raises RuntimeError,
+            # which an `except Exception: pass` would silently swallow — leaving
+            # the grace period permanently unreachable. Read the guard's
+            # monotonic heartbeat instead.
+            since_rearm = time.monotonic() - _accept_guard_last_rearm
+            guard_active = (
+                _accept_guard_last_rearm > 0.0 and since_rearm < interval_s * 2
+            )
+
+            if guard_active:
+                print(
+                    f"[DualStack] watchdog: guard re-armed {since_rearm:.1f}s ago "
+                    f"— recoverable fault, waiting one more interval",
+                    flush=True,
+                )
+                time.sleep(interval_s)
+                if _probe_health_dual(port):
+                    failures = 0
+                    print(
+                        "[DualStack] watchdog: health recovered via guard — "
+                        "standing down",
+                        flush=True,
+                    )
+                    _audit_line(
+                        f"WATCHDOG_STOOD_DOWN pid={os.getpid()} "
+                        f"port={port} reason=guard_recovered"
+                    )
+                    continue
+                reason = "guard_active_but_unhealthy"
+            else:
+                reason = "no_guard_activity"
+
             _pid = os.getpid()
             try:
                 _audit = os.path.join(
@@ -275,15 +345,218 @@ def _self_health_watchdog(port: int, interval_s: float = 10.0, max_failures: int
                 with open(_audit, "a", encoding="utf-8") as _fh:
                     _fh.write(
                         f"{time.strftime('%Y-%m-%d %H:%M:%S')} WATCHDOG_EXIT pid={_pid} "
-                        f"reason=health_probe_failed\n"
+                        f"reason={reason} port={port}\n"
                     )
             except Exception:
                 pass
             print(
-                f"[DualStack] watchdog: {max_failures} consecutive health failures — exiting",
+                f"[DualStack] watchdog: {max_failures} consecutive health failures "
+                f"({reason}) â€” exiting",
                 flush=True,
             )
             os._exit(3)
+
+
+def _install_accept_loop_guard() -> bool:
+    """Patch ``BaseProactorEventLoop._start_serving`` so AcceptEx OSError
+    re-arms the LISTENING socket instead of closing it.
+
+    WHY (2026-08-29): CPython 3.10.11 ``proactor_events.py:842-849`` catches
+    ``OSError`` from ``AcceptEx``, calls ``sock.close()`` on the listening
+    socket, and never re-arms ``self._proactor.accept(sock)``. One aborted
+    inbound connection permanently deafens the router; the self-health
+    watchdog then ``os._exit(3)``s and the supervisor respawns into the same
+    trap until it gives up â€” total ``:6969`` outage.
+
+    The patch wraps the inner ``loop`` callback of ``_start_serving``. When
+    ``f.result()`` raises ``OSError`` and the socket is still valid, the
+    guard re-arms ``self._proactor.accept(sock)`` on the SAME socket,
+    keeping the listening socket alive with no rebind window.
+
+    Safeguards:
+      - No-op on non-Windows / non-Proactor loops (loop type guard).
+      - Idempotent (re-install is a safe no-op).
+      - If ``sock.fileno() == -1`` the socket is genuinely gone â€” fall back
+        to the original ``sock.close()`` behaviour rather than spinning.
+      - Burst guard: ``_ACCEPT_GUARD_BURST`` re-arms within
+        ``_ACCEPT_GUARD_WINDOW_S`` per socket. If exceeded, the guard sets
+        ``_accept_guard_exhausted = True`` and falls through to the original
+        path so the supervisor can recover (F8-B).
+
+    Returns True when the guard was installed, False on a non-Proactor loop.
+    """
+    global _accept_guard_exhausted
+
+    # No-op on non-Windows / non-Proactor loops.
+    # NOTE: BaseProactorEventLoop is NOT exported on the `asyncio` package â€”
+    # it lives in asyncio.proactor_events. Referencing asyncio.BaseProactorEventLoop
+    # raises AttributeError and crashed every child on boot (rc=1, 2026-08-29 15:23).
+    try:
+        from asyncio.proactor_events import BaseProactorEventLoop
+    except ImportError:
+        return False
+
+    loop = asyncio.get_event_loop_policy().get_event_loop()
+    if not isinstance(loop, BaseProactorEventLoop):
+        return False
+
+    # Idempotent: the wrapper already carries the marker.
+    orig = BaseProactorEventLoop._start_serving
+    if getattr(orig, "_bsl_accept_guard", False):
+        return True
+
+    # Capture module logger lazily (None if unavailable).
+    try:
+        from asyncio.log import logger as _alogger
+        _logger_debug = _alogger.debug
+    except Exception:
+        _logger_debug = None
+
+    def _guard_start_serving(self, protocol_factory, sock,
+                             sslcontext=None, server=None, backlog=100,
+                             ssl_handshake_timeout=None):
+        # Per-socket burst counter: {fileno: [timestamps]}.
+        burst = {}
+        # Lifetime resurrection count per socket, used to throttle audit logging
+        # (the burst window resets, so it cannot serve as a stable log key).
+        total = {}
+        # Listening port for audit lines (best-effort; 0 if unknown).
+        try:
+            _port = sock.getsockname()[1]
+        except Exception:
+            _port = 0
+
+        def loop(f=None):
+            try:
+                if f is not None:
+                    conn, addr = f.result()
+                    if self._debug:
+                        _logger_debug and _logger_debug(
+                            "%r got a new connection from %r: %r",
+                            server, addr, conn,
+                        )
+                    protocol = protocol_factory()
+                    if sslcontext is not None:
+                        self._make_ssl_transport(
+                            conn, protocol, sslcontext, server_side=True,
+                            extra={'peername': addr}, server=server,
+                            ssl_handshake_timeout=ssl_handshake_timeout,
+                        )
+                    else:
+                        self._make_socket_transport(
+                            conn, protocol,
+                            extra={'peername': addr}, server=server,
+                        )
+                if self.is_closed():
+                    return
+                f = self._proactor.accept(sock)
+            except OSError as exc:
+                if sock.fileno() == -1:
+                    # Socket genuinely gone â€” original behaviour.
+                    if self._debug:
+                        _logger_debug and _logger_debug(
+                            "Accept failed on socket %r", sock, exc_info=True
+                        )
+                    sock.close()
+                    return
+                # F8-A: re-arm the listening socket instead of closing it.
+                now = time.monotonic()
+                key = sock.fileno()
+                stamps = burst.get(key, [])
+                stamps = [t for t in stamps if now - t < _ACCEPT_GUARD_WINDOW_S]
+                stamps.append(now)
+                burst[key] = stamps
+                count = len(stamps)
+                total[key] = total.get(key, 0) + 1
+                if count > _ACCEPT_GUARD_BURST:
+                    # F8-B: budget exhausted. Do NOT close the listening socket â€”
+                    # closing it IS the failure mode we exist to prevent, and doing
+                    # so here reproduced the original outage exactly (verified
+                    # 2026-08-29 17:13: count reached 50, guard closed the socket,
+                    # router went deaf, health FAIL with the process still alive).
+                    #
+                    # Instead: flag exhaustion so the self-health watchdog owns the
+                    # decision to exit, and keep re-arming. A hot spin is bounded by
+                    # the fact that each re-arm requires a real failed AcceptEx
+                    # completion â€” we are not looping without work.
+                    global _accept_guard_exhausted
+                    if not _accept_guard_exhausted:
+                        _accept_guard_exhausted = True
+                        _audit_line(
+                            f"ACCEPT_GUARD_EXHAUSTED pid={os.getpid()} port={_port} "
+                            f"count={count} window_s={_ACCEPT_GUARD_WINDOW_S} "
+                            f"action=keep_serving_watchdog_decides"
+                        )
+                        print(
+                            f"[DualStack] accept-loop guard: burst budget exhausted "
+                            f"({count} re-arms in {_ACCEPT_GUARD_WINDOW_S}s) â€” still "
+                            f"serving, watchdog will decide",
+                            flush=True,
+                        )
+                    # Reset the window so the counter reflects the CURRENT burst
+                    # rather than staying permanently over budget.
+                    burst[key] = [now]
+                # Resurrect: re-arm accept on the SAME listening socket.
+                try:
+                    f = self._proactor.accept(sock)
+                except Exception:
+                    # Re-arm itself failed â€” fall back to original.
+                    if self._debug:
+                        _logger_debug and _logger_debug(
+                            "Accept re-arm failed on socket %r", sock,
+                            exc_info=True,
+                        )
+                    sock.close()
+                    return
+                # Publish the heartbeat on EVERY successful re-arm, not just the
+                # logged ones — the watchdog thread reads this to tell a
+                # recoverable accept fault from a genuinely wedged loop.
+                global _accept_guard_last_rearm
+                _accept_guard_last_rearm = now
+                # F8-A2: make resurrections visible WITHOUT flooding the shared
+                # audit log. An unthrottled line-per-resurrection wrote ~900
+                # lines/second during a real burst (measured 2026-08-29 17:16:
+                # 18.5k lines / 1.55 MB from two probe runs), which would bury
+                # every genuine SPAWN/WATCHDOG_EXIT record operators rely on.
+                # Log the first few, then every _LOG_EVERY-th, with a running
+                # total so the true volume is never understated.
+                _n = total[key]
+                if _n <= 3 or _n % _ACCEPT_GUARD_LOG_EVERY == 0:
+                    _audit_line(
+                        f"ACCEPT_LOOP_RESURRECTED pid={os.getpid()} port={_port} "
+                        f"winerror={getattr(exc, 'winerror', None)} "
+                        f"burst={count} total={_n}"
+                    )
+                    print(
+                        f"[DualStack] accept-loop guard: resurrected listener on "
+                        f"[::]:{_port} after OSError "
+                        f"winerror={getattr(exc, 'winerror', None)} "
+                        f"(burst={count}/{_ACCEPT_GUARD_BURST} total={_n})",
+                        flush=True,
+                    )
+                # CRITICAL: register the re-armed future HERE. The `else:` clause
+                # below only runs when NO exception occurred, so a future re-armed
+                # inside this handler would otherwise never get its done-callback
+                # attached â€” the accept loop would stop just as silently as the
+                # bug we are fixing, only now with a log line claiming success.
+                self._accept_futures[sock.fileno()] = f
+                f.add_done_callback(loop)
+                return
+            except asyncio.CancelledError:
+                sock.close()
+                return
+            else:
+                self._accept_futures[sock.fileno()] = f
+                f.add_done_callback(loop)
+
+        self.call_soon(loop)
+
+    # Carry the marker and the original reference.
+    _guard_start_serving._bsl_accept_guard = True  # type: ignore[attr-defined]
+    _guard_start_serving._bsl_original = orig  # type: ignore[attr-defined]
+
+    BaseProactorEventLoop._start_serving = _guard_start_serving
+    return True
 
 
 def main() -> None:
@@ -293,7 +566,7 @@ def main() -> None:
     args, _unknown = parser.parse_known_args()
 
     # B1 SUPERVISION GATE (2026-08-27): the UI auto_restart toggle was dead
-    # code — its gate lived in app/main.py's __main__, a path production
+    # code â€” its gate lived in app/main.py's __main__, a path production
     # never takes (bslrouter.ps1 and /api/version/restart both spawn THIS
     # module). Honor config.watchdog.auto_restart here instead. The env guard
     # prevents fork-bombing: a supervised child must serve, never re-enter
@@ -311,7 +584,7 @@ def main() -> None:
             if (_cfg.get("watchdog") or {}).get("auto_restart") is True:
                 # SINGLE-INSTANCE PRE-GATE (2026-08-28 fork-bomb fix): never
                 # create a SECOND supervision lineage while a healthy router
-                # already answers /health — a duplicate supervisor is exactly
+                # already answers /health â€” a duplicate supervisor is exactly
                 # what made restarts fight over the port. Intended successors
                 # (restart flow) skip this gate: the old holder is still
                 # healthy during its drain window.
@@ -322,7 +595,7 @@ def main() -> None:
                         f"reason=healthy_router_already_running"
                     )
                     print(
-                        "[DualStack] healthy router already serving — standing down "
+                        "[DualStack] healthy router already serving â€” standing down "
                         "(no duplicate supervision)",
                         flush=True,
                     )
@@ -331,10 +604,10 @@ def main() -> None:
                 run_supervised(port=args.port)
                 return
         except FileNotFoundError:
-            pass  # no config.yaml — serve unsupervised
+            pass  # no config.yaml â€” serve unsupervised
         except Exception as _e:
             # Never let a console-encoding error (cp1252 vs non-ASCII, live
-            # incident 2026-08-27) crash the process — ASCII-only message.
+            # incident 2026-08-27) crash the process â€” ASCII-only message.
             try:
                 print(f"[DualStack] supervision gate failed ({type(_e).__name__}) - serving unsupervised", flush=True)
             except Exception:
@@ -351,7 +624,7 @@ def main() -> None:
     _intended = os.environ.get("BSL_INTENDED_SUCCESSOR") == "1"
     if not acquire_instance_lock(args.port, intended_successor=_intended):
         print(
-            "[DualStack] another instance owns this port — standing down",
+            "[DualStack] another instance owns this port â€” standing down",
             flush=True,
         )
         return  # exit 0: a watchdog parent reads this as "stand down" too
@@ -393,10 +666,23 @@ def main() -> None:
         with open(_audit, "a", encoding="utf-8") as _fh:
             _fh.write(
                 f"{time.strftime('%Y-%m-%d %H:%M:%S')} SPAWN pid={os.getpid()} ppid={_ppid} "
-                f"parent_cmd={(_pcmd or '(empty — parent already exited)')[:180]}\n"
+                f"parent_cmd={(_pcmd or '(empty â€” parent already exited)')[:180]}\n"
             )
     except Exception as _audit_exc:
         print(f"[DualStack] spawn audit failed: {_audit_exc!r}", flush=True)
+
+    # ACCEPT-LOOP GUARD (KEY FIX 2026-08-29, WinError 64 deaf-router):
+    # rewrite the ProactorEventLoop accept callback so an OSError from
+    # AcceptEx re-arms the listening socket instead of closing it. No-op
+    # on non-Windows / non-Proactor loops. Must run before server.run so
+    # the patch is in place before the first accept is armed.
+    _guard_installed = _install_accept_loop_guard()
+    if _guard_installed:
+        print(
+            f"[DualStack] accept-loop guard installed (burst={_ACCEPT_GUARD_BURST} "
+            f"per {_ACCEPT_GUARD_WINDOW_S}s)",
+            flush=True,
+        )
 
     try:
         server.run(sockets=[sock])
@@ -409,7 +695,7 @@ def main() -> None:
         except OSError:
             pass
     print(
-        "[DualStack] server.run returned — exiting so supervisor can restart cleanly",
+        "[DualStack] server.run returned â€” exiting so supervisor can restart cleanly",
         flush=True,
     )
 
