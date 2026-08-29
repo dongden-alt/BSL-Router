@@ -149,6 +149,44 @@ function Get-ListenerTreeRoot ([int]$listenerPid) {
     return $rootPid
 }
 
+function Get-AppSupervisorRoot ([int]$listenerPid) {
+    # APP SUPERVISOR ROOT WALK (audit F3, 2026-08-29): with
+    # config.watchdog.auto_restart: true every spawn is a
+    # supervisor(parent)+server(child) lineage where BOTH processes share the
+    # SAME command line (`python -m app.dualstack_serve --port 6969`). A plain
+    # listener kill only nukes the child, so the supervisor respawns it
+    # instantly and `stop` is a no-op while `restart` serves STALE build/config.
+    #
+    # Walk UP the parent chain while the parent is a python/pythonw host whose
+    # CommandLine is the BSL dualstack_serve entrypoint AND whose ExecutablePath
+    # resolves under the project $Root. That proves the parent is the BSL
+    # supervisor (not an unrelated desktop/shell python), so killing it first
+    # tears down the whole tree before the child can be re-spawned.
+    #
+    # NOTE: this is the APP family only. Get-ListenerTreeRoot handles the MITM
+    # port (node.exe / mitmdump / app\mitm.py) -- do NOT merge the two; they
+    # walk different process families with different evidence rules.
+    $rootPid = $listenerPid
+    $current = Get-CimInstance Win32_Process -Filter "ProcessId=$listenerPid" -ErrorAction SilentlyContinue
+    while ($current -and $current.ParentProcessId -gt 0) {
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($current.ParentProcessId)" -ErrorAction SilentlyContinue
+        if (-not $parent) { break }
+        # Resolve the parent's executable under the project root so we never
+        # walk past a BSL supervisor into an unrelated python parent.
+        $parentPath = [string]$parent.ExecutablePath
+        $parentUnderRoot = $false
+        if ($parentPath) {
+            try { $parentUnderRoot = (Resolve-Path -Path $parentPath -ErrorAction SilentlyContinue).Path -like "$Root*" } catch { $parentUnderRoot = $false }
+        }
+        $isPythonHost = $parent.Name -match '^(python|python\.exe|pythonw|pythonw\.exe)$'
+        $isDualstackCmd = [string]$parent.CommandLine -like '*app.dualstack_serve*'
+        if (-not ($isPythonHost -and $isDualstackCmd -and $parentUnderRoot)) { break }
+        $rootPid = [int]$parent.ProcessId
+        $current = $parent
+    }
+    return $rootPid
+}
+
 function Stop-Tree ([int]$rootPid, [string]$label) {
     Write-Info "Forcefully stopping $label (listener $rootPid)..."
     # User's direct, aggressive kill strategy
@@ -285,12 +323,20 @@ function Start-App {
     # a healthy router makes start a NO-OP unless -ForceKill is passed.
     $stalePids = @(Get-ListenerPids $Port)
     if ($stalePids.Count -gt 0 -and -not $ForceKill) {
+        # DUAL-STACK HEALTH PROBE (audit F4, 2026-08-29): after a network-stack
+        # hiccup the IPv4 accept path can be the dead one while IPv6 still
+        # serves fine. A single 127.0.0.1 probe would then falsely declare a
+        # healthy router stale and kill it. Probe BOTH stacks -- EITHER
+        # returning 200 means the router is alive; only a TOTAL dual-stack
+        # blackout counts as stale.
         $healthy = $false
         try {
-            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v1/models" `
-                -Headers @{ Authorization = 'Bearer REDACTED-BSL-ADMIN-KEY' } `
-                -UseBasicParsing -TimeoutSec 4
-            $healthy = ($resp.StatusCode -eq 200)
+            $hdr = @{ Authorization = 'Bearer REDACTED-BSL-ADMIN-KEY' }
+            $v4 = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v1/models" -Headers $hdr `
+                -UseBasicParsing -TimeoutSec 4 -ErrorAction SilentlyContinue
+            $v6 = Invoke-WebRequest -Uri "http://[::1]:$Port/v1/models" -Headers $hdr `
+                -UseBasicParsing -TimeoutSec 4 -ErrorAction SilentlyContinue
+            $healthy = ($v4 -and $v4.StatusCode -eq 200) -or ($v6 -and $v6.StatusCode -eq 200)
         } catch {
             $healthy = $false
         }
@@ -321,11 +367,19 @@ function Start-App {
         # fetch) got instant ECONNREFUSED that looked like transient restarts.
         # The app.dualstack_serve module binds [::] with IPV6_V6ONLY=0 so ONE
         # socket serves both families. Never bind a single family here again.
-        $pyExe     = Join-Path $VenvBin 'python.exe'
-        $appArgs = @('-m', 'app.dualstack_serve', '--port', "$Port")
-        Start-Process -FilePath $pyExe -ArgumentList $appArgs -WorkingDirectory $Root `
-            -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
-        Write-Ok "App server started (background, dual-stack) on :$Port  ->  logs: $out"
+        $pyExe = Join-Path $VenvBin 'python.exe'
+        # JOB-OBJECT ESCAPE (audit F2, 2026-08-29): the old Start-Process +
+        # -RedirectStandard* spawned the child INSIDE the caller's Job Object,
+        # so a background/agent caller that finished tree-killed the healthy
+        # router (today: silently killed it 2 minutes after restore).
+        # Win32_Process.Create parents the child under WmiPrvSE -- OUTSIDE any
+        # caller job -- so it survives the caller's exit. cmd /c supplies the
+        # log redirection WMI lacks; the python path and both log paths are
+        # quoted (the project root contains a space, "BSL Router").
+        $cmd = 'cmd /c ""{0}" -m app.dualstack_serve --port {1} >> "{2}" 2>> "{3}""' -f $pyExe, $Port, $out, $err
+        Write-Info "Spawning (job-detached): $cmd"
+        Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; CurrentDirectory = $Root } | Out-Null
+        Write-Ok "App server started (background, dual-stack, job-detached) on :$Port  ->  logs: $out"
     } else {
         # Reload is opt-in via config.server.reload (default OFF). Auto-reload on
         # a production router restarts the worker mid-request and drops in-flight
@@ -432,7 +486,24 @@ function Invoke-Stop {
     if ($selection.App) {
         $appPids = @(Get-ListenerPids $Port)
         if ($appPids.Count -gt 0) {
-            foreach ($listenerPid in $appPids) { Stop-Tree $listenerPid "app (:$Port)" }
+            foreach ($listenerPid in $appPids) {
+                # SUPERVISOR-AWARE STOP (audit F3, 2026-08-29): a supervised
+                # router is a supervisor(parent)+server(child) pair sharing the
+                # same command line. Kill the topmost supervisor FIRST
+                # (taskkill /F /T) so the whole tree -- including the
+                # supervisor -- is reaped before it can respawn the child. The
+                # listener PID is then killed as belt-and-suspenders. Without
+                # killing the supervisor first, stop was a no-op (stale
+                # restart) while the child kept serving.
+                $rootPid = Get-AppSupervisorRoot $listenerPid
+                Write-Info "App stop on :$Port - supervisor root PID=$rootPid (listener PID=$listenerPid)"
+                & taskkill /F /T /PID $rootPid 2>&1 | Out-Null
+                if ($rootPid -ne $listenerPid) {
+                    & taskkill /F /T /PID $listenerPid 2>&1 | Out-Null
+                }
+                Start-Sleep -Milliseconds 300
+            }
+            if (-not (Wait-PortEmpty $Port)) { exit 1 }
         } else { Write-Info "App not running on :$Port." }
     }
     if ($selection.Mitm) {

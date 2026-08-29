@@ -105,19 +105,33 @@ def _health_check(port: int) -> bool:
 
 def _wait_for_port(port: int, host: str = "127.0.0.1",
                    timeout_s: float = CHILD_BOOT_TIMEOUT_S) -> bool:
-    """Block until something accepts TCP on host:port, or timeout.
+    """Block until something accepts TCP on port (EITHER stack), or timeout.
 
     This is the boot gate: bind-retry inside the child can legitimately take
     up to 120s (zombie port holder). Health probes must not start — and the
     crash counter must not run — until the port is actually OPEN.
+
+    DUAL-STACK FIX 2026-08-29 (audit F7): the child binds ONE dual-stack socket
+    ([::] with IPV6_V6ONLY=0), so either the IPv4 accept path or the IPv6 path
+    counts as "port up". Probing only 127.0.0.1 could leave the supervisor
+    waiting on a dead IPv4 path while IPv6 already served, holding the child in
+    boot-gate limbo. Probe BOTH 127.0.0.1 and [::1] — EITHER accepting = port up.
+    The 150s window / 2s cadence semantics are unchanged.
     """
+    hosts = ("127.0.0.1", "[::1]")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=2.0):
-                return True
-        except OSError:
-            time.sleep(2.0)
+        port_up = False
+        for h in hosts:
+            try:
+                with socket.create_connection((h, port), timeout=2.0):
+                    port_up = True
+                    break
+            except OSError:
+                continue
+        if port_up:
+            return True
+        time.sleep(2.0)
     return False
 
 
@@ -285,8 +299,25 @@ def run_supervised(port: int = 6969, host: str = "", reload: bool = False,
         now = time.monotonic()
         restart_timestamps = [t for t in restart_timestamps if now - t < RESTART_WINDOW_S]
         if len(restart_timestamps) >= MAX_RESTARTS_PER_WINDOW:
+            # GIVE-UP GUARD 2026-08-29 (audit F5): the old give-up path exited
+            # the supervisor while its LAST child might still be running,
+            # leaving an unsupervised orphan (the exact shape of the 04:24
+            # outage). Best-effort kill the current child FIRST so no child
+            # outlives a supervisor that has given up. Wrapped in try/except:
+            # if the child is already gone we just stand down.
             _log("GIVING UP — too many restarts in the crash-loop window. "
-                 "Exiting supervisor. Last child process may still be running.")
+                 "Killing current child before exiting so it is not orphaned.")
+            try:
+                if child.poll() is None:
+                    child.terminate()
+                    child.wait(timeout=10)
+            except Exception as e:
+                _log(f"Give-up child kill raised ({e}); forcing SIGKILL")
+                try:
+                    child.kill()
+                except Exception:
+                    pass
+            _log("Exiting supervisor. No child left orphaned.")
             return
         restart_timestamps.append(now)
         consecutive_failures = 0
