@@ -377,8 +377,22 @@ function Start-App {
         # log redirection WMI lacks; the python path and both log paths are
         # quoted (the project root contains a space, "BSL Router").
         $cmd = 'cmd /c ""{0}" -m app.dualstack_serve --port {1} >> "{2}" 2>> "{3}""' -f $pyExe, $Port, $out, $err
-        Write-Info "Spawning (job-detached): $cmd"
-        Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; CurrentDirectory = $Root } | Out-Null
+        # HIDDEN CONSOLE (2026-08-29): Win32_Process.Create always allocates a
+        # console for console-subsystem children and the 2-arg form shows it, so
+        # every restart popped an empty cmd window whose only content went to
+        # app.out.log. Win32_ProcessStartup.ShowWindow = 12 (SW_HIDE) creates
+        # that console WITHOUT a visible window. Job-object escape (F2) is
+        # unchanged -- the child is still parented under WmiPrvSE, and the
+        # cmd /c redirection still works (conhost exists, just hidden).
+        # NOTE: the CIM cmdlet form (New-CimInstance -ClientOnly +
+        # Invoke-CimMethod) rejects the embedded startup object with
+        # "Type mismatch" (0x80041005); the classic [wmiclass] COM form
+        # accepts it. Scratch-verified 2026-08-29: MainWindowHandle=0,
+        # process alive, output redirection intact.
+        $startup = ([wmiclass]"Win32_ProcessStartup").CreateInstance()
+        $startup.ShowWindow = 12
+        Write-Info "Spawning (job-detached, hidden console): $cmd"
+        ([wmiclass]"Win32_Process").Create($cmd, $Root, $startup) | Out-Null
         Write-Ok "App server started (background, dual-stack, job-detached) on :$Port  ->  logs: $out"
     } else {
         # Reload is opt-in via config.server.reload (default OFF). Auto-reload on
