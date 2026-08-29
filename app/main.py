@@ -1693,35 +1693,34 @@ async def lifespan(app: FastAPI):
             print(f"[BSL Startup] Restored {_restored} live AEP cooldown(s) from sidecar.", flush=True)
     except Exception as _aep_err:
         print(f"[BSL Startup] AEP sidecar restore skipped (non-blocking): {_aep_err}", flush=True)
-    # â”€â”€ Hosts file auto-restore â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # If antigravity_integration is enabled, ensure MITM intercept domains are
-    # present in the hosts file on every startup. This survives Stopâ†’Start cycles
-    # without requiring the user to manually click "Start Integration" again.
-    _ag_cfg = config.get("antigravity_integration", {}) if isinstance(config, dict) else {}
-    if _ag_cfg.get("enabled", False):
-        _ag_domains = ["daily-cloudcode-pa.googleapis.com"]  # auth domain cloudcode-pa MUST NOT be intercepted â€” breaks login
-        _BSL_TAG = "# bsl-router"
-        try:
-            with open(HOSTS_PATH, "r") as _hf:
-                _h_lines = _hf.readlines()
-            _existing = {
-                ln.split()[1]
-                for ln in _h_lines
-                if ln.strip() and not ln.startswith("#") and len(ln.split()) >= 2
-            }
-            _to_add = [d for d in _ag_domains if d not in _existing]
-            if _to_add:
-                for _d in _to_add:
-                    _h_lines.append(f"127.0.0.1 {_d} {_BSL_TAG}\n")
-                with open(HOSTS_PATH, "w") as _hf:
-                    _hf.writelines(_h_lines)
-                print(f"[BSL Startup] Restored hosts entries: {_to_add}", flush=True)
-            else:
-                print("[BSL Startup] Hosts entries already present â€” no restore needed.", flush=True)
-        except PermissionError:
-            print("[BSL Startup] WARNING: Cannot auto-restore hosts file â€” run BSL Router as Administrator.", flush=True)
-        except Exception as _he:
-            print(f"[BSL Startup] WARNING: Hosts auto-restore failed: {_he}", flush=True)
+    # â”€â”€ Hosts hijack reconcile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # INVARIANT: the intercept hijack exists iff a verified BSL MITM listener is
+    # alive. This block used to ADD the hijack whenever antigravity_integration
+    # .enabled was true -- but MITM no longer auto-starts (launcher default is
+    # App-only), so boot was establishing a DNS hijack with nothing listening
+    # behind it. Observed 2026-08-29: hosts written 20:33:32, MITM not up until
+    # a manual click at 21:20:41 -- 47 minutes of silent dead-socket failures.
+    #
+    # Liveness, NOT the enabled flag, is ground truth here: the flag records
+    # user intent and can legitimately disagree with reality after a crash. A
+    # MITM that outlived a router restart reports server=True and correctly
+    # keeps its hijack.
+    # Hosts hijack reconcile: only touch the hosts file when liveness is
+    # VERIFIED. _mitm_runtime_status returns server=False both when the port is
+    # genuinely empty AND when the inspection probe itself failed (catch-all at
+    # L3770). Stripping the hijack on an inspection error would remove a valid
+    # hijack on a transient probe failure, so treat inspection_error as
+    # inconclusive and leave the hosts file untouched in that case.
+    try:
+        _status = _mitm_runtime_status()
+        _hosts_note = _reconcile_hosts_from_status(_status)
+        print(
+            f"[BSL Startup] Hosts hijack reconcile: mitm_live={_status.get('server', False)} "
+            f"(inspection_error={_status.get('inspection_error')}) -> {_hosts_note}",
+            flush=True,
+        )
+    except Exception as _he:
+        print(f"[BSL Startup] WARNING: Hosts reconcile failed (non-blocking): {_he}", flush=True)
     # High-performance, self-recycling connection pool (parity with 9Router).
     # Solves both the Node.js 5-minute timeout drops AND keep-alive pool
     # corruption via transport-level retries + bounded keepalive expiry.
@@ -2636,31 +2635,8 @@ async def antigravity_integration_start_full():
     if hasattr(flag_result, "status_code") and flag_result.status_code >= 400:
         return flag_result
 
-    # Step 2: Restore hosts entries (same logic as startup auto-restore)
-    _ag_domains = ["daily-cloudcode-pa.googleapis.com"]  # auth domain cloudcode-pa MUST NOT be intercepted â€” breaks login
-    _BSL_TAG = "# bsl-router"
-    hosts_note = "hosts_skipped"
-    try:
-        with open(HOSTS_PATH, "r") as _hf:
-            _h_lines = _hf.readlines()
-        _existing = {
-            ln.split()[1]
-            for ln in _h_lines
-            if ln.strip() and not ln.startswith("#") and len(ln.split()) >= 2
-        }
-        _to_add = [d for d in _ag_domains if d not in _existing]
-        if _to_add:
-            for _d in _to_add:
-                _h_lines.append(f"127.0.0.1 {_d} {_BSL_TAG}\n")
-            with open(HOSTS_PATH, "w") as _hf:
-                _hf.writelines(_h_lines)
-            hosts_note = f"restored:{','.join(_to_add)}"
-        else:
-            hosts_note = "already_present"
-    except PermissionError:
-        hosts_note = "permission_denied"
-    except Exception as _he:
-        hosts_note = f"error:{_he}"
+    # Step 2: Restore hosts entries (single owner: _sync_antigravity_hosts)
+    hosts_note = await asyncio.to_thread(_sync_antigravity_hosts, True)
 
     # Step 3: Start MITM â€” delegate to existing endpoint (handles lock + kill + verify)
     mitm_resp = await mitm_start()
@@ -2673,6 +2649,8 @@ async def antigravity_integration_start_full():
     if not mitm_payload.get("ok", False):
         # Rollback the integration flag if MITM failed
         await _set_antigravity_integration_enabled(False)
+        # MITM never came up -> do not leave a hijack pointing at a dead socket.
+        hosts_note = await asyncio.to_thread(_sync_antigravity_hosts, False)
         return JSONResponse({
             "ok": False,
             "error": f"Failed to start MITM server: {mitm_payload.get('error', 'unknown error')}. Hosts file status: {hosts_note}",
@@ -3846,6 +3824,89 @@ async def mitm_status():
 
 HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts" if _platform.system() == "Windows" else "/etc/hosts"
 
+AG_INTERCEPT_DOMAINS = ["daily-cloudcode-pa.googleapis.com"]
+BSL_HOSTS_TAG = "# bsl-router"
+
+
+def _reconcile_hosts_from_status(_status: dict) -> str:
+    """Decide and apply the Antigravity hosts hijack from a MITM runtime status.
+
+    INVARIANT (see lifespan boot block): the hijack exists iff a verified BSL
+    MITM listener is alive. ``inspection_error`` is treated as INCONCLUSIVE -- a
+    transient probe failure must not strip a valid hijack, so when the probe
+    errored we leave the hosts file untouched and report that explicitly. This
+    is the exact decision branch inlined in ``lifespan`` at boot; extracted here
+    solely so it is unit-testable without spinning up the whole app.
+    """
+    if _status.get("inspection_error"):
+        return (
+            f"inspection inconclusive ({_status['inspection_error']}); "
+            "hosts unchanged"
+        )
+    _mitm_live = bool(_status.get("server", False))
+    return _sync_antigravity_hosts(_mitm_live)
+
+
+def _sync_antigravity_hosts(present: bool) -> str:
+    """Reconcile the hosts file so the Antigravity intercept hijack matches ``present``.
+
+    INVARIANT (2026-08-29): the hijack must exist if and only if a verified BSL
+    MITM listener is alive. Boot used to ADD the hijack whenever the integration
+    flag was true, without starting MITM -- so a restart with integration off
+    left Antigravity's inference traffic pointed at a dead 127.0.0.1:443 socket,
+    failing silently. Every hosts mutation for this domain now goes through here.
+
+    Only lines carrying BOTH the BSL tag and a target domain are eligible for
+    removal, so hand-edited user entries survive untouched.
+
+    SAFETY: the auth host ``cloudcode-pa.googleapis.com`` is a strict SUBSTRING
+    of the intercept host but is never a member of AG_INTERCEPT_DOMAINS, and the
+    match tests whether the (longer) intercept domain appears in the line -- so
+    the auth entry can never be collaterally removed. Intercepting the auth
+    domain breaks Google login, so this asymmetry is load-bearing.
+
+    Never raises: returns a short status note for the caller to surface.
+    """
+    try:
+        with open(HOSTS_PATH, "r") as handle:
+            lines = handle.readlines()
+    except PermissionError:
+        return "permission_denied"
+    except Exception as exc:
+        return f"error:{exc}"
+
+    if present:
+        mapped = {
+            ln.split()[1]
+            for ln in lines
+            if ln.strip() and not ln.startswith("#") and len(ln.split()) >= 2
+        }
+        to_add = [d for d in AG_INTERCEPT_DOMAINS if d not in mapped]
+        if not to_add:
+            return "already_present"
+        for domain in to_add:
+            lines.append(f"127.0.0.1 {domain} {BSL_HOSTS_TAG}\n")
+        note = f"added:{','.join(to_add)}"
+    else:
+        kept = [
+            ln for ln in lines
+            if not (BSL_HOSTS_TAG in ln and any(d in ln for d in AG_INTERCEPT_DOMAINS))
+        ]
+        removed = len(lines) - len(kept)
+        if removed == 0:
+            return "already_absent"
+        lines = kept
+        note = f"removed:{removed}"
+
+    try:
+        with open(HOSTS_PATH, "w") as handle:
+            handle.writelines(lines)
+        return note
+    except PermissionError:
+        return "permission_denied"
+    except Exception as exc:
+        return f"error:{exc}"
+
 @app.post("/api/mitm/hosts")
 async def edit_hosts(request: Request):
     """Add or remove hosts file entries for a given IDE's domains."""
@@ -4173,7 +4234,12 @@ async def mitm_stop(force: bool = False):
             return _stage_error("ownership_not_verified", "MITM port state is unknown.", runtime)
         if not runtime["port_occupied"]:
             runtime = await asyncio.to_thread(_set_mitm_supervisor_target, False, runtime)
-            return JSONResponse({"ok": True, "message": "MITM port verified empty.", **runtime})
+            # No listener -> the DNS hijack must not survive (see _sync_antigravity_hosts).
+            hosts_note = await asyncio.to_thread(_sync_antigravity_hosts, False)
+            return JSONResponse({
+                "ok": True, "message": "MITM port verified empty.",
+                "hosts": hosts_note, **runtime,
+            })
         if (runtime["conflict"] or not runtime["server"]) and not force:
             return _stage_error(
                 "ownership_not_verified",
@@ -4196,7 +4262,13 @@ async def mitm_stop(force: bool = False):
                     verified,
                 )
             verified = await asyncio.to_thread(_set_mitm_supervisor_target, False, verified)
-            return JSONResponse({"ok": True, "message": "MITM port verified empty.", **verified})
+            # Listener is gone and verified -> drop the hijack so the next router
+            # boot cannot inherit a hijack with no listener behind it.
+            hosts_note = await asyncio.to_thread(_sync_antigravity_hosts, False)
+            return JSONResponse({
+                "ok": True, "message": "MITM port verified empty.",
+                "hosts": hosts_note, **verified,
+            })
         except _subprocess.TimeoutExpired:
             verified = await asyncio.to_thread(_mitm_runtime_status)
             return _stage_error("kill_failed", "MITM stop launcher timed out.", verified)
