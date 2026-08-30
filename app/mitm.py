@@ -66,6 +66,9 @@ _LAST_KNOWN_SAFE_REAL_IP_TTL = 3600  # seconds
 
 _TELEMETRY_PATH = os.path.join(_PROJECT_ROOT, ".brain", "logs", "mitm_egress_frames.jsonl")
 _TELEMETRY_LOCK = threading.Lock()
+# Hard cap: rotate telemetry at 50MB (path -> path+".1"). The 2026-08-30 RCA
+# found this file at 4.3GB because the append below never rotated.
+_TELEMETRY_CAP_BYTES = 50 * 1024 * 1024
 
 # Route classification labels emitted as redacted structural metadata on every
 # managed flow. They describe the MITM's decision boundary only:
@@ -130,8 +133,13 @@ def _append_egress_telemetry(event: dict) -> None:
     """Append redacted structural telemetry; never persist generated content."""
     try:
         os.makedirs(os.path.dirname(_TELEMETRY_PATH), exist_ok=True)
-        with _TELEMETRY_LOCK, open(_TELEMETRY_PATH, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n")
+        with _TELEMETRY_LOCK:
+            # Rotate BEFORE opening so an oversized file never keeps growing.
+            # os.replace overwrites any stale .1 atomically (Windows-safe).
+            if os.path.exists(_TELEMETRY_PATH) and os.path.getsize(_TELEMETRY_PATH) >= _TELEMETRY_CAP_BYTES:
+                os.replace(_TELEMETRY_PATH, _TELEMETRY_PATH + ".1")
+            with open(_TELEMETRY_PATH, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n")
     except Exception as exc:
         logging.debug(f"[BSL MITM] Egress telemetry write skipped: {exc}")
 

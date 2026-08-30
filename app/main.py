@@ -1672,6 +1672,116 @@ async def _mitm_watchdog_loop():
             print(f"[MitmWatchdog] error: {exc}", flush=True)
 
 
+# ─── Inbound capture logging (I/O stall fix 2026-08-30) ──────────────────────
+# RCA (cc_tasks/capture-log-stall-fix.md): this logger wrote full payloads
+# synchronously on the event loop per request and never rotated — the file hit
+# 29.8GB and appends stalled streams for minutes (2,297 "200 OK (content
+# missing)" + client disconnects), cascading into zero-output force-stops that
+# killed the IDE's language server.
+#
+# New design:
+#   - default METADATA-ONLY records (no payloads/headers); BSL_CAPTURE_INBOUND=1
+#     restores the full diagnostic capture
+#   - 50MB rotation (path -> path+".1") on both inbound and MITM telemetry logs
+#   - async queue writer: the hot path only does put_nowait (drop-on-full);
+#     disk I/O happens in a background task via asyncio.to_thread
+#   - boot self-heal: lifespan fires rotation checks so a restarted app heals
+#     already-oversized files immediately
+_FULL_CAPTURE = os.environ.get("BSL_CAPTURE_INBOUND", "") == "1"
+_CAPTURE_PATH = os.path.join(_os_module.path.dirname(_project_root), ".brain", "logs", "antigravity_inbound.jsonl")
+_CAPTURE_MITM_LOG_PATH = os.path.join(_os_module.path.dirname(_project_root), ".brain", "logs", "mitm_egress_frames.jsonl")
+_CAPTURE_CAP_BYTES = 50 * 1024 * 1024
+_capture_queue: "asyncio.Queue | None" = None
+_CAPTURE_QUEUE_MAX = 256
+
+
+def _build_capture_record(path, query, alias, body, openai_body, headers, full: bool) -> dict:
+    """PURE record builder — no I/O, safe to unit-test and call on the hot path.
+
+    Metadata (ts, path, query, model_alias, body_bytes) is always recorded.
+    headers/raw_body/converted_openai_body are included ONLY when full=True;
+    that is the default-off diagnostic mode behind BSL_CAPTURE_INBOUND=1.
+    Any headers dict included is redacted in-place-safe (copy) — auth-bearing
+    keys never touch disk.
+    """
+    rec = {
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "path": path,
+        "query": query,
+        "model_alias": alias,
+        "body_bytes": len(body) if isinstance(body, (bytes, str)) else len(json.dumps(body, default=str)),
+    }
+    if not full:
+        return rec
+    _redacted = {
+        key: value
+        for key, value in dict(headers).items()
+        if key.lower() not in ("authorization", "x-goog-api-key", "x-api-key", "cookie")
+    }
+    rec["headers"] = _redacted
+    rec["raw_body"] = body
+    rec["converted_openai_body"] = openai_body
+    return rec
+
+
+def _rotate_capped_file(path: str, cap: int) -> None:
+    """Rotate path -> path+'.1' once it reaches cap bytes. Windows-safe
+    (os.replace is atomic and overwrites a stale .1). Never raises."""
+    try:
+        if os.path.exists(path) and os.path.getsize(path) >= cap:
+            os.replace(path, path + ".1")
+    except Exception:
+        pass
+
+
+def _capture_write_direct(rec: dict) -> None:
+    """Blocking append with rotation; runs in a worker thread, never raises."""
+    try:
+        os.makedirs(os.path.dirname(_CAPTURE_PATH), exist_ok=True)
+        _rotate_capped_file(_CAPTURE_PATH, _CAPTURE_CAP_BYTES)
+        with open(_CAPTURE_PATH, "a", encoding="utf-8") as capture_file:
+            capture_file.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
+async def _capture_writer_task():
+    """Background drain: queue -> to_thread(direct write). One at a time keeps
+    the file append-ordered; the queue absorbs bursts off the event loop."""
+    global _capture_queue
+    if _capture_queue is None:
+        _capture_queue = asyncio.Queue(maxsize=_CAPTURE_QUEUE_MAX)
+    while True:
+        rec = await _capture_queue.get()
+        try:
+            await asyncio.to_thread(_capture_write_direct, rec)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
+
+def _capture_line(rec: dict) -> None:
+    """Non-blocking enqueue for the hot path.
+
+    put_nowait with drop-on-full (never block inference). When no event loop
+    is running (tests, CLI probes) falls back to a direct write so the record
+    still lands.
+    """
+    global _capture_queue
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _capture_write_direct(rec)
+        return
+    if _capture_queue is None:
+        _capture_queue = asyncio.Queue(maxsize=_CAPTURE_QUEUE_MAX)
+    try:
+        _capture_queue.put_nowait(rec)
+    except asyncio.QueueFull:
+        pass  # drop — capture must never stall the request
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = cs_get_config()
@@ -1744,10 +1854,25 @@ async def lifespan(app: FastAPI):
 
     log_rotation_task = asyncio.create_task(_periodic_log_rotation())
 
+    # ── Capture-log writer + boot self-heal (I/O stall fix 2026-08-30) ────────
+    # Drain the inbound-capture queue off the event loop, and fire-and-forget
+    # rotation checks for BOTH jsonl loggers so a restart heals files that
+    # already blew past the cap (the 29.8GB inbound log had no rotation at all).
+    global _capture_queue
+    if _capture_queue is None:
+        _capture_queue = asyncio.Queue(maxsize=_CAPTURE_QUEUE_MAX)
+    capture_writer_task = asyncio.create_task(_capture_writer_task())
+    for _boot_path in (_CAPTURE_PATH, _CAPTURE_MITM_LOG_PATH):
+        try:
+            _rotate_capped_file(_boot_path, _CAPTURE_CAP_BYTES)
+        except Exception:
+            pass
+
     print("BSL Router Initialized. Connection pool active.")
     yield
     watchdog_task.cancel()
     log_rotation_task.cancel()
+    capture_writer_task.cancel()
     try:
         await watchdog_task
     except asyncio.CancelledError:
@@ -11334,24 +11459,16 @@ async def antigravity_generate(request: Request, model: str = None):
         # Capture only mapped BSL requests. Native fallback paths preserve caller
         # authorization but intentionally avoid payload/header diagnostic logging.
         try:
-            import os as _os
-            _hdrs = {
-                key: value
-                for key, value in request.headers.items()
-                if key.lower() not in ("authorization", "x-goog-api-key", "x-api-key", "cookie")
-            }
-            _rec = {
-                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "path": path,
-                "query": str(request.url.query),
-                "content_type": request.headers.get("content-type", ""),
-                "headers": _hdrs,
-                "raw_body": body,
-                "converted_openai_body": openai_body,
-            }
-            _os.makedirs(".brain/logs", exist_ok=True)
-            with open(".brain/logs/antigravity_inbound.jsonl", "a", encoding="utf-8") as capture_file:
-                capture_file.write(json.dumps(_rec, ensure_ascii=False, default=str) + "\n")
+            _rec = _build_capture_record(
+                path,
+                str(request.url.query),
+                request.headers.get("x-bsl-antigravity-alias", "").strip() or mapping_target,
+                body,
+                openai_body,
+                request.headers,
+                full=_FULL_CAPTURE,
+            )
+            _capture_line(_rec)
             print(f"[AntigravityIntegration] mapped {raw_model} -> {mapping_target}", flush=True)
         except Exception as exc:
             print(f"[AntigravityIntegration] mapped capture failed ({type(exc).__name__})", flush=True)
