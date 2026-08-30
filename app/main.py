@@ -10326,7 +10326,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
             # Gemini non-stream egress (Phase 5B-1 / Antigravity): render the OpenAI
             # completion as a wrapped {"response": {candidates, usageMetadata, ...}}
-            # object (spec Â§4b). Errors pass through as a Gemini-shaped error object.
+            # object (spec §4b). Errors pass through as a Gemini-shaped error object.
             if client_wants_gemini:
                 if resp.status_code == 200:
                     try:
@@ -11133,7 +11133,7 @@ async def chat_completions(request: Request):
             # aliases.json target, so it is handed straight to BSL's resolver.
             openai_body = gemini_request_to_openai(inner, body.get("model", ""))
             # 9router's antigravity interceptor always relays via SSE (pipeSSE) and
-            # Antigravity streams by default (spec Â§8.12), so force a streaming egress.
+            # Antigravity streams by default (spec §8.12), so force a streaming egress.
             openai_body["stream"] = True
             if body.get("userAgent"):
                 openai_body["x_antigravity_user_agent"] = body["userAgent"]
@@ -11211,7 +11211,7 @@ def _should_probe_stream_status(is_stream: bool, active_chain: list, client_want
 # conversion live in app/compat/adapters/gemini.py; this route is a thin wrapper
 # that unwraps the Cloud Code envelope, normalizes the model, converts Gemini→
 # OpenAI, then dispatches to _process_chat_completion with client_wants_gemini
-# so the egress converts OpenAI→Gemini on the way back. See spec Â§1/Â§2.
+# so the egress converts OpenAI→Gemini on the way back. See spec §1/§2.
 @app.post("/v1internal:generateContent")
 @app.post("/v1internal:streamGenerateContent")
 @app.post("/v1beta/models/{model}:generateContent")

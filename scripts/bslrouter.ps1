@@ -2,29 +2,32 @@
     BSL Router unified launcher.
 
     One command, runnable from anywhere (after `bslrouter install`), to control
-    the FastAPI app server (:6969), with explicit MITM interceptor (:443) control.
+    the FastAPI app server (:6969), with opt-in MITM interceptor (:443) control.
 
     Usage:
         bslrouter                 Start the app server only (default)
-        bslrouter -Background     Start the app server only, hidden in the background
-        bslrouter start           Same as `bslrouter` (app only)
-        bslrouter start -App      Start only the app server
-        bslrouter start -Mitm     Start only the MITM interceptor
-        bslrouter start -App -Mitm Start both services
-        bslrouter stop            Stop only the app server (default)
+        bslrouter -Background     Start the app server only, hidden, zero windows
+        bslrouter start -Mitm     Start the MITM interceptor explicitly
+        bslrouter start -App      Start only the app server (explicit)
+        bslrouter stop            Stop the app server only (default)
         bslrouter stop -Mitm      Stop every listener on the MITM port
-        bslrouter restart         Restart only the app server (default)
-        bslrouter restart -Mitm   Restart only the MITM interceptor
+        bslrouter restart         Restart the app server (default)
         bslrouter status          Show what is currently listening
         bslrouter install         Register `bslrouter` on PATH so it runs from anywhere
         bslrouter uninstall       Remove the PATH registration
+        bslrouter trust-ca        Install BSL's mitmproxy CA for IDE trust
 
     Notes:
-      * Start, stop, and restart never manipulate the MITM port unless -Mitm is
-        explicitly supplied. Use -App -Mitm together to control both services.
-      * The MITM interceptor binds port 443, which requires Administrator.
-        The BSL app/launcher must already be elevated; lifecycle requests fail
-        fast without opening a UAC prompt when elevation is unavailable.
+      * DEFAULT = APP ONLY (2026-08-29 user directive): MITM (Antigravity
+        Integration) is started/stopped ONLY from the Admin UI buttons
+        (/api/mitm/start + /api/mitm/stop), never auto-started by the launcher.
+        This prevents the launcher from fighting the UI buttons over :443.
+      * Start is idempotent: a healthy app (or, for -Mitm, a healthy BSL MITM)
+        already listening makes start a no-op (use -ForceKill to force).
+      * The MITM interceptor binds port 443. Windows normally allows a
+        non-elevated process to bind it (no explicit port reservation); if the
+        bind is refused for elevation reasons the MITM start fails loudly
+        rather than silently routing the IDE straight to Google.
       * The app root is fixed to the project folder, so the command works from
         any working directory.
 #>
@@ -414,9 +417,25 @@ function Start-App {
 
 function Start-Mitm {
     if (-not (Test-Path $Mitmdump)) { Write-StageError 'launch_failed' "mitmdump not found at $Mitmdump."; exit 1 }
+    # Windows does not reserve 443 for elevated processes; a normal user bind
+    # succeeds (the vbs-era MITM ran non-elevated for months). Only warn -- a
+    # hard exit here would make the one-command stack start fail on machines
+    # where no explicit reservation exists.
     if ($MitmPort -eq 443 -and -not (Test-IsAdmin)) {
-        Write-StageError 'admin_required' 'MITM lifecycle requires BSL Router to run as Administrator; no UAC prompt was opened.'
-        exit 1
+        Write-Info "Note: not elevated. Binding :443 usually works without admin; continuing."
+    }
+
+    # IDEMPOTENCE GATE (2026-08-29): a healthy BSL-owned mitmdump already on
+    # :$MitmPort makes start a no-op, mirroring the app gate. This lets
+    # `bslrouter -Background` be the one re-runnable command for the whole
+    # stack (run it after a MITM crash to bring only the dead half back).
+    $currentOwners = @(Get-ListenerPids $MitmPort)
+    if ($currentOwners.Count -gt 0) {
+        $bslOwners = @($currentOwners | Where-Object { Test-BslMitmOwner $_ })
+        if ($bslOwners.Count -eq $currentOwners.Count -and -not $ForceKill) {
+            Write-Ok "MITM already running on :$MitmPort ($(Format-ListenerOwners $bslOwners)). Start is a no-op. Use -ForceKill to restart."
+            return
+        }
     }
     New-Item -ItemType Directory -Force $LogDir | Out-Null
 
@@ -424,7 +443,6 @@ function Start-Mitm {
     # tree is always cleared. FOREIGN listeners are different — killing them is
     # only permitted with explicit user consent (-EvictForeign). This is what
     # stops the watchdog from silently stealing :443 back from 9Router every 5s.
-    $currentOwners = @(Get-ListenerPids $MitmPort)
     if ($currentOwners.Count -gt 0) {
         $foreignOwners = @($currentOwners | Where-Object { -not (Test-BslMitmOwner $_) })
         if ($foreignOwners.Count -gt 0 -and -not $EvictForeign) {
@@ -450,10 +468,19 @@ function Start-Mitm {
 
     try {
         if ($Background) {
-            $out = Join-Path $LogDir 'mitm.out.log'
+            $out  = Join-Path $LogDir 'mitm.out.log'
             $merr = Join-Path $LogDir 'mitm.err.log'
-            Start-Process -FilePath $Mitmdump -ArgumentList $mitmArgs -WorkingDirectory $Root `
-                -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $merr | Out-Null
+            # JOB-OBJECT ESCAPE + HIDDEN (2026-08-29): same pattern as the app
+            # spawn below -- [wmiclass] Win32_Process.Create with ShowWindow=12
+            # (SW_HIDE) parents mitmdump under WmiPrvSE (survives caller exit,
+            # no visible window) while cmd /c supplies the redirection. The old
+            # Start-Process + -RedirectStandard* form died with the caller's
+            # job object AND showed a console.
+            $mitmCmd = 'cmd /c ""{0}" -s app\mitm.py -p {1} --set connection_strategy=lazy --set upstream_cert=false >> "{2}" 2>> "{3}""' -f $Mitmdump, $MitmPort, $out, $merr
+            $startup = ([wmiclass]'Win32_ProcessStartup').CreateInstance()
+            $startup.ShowWindow = 12
+            Write-Info "Spawning MITM (job-detached, hidden console) on :$MitmPort"
+            ([wmiclass]'Win32_Process').Create($mitmCmd, $Root, $startup) | Out-Null
             Write-Info "MITM launch dispatched (background) on :$MitmPort  ->  logs: $out"
         } else {
             $inner = '"{0}" -s app\mitm.py -p {1} --set connection_strategy=lazy --set upstream_cert=false' -f $Mitmdump, $MitmPort
@@ -481,6 +508,12 @@ function Start-Mitm {
 }
 
 function Get-ServiceSelection {
+    # DEFAULT = APP ONLY (2026-08-29 user directive, REVISED): MITM is
+    # controlled exclusively by the Admin UI Start/Stop Integration buttons —
+    # NOT by this launcher. Auto-starting MITM here would fight the buttons
+    # (user clicks Stop, launcher's next run brings it back) and recreate the
+    # rogue-respawn behavior this repo just purged. -Mitm remains available
+    # for explicit, intentional use.
     $defaultAppOnly = -not $App -and -not $Mitm
     [PSCustomObject]@{
         App  = [bool]($App -or $defaultAppOnly)

@@ -20,7 +20,7 @@
                     <h1 class="brand-name">BSL Router</h1>
                     <div class="version-tag">v1.0.0</div>
                     <a href="#" id="update-pill" style="display:none;" onclick="startUpdate(); return false;">
-                        <span id="update-pill-text">â¬† v--</span>
+                        <span id="update-pill-text">⬆ v--</span>
                     </a>
                 </div>
             </div>
@@ -189,16 +189,16 @@
                     <input type="password" class="input" id="p-key" placeholder="sk-...">
                 </div>
                 <div class="form-group">
-                    <label>Header Profile <span style="color:var(--text-muted);font-weight:400">(Há»“ sÆ¡ Header)</span></label>
+                    <label>Header Profile <span style="color:var(--text-muted);font-weight:400">(Hồ sơ Header)</span></label>
                     <select class="input" id="p-header-profile" onchange="toggleCustomHeadersField()">
-                        <option value="default">Default — no extra headers / Máº·c Ä‘á»‹nh</option>
+                        <option value="default">Default — no extra headers / Mặc định</option>
                         <option value="codex">Codex CLI (originator + OpenAI-Beta)</option>
                         <option value="claude_code">Claude Code CLI (anthropic-beta + x-app)</option>
-                        <option value="custom">Custom / TÃ¹y chá»‰nh</option>
+                        <option value="custom">Custom / Tùy chỉnh</option>
                     </select>
                 </div>
                 <div class="form-group" id="p-custom-headers-group" style="display:none;">
-                    <label>Custom Headers <span style="color:var(--text-muted);font-weight:400">(má»™t dÃ²ng má»—i header: Key: Value)</span></label>
+                    <label>Custom Headers <span style="color:var(--text-muted);font-weight:400">(một dòng mỗi header: Key: Value)</span></label>
                     <textarea class="input" id="p-custom-headers" rows="4" placeholder="X-Auth-Token: abc123&#10;X-Custom-Header: value" style="resize:vertical;"></textarea>
                 </div>
             </div>
