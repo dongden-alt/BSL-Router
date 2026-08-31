@@ -36,6 +36,64 @@ _MITM_TOKENS = ("mitmdump", "mitm.py", "listen-port", "--listen", "listen_port")
 # Tokens that suggest a process is a respawn supervisor (a loop or sleep).
 _RESPAWN_TOKENS = ("while", "Start-Sleep", "for(", "Repeat")
 
+# ── Critical-process guard (0xEF prevention, 2026-08-31) ─────────────────────
+# RCA: the 2026-08-31 13:07 bugcheck (CRITICAL_PROCESS_DIED, 0xEF) correlates
+# with a MITM port eviction: taskkill on the Windows System process (PID 4,
+# which HTTP.sys uses to bind :443) or on another protected/critical process
+# terminates the whole machine, not just the listener. Every kill path in this
+# module therefore refuses -- loudly -- when the target is on the critical
+# list or cannot be identified while live. Eviction of ordinary foreign owners
+# (e.g. 9Router's node.exe) is unchanged.
+_CRITICAL_PROCESS_NAMES = frozenset({
+    # True protected processes: killing any of these bugchecks Windows.
+    "system", "smss", "csrss", "wininit", "services", "lsass", "winlogon",
+    # Service/desktop hosts: tree-killing them takes down whole service
+    # groups or the interactive desktop (and everything parented under it).
+    "svchost", "dwm", "explorer", "conhost", "dllhost", "runtimebroker",
+    "searchhost", "sihost", "taskhostw", "fontdrvhost", "spoolsv",
+    "audiodg", "wmiprvse",
+})
+
+
+def _is_critical_process_name(name: str) -> bool:
+    """True if *name* (case-insensitive, ``.exe`` optional) must never be killed."""
+    if not name:
+        return False
+    stem = name.strip().lower()
+    if stem.endswith(".exe"):
+        stem = stem[:-4]
+    return stem in _CRITICAL_PROCESS_NAMES
+
+
+def _get_process_names(pids) -> dict:
+    """One-shot WMI lookup ``{pid: process_name}`` for *pids*.
+
+    Terminated PIDs are simply absent from the result (racing a dying process
+    is benign). Raises RuntimeError when the WMI query itself fails — callers
+    must treat that as fail-closed and never kill a live process they could
+    not identify.
+    """
+    if not pids:
+        return {}
+    filt = " OR ".join(f"ProcessId={int(p)}" for p in sorted(pids))
+    cmd = [
+        "powershell", "-NoProfile", "-Command",
+        f"Get-CimInstance Win32_Process -Filter '{filt}' | "
+        "ForEach-Object { \"$($_.ProcessId)|$($_.Name)\" }",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    if result.returncode != 0:
+        raise RuntimeError(f"WMI name lookup failed: {(result.stderr or '').strip()[:200]}")
+    names = {}
+    for line in (result.stdout or "").splitlines():
+        line = line.strip()
+        if "|" not in line:
+            continue
+        pid_s, _, pname = line.partition("|")
+        if pid_s.strip().isdigit() and pname.strip():
+            names[int(pid_s.strip())] = pname.strip()
+    return names
+
 
 def _get_listener_pids(port: int) -> set:
     """Return set of PIDs that have a LISTENING socket on *port*.
@@ -163,6 +221,33 @@ def kill_respawn_supervisors(port: int) -> tuple:
         if not supervisor_pids:
             return True, f"Port {port}: no respawn supervisors found in parent chains."
 
+        # ── CRITICAL-PROCESS PRE-SCAN (0xEF prevention, 2026-08-31) ─────────
+        # Identify every flagged supervisor BEFORE killing anything. A single
+        # Windows-critical name aborts the whole sweep: taskkill on such a PID
+        # bugchecks the machine (CRITICAL_PROCESS_DIED, 0xEF) instead of
+        # freeing the port.
+        try:
+            sup_names = _get_process_names(supervisor_pids)
+            sup_lookup_error = None
+        except Exception as exc:  # fail closed — never kill blind
+            sup_names = {}
+            sup_lookup_error = exc
+
+        blocked = []
+        for spid in sorted(supervisor_pids):
+            sname = sup_names.get(spid)
+            if sname is not None and _is_critical_process_name(sname):
+                blocked.append(f"{spid}({sname})")
+            elif sname is None and sup_lookup_error is not None:
+                blocked.append(f"{spid}(name_unresolvable)")
+        if blocked:
+            detail = (
+                f"Refusing to kill Windows-critical/unidentifiable supervisor(s) "
+                f"on port {port}: {', '.join(blocked)}"
+            )
+            logger.error(f"[mitm_kill] {detail}")
+            return False, detail
+
         killed = []
         failed = []
         for spid in sorted(supervisor_pids):
@@ -246,6 +331,35 @@ def force_kill_mitm_port(port: int = 443) -> tuple:
                 f"[mitm_kill] Round {round_num}/{_MAX_KILL_ROUNDS}: "
                 f"port {port} has listeners: {sorted(pids)}"
             )
+
+            # ── CRITICAL-PROCESS PRE-SCAN (0xEF prevention, 2026-08-31) ─────
+            # Identify every listener BEFORE killing anything this round. A
+            # single Windows-critical owner (or one we cannot identify) aborts
+            # the eviction: taskkill on such a PID bugchecks the machine
+            # (CRITICAL_PROCESS_DIED, 0xEF). PID 4 (System/HTTP.sys) never
+            # reaches here — _get_listener_pids excludes pid <= 4 — this is
+            # the name-level second line of defense.
+            try:
+                round_names = _get_process_names(pids)
+                round_lookup_error = None
+            except Exception as exc:  # fail closed — never kill blind
+                round_names = {}
+                round_lookup_error = exc
+
+            blocked = []
+            for pid in sorted(pids):
+                pname = round_names.get(pid)
+                if pname is not None and _is_critical_process_name(pname):
+                    blocked.append(f"{pid}({pname})")
+                elif pname is None and round_lookup_error is not None:
+                    blocked.append(f"{pid}(name_unresolvable)")
+            if blocked:
+                detail = (
+                    f"Refusing to kill Windows-critical/unidentifiable process(es) "
+                    f"on port {port}: {', '.join(blocked)}"
+                )
+                logger.error(f"[mitm_kill] {detail}")
+                return False, detail
 
             killed_this_round = []
             failed_this_round = []

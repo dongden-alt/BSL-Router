@@ -55,10 +55,13 @@ def test_deadline_present_and_identical_across_recursive_hops():
 def test_chain_budget_remaining_and_refusal_logic():
     main = _reload_main()
 
-    # Fresh chain: budget remaining ≈ CHAIN_TOTAL_BUDGET.
+    # Fresh chain: budget remaining ≈ CHAIN_TOTAL_BUDGET. The upper bound
+    # carries a 1e-6 epsilon: two separate monotonic() reads + IEEE-754
+    # rounding on (t1 + budget) - t2 can land at budget + ~9e-13 (observed:
+    # 960.0000000000009), which is rounding noise, not a budget violation.
     _chain_deadline = time.monotonic() + main.CHAIN_TOTAL_BUDGET
     remaining = _chain_deadline - time.monotonic()
-    assert 0.0 < remaining <= main.CHAIN_TOTAL_BUDGET
+    assert 0.0 < remaining <= main.CHAIN_TOTAL_BUDGET + 1e-6
 
     # Exhausted chain: remaining <= 0 -> refuse further fallback.
     _chain_deadline = time.monotonic() - 1.0

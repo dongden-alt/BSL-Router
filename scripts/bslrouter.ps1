@@ -121,8 +121,33 @@ function Get-ListenerPids ([int]$p) {
     @(Get-NetTCPConnection -State Listen -ErrorAction Stop |
         Where-Object { $_.LocalPort -eq $p } |
         Select-Object -ExpandProperty OwningProcess -Unique |
-        Where-Object { $_ -and [int]$_ -gt 0 } |
+        # PID <= 4 is the System process (HTTP.sys binds :443 as PID 4).
+        # taskkill on it bugchecks Windows (CRITICAL_PROCESS_DIED, 0xEF) --
+        # parity with app/utils/mitm_kill.py:_get_listener_pids (audit 2026-08-31).
+        Where-Object { $_ -and [int]$_ -gt 4 } |
         ForEach-Object { [int]$_ })
+}
+
+# ── Critical-process guard (0xEF prevention, 2026-08-31) ─────────────────────
+# Killing any of these names terminates Windows itself (CRITICAL_PROCESS_DIED
+# bugcheck 0xEF) or the entire desktop/service group. Every tree-kill site in
+# this launcher checks this list first and REFUSES loudly instead of taking
+# the machine down. Mirror of app/utils/mitm_kill.py:_CRITICAL_PROCESS_NAMES.
+$CriticalProcessNames = @(
+    'system','smss','csrss','wininit','services','lsass','winlogon',
+    'svchost','dwm','explorer','conhost','dllhost','runtimebroker',
+    'searchhost','sihost','taskhostw','fontdrvhost','spoolsv','audiodg','wmiprvse'
+)
+
+function Test-CriticalProcess ([int]$targetPid) {
+    if ($targetPid -le 4) { return $true }   # PID 0/4 (System) -- never killable
+    try {
+        $proc = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+    } catch {
+        return $true   # cannot identify -> fail closed, never kill blind
+    }
+    if (-not $proc) { return $false }        # already gone -> taskkill will no-op
+    return ($CriticalProcessNames -contains [string]$proc.ProcessName.ToLower())
 }
 
 function Write-StageError ([string]$code, [string]$message) {
@@ -191,6 +216,10 @@ function Get-AppSupervisorRoot ([int]$listenerPid) {
 }
 
 function Stop-Tree ([int]$rootPid, [string]$label) {
+    if (Test-CriticalProcess $rootPid) {
+        Write-StageError 'critical_process_blocked' "Refusing to stop $label (PID $rootPid): Windows-critical process. Aborting to prevent system crash (0xEF)."
+        return $false
+    }
     Write-Info "Forcefully stopping $label (listener $rootPid)..."
     # User's direct, aggressive kill strategy
     Stop-Process -Id $rootPid -Force -ErrorAction SilentlyContinue
@@ -233,6 +262,16 @@ function Stop-AllListeners ([int]$p, [string]$label) {
             return $true
         }
         Write-Info "Round $round/3: killing listeners on :$p - $(Format-ListenerOwners $currentPids)"
+        # CRITICAL-PROCESS PRE-SCAN (0xEF prevention): if ANY owner is
+        # Windows-critical (or unidentifiable), abort the entire eviction
+        # before the first taskkill -- a partial kill that ends in a bugcheck
+        # is worse than a refused one.
+        foreach ($listenerPid in $currentPids) {
+            if (Test-CriticalProcess $listenerPid) {
+                Write-StageError 'critical_process_blocked' "Refusing to kill PID $listenerPid on :$p - Windows-critical or unidentifiable process. Aborting eviction to prevent system crash (0xEF)."
+                return $false
+            }
+        }
         foreach ($listenerPid in $currentPids) {
             & taskkill /F /T /PID $listenerPid 2>&1 | Out-Null
         }
@@ -374,6 +413,10 @@ function Start-App {
     if ($stalePids.Count -gt 0) {
         Write-Warn "Stale listener(s) on :$Port -- killing before restart: $(Format-ListenerOwners $stalePids)"
         foreach ($stalePid in $stalePids) {
+            if (Test-CriticalProcess $stalePid) {
+                Write-StageError 'critical_process_blocked' "Refusing to kill PID $stalePid on :$Port - Windows-critical process. Cannot start app."
+                return
+            }
             Stop-Process -Id $stalePid -Force -ErrorAction SilentlyContinue
         }
         $cleared = Wait-PortEmpty $Port 8
@@ -565,8 +608,16 @@ function Invoke-Stop {
                 # restart) while the child kept serving.
                 $rootPid = Get-AppSupervisorRoot $listenerPid
                 Write-Info "App stop on :$Port - supervisor root PID=$rootPid (listener PID=$listenerPid)"
+                if (Test-CriticalProcess $rootPid) {
+                    Write-StageError 'critical_process_blocked' "Refusing to kill supervisor root PID $rootPid on :$Port - Windows-critical process. Aborting stop to prevent system crash (0xEF)."
+                    exit 1
+                }
                 & taskkill /F /T /PID $rootPid 2>&1 | Out-Null
                 if ($rootPid -ne $listenerPid) {
+                    if (Test-CriticalProcess $listenerPid) {
+                        Write-StageError 'critical_process_blocked' "Refusing to kill listener PID $listenerPid on :$Port - Windows-critical process."
+                        exit 1
+                    }
                     & taskkill /F /T /PID $listenerPid 2>&1 | Out-Null
                 }
                 Start-Sleep -Milliseconds 300

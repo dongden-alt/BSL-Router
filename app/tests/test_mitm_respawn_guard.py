@@ -59,6 +59,10 @@ class TestKillRespawnSupervisors:
         ), mock.patch.object(
             mitm_kill, "_get_process_info", return_value=(sup_pid, sup_cmd)
         ), mock.patch.object(
+            # Critical-process guard (2026-08-31): the pre-scan must be able
+            # to identify the supervisor as an ordinary powershell.exe.
+            mitm_kill, "_get_process_names", return_value={sup_pid: "powershell.exe"}
+        ), mock.patch.object(
             mitm_kill, "_is_protected_pid", return_value=False
         ), mock.patch.object(
             mitm_kill.subprocess, "run", _fake_taskkill({sup_pid})
@@ -113,6 +117,10 @@ class TestKillRespawnSupervisors:
             mitm_kill, "_get_listener_pids", return_value={child_pid}
         ), mock.patch.object(
             mitm_kill, "_get_process_info", side_effect=fake_info
+        ), mock.patch.object(
+            # Critical-process guard (2026-08-31): identify the flagged
+            # supervisor as an ordinary powershell.exe so the pre-scan passes.
+            mitm_kill, "_get_process_names", return_value={sup_pid: "powershell.exe"}
         ), mock.patch.object(
             mitm_kill, "_is_protected_pid", return_value=False
         ), mock.patch.object(
