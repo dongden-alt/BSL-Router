@@ -332,19 +332,41 @@ function Start-App {
         # healthy router stale and kill it. Probe BOTH stacks -- EITHER
         # returning 200 means the router is alive; only a TOTAL dual-stack
         # blackout counts as stale.
+        #
+        # PER-STACK ISOLATION (2026-08-31): each probe now gets its OWN
+        # try/catch. Invoke-WebRequest raises a TERMINATING error when a
+        # connection is refused, so the previous single shared try{} meant a
+        # dead IPv4 stack aborted the block BEFORE the IPv6 probe ever ran --
+        # the "dual-stack" probe could only ever report what IPv4 said, and a
+        # v6-only-healthy router was still killed as stale. That is the exact
+        # failure this gate was written to prevent.
+        #
+        # UNAUTHENTICATED PROBE (2026-08-31): this used to GET /v1/models with a
+        # hardcoded Bearer key that was a TYPO of the real one -- a dropped 'j'
+        # (...Q4jHmqdyCy5, 38 chars vs the real ...Q4jHjmqdyCy5, 39) -- shipped
+        # by 01e1643, the very commit that added this gate. It only ever passed
+        # because /v1/models does not enforce auth; the moment it does, the
+        # probe 401s, $healthy goes $false, and the launcher kills a HEALTHY
+        # router. /health needs no credential, so the launcher also stops
+        # embedding a live API key in a git-tracked file (config.yaml is
+        # gitignored -- this script was the only committed copy of that key).
         $healthy = $false
-        try {
-            $hdr = @{ Authorization = 'Bearer REDACTED-BSL-ADMIN-KEY' }
-            $v4 = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v1/models" -Headers $hdr `
-                -UseBasicParsing -TimeoutSec 4 -ErrorAction SilentlyContinue
-            $v6 = Invoke-WebRequest -Uri "http://[::1]:$Port/v1/models" -Headers $hdr `
-                -UseBasicParsing -TimeoutSec 4 -ErrorAction SilentlyContinue
-            $healthy = ($v4 -and $v4.StatusCode -eq 200) -or ($v6 -and $v6.StatusCode -eq 200)
-        } catch {
-            $healthy = $false
+        foreach ($probe in @("http://127.0.0.1:$Port/health", "http://[::1]:$Port/health")) {
+            if ($healthy) { break }
+            try {
+                $resp = Invoke-WebRequest -Uri $probe -UseBasicParsing -TimeoutSec 4
+                if ($resp -and $resp.StatusCode -eq 200) { $healthy = $true }
+            } catch {
+                # This stack is down. The other one still gets its own chance.
+            }
         }
         if ($healthy) {
-            Write-Ok "Router already healthy on :$Port (PID $($stalePids[0])). Start is a no-op. Use -ForceKill or `restart` to force."
+            # ESCAPE FIX (2026-08-31): the backticks around `restart` were bare,
+            # and in a PowerShell double-quoted string a backtick is the ESCAPE
+            # character -- "`r" emitted a carriage return, so this printed as
+            # "Use -ForceKill or <CR>estart` to force." (observed live). Doubled
+            # backticks emit a literal one.
+            Write-Ok "Router already healthy on :$Port (PID $($stalePids[0])). Start is a no-op. Use -ForceKill or ``restart`` to force."
             return
         }
         Write-Warn "Listener on :$Port failed health check -- treating as stale."
@@ -460,11 +482,10 @@ function Start-Mitm {
     # Hosts-file interception maps managed domains to 127.0.0.1. Lazy
     # connection strategy is mandatory: request() must choose BSL Router or
     # the real upstream IP before mitmproxy opens the server-side TLS socket.
-    $mitmArgs = @(
-        '-s', 'app\mitm.py', '-p', "$MitmPort",
-        '--set', 'connection_strategy=lazy',
-        '--set', 'upstream_cert=false'
-    )
+    # These flags are spelled out inline in both spawn forms below; the old
+    # $mitmArgs array they came from was left assigned-but-unreferenced by the
+    # WMI/cmd refactor and has been removed so there is exactly ONE definition
+    # of the mitmdump argument list per spawn path.
 
     try {
         if ($Background) {

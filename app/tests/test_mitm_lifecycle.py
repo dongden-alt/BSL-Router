@@ -323,13 +323,40 @@ def test_lifecycle_source_has_single_authoritative_start_contract():
     assert "_subprocess.Popen(" in source
     assert "capture_output=True" not in source.split("def _run_mitm_launcher", 1)[1].split("def _poll_mitm_runtime", 1)[0]
     start_function = launcher.split("function Start-Mitm {", 1)[1].split("function Get-ServiceSelection", 1)[0]
-    assert start_function.index("Stop-AllListeners $MitmPort 'MITM'") < start_function.index("Start-Process -FilePath $Mitmdump")
+
+    # SPAWN-FORM AGNOSTIC ORDERING (2026-08-31): these assertions used to key on
+    # "Start-Process -FilePath $Mitmdump", which no longer exists in Start-Mitm.
+    # Background spawn moved to [wmiclass]Win32_Process.Create (job-object escape
+    # so an exiting caller cannot tree-kill mitmdump) and window spawn to
+    # Start-Process cmd.exe /k. The only remaining Start-Process -FilePath
+    # $Mitmdump in the file is in Ensure-BslCaTrust, which briefly runs mitmdump
+    # on throwaway port 8083 to materialize the CA -- NOT the real MITM launch.
+    # Keying on it made this test raise ValueError instead of verifying anything.
+    # Anchor on the log line each spawn path emits: those are inside Start-Mitm,
+    # one per spawn form, and survive future changes to the spawn mechanism.
+    launch_markers = [
+        start_function.index('Write-Info "MITM launch dispatched (background) on :$MitmPort'),
+        start_function.index('Write-Info "MITM launch dispatched (window) on :$MitmPort'),
+    ]
+    first_launch = min(launch_markers)
+
+    # Both spawn forms must exist, and neither may reintroduce a job-object-bound
+    # background spawn (the 2026-08-29 F2 audit: Start-Process + -RedirectStandard*
+    # died with the caller, silently killing a healthy MITM).
+    assert "([wmiclass]'Win32_Process').Create($mitmCmd, $Root, $startup)" in start_function
+    assert "Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', $inner" in start_function
+    assert "-RedirectStandardOutput" not in start_function
+    assert "-RedirectStandardError" not in start_function
+
+    # Kill BEFORE launch: a stale BSL tree must be cleared first or the new
+    # mitmdump cannot bind the port.
+    assert start_function.index("Stop-AllListeners $MitmPort 'MITM'") < first_launch
 
     # Ownership verification must still happen AFTER launch. This keys on the
     # verification loop's deadline rather than the first Test-BslMitmOwner use,
     # because the consent gate below legitimately calls Test-BslMitmOwner
     # BEFORE launch to classify existing owners as foreign.
-    assert start_function.index("Start-Process -FilePath $Mitmdump") < start_function.index("$deadline = [DateTime]::UtcNow.AddSeconds(20)")
+    assert max(launch_markers) < start_function.index("$deadline = [DateTime]::UtcNow.AddSeconds(20)")
 
     # CONSENT GATE: a foreign owner may only be evicted with -EvictForeign, which
     # solely the Start Integration button passes. This is what prevents the
@@ -343,6 +370,79 @@ def test_lifecycle_source_has_single_authoritative_start_contract():
     assert "await _start_mitm_locked(evict_foreign=True)" in source
     assert "await _start_mitm_locked(evict_foreign=False)" in source
     assert '("-EvictForeign",) if evict_foreign else ()' in source
+
+
+def _powershell_code_only(script: str) -> str:
+    """Strip whole-line PowerShell comments.
+
+    Every "pattern X must not appear" assertion against the launcher has to run
+    against CODE, never prose. The comments in bslrouter.ps1 deliberately record
+    what was removed and why (the typo'd probe key, /v1/models, $mitmArgs), so a
+    bare substring check is matched by the very documentation that explains the
+    fix -- a self-defeating assertion. Full-line comments only: trailing-comment
+    stripping would need real tokenizing to avoid mangling '#' inside strings.
+    """
+    return "\n".join(
+        line for line in script.splitlines()
+        if not line.strip().startswith("#")
+    )
+
+
+def test_launcher_health_gate_is_unauthenticated_and_probes_each_stack_independently():
+    """The idempotence gate must not kill a healthy router.
+
+    Two real defects this locks out, both found 2026-08-31:
+      1. The probe carried a hardcoded Bearer key that was a TYPO of the real one
+         (a dropped 'j'). It passed only because /v1/models does not enforce
+         auth; the day it does, the gate 401s and kills a HEALTHY router. It also
+         put a live API key in a git-tracked file (config.yaml is gitignored, so
+         this script was the only committed copy).
+      2. Both probes shared ONE try/catch. Invoke-WebRequest raises a terminating
+         error on a refused connection, so a dead IPv4 stack aborted the block
+         before the IPv6 probe ran -- the "dual-stack" gate could only ever
+         report IPv4, defeating its own purpose.
+    """
+    launcher = Path("scripts/bslrouter.ps1").read_text(encoding="utf-8")
+    launcher_code = _powershell_code_only(launcher)
+    start_app = launcher_code.split("function Start-App {", 1)[1].split("function Start-Mitm", 1)[0]
+
+    # No credential in the health gate, and no API key anywhere in the launcher.
+    assert "Authorization" not in start_app
+    assert "sk-bsl-" not in launcher_code, "launcher must not embed a live API key"
+
+    # Unauthenticated endpoint, both families.
+    assert 'http://127.0.0.1:$Port/health' in start_app
+    assert 'http://[::1]:$Port/health' in start_app
+    assert "/v1/models" not in start_app
+
+    # Per-stack isolation: the probe loop carries its own try/catch INSIDE the
+    # foreach, so one dead family cannot suppress the other. Slice the loop body
+    # by its own boundaries -- an earlier version split on "if ($healthy) {" and
+    # hit the loop's internal `if ($healthy) { break }` guard first, cutting the
+    # region off before the try/catch it was meant to inspect.
+    probe_block = start_app.split("foreach ($probe in", 1)[1].split("Write-Ok \"Router already healthy", 1)[0]
+    assert probe_block.count("try {") == 1, "probe loop must carry exactly one try per iteration"
+    assert probe_block.count("} catch {") == 1, "each stack needs its own catch"
+    # Shared-try regression guard: the old form probed both stacks in one try{}.
+    assert '$v4 = Invoke-WebRequest' not in start_app
+    assert '$v6 = Invoke-WebRequest' not in start_app
+
+    # A healthy router must still be a no-op (the anti-restart-loop guarantee).
+    assert "Start is a no-op" in start_app
+
+
+def test_launcher_has_no_dead_mitm_arg_array():
+    """$mitmArgs was assigned once and referenced nowhere after the WMI/cmd
+    refactor. Two competing definitions of mitmdump's flags is a drift hazard:
+    editing the dead array looks like it works and changes nothing."""
+    launcher = Path("scripts/bslrouter.ps1").read_text(encoding="utf-8")
+    launcher_code = _powershell_code_only(launcher)
+
+    assert "$mitmArgs" not in launcher_code
+
+    # The real flags still reach both spawn paths (background WMI + window cmd).
+    assert launcher_code.count("connection_strategy=lazy") == 2
+    assert launcher_code.count("upstream_cert=false") == 2
 
 
 def test_frontend_has_no_takeover_modal_or_endpoint_and_updates_only_after_verified_success():

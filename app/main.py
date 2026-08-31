@@ -1690,12 +1690,31 @@ async def _mitm_watchdog_loop():
 _FULL_CAPTURE = os.environ.get("BSL_CAPTURE_INBOUND", "") == "1"
 _CAPTURE_PATH = os.path.join(_os_module.path.dirname(_project_root), ".brain", "logs", "antigravity_inbound.jsonl")
 _CAPTURE_MITM_LOG_PATH = os.path.join(_os_module.path.dirname(_project_root), ".brain", "logs", "mitm_egress_frames.jsonl")
+# Third MITM-owned logger (mitm.py::_bsl_debug). It is rotated in-process by
+# mitm.py; this path exists here only so the router's boot sweep can heal a
+# file that already blew past the cap while mitmdump was down. Cross-process
+# rotation is best-effort on Windows (a live mitmdump handle makes os.replace
+# fail) — harmless, because _rotate_capped_file never raises.
+_CAPTURE_MITM_DEBUG_LOG_PATH = os.path.join(_os_module.path.dirname(_project_root), ".brain", "logs", "mitm_live_debug.log")
 _CAPTURE_CAP_BYTES = 50 * 1024 * 1024
 _capture_queue: "asyncio.Queue | None" = None
+# Bounds RECORD COUNT, not bytes. Metadata-only records are ~142B, so a full
+# queue costs ~36KB. Under BSL_CAPTURE_INBOUND=1 each slot holds a complete
+# payload instead, so a lagging drain can hold ~128MB resident for 0.5MB agent
+# requests. That ceiling is accepted for an opt-in diagnostic mode only.
 _CAPTURE_QUEUE_MAX = 256
 
 
-def _build_capture_record(path, query, alias, body, openai_body, headers, full: bool) -> dict:
+def _build_capture_record(
+    path,
+    query,
+    alias,
+    body,
+    openai_body,
+    headers,
+    full: bool,
+    body_bytes: "int | None" = None,
+) -> dict:
     """PURE record builder — no I/O, safe to unit-test and call on the hot path.
 
     Metadata (ts, path, query, model_alias, body_bytes) is always recorded.
@@ -1703,13 +1722,22 @@ def _build_capture_record(path, query, alias, body, openai_body, headers, full: 
     that is the default-off diagnostic mode behind BSL_CAPTURE_INBOUND=1.
     Any headers dict included is redacted in-place-safe (copy) — auth-bearing
     keys never touch disk.
+
+    `body_bytes` should be supplied by request-path callers as the raw wire
+    length (len(await request.body())). Deriving it from an already-parsed
+    `body` dict costs a full json.dumps of the entire conversation — measured
+    at 1.713ms vs 0.003ms for a 0.48MB agent payload (516x) — and that cost
+    would land on the event loop this fix exists to keep free. The fallback is
+    retained for tests and offline probes that only hold a parsed body.
     """
+    if body_bytes is None:
+        body_bytes = len(body) if isinstance(body, (bytes, str)) else len(json.dumps(body, default=str))
     rec = {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "path": path,
         "query": query,
         "model_alias": alias,
-        "body_bytes": len(body) if isinstance(body, (bytes, str)) else len(json.dumps(body, default=str)),
+        "body_bytes": body_bytes,
     }
     if not full:
         return rec
@@ -1856,13 +1884,14 @@ async def lifespan(app: FastAPI):
 
     # ── Capture-log writer + boot self-heal (I/O stall fix 2026-08-30) ────────
     # Drain the inbound-capture queue off the event loop, and fire-and-forget
-    # rotation checks for BOTH jsonl loggers so a restart heals files that
-    # already blew past the cap (the 29.8GB inbound log had no rotation at all).
+    # rotation checks for ALL THREE unbounded loggers so a restart heals files
+    # that already blew past the cap (the 29.8GB inbound log had no rotation at
+    # all; mitm_live_debug.log had reached 104MB by the 2026-08-30 audit).
     global _capture_queue
     if _capture_queue is None:
         _capture_queue = asyncio.Queue(maxsize=_CAPTURE_QUEUE_MAX)
     capture_writer_task = asyncio.create_task(_capture_writer_task())
-    for _boot_path in (_CAPTURE_PATH, _CAPTURE_MITM_LOG_PATH):
+    for _boot_path in (_CAPTURE_PATH, _CAPTURE_MITM_LOG_PATH, _CAPTURE_MITM_DEBUG_LOG_PATH):
         try:
             _rotate_capped_file(_boot_path, _CAPTURE_CAP_BYTES)
         except Exception:
@@ -11467,6 +11496,9 @@ async def antigravity_generate(request: Request, model: str = None):
                 openai_body,
                 request.headers,
                 full=_FULL_CAPTURE,
+                # raw_body is the undecoded wire payload already in scope; pass
+                # its length so the record never re-serializes `body`.
+                body_bytes=len(raw_body),
             )
             _capture_line(_rec)
             print(f"[AntigravityIntegration] mapped {raw_model} -> {mapping_target}", flush=True)

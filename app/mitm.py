@@ -12,12 +12,25 @@ import logging
 _CONFIG_CACHE = (None, None, None)
 
 _DEBUG_LOG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".brain", "logs", "mitm_live_debug.log")
+# Hard cap: rotate the debug log at 50MB (path -> path+".1"), matching the
+# telemetry cap below. The 2026-08-30 audit found this file at 104MB — larger
+# than the entire post-fix ceiling of both jsonl loggers combined — because the
+# append below never rotated. Same failure shape as the 29.8GB inbound capture
+# that stalled the event loop and killed the IDE, just slower to arrive.
+_DEBUG_LOG_CAP_BYTES = 50 * 1024 * 1024
+_DEBUG_LOG_LOCK = threading.Lock()
+
 
 def _bsl_debug(msg: str) -> None:
     """File-based debug log readable regardless of process elevation."""
     try:
-        with open(_DEBUG_LOG, "a", encoding="utf-8") as _f:
-            _f.write(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] {msg}\n")
+        with _DEBUG_LOG_LOCK:
+            # Rotate BEFORE opening so an oversized file never keeps growing.
+            # os.replace overwrites any stale .1 atomically (Windows-safe).
+            if os.path.exists(_DEBUG_LOG) and os.path.getsize(_DEBUG_LOG) >= _DEBUG_LOG_CAP_BYTES:
+                os.replace(_DEBUG_LOG, _DEBUG_LOG + ".1")
+            with open(_DEBUG_LOG, "a", encoding="utf-8") as _f:
+                _f.write(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] {msg}\n")
     except Exception:
         pass
 

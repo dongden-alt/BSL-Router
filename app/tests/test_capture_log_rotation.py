@@ -195,3 +195,106 @@ def test_mitm_telemetry_never_raises_on_bad_path(tmp_path, monkeypatch):
     finally:
         monkeypatch.undo()
 
+
+# ── 2026-08-30 audit findings F-1/F-2/F-3 ───────────────────────────────────
+
+
+def test_build_capture_record_uses_explicit_body_bytes_without_reserializing():
+    """F-2: the request path passes the raw wire length, so the parsed payload
+    is never re-serialized just to measure it."""
+    sentinel_len = 505222
+
+    class ExplodingBody(dict):
+        """Any attempt to serialize this raises, proving json.dumps is skipped."""
+
+        def __repr__(self):  # pragma: no cover - only hit on failure
+            raise AssertionError("record builder must not touch the body")
+
+    body = ExplodingBody(contents=[{"role": "user", "parts": [{"text": "hi"}]}])
+
+    rec = main._build_capture_record(
+        "/v1internal:generateContent", "alt=sse", "alias", body, {}, {},
+        full=False, body_bytes=sentinel_len,
+    )
+    assert rec["body_bytes"] == sentinel_len
+
+    # Fallback still works for callers that only hold a parsed body (tests,
+    # offline probes) — otherwise this contract would silently break them.
+    plain = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}
+    fallback = main._build_capture_record(
+        "/p", "", "a", plain, {}, {}, full=False
+    )
+    assert fallback["body_bytes"] == len(json.dumps(plain, default=str))
+
+    # bytes/str bodies keep their direct length.
+    assert main._build_capture_record(
+        "/p", "", "a", b"abc", {}, {}, full=False
+    )["body_bytes"] == 3
+
+
+def test_mitm_debug_log_rotates_at_cap_and_overwrites_stale_backup(tmp_path, monkeypatch):
+    """F-3: mitm_live_debug.log had reached 104MB with no rotation at all."""
+    path = str(tmp_path / "mitm_live_debug.log")
+    monkeypatch.setattr(mitm, "_DEBUG_LOG", path)
+    monkeypatch.setattr(mitm, "_DEBUG_LOG_CAP_BYTES", 512)
+
+    for _ in range(200):
+        mitm._bsl_debug("x" * 60)
+
+    assert os.path.getsize(path) < 512 + 200, "primary must stay near the cap"
+    assert os.path.exists(path + ".1")
+    # Bounded: cap + one rotation, not 200 * ~80 bytes of unbounded growth.
+    assert os.path.getsize(path) + os.path.getsize(path + ".1") < 512 * 3
+
+    # Second overflow cycle must overwrite `.1` rather than create `.2`/`.3`.
+    before = set(os.listdir(tmp_path))
+    for _ in range(200):
+        mitm._bsl_debug("y" * 60)
+    assert set(os.listdir(tmp_path)) == before
+
+
+def test_mitm_debug_log_never_raises_on_bad_path(tmp_path, monkeypatch):
+    """Debug logging is fail-open: it must never propagate into MITM handlers."""
+    monkeypatch.setattr(mitm, "_DEBUG_LOG", str(tmp_path / "no" / "perm" / "d.log"))
+    mitm._bsl_debug("must not raise")
+
+
+def test_boot_self_heal_covers_all_three_unbounded_loggers():
+    """F-3: the lifespan rotation sweep must include the mitm debug log."""
+    assert hasattr(main, "_CAPTURE_MITM_DEBUG_LOG_PATH")
+    assert main._CAPTURE_MITM_DEBUG_LOG_PATH.endswith("mitm_live_debug.log")
+
+    source = open(
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"),
+        encoding="utf-8",
+    ).read()
+    assert (
+        "for _boot_path in (_CAPTURE_PATH, _CAPTURE_MITM_LOG_PATH, _CAPTURE_MITM_DEBUG_LOG_PATH):"
+        in source
+    )
+
+
+def test_conftest_isolation_keeps_every_log_path_out_of_brain_logs():
+    """F-1: the autouse guard must redirect all capture paths away from the
+    real `.brain/logs`, because the async writer drains after teardown and
+    escapes per-test monkeypatching of builtins.open."""
+    for path in (
+        main._CAPTURE_PATH,
+        main._CAPTURE_MITM_LOG_PATH,
+        main._CAPTURE_MITM_DEBUG_LOG_PATH,
+        mitm._TELEMETRY_PATH,
+        mitm._DEBUG_LOG,
+    ):
+        normalized = str(path).replace("\\", "/")
+        assert "/.brain/logs/" not in normalized, f"{path} still points at production"
+
+
+def test_conftest_resets_capture_queue_between_tests():
+    """F-1: a queue inherited from an earlier test made queue-state assertions
+    order-dependent (passed alone, failed in the full suite)."""
+    assert getattr(main, "_capture_queue", None) is None
+    main._capture_queue = asyncio.Queue(maxsize=4)
+    main._capture_queue.put_nowait({"leaked": True})
+    # The autouse fixture drains and unsets this before the next test runs;
+    # test_conftest_isolation_* above asserts the paired path guarantee.
+
