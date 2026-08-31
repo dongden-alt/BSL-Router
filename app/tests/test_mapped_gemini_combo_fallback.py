@@ -102,6 +102,7 @@ def _config():
             "models": [{"id": model, "enabled": True, "thinking": "off"}],
         }
     return {
+        "settings": {"combo_infinite_retry": False},
         "tools": {"output_thinking_squeeze": False},
         "providers": providers,
         "combos": [{
@@ -365,6 +366,7 @@ def _config_three_leaves():
             "models": [{"id": model, "enabled": True, "thinking": "off"}],
         }
     return {
+        "settings": {"combo_infinite_retry": False},
         "tools": {"output_thinking_squeeze": False},
         "providers": providers,
         "combos": [{
