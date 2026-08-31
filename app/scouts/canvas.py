@@ -46,22 +46,3 @@ GENERATE_IMAGE_TOOL_SCHEMA = {
 }
 
 
-def inject_canvas_tool(request: ChatCompletionRequest) -> ChatCompletionRequest:
-    """
-    Inject the generate_image tool into the request's tools array.
-
-    If the request already has tools, append the canvas tool.
-    If it has no tools, create the array with just the canvas tool.
-    If the canvas tool is already present, skip injection (no duplicates).
-
-    Returns the modified ChatCompletionRequest.
-    """
-    existing_tools = request.tools or []
-
-    # Check if generate_image is already in the tools array
-    for tool in existing_tools:
-        if isinstance(tool, dict) and tool.get("function", {}).get("name") == "generate_image":
-            return request
-
-    request.tools = existing_tools + [GENERATE_IMAGE_TOOL_SCHEMA]
-    return request

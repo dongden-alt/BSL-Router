@@ -92,19 +92,6 @@ def is_eventstream(buf: bytes) -> bool:
     return 16 <= frame_len <= 16_000_000 and header_len <= frame_len - 16
 
 
-def frame_to_openai_chunk(event_type: str, payload: bytes) -> dict | None:
-    """Convert one decoded event-stream frame payload to an OpenAI chunk dict."""
-    # Imported lazily to avoid a circular import at module load.
-    from app.kiro_adapter import kiro_event_to_openai_chunk
-    try:
-        data = json.loads(payload.decode("utf-8")) if payload else {}
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    return kiro_event_to_openai_chunk(event_type, data)
-
-
 def eventstream_to_openai_completion(raw: bytes) -> dict | None:
     """Decode a complete binary event-stream response into ONE OpenAI completion."""
     events, _ = parse_eventstream_frames(raw)
@@ -206,6 +193,5 @@ async def eventstream_to_openai_sse_lines_with_fallback(raw_iter):
     else:
         async for out in kiro_adapter.kiro_raw_to_openai_sse(_chain_chunks(head, raw_iter)):
             yield out
-
 
 

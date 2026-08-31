@@ -147,9 +147,6 @@ class ToolLedger:
 
         return issues
 
-    def has_open_tool_uses(self) -> bool:
-        """Check if there are any unresolved tool_use entries."""
-        return any(e.status == "open" for e in self.entries.values())
 
     def summary(self) -> Dict[str, Any]:
         """Return a summary of the ledger state for logging."""

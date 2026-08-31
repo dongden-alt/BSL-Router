@@ -123,22 +123,3 @@ def inject_json_instruction(payload: Dict[str, Any]) -> Dict[str, Any]:
         return payload
 
 
-def validate_json_response(response_text: str, provider: str, model: str) -> bool:
-    """
-    Check if a response that should be JSON (response_format was requested)
-    is actually valid JSON. Returns True if valid, False otherwise.
-
-    Used for diagnostic logging — does not modify the response.
-    """
-    import json
-    text = response_text.strip()
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        lines = text.split("\n")
-        if len(lines) >= 2:
-            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-    try:
-        json.loads(text)
-        return True
-    except (json.JSONDecodeError, ValueError):
-        return False

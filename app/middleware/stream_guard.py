@@ -98,40 +98,6 @@ class StreamEmissionState:
             return ""
         return repr(self.first_emitted)[:limit]
 
-    def mark_emitted_if_content(self, chunk: Optional[bytes]) -> bool:
-        """Mark emission only if `chunk` carries RENDERABLE content.
-
-        BUG M (2026-08-04). Raw SSE passthrough pumps forwarded upstream bytes
-        and called `mark_emitted(chunk)` on EVERY one. But a stream opens with
-        frames that render nothing:
-
-            event: message_start        {"role":"assistant","content":[]}
-            event: ping                 {"type":"ping"}
-            event: content_block_start  {"content_block":{"text":""}}
-
-        Those flipped `emitted=True` before any text existed, so a leaf that
-        then produced ZERO output could not fail over: `may_fallback()` refused,
-        and the user got a dead stream while healthy chain entries went untried.
-        Same defect class as BUG L, different pump.
-
-        DIRECTION OF SAFETY. The dangerous error is a FALSE NEGATIVE: declaring
-        real content non-renderable would permit a second stream to splice into
-        a transcript the user is already reading -- the freeze this whole module
-        exists to prevent. A false positive merely forgoes one fallback. So this
-        marks emission by DEFAULT and withholds it only when the chunk is
-        PROVABLY scaffolding-only. Anything unrecognised counts as content.
-
-        Returns whether emission was marked, for callers tracking their own flag.
-        """
-        if not chunk:
-            return False
-        if _is_scaffolding_only(chunk):
-            # Bytes still went out; count them so `byte_count` stays honest.
-            # Only the fallback veto is withheld.
-            self.byte_count += len(chunk)
-            return False
-        self.mark_emitted(chunk)
-        return True
 
     def may_fallback(self, reason: str = "") -> bool:
         """Return True only if combo fallback is still safe.

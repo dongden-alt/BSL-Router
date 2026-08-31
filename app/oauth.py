@@ -164,7 +164,6 @@ _loopback_timeout_tasks: dict[str, Any] = collections.defaultdict(lambda: None)
 _loopback_app_ports: dict[str, int] = {}
 
 
-
 def generate_pkce(verifier_bytes: int = 32) -> dict[str, str]:
     """Generate the URL-safe S256 PKCE pair used by 9router."""
     verifier = base64.urlsafe_b64encode(os.urandom(verifier_bytes)).rstrip(b"=").decode("ascii")
@@ -386,10 +385,6 @@ def _url_with_params(url: str, params: dict[str, str], quote_spaces: bool = Fals
     return f"{url}?{urlencode(params, quote_via=quote if quote_spaces else quote_plus)}"
 
 
-
-
-
-
 def _build_claude_auth_url(config: dict[str, Any], redirect_uri: str, state: str, code_challenge: str, _: Any = None) -> str:
     return _url_with_params(config["authorizeUrl"], {
         "code": "true",
@@ -430,12 +425,6 @@ def _build_google_auth_url(config: dict[str, Any], redirect_uri: str, state: str
     })
 
 
-
-
-
-
-
-
 async def _exchange_claude(config: dict[str, Any], code: str, redirect_uri: str, code_verifier: str | None, state: str | None = None) -> dict[str, Any]:
     parsed_code, separator, code_state = code.partition("#")
     return await _post_json(config["tokenUrl"], {
@@ -466,12 +455,6 @@ async def _exchange_google(config: dict[str, Any], code: str, redirect_uri: str,
         "code": code,
         "redirect_uri": redirect_uri,
     }, "Google token exchange")
-
-
-
-
-
-
 
 
 def _google_metadata() -> dict[str, int]:
@@ -645,23 +628,6 @@ def _map_github(tokens: dict[str, Any], post: dict[str, Any] | None = None) -> d
     return data
 
 
-def _map_qwen(tokens: dict[str, Any], _: dict[str, Any] | None = None) -> dict[str, Any]:
-    # Qwen's token response includes an id_token (scope: "openid profile email model.completion").
-    # Extract the user's email from it so the connection shows the actual account identity.
-    id_token = tokens.get("id_token")
-    email = None
-    if isinstance(id_token, str):
-        email = extract_email_from_token(id_token)
-    if not email:
-        email = extract_email_from_token(str(tokens.get("access_token") or ""))
-    data = _map_default(tokens)
-    if email:
-        data["email"] = email
-        data["displayName"] = email
-    data["providerSpecificData"] = {"resourceUrl": tokens.get("resource_url")}
-    return data
-
-
 def _map_kiro(tokens: dict[str, Any], _: dict[str, Any] | None = None) -> dict[str, Any]:
     data = _map_default(tokens)
     # Try extracting email from id_token first (AWS SSO id_tokens often contain email),
@@ -736,19 +702,6 @@ async def _request_github_device_code(config: dict[str, Any], _: str | None = No
     return await _post_form(config["deviceCodeUrl"], {"client_id": config["clientId"], "scope": config["scopes"]}, "GitHub device authorization")
 
 
-async def _request_qwen_device_code(config: dict[str, Any], code_challenge: str | None, __: dict[str, Any] | None = None) -> dict[str, Any]:
-    if not code_challenge:
-        raise HTTPException(status_code=400, detail="Qwen device authorization requires a PKCE challenge")
-    # Qwen's device-code endpoint requires form-encoded data, not JSON.
-    raw = await _post_form(config["deviceCodeUrl"], {
-        "client_id": config["clientId"],
-        "scope": config["scope"],
-        "code_challenge": code_challenge,
-        "code_challenge_method": config["codeChallengeMethod"],
-    }, "Qwen device authorization")
-    return raw
-
-
 async def _request_grok_device_code(config: dict[str, Any], _: str | None = None, __: dict[str, Any] | None = None) -> dict[str, Any]:
     data = {"client_id": config["clientId"], "scope": config["scope"]}
     if config.get("referrer"):
@@ -795,20 +748,6 @@ async def _poll_github(config: dict[str, Any], device_code: str, _: str | None, 
         response = await _oauth_client.post(config["tokenUrl"], data={
             "client_id": config["clientId"], "device_code": device_code,
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-        }, headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"})
-        data = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        return False, {"error": "invalid_response", "error_description": str(exc)}
-    return response.is_success, data if isinstance(data, dict) else {"error": "invalid_response"}
-
-
-async def _poll_qwen(config: dict[str, Any], device_code: str, code_verifier: str | None, __: dict[str, Any] | None = None) -> tuple[bool, dict[str, Any]]:
-    if not code_verifier:
-        raise HTTPException(status_code=400, detail="Qwen polling requires codeVerifier")
-    try:
-        response = await _oauth_client.post(config["tokenUrl"], data={
-            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            "client_id": config["clientId"], "device_code": device_code, "code_verifier": code_verifier,
         }, headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"})
         data = response.json()
     except (httpx.HTTPError, ValueError) as exc:

@@ -17,15 +17,11 @@ from typing import Dict, List, Optional
 from app.models import ChatCompletionRequest, Message
 from app.middleware.request_intent import extract_current_intent
 
-
 # ─── Complexity levels ──────────────────────────────────────────────────────
 
 COMPLEXITY_TRIVIAL = "trivial"
 COMPLEXITY_STANDARD = "standard"
 COMPLEXITY_DEEP = "deep"
-
-COMPLEXITY_LEVELS = [COMPLEXITY_TRIVIAL, COMPLEXITY_STANDARD, COMPLEXITY_DEEP]
-
 
 # ─── Signal patterns ────────────────────────────────────────────────────────
 
@@ -161,8 +157,9 @@ _CONTINUATION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# ── D1-D4 helper functions ────────────────────────────────────────────────
 
+
+# ── D1-D4 helper functions ────────────────────────────────────────────────
 def _detect_scope(text: str) -> tuple[bool, bool]:
     """D1. Returns (scope_fired, scope_saturated).
     scope_fired: explicit magnitude requested (>=400 words OR a longform noun
@@ -247,7 +244,6 @@ def _root_turn_text(messages: List[Message], current_text: str) -> Optional[str]
             return prev
     return None
 
-
 _TIER_ORDER = [COMPLEXITY_TRIVIAL, COMPLEXITY_STANDARD, COMPLEXITY_DEEP]
 
 
@@ -307,7 +303,6 @@ _DOMAIN_DENSITY_RE = re.compile(
     re.IGNORECASE,
 )
 
-
 # ─── Token estimation ───────────────────────────────────────────────────────
 
 CHARS_PER_TOKEN = 4
@@ -340,8 +335,8 @@ def _count_input_tokens(messages: List[Message]) -> int:
     return sum(_approx_tokens(_msg_text(m)) for m in messages)
 
 
-# ─── Signal extraction ──────────────────────────────────────────────────────
 
+# ─── Signal extraction ──────────────────────────────────────────────────────
 def _has_tool_context(messages: List[Message]) -> bool:
     """Check if messages contain tool_calls or tool result messages."""
     for msg in messages:
@@ -396,9 +391,11 @@ def _count_distinct_matches(pattern: re.Pattern, text: str) -> int:
     return len(distinct)
 
 
-# ─── Decision dataclass ─────────────────────────────────────────────────────
 
+# ─── Decision dataclass ─────────────────────────────────────────────────────
 @dataclass
+
+
 class ComplexityDecision:
     """Result of complexity estimation for a request.
 
@@ -417,8 +414,8 @@ class ComplexityDecision:
     feature_vector: Dict[str, object] = field(default_factory=dict)
 
 
-# ─── Main API ────────────────────────────────────────────────────────────────
 
+# ─── Main API ────────────────────────────────────────────────────────────────
 def estimate_request_complexity(
     request: ChatCompletionRequest,
     category_scores: Optional[Dict[str, int]] = None,

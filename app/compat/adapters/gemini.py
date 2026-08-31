@@ -179,7 +179,6 @@ def _inject_tool_metadata(args: Any, tool_name: str) -> Dict[str, Any]:
     return args
 
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # SSE wire helpers — spec §5
 # ──────────────────────────────────────────────────────────────────────────────
@@ -884,5 +883,3 @@ def openai_response_to_gemini(openai_resp: Dict[str, Any], model: str) -> Dict[s
     return {"response": obj}
 
 
-def _fresh_response_id() -> str:
-    return f"resp_{_uuid.uuid4().hex[:16]}"

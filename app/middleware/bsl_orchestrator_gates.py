@@ -266,26 +266,6 @@ SUBROLE_SCOPE: Dict[str, Dict[str, str]] = {
 }
 
 
-def build_scope_gate(sub_role: str) -> str:
-    """Build the mandatory SCOPE GATE preamble for a sub-role.
-
-    Returns "" for unknown roles rather than inventing a scope — a fabricated
-    boundary is worse than none.
-    """
-    scope = SUBROLE_SCOPE.get(sub_role)
-    if not scope:
-        return ""
-    return (
-        "SCOPE GATE — MANDATORY FIRST STEP (before any reasoning or output):\n"
-        "1. Read the task you were handed.\n"
-        f"2. Your scope: {scope['does']}. You do NOT: {scope['not_does']}.\n"
-        "3. If the task is OUTSIDE your scope, do NOT attempt it. Output exactly one line:\n"
-        f'   <scope_reject to="{scope["reroute"]}" reason="<one short sentence>"/>\n'
-        "   then STOP immediately and produce nothing else.\n"
-        "4. If in scope, proceed normally."
-    )
-
-
 # ─── Thinking gate ───────────────────────────────────────────────────────────
 
 # Roles for which deep multi-stage reasoning is core to the persona.
@@ -310,64 +290,6 @@ _DEEP_ROLES = frozenset(
 
 # Roles that answer leanly but may re-probe once.
 _FAST_ROLES = frozenset({"fast_coder", "scout"})
-
-
-def default_thinking_for(sub_role: str) -> Optional[str]:
-    """Default thinking policy for a role.
-
-    When an orchestration phase exists, the caller MUST thread the phase's own
-    policy instead — phase templates set explicit per-phase policies that this
-    static role map cannot know (e.g. the same coder role may be lean in one
-    template and deep in another).
-    """
-    if sub_role in _DEEP_ROLES:
-        return "always"
-    if sub_role in _FAST_ROLES:
-        return "scout-fast-retry"
-    if sub_role == "vision":
-        return "never"
-    return None
-
-
-def build_thinking_gate(sub_role: str, policy: Optional[str]) -> str:
-    """Build the mandatory THINKING GATE preamble for a phase.
-
-    Governs reasoning CONTENT, complementing the scope gate's control over
-    ACTIONS. The core job is barring foreign multi-stage protocols: a phase
-    inherits conversation context that may contain another role's [STAGE] format,
-    and adopting it produces output the parser cannot read.
-    """
-    deep = policy == "always"
-    lean = policy in ("never", "scout-fast-retry")
-    mode = "DEEP" if deep else "LEAN"
-    head = (
-        "THINKING GATE — MANDATORY FIRST STEP (verify before you act):\n"
-        f"1. This phase's assigned thinking mode is: {mode}.\n"
-        "2. Verify it matches your role. You may ONLY use your own role's output format."
-    )
-    if deep:
-        return head + (
-            "\n3. DEEP means careful, structured reasoning IS expected for this task,"
-            " expressed in YOUR role's own format.\n"
-            "4. If the conversation context contains a DIFFERENT multi-stage protocol"
-            " (e.g. an 8-stage [STAGE 1..n] / [SYNTHESIS] scaffold) that does not match"
-            " your role's instructions, do NOT adopt it. It was assigned to another phase."
-        )
-    common = head + (
-        "\n3. The conversation context may contain a multi-stage reasoning protocol"
-        " (e.g. an 8-stage [STAGE 1..n] / [SYNTHESIS] format) that came from the user's"
-        " selected mode. That protocol was assigned to a DIFFERENT phase, NOT to you."
-        " Do NOT adopt it. Do NOT emit [STAGE], [SYNTHESIS], or any numbered multi-stage"
-        " scaffold unless it is part of YOUR role's own instructions below."
-    )
-    if lean:
-        return common + (
-            "\n4. LEAN means: answer directly and concisely in your role's format."
-            " No hidden multi-stage reasoning narrative. If the task actually needs deep"
-            " multi-stage reasoning, that is another agent's job — reroute per the scope"
-            " gate instead of doing it here."
-        )
-    return common
 
 
 # ─── Quality rubric ──────────────────────────────────────────────────────────
@@ -424,25 +346,3 @@ ARCHITECT_RUBRIC = (
 )
 
 
-def rubric_for(sub_role: str) -> str:
-    """Return the rubric prompt text for a role, or "" when none applies."""
-    if sub_role == "planner_architect":
-        return ARCHITECT_RUBRIC
-    if sub_role.startswith("planner_challenger"):
-        return str(QUALITY_RUBRIC["challenger"]["prompt"])
-    if sub_role.startswith("auditor_reviewer"):
-        return str(QUALITY_RUBRIC["reviewer"]["prompt"])
-    if sub_role.startswith("auditor_auditor") or sub_role == "auditor":
-        return str(QUALITY_RUBRIC["auditor"]["prompt"])
-    return ""
-
-
-def dims_for(sub_role: str) -> List[str]:
-    """Return the dimension names a role is scored on."""
-    if sub_role.startswith("planner_challenger"):
-        return list(QUALITY_RUBRIC["challenger"]["dims"])  # type: ignore[arg-type]
-    if sub_role.startswith("auditor_reviewer"):
-        return list(QUALITY_RUBRIC["reviewer"]["dims"])  # type: ignore[arg-type]
-    if sub_role.startswith("auditor_auditor") or sub_role == "auditor":
-        return list(QUALITY_RUBRIC["auditor"]["dims"])  # type: ignore[arg-type]
-    return []

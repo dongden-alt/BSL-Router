@@ -125,12 +125,6 @@ def _get_fernet() -> Fernet:
     return _fernet
 
 
-def _reset_fernet_cache() -> None:
-    """Reset the cached Fernet instance (for testing)."""
-    global _fernet
-    _fernet = None
-
-
 def encrypt_value(plaintext: str) -> str:
     """Encrypt a string. Returns 'enc:gAAAAA...'.
 

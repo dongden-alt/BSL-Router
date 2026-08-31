@@ -261,36 +261,6 @@ def kiro_event_to_openai_chunk(event_name: str, data: dict) -> dict | None:
     return None
 
 
-def kiro_stream_to_openai_events(kiro_chunk: str) -> list[str]:
-    """Convert a raw Kiro SSE chunk to OpenAI SSE lines."""
-    events = []
-    current_event = None
-    current_data_lines = []
-
-    for line in kiro_chunk.split("\n"):
-        event_m = _SSE_EVENT_RE.match(line)
-        data_m = _SSE_DATA_RE.match(line)
-
-        if event_m:
-            # flush previous
-            if current_event and current_data_lines:
-                oai = _emit_openai_event(current_event, current_data_lines)
-                if oai:
-                    events.append(oai)
-            current_event = event_m.group(1)
-            current_data_lines = []
-        elif data_m:
-            current_data_lines.append(data_m.group(1))
-
-    # flush last
-    if current_event and current_data_lines:
-        oai = _emit_openai_event(current_event, current_data_lines)
-        if oai:
-            events.append(oai)
-
-    return events
-
-
 def _emit_openai_event(event_name: str, data_lines: list[str]) -> str | None:
     """Convert Kiro SSE event to OpenAI SSE, return SSE text or None."""
     try:

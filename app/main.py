@@ -123,7 +123,7 @@ from app.utils.url_normalization import (
 from app.compat.adapters import (
     unwrap_request as gemini_unwrap_request,
     is_antigravity as is_antigravity_request,
-    normalize_model as normalize_gemini_model,
+
     gemini_request_to_openai,
     openai_chunk_to_gemini,
     openai_response_to_gemini,

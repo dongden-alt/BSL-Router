@@ -46,11 +46,6 @@ from app.middleware.bsl_router_utils import resolve_agent_route, _extract_route
 
 SESSION_PHASE_CAP_FAST = 18
 SESSION_PHASE_CAP_BALANCED = 22
-SESSION_PHASE_CAP_DEEP = 30
-
-# Balanced tier members/rounds (member-config.ts): 1 member, 1 round.
-BALANCED_MEMBER_COUNT = 1
-BALANCED_ROUNDS = 1
 
 # A phase output shorter than this fails the substance gate (one retry, then
 # continue). Balanced mode must not fan out N calls for empty answers.
@@ -58,6 +53,8 @@ SUBSTANCE_GATE_MIN_CHARS = 200
 
 
 @dataclass
+
+
 class PhaseGroup:
     """Metadata for one independently executed reasoning behavior boundary."""
 
@@ -71,6 +68,8 @@ class PhaseGroup:
 
 
 @dataclass
+
+
 class BSPhase:
     """Port of the reference PhaseConfig: one internal upstream call."""
 
@@ -83,7 +82,6 @@ class BSPhase:
     timeout: float = 60.0  # seconds
     reassess_after: bool = False
     phase_group: Optional[PhaseGroup] = None
-
 
 # ─── Thinking-mode behavior groups (thinking-modes.ts PHASE_GROUPS) ──────────
 # Briefs and boundaries are copied verbatim from the TS source. Each group is
@@ -202,7 +200,6 @@ _SUB_ROLE_MODES: Dict[str, str] = {
 def mode_for_sub_role(sub_role: str) -> Optional[str]:
     return _SUB_ROLE_MODES.get(sub_role)
 
-
 # K2 fast-tier per-role briefs (phase-expansion.ts FAST_BRIEF).
 FAST_BRIEF: Dict[str, str] = {
     "planner_architect": "Assess scope, key constraints, and propose a high-level approach. Be concise.",
@@ -212,7 +209,6 @@ FAST_BRIEF: Dict[str, str] = {
     "auditor_reviewer": "Review for actionability and testability. Flag blocking issues only.",
     "auditor_auditor": "Audit code quality, security, and edge cases. Report critical issues only.",
 }
-
 
 # ─── Sub-role system directives (condensed from sub-role-prompts.ts) ─────────
 # Each phase's system message = role boundary directive + template description
@@ -305,7 +301,6 @@ def _scout_phase(description: str, timeout: float = 15.0) -> BSPhase:
         sub_role="scout_internal", description=description, model="fast",
         thinking="scout-fast-retry", tools="search", max_tokens=2000, timeout=timeout,
     )
-
 
 # ─── Phase templates (phase-templates.ts, ordered by specificity) ────────────
 # arch-plan carries the full 7-phase pipeline; the rest are 2-phase seeds.
@@ -401,7 +396,6 @@ _FEATURE_BUILD_INTENT = re.compile(
     re.IGNORECASE)
 _BUG_FIX_INTENT = re.compile(r"\b(fix|bug|broken|error|crash|debug)\b", re.IGNORECASE)
 
-
 # ─── Template matching (deterministic, zero-LLM) ─────────────────────────────
 
 _CODER_LANES = (CATEGORY_FAST_CODER, CATEGORY_POWER_CODER, CATEGORY_ULTRA_CODER)
@@ -459,7 +453,6 @@ def _copy_phases(template_id: str) -> List[BSPhase]:
         kwargs["phase_group"] = group
         copies.append(BSPhase(**kwargs))
     return copies
-
 
 # ─── Expansion (phase-expansion.ts) ──────────────────────────────────────────
 
@@ -526,21 +519,27 @@ def expand_reasoning_phases(
     return expanded
 
 
-# ─── Preflight (preflight.ts) ────────────────────────────────────────────────
 
+# ─── Preflight (preflight.ts) ────────────────────────────────────────────────
 @dataclass
+
+
 class MissingSlot:
     role: str  # sub_role or member slot key, e.g. "planner_challenger:1"
     slot: str = "primary"
 
 
 @dataclass
+
+
 class DegradedSlot:
     role: str
     slot: str  # "fallback_1" | "fallback_2"
 
 
 @dataclass
+
+
 class PreflightResult:
     status: str = "ready"  # "ready" | "degraded" | "blocked"
     missing: List[MissingSlot] = field(default_factory=list)
@@ -611,9 +610,11 @@ def _role_route_key(sub_role: str) -> str:
     return sub_role
 
 
-# ─── Orchestration result ────────────────────────────────────────────────────
 
+# ─── Orchestration result ────────────────────────────────────────────────────
 @dataclass
+
+
 class PhaseTraceEntry:
     phase_idx: int
     sub_role: str
@@ -626,6 +627,8 @@ class PhaseTraceEntry:
 
 
 @dataclass
+
+
 class OrchestratorResult:
     final_text: str = ""
     trace: List[PhaseTraceEntry] = field(default_factory=list)
@@ -636,7 +639,6 @@ class OrchestratorResult:
     category: str = ""
     tokens_in: int = 0
     tokens_out: int = 0
-
 
 # execute(role_model, messages, max_tokens, timeout) -> {text, tokens_in, tokens_out}
 ExecuteFn = Callable[..., Awaitable[Dict]]

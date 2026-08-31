@@ -70,12 +70,6 @@ def _apply_gpt5(
     return payload
 
 
-def _gpt5_applies(ctx: ThinkingContext) -> bool:
-    return ctx.effort_is_explicit or ctx.reasoning_mode in ("standard", "pro") or (
-        ctx.reasoning_context in ("auto", "current_turn", "all_turns")
-    )
-
-
 CONTRACTS = [
     Contract(
         id="gpt-5",
