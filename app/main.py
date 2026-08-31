@@ -5793,10 +5793,13 @@ class _ComboFallbackNeeded(Exception):
     re-invokes _process_chat_completion with the preserved retry state, and
     yields the replacement stream without falling through to native Google.
     """
-    def __init__(self, status_code: int, err_text: str, retry_state: dict):
+    def __init__(self, status_code: int, err_text: str, retry_state: dict, backoff: float = 0.0):
         self.status_code = status_code
         self.err_text = err_text
         self.retry_state = retry_state
+        # NEVER-STOP RETRY (2026-08-31): seconds the guarded catch handler
+        # sleeps before recursing into the wrapped pass. 0 = plain advance.
+        self.backoff = backoff
         super().__init__(err_text)
 
 
@@ -5845,6 +5848,26 @@ def _combo_restart_or_give_up(model, retry_state, active_chain, original_model,
         'pass_no': pass_no + 1,
     }
     return backoff, wrapped
+
+
+def _raise_combo_wrap(model, config, request, retry_state, active_chain,
+                      original_model, cache_bp, status_code, err_text, reason):
+    """NEVER-STOP streaming wrap: exhaustion reached inside an SSE generator.
+
+    Raises _ComboFallbackNeeded carrying a WRAPPED retry state (idx 0,
+    pass_no+1, fresh deadline) plus the pass backoff, which the guarded
+    catch handlers sleep before recursing (client disconnect during the
+    sleep cancels it — the only permitted terminator). Returns without
+    raising when settings.combo_infinite_retry is false so the caller
+    falls through to its terminal frames exactly as before.
+    """
+    if not _combo_infinite_retry_enabled(config):
+        return
+    _backoff, _wrap = _combo_restart_or_give_up(
+        model, retry_state, active_chain, original_model, cache_bp, request,
+        reason=reason,
+    )
+    raise _ComboFallbackNeeded(status_code, err_text, _wrap, backoff=_backoff)
 
 
 class _DeadlineRetryNeeded(Exception):
@@ -7466,6 +7489,25 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     f"client={client_label} stream={is_stream} status={_probe_resp.status_code} rid={request_id}",
                     flush=True,
                 )
+                # NEVER-STOP RETRY (2026-08-31): probe-stage exhaustion (the
+                # user-visible "[BSL Router] upstream error 429" force-stop)
+                # wraps to pass 2+ instead of emitting terminal frames.
+                if _combo_infinite_retry_enabled(config):
+                    if _probe_resp is not None:
+                        try:
+                            await _probe_resp.aclose()
+                        except Exception:
+                            pass
+                        _probe_resp = None
+                    _backoff, _wrap = _combo_restart_or_give_up(
+                        model, _retry_state, active_chain, original_model,
+                        _cache_breakpoints, request, reason="probe_exhausted",
+                    )
+                    await asyncio.sleep(_backoff)
+                    return await _process_chat_completion(
+                        body, client_wants_anthropic, client_wants_gemini,
+                        _retry_state=_wrap, request=request,
+                    )
                 if client_wants_gemini:
                     async def _gemini_probe_error():
                         # FORENSIC: proves whether this generator is actually
@@ -7940,6 +7982,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
                     elif _emit.may_fallback(f"transport_{stats['status']}"):
                         raise _ComboFallbackNeeded(stats["status"], stats["error"], _fb_retry_state)
+                if not _emit.emitted:
+                    # NEVER-STOP RETRY (2026-08-31): pre-emission exhaustion
+                    # wraps to pass 2+ instead of a terminal error+DONE frame.
+                    _raise_combo_wrap(
+                        model, config, request, _retry_state, active_chain,
+                        original_model, _cache_breakpoints, stats["status"],
+                        stats["error"], reason="openai_transport_exhausted",
+                    )
                 # Fallback refused / exhausted: fall through to terminal error+DONE.
                 err_payload = f"data: {json.dumps({'error': stats['error']})}\n\n"
                 yield err_payload.encode('utf-8')
@@ -8018,6 +8068,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     stats["error"] = None
                     _retry_again = True
                 except _ComboFallbackNeeded as _cf_raw:
+                    if getattr(_cf_raw, "backoff", 0):
+                        # NEVER-STOP wrap: sleep the pass backoff (client
+                        # disconnect cancels — the only permitted terminator).
+                        await asyncio.sleep(_cf_raw.backoff)
                     _raw_fallback = await _process_chat_completion(
                         body, client_wants_anthropic, client_wants_gemini,
                         _retry_state=_cf_raw.retry_state,
@@ -8139,6 +8193,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                 # the invariant holds uniformly if the ordering
                                 # ever changes.
                                 raise _ComboFallbackNeeded(resp.status_code, err_text[:500], _fb_retry_state)
+                        # NEVER-STOP RETRY (2026-08-31): chain exhausted at the
+                        # Anthropic non-200 gate (pre-emission by construction)
+                        # — wrap to pass 2+ instead of a terminal error frame.
+                        _raise_combo_wrap(
+                            model, config, request, _retry_state, active_chain,
+                            original_model, _cache_breakpoints, resp.status_code,
+                            err_text[:500], reason="anthropic_egress_exhausted",
+                        )
                         err_event = {
                             "type": "error",
                             "error": {"type": "upstream_error", "message": err_text[:1000]},
@@ -8319,6 +8381,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
                         elif _emit.may_fallback(f"transport_{stats['status']}"):
                             raise _ComboFallbackNeeded(stats["status"], stats["error"], _fb_retry_state)
+                    if not _emit.emitted:
+                        # NEVER-STOP RETRY (2026-08-31): pre-emission exhaustion
+                        # wraps to pass 2+ instead of terminal error frames.
+                        _raise_combo_wrap(
+                            model, config, request, _retry_state, active_chain,
+                            original_model, _cache_breakpoints, stats["status"],
+                            stats["error"], reason="anthropic_transport_exhausted",
+                        )
                     # Fallback refused / exhausted: fall through to terminal frames.
                     err_event = {
                         "type": "error",
@@ -8395,6 +8465,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         stats["error"] = None
                         _retry_again = True
                     except _ComboFallbackNeeded as _cf_egr:
+                        if getattr(_cf_egr, "backoff", 0):
+                            # NEVER-STOP wrap: sleep the pass backoff (client
+                            # disconnect cancels — the only permitted terminator).
+                            await asyncio.sleep(_cf_egr.backoff)
                         _egr_fallback = await _process_chat_completion(
                             body, client_wants_anthropic, client_wants_gemini,
                             _retry_state=_cf_egr.retry_state,
@@ -8491,11 +8565,19 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 have emitted yet may omit it.
                 """
                 _next_state = _next_gemini_combo_retry_state()
-                if _next_state is None:
-                    return
                 if emit is not None and not emit.may_fallback(err_text or f"gemini_{status_code}"):
                     # Post-emission: the client is mid-parse. Return so the caller
                     # falls through to its terminal error+DONE frame instead.
+                    return
+                if _next_state is None:
+                    # NEVER-STOP RETRY (2026-08-31): chain exhausted pre-emission
+                    # — wrap to pass 2+ instead of returning into the caller's
+                    # terminal frame (the 429 force-stop path).
+                    _raise_combo_wrap(
+                        model, config, request, _retry_state, active_chain,
+                        original_model, _cache_breakpoints, status_code,
+                        err_text, reason="gemini_chain_exhausted",
+                    )
                     return
                 print(
                     f"[Combo Fallback] '{model}' {err_text} for "
@@ -8505,6 +8587,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 )
                 if _chain_budget_remaining() <= 0:
                     print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_state['idx']}, refusing further fallback", flush=True)
+                    # NEVER-STOP RETRY (2026-08-31): budget dead — wrap with a
+                    # fresh deadline instead of silently refusing to advance.
+                    _raise_combo_wrap(
+                        model, config, request, _retry_state, active_chain,
+                        original_model, _cache_breakpoints, status_code,
+                        err_text, reason="gemini_budget_exhausted",
+                    )
                 else:
                     raise _ComboFallbackNeeded(status_code, err_text, _next_state)
 
@@ -9001,8 +9090,26 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                 )
                                 if _chain_budget_remaining() <= 0:
                                     print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_pre_next_idx}, refusing further fallback", flush=True)
+                                    # NEVER-STOP RETRY (2026-08-31): budget dead —
+                                    # wrap to a fresh pass instead of terminal frame.
+                                    _raise_combo_wrap(
+                                        model, config, request, _retry_state, active_chain,
+                                        original_model, _cache_breakpoints, 504,
+                                        stats.get("error") or "stream_stall",
+                                        reason="gemini_stall_budget_exhausted",
+                                    )
                                 else:
                                     raise _ComboFallbackNeeded(504, stats.get("error") or "stream_stall", _pre_retry_state)
+                            else:
+                                # NEVER-STOP RETRY (2026-08-31): chain exhausted
+                                # pre-content — wrap to pass 2+ instead of the
+                                # terminal stall frame below.
+                                _raise_combo_wrap(
+                                    model, config, request, _retry_state, active_chain,
+                                    original_model, _cache_breakpoints, 504,
+                                    stats.get("error") or "stream_stall",
+                                    reason="gemini_stall_chain_exhausted",
+                                )
                         # POST-CONTENT or no fallback available: bench the dead leaf
                         # so the combo's next request skips it.
                         try:
@@ -9200,6 +9307,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         pass
                     return
                 except _ComboFallbackNeeded as _cf:
+                    if getattr(_cf, "backoff", 0):
+                        # NEVER-STOP wrap: sleep the pass backoff (client
+                        # disconnect cancels — the only permitted terminator).
+                        await asyncio.sleep(_cf.backoff)
                     _fallback = await _process_chat_completion(
                         body, client_wants_anthropic, client_wants_gemini,
                         _retry_state=_cf.retry_state,
@@ -9613,6 +9724,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     except _ComboFallbackNeeded as _cf_anthr:
                         # Body-level upstream failure (e.g. 524 stall after headers) —
                         # advance the combo chain instead of returning an error to the client.
+                        if getattr(_cf_anthr, "backoff", 0):
+                            # NEVER-STOP wrap: sleep the pass backoff (client
+                            # disconnect cancels — the only permitted terminator).
+                            await asyncio.sleep(_cf_anthr.backoff)
                         _anthr_fallback = await _process_chat_completion(
                             body, client_wants_anthropic, client_wants_gemini,
                             _retry_state=_cf_anthr.retry_state,
