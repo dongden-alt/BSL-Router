@@ -89,6 +89,11 @@ from app.antifreeze import (
 from app.compat import get_profile, is_anthropic_compatible, ToolLedger
 from app.middleware.response_format_guard import inject_json_instruction, has_response_format
 from app.middleware.glm_tools import normalize_glm_tool_calls, inject_glm_language_forcing
+from app.middleware.anthropic_tools import (
+    AnthropicStreamToolGuard,
+    anthropic_tool_repair_enabled,
+    repair_anthropic_response_tool_uses,
+)
 from app.middleware.agentrouter_policy import (
     _is_agentrouter_family,
     agentrouter_nfkd_transcode,
@@ -7844,6 +7849,23 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         pass
                     return
 
+                # ANTHROPIC TOOL REPAIR (2026-09-03): the Anthropic→Anthropic
+                # passthrough previously forwarded GLM's malformed tool-arg JSON
+                # fragments verbatim; Claude Code then rejected the tool call
+                # ("invalid tool call error / invalid_args") and burned retries.
+                # The guard holds tool_use input_json_delta bytes until the
+                # block's content_block_stop, then repairs the accumulated JSON
+                # only when it fails to parse. Fail-open by construction: on any
+                # error it degrades to byte-exact passthrough. OpenAI/Gemini
+                # clients never enter this branch (gate below).
+                _tool_guard = None
+                if (client_wants_anthropic and _is_anthropic_fmt
+                        and upstream_payload.get("tools")
+                        and anthropic_tool_repair_enabled(config)):
+                    try:
+                        _tool_guard = AnthropicStreamToolGuard(tools_in_request=True)
+                    except Exception:
+                        _tool_guard = None
                 try:
                     async for chunk in _pump(resp.aiter_raw(), _emit, _attempt, "openai"):
                         _detector.feed(chunk)
@@ -7903,8 +7925,16 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         except Exception:
                             pass
 
-                        _emit.mark_emitted(chunk)
-                        yield chunk
+                        if _tool_guard is not None:
+                            # Guard may hold tool_use fragments; only mark what
+                            # actually reaches the client (emission-state must
+                            # reflect delivered bytes, not inspected bytes).
+                            for _tg_out in _tool_guard.feed(chunk):
+                                _emit.mark_emitted(_tg_out)
+                                yield _tg_out
+                        else:
+                            _emit.mark_emitted(chunk)
+                            yield chunk
                 except (httpx.RemoteProtocolError, httpx.TransportError) as _mid_err:
                     # BUG J: transport death mid-body. Route into the combo chain
                     # instead of falling through to `except Exception` (which
@@ -7914,6 +7944,16 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     )
                     # Not re-raised: fallback declined (content already sent, or
                     # chain exhausted). Fall through to the terminal frame below.
+                if _tool_guard is not None:
+                    # ANTHROPIC TOOL REPAIR: release any block still held at
+                    # stream end (missing content_block_stop) — verbatim,
+                    # fail-open. A held block can never be silently dropped.
+                    try:
+                        for _tg_out in _tool_guard.flush():
+                            _emit.mark_emitted(_tg_out)
+                            yield _tg_out
+                    except Exception:
+                        pass
                 if _detector.truncated and not _cont_state["used"]:
                     _cont_state["used"] = True
                     try:
@@ -10745,6 +10785,24 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 except Exception as e:
                     print(f"[Egress] OpenAI->Anthropic response conversion failed (passthrough): {e}")
 
+            # STREAM-BUFFER SHAPE FIX (2026-09-03): _accumulate_sse_stream ALWAYS
+            # assembles an OpenAI-shaped dict. When the stream buffer fired for
+            # an Anthropic-format upstream AND the client wants Anthropic, the
+            # OpenAI→Anthropic conversion above is skipped (its `not
+            # _is_anthropic_fmt` guard fails) and the OpenAI shape reached
+            # Claude Code raw — which cannot parse it. Convert the synthetic
+            # OpenAI shape here instead. _SyntheticResponse 200 + anthropic-fmt
+            # only arises from the stream-buffer products (codex/kiro synthetics
+            # are OpenAI-fmt upstreams and fail the _is_anthropic_fmt gate).
+            if (client_wants_anthropic and _is_anthropic_fmt and resp.status_code == 200
+                    and isinstance(resp, _SyntheticResponse)):
+                try:
+                    _sbx_openai = _normalized_json if _normalized_json is not None else resp.json()
+                    _sbx_anthropic = UniversalNormalizer.openai_response_to_anthropic(_sbx_openai, model=target_model)
+                    return JSONResponse(_sbx_anthropic, status_code=200)
+                except Exception as e:
+                    print(f"[Egress] StreamBuffer OpenAI->Anthropic shape conversion failed (passthrough): {e}")
+
             # Gemini non-stream egress (Phase 5B-1 / Antigravity): render the OpenAI
             # completion as a wrapped {"response": {candidates, usageMetadata, ...}}
             # object (spec §4b). Errors pass through as a Gemini-shaped error object.
@@ -10801,6 +10859,18 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             if resp.status_code == 200:
                 try:
                     _passthrough_json = _normalized_json if _normalized_json is not None else resp.json()
+                    # ANTHROPIC TOOL REPAIR (2026-09-03, non-stream): repair
+                    # malformed GLM tool_use.input before an Anthropic client
+                    # (Claude Code) sees it. Same gate as the streaming site.
+                    if (client_wants_anthropic and _is_anthropic_fmt
+                            and upstream_payload.get("tools")
+                            and anthropic_tool_repair_enabled(config)):
+                        try:
+                            _passthrough_json, _atr_mut = repair_anthropic_response_tool_uses(_passthrough_json)
+                            if _atr_mut:
+                                print("[AnthropicToolRepair] non-stream repaired tool_use input", flush=True)
+                        except Exception:
+                            pass
                     if _passthrough_json.get("model") != target_model:
                         _passthrough_json["model"] = target_model
                     _log_nonstream_success(_passthrough_json)

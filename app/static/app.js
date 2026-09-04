@@ -2141,7 +2141,19 @@ window.deleteConnection = async (idx) => {
 };
 
 window.toggleConnection = async (idx, enabled) => {
-    globalConfig.providers[activeProviderId].connections[idx].enabled = enabled;
+    // Guard (2026-09-04): idx is baked into the rendered template; if the
+    // connections array changed since render (auto-refresh, backend
+    // reconciliation, stale tab), the slot may no longer exist. Mirror
+    // toggleProviderRoundRobin's guard instead of throwing
+    // "Cannot set properties of undefined (setting 'enabled')".
+    const prov = globalConfig.providers?.[activeProviderId];
+    const conn = prov?.connections?.[idx];
+    if (!conn) {
+        console.warn('[toggleConnection] stale connection slot — re-rendering', { provider: activeProviderId, idx });
+        renderActiveTab();
+        return;
+    }
+    conn.enabled = enabled;
     // Re-arming a key clears its breaker failures + UI dim (2026-08-28):
     // the user explicitly wants this key back in rotation, so a leftover
     // rate-limit OPEN or dim must not shadow the very next request.

@@ -6,7 +6,9 @@
     <title>BSL Router Admin</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="/admin/style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- 2026-09-04: Google Fonts link removed — offline/proxied envs got ERR_CONNECTION_CLOSED.
+         Inter is now the first entry of the system font stack in style.css (line 15); when
+         the font is absent the UI falls back to system fonts with zero console errors. -->
 </head>
 <body>
     <div class="app-container">
@@ -282,6 +284,6 @@
         </div>
     </div>
 
-    <script src="/admin/app.js?v=20260827-provider-guard-1"></script>
+    <script src="/admin/app.js?v=20260904-toggle-guard-1"></script>
 </body>
 </html>
