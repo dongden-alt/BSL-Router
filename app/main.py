@@ -8854,8 +8854,16 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             err_text = str(raw_err)
                         stats["error"] = err_text[:500]
                         bench_leaf(config, provider_name, target_model, resp.status_code, err_text[:500], stats.get("out", 0))
-                        if _next_gemini_combo_retry_state() is not None:
-                            _raise_gemini_combo_fallback(resp.status_code, err_text, _emit)
+                        # NEVER-STOP FIX (2026-09-04): call unconditionally — the
+                        # helper advances to the next entry when one exists and
+                        # WRAPS to the next pass when the chain/budget is exhausted.
+                        # The old `is not None` gate made the wrap branch unreachable
+                        # from this site, so a final-entry non-200 stream start fell
+                        # through to the terminal 429 frame (force stop). The helper
+                        # still returns without raising when bytes already reached
+                        # the client (mid-parse splice is forbidden) — the terminal
+                        # frames below remain that path's correct ending.
+                        _raise_gemini_combo_fallback(resp.status_code, err_text, _emit)
                         # FREEZE FIX (2026-08-07): no eligible leaf remains (or
                         # budget exhausted -> _raise_gemini_combo_fallback
                         # returned without raising). Emit the SOLE terminal

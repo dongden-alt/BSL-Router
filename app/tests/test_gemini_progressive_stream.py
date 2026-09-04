@@ -169,7 +169,17 @@ def test_antigravity_stream_returns_headers_and_heartbeat_before_upstream_comple
 
 def test_antigravity_stream_upstream_error_is_valid_gemini_sse_then_done(monkeypatch):
     _block_forensics(monkeypatch)
-    cs.replace_config(_config())
+    # NEVER-STOP FIX (2026-09-04): with combo_infinite_retry at its default
+    # (ON), a stream-start 503 on the final chain entry now WRAPS to the next
+    # pass (client disconnect is the only terminator) — the old terminal-only
+    # behavior was the 429 force-stop this repo bans. The terminal-frame SHAPE
+    # contract below remains binding for every path that legitimately stops:
+    # knob OFF (pinned here) or bytes already emitted (mid-parse splice is
+    # forbidden). Wrap behavior under knob ON is pinned in
+    # test_gemini_429_neverstop.py.
+    cfg = _config()
+    cfg["settings"] = {"combo_infinite_retry": False}
+    cs.replace_config(cfg)
     monkeypatch.setattr(main, "_get_client_for_proxy", lambda _proxy: _FakeErrorClient())
 
     async def scenario():

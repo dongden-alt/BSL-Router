@@ -138,7 +138,14 @@ def _config_two_leaf():
 
 
 def _config_single_leaf():
+    # NEVER-STOP FIX (2026-09-04): pin the knob OFF. The bounded second pass
+    # (2026-08-22 continuous-fallback: exactly two dials) is knob-independent,
+    # but the INFINITE wrap after pass-2 exhaustion is knob-gated and now ON
+    # by default. Under ON, this scenario wraps forever (client disconnect is
+    # the only terminator — see test_gemini_429_neverstop.py); the terminal-
+    # surfacing contract below is the knob-OFF behavior.
     return {
+        "settings": {"combo_infinite_retry": False},
         "tools": {"output_thinking_squeeze": False},
         "providers": {
             "dead": {
