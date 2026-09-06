@@ -1511,6 +1511,10 @@ function getThinkingSpec(modelId) {
     if (/gemini/.test(id)) return { effort: ['off','16k','32k'] };
     // GPT-5.4 / 5.5
     if (/gpt-?5\.[45]/.test(id)) return { effort: ['off','low','medium','high','xhigh'] };
+    // GPT-6 Astra: effort-only, always-on (no off - upstream 400s on none).
+    // No mode/context axes (those are gpt-5.6 Sol/Terra features).
+    // Backend contract: app/compat/families/openai.py (pattern gpt-?[56]).
+    if (/gpt-?6/.test(id)) return { effort: ['low','medium','high','xhigh','max'], mandatory: true };
     // Generic reasoning-capable fallback.
     if (/gpt-5|o1|o3|o4|openrouter/.test(id)) return { effort: ['off','low','medium','high','max'] };
     // Meta Muse Spark — versioned wire (families/muse.py). 1.1 uses

@@ -196,6 +196,20 @@ def test_registry_matches_legacy_for_all_config_models(effort):
         if re.search(r"deepseek-v4", f_val, re.IGNORECASE):
             continue
 
+        # GPT-6 (Astra) is a DELIBERATE divergence: the legacy `gpt-?5`
+        # detector matched NOTHING for gpt-6 ids, so every configured effort
+        # was silently dropped. The widened gpt-?[56] contract now emits the
+        # effort. See test_family_divergences.py (Divergence 10) and
+        # test_gpt6_astra.py.
+        if re.search(r"gpt-?6", f_val):
+            continue
+
+        # GPT-5.x budget efforts are a DELIBERATE divergence: legacy emitted
+        # budget words RAW (reasoning_effort="32k" — invalid upstream). The
+        # contract now coerces budgets to levels. See Divergence 10.
+        if re.search(r"gpt-?[56]", f_val) and effort in ("16k", "32k", "64k", "128k"):
+            continue
+
         # Ox Alpha is a DELIBERATE divergence at every graded effort: the
         # legacy cascade had ZERO branches for stealth/ox-alpha or
         # x-preview-f-free ids, so any operator effort was silently dropped
@@ -270,6 +284,11 @@ def test_registry_matches_legacy_spot_checks(f_val, effort):
 
     # DeepSeek-v4 dual_shape divergence (no output_config).
     if re.search(r"deepseek-v4", f_val, re.IGNORECASE):
+        return
+
+    # GPT budget-coercion divergence (Divergence 10): legacy emitted "32k"
+    # raw for gpt-5.x; the contract now coerces to a level.
+    if re.search(r"gpt-?[56]", f_val) and effort in ("16k", "32k", "64k", "128k"):
         return
 
     legacy_payload = legacy_apply_thinking(_base_payload(), f_val, effort)

@@ -674,3 +674,75 @@ def test_gpt5_openai_wire_still_emits_reasoning_controls():
     )
     assert out.get("reasoning_effort") == "max"
     assert out.get("reasoning") == {"effort": "max", "mode": "pro"}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# DIVERGENCE 10 — GPT-6 (Astra) joins the GPT-5 effort contract, and
+#                 budget-style thinking values coerce to a level
+#                 (2026-09-06, gpt-6-astra first-class enablement).
+#
+# WHY LEGACY WAS WRONG (two bugs):
+#
+#   (a) INVISIBLE MODEL. The legacy `gpt-?5` detector matched NOTHING for
+#       gpt-6 ids, so vsllm-r/gpt-6-astra ran with its configured effort
+#       silently dropped — no reasoning control ever reached upstream.
+#       The contract pattern widened to gpt-?[56]. Astra is EFFORT-ONLY:
+#       low|medium|high|xhigh|max (upstream 400s on 'none'), and it has no
+#       reasoning_mode/reasoning_context config keys, so the gpt-5.6
+#       mode/context extras stay unset naturally.
+#
+#   (b) RAW BUDGET LEAK. For gpt-5.x, legacy passed budget-style thinking
+#       values straight through: thinking: 32k -> reasoning_effort="32k",
+#       an invalid effort value upstream rejects. coerce_effort now maps
+#       budgets to levels inside the contract (<=16k -> medium, else max).
+# ─────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("f_val", [
+    "vsllm-r/gpt-6-astra",
+    "openai/gpt-6-astra",
+    "arena-web/gpt-6-astra-max",
+    "gpt-6",        # bare id
+    "gpt6-mini",    # hyphen-less id
+])
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+def test_gpt6_astra_emits_effort(f_val, effort):
+    """Legacy silently dropped every effort for gpt-6 ids; now they emit."""
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    assert out.get("reasoning_effort") == effort, (
+        f"{f_val} effort={effort!r}: got {out.get('reasoning_effort')!r} — "
+        "gpt-6 must engage the gpt-5 effort contract"
+    )
+    reasoning = out.get("reasoning", {})
+    assert reasoning.get("effort") == effort
+    # Effort-only family: no mode/context axes (gpt-5.6 Sol/Terra features).
+    assert "mode" not in reasoning
+    assert "context" not in reasoning
+    assert prov.records, f"{f_val}: no provenance"
+
+
+@pytest.mark.parametrize("f_val", [
+    "vsllm-r/gpt-6-astra",
+    "vsllm-gpt/gpt-5.5",
+])
+def test_gpt_auto_emits_nothing(f_val):
+    """auto stays emit-nothing for both generations (legacy parity)."""
+    out, _ = resolve_thinking(_payload(), f_val, "auto")
+    assert "reasoning_effort" not in out
+    assert "reasoning" not in out
+
+
+@pytest.mark.parametrize("f_val,effort,expected", [
+    ("vsllm-gpt/gpt-5.5", "32k", "max"),
+    ("vsllm-gpt/gpt-5.5", "16k", "medium"),
+    ("vsllm-gpt/gpt-5.6-terra", "32k", "max"),
+    ("vsllm-r/gpt-6-astra", "32k", "max"),
+    ("vsllm-gpt/gpt-5.5", "32768", "max"),  # raw token count, no 'k'
+])
+def test_gpt_budget_thinking_coerces_to_valid_level(f_val, effort, expected):
+    """Legacy emitted budget words RAW (reasoning_effort="32k" — invalid);
+    the contract coerces them to a real level before emission."""
+    out, _ = resolve_thinking(_payload(), f_val, effort)
+    got = out.get("reasoning_effort")
+    assert got == expected, (
+        f"{f_val} effort={effort!r}: expected coerced {expected!r}, got {got!r}"
+    )

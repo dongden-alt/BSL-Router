@@ -1,9 +1,11 @@
 """
 OpenAI family contracts.
 
-GPT-5.x uses a top-level `reasoning_effort` for /chat/completions, with
-nested reasoning.mode / reasoning.context as best-effort extras for
-reseller channels. effort="auto" is never emitted at either level.
+GPT-5.x / GPT-6 (Astra) use a top-level `reasoning_effort` for /chat/completions,
+with nested reasoning.mode / reasoning.context as best-effort extras for
+reseller channels. effort="auto" is never emitted at either level. gpt-6-astra
+carries no mode/context config keys, so those extras never fire for it, and
+budget-style thinking values (e.g. "32k") coerce to a level before emission.
 
 `always_applies=True` because explicit reasoning_mode/reasoning_context
 metadata must still be sent when no effort level is selected.
@@ -21,7 +23,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from app.compat.families._base import Contract, Provenance, ThinkingContext
-from app.compat.families._effort import apply_gpt5_reasoning_controls
+from app.compat.families._effort import apply_gpt5_reasoning_controls, coerce_effort
 
 SOURCE = "families/openai.py"
 
@@ -55,8 +57,11 @@ def _apply_gpt5(
     before_effort = payload.get("reasoning_effort")
     before_reasoning = payload.get("reasoning")
 
+    # Budget-style thinking values (e.g. "32k") coerce to a level here so an
+    # invalid effort never reaches the wire; real effort words pass through
+    # unchanged and auto stays auto (emits nothing).
     payload = apply_gpt5_reasoning_controls(
-        payload, ctx.effort, ctx.reasoning_mode, ctx.reasoning_context
+        payload, coerce_effort(ctx.effort), ctx.reasoning_mode, ctx.reasoning_context
     )
 
     # Attribute only what actually changed so the log stays truthful.
@@ -75,7 +80,10 @@ CONTRACTS = [
         id="gpt-5",
         source=SOURCE,
         priority=100,
-        pattern=r"gpt-?5",
+        # [56] pulls gpt-6 (Astra) onto the same effort contract. Astra is
+        # effort-only: no reasoning_mode/reasoning_context config keys exist
+        # for it, so the mode/context extras below stay unset naturally.
+        pattern=r"gpt-?[56]",
         apply=_apply_gpt5,
         # Metadata-only requests (mode/context without effort) must still
         # reach the upstream, so this contract opts out of the effort gate.
