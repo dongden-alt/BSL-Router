@@ -181,6 +181,17 @@ def test_registry_matches_legacy_for_all_config_models(effort):
         ):
             continue
 
+        # Fable/Mythos 5.1 (claude-next-51) is a DELIBERATE divergence:
+        # 5.1 thinking is ALWAYS-ON (no off), so at off/auto/none/''/
+        # enable/adaptive the new contract pins thinking {adaptive} +
+        # output_config.effort='high' where the legacy cascade either wrote
+        # nothing (non-vocab gate) or passed the raw word through (the old
+        # fable-?5 pattern matched 5.1 ids and emitted effort='adaptive' raw).
+        # Graded efforts remain legacy-compatible but are fully locked in
+        # test_fable_51_thinking.py + test_family_divergences.py.
+        if re.search(r"fable-?5[.-]1|mythos-?5[.-]1", f_val):
+            continue
+
         # Grok is a deliberate divergence (Divergence 7 / official parity):
         # version-gate xhigh, unknown efforts -> high, and sanitize strips
         # presence_penalty/frequency_penalty/stop (legacy passed them through).

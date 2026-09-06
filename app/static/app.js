@@ -1454,6 +1454,13 @@ function getThinkingSpec(modelId) {
         return { effort: ['low','medium','high'], mandatory: true };
     }
 
+    // Fable/Mythos 5.1 (docs 2026-09-06): adaptive is the ONLY thinking mode
+    // ('enabled' 400s); effort low..max with xhigh NEW; default high; always-on
+    // so no 'off'. Backend contract: families/anthropic.py claude-next-51.
+    if (/fable-?5[.-]1|mythos-?5[.-]1/.test(id)) {
+        return { effort: ['low','medium','high','xhigh','max'], mode: ['adaptive'], display: ['summarized','omitted'], mandatory: true };
+    }
+
     // Anthropic Fable 5 / Mythos 5: effort + thinking mode + response display.
     if (/fable-?5|mythos-?5/.test(id)) {
         return { effort: ['off','low','medium','high','max'], mode: ['adaptive','enabled'], display: ['summarized','omitted'] };

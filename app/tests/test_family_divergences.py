@@ -549,6 +549,38 @@ def test_glm52_none_minimal_disables_thinking(effort):
     assert "reasoning_effort" not in out
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Divergence — Fable/Mythos 5.1 (claude-next-51): always-on adaptive, clamped vocab
+# ═══════════════════════════════════════════════════════════════════════════════
+# Divergence (2026-09-06): the legacy cascade's fable-?5 pattern matched 5.1
+# ids, passing switch words through raw (effort='adaptive' caused upstream
+# 400s) and dropping non-vocabulary efforts entirely. 5.1 is adaptive-only with
+# vocab low/medium/high/xhigh/max and NO off: anything else clamps to the
+# documented default 'high'; budgets coerce (32k→max, 16k→medium).
+# Full lock: test_fable_51_thinking.py.
+
+@pytest.mark.parametrize("f_val", ["tokenrouter/anthropic/claude-fable-5.1",
+                                   "claude-mythos-5-1"])
+@pytest.mark.parametrize("effort,expected", [
+    ("off", "high"), ("auto", "high"), ("none", "high"), ("", "high"),
+    ("adaptive", "high"), ("banana", "high"),
+    ("low", "low"), ("medium", "medium"), ("high", "high"),
+    ("xhigh", "xhigh"), ("max", "max"),
+])
+def test_fable51_alwayson_adaptive_clamps(f_val, effort, expected):
+    """5.1 never disables thinking; unknown efforts clamp to 'high'."""
+    out, _ = resolve_thinking(_payload(), f_val, effort)
+    assert out["thinking"] == {"type": "adaptive"}
+    assert out["output_config"] == {"effort": expected}
+
+
+@pytest.mark.parametrize("effort,expected", [("32k", "max"), ("16k", "medium")])
+def test_fable51_budgets_coerce(effort, expected):
+    out, _ = resolve_thinking(_payload(), "tokenrouter/anthropic/claude-fable-5.1", effort)
+    assert out["thinking"] == {"type": "adaptive"}
+    assert out["output_config"] == {"effort": expected}
+
+
 # ─────────────────────────────────────────────────────────────────────
 # DIVERGENCE 7 — Grok effort is version-gated; unknowns default to high;
 #                presence_penalty/frequency_penalty/stop are stripped.

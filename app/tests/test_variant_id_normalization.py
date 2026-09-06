@@ -190,13 +190,16 @@ def test_grok_dashed_dotted_parity_xhigh():
     _assert_parity("prov/grok-4-5", "prov/grok-4.5", "xhigh")
 
 
-def test_fable_5_1_hits_claude_next_contract():
-    """Fable 5.x routes to the claude-next contract (fable|mythos pattern),
-    dashed or dotted."""
+def test_fable_5_1_hits_claude_next_51_contract():
+    """Fable/Mythos 5.1 routes to claude-next-51 (adaptive-only, official
+    docs 2026-09-06 — 'enabled' 400s upstream), dashed or dotted. The
+    effort=high payload shape matches the 5.x contract, so the provenance
+    assertion is what pins the NEW contract id."""
     for f_val in ("vsllm-a/fable-5-1", "vsllm-a/fable-5.1"):
-        out, _ = resolve_thinking(_payload(), f_val, "high")
+        out, prov = resolve_thinking(_payload(), f_val, "high")
         assert out.get("thinking") == {"type": "adaptive"}, f_val
         assert out.get("output_config") == {"effort": "high"}, f_val
+        assert [r.contract_id for r in prov.records] == ["claude-next-51"], f_val
     _assert_parity("vsllm-a/fable-5-1", "vsllm-a/fable-5.1", "high")
 
 

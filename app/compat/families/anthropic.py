@@ -10,6 +10,12 @@ Anthropic family contracts — three incompatible generations.
                           Computed BEFORE modern/legacy and excluded from
                           them so the relaxed version match cannot steal
                           fable-5 / mythos-5.
+  next51 (Fable/Mythos 5.1) -> ADAPTIVE-ONLY (docs 2026-09-06): upstream
+                          400s on type="enabled", effort runs low..max
+                          (xhigh is new) with NO off, so auto/off/garbage
+                          clamps to the documented default 'high'.
+                          Matched before claude-next so 5.1 never takes
+                          the 5.x adaptive|enabled path.
   legacy (Claude 3.x)  -> enabled + budget_tokens, or bare adaptive when
                           no budget vocabulary was configured.
 
@@ -89,6 +95,33 @@ def _apply_next(
     )
 
 
+# Fable/Mythos 5.1 — matched BEFORE claude-next (priority 76 > 75) so the
+# 5.x adaptive|enabled contract can never capture a 5.1 id.
+_NEXT51_RE = r"fable-?5[.-]1|mythos-?5[.-]1"
+_F51_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _apply_next_51(
+    payload: Dict[str, Any],
+    ctx: ThinkingContext,
+    prov: Provenance,
+    contract: Contract,
+) -> Dict[str, Any]:
+    # Fable/Mythos 5.1 (docs 2026-09-06): adaptive is the ONLY thinking mode
+    # ('enabled' 400s upstream) and effort is low..max with NO off. Clamp any
+    # inbound effort (auto/off/unknown/garbage) to the documented default
+    # 'high'; budget-style values coerce via coerce_effort (32k->max, 16k->medium).
+    v = coerce_effort(ctx.effort)
+    if v not in _F51_EFFORTS:
+        v = "high"
+    oc = payload.get("output_config", {})
+    if not isinstance(oc, dict):
+        oc = {}
+    oc["effort"] = v
+    return prov.apply(payload, contract, "adaptive_only",
+                      {"thinking": {"type": "adaptive"}, "output_config": oc})
+
+
 def _apply_legacy(
     payload: Dict[str, Any],
     ctx: ThinkingContext,
@@ -145,6 +178,16 @@ CONTRACTS = [
         exclude=_NEXT_RE,
         apply=_apply_modern,
         major_min=4,
+    ),
+    Contract(
+        id="claude-next-51",
+        source=SOURCE,
+        priority=76,
+        pattern=_NEXT51_RE,
+        apply=_apply_next_51,
+        # Thinking is ALWAYS-ON on 5.1 (no off): apply must also run for
+        # auto/off/none so the clamp can pin the documented default 'high'.
+        always_applies=True,
     ),
     Contract(
         id="claude-next",

@@ -58,6 +58,13 @@ CONFORMANCE = [
      {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
     ("pix4k/fable-5", "max",
      {"thinking": {"type": "adaptive"}, "output_config": {"effort": "max"}}),
+    # Fable/Mythos 5.1 (claude-next-51): adaptive-only, effort vocab
+    # low/medium/high/xhigh/max with NO off. Full lock: test_fable_51_thinking.py.
+    ("tokenrouter/anthropic/claude-fable-5.1", "xhigh",
+     {"thinking": {"type": "adaptive"}, "output_config": {"effort": "xhigh"}}),
+    # off/auto clamp to the documented default 'high' (thinking always-on).
+    ("tokenrouter/anthropic/claude-fable-5.1", "off",
+     {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
     # Claude 3.x: budget vocabulary -> enabled + budget_tokens
     ("anthropic/claude-3-5-sonnet-20241022", "32k",
      {"thinking": {"type": "enabled", "budget_tokens": 32768}}),
