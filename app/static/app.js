@@ -1416,7 +1416,10 @@ function renderProviderDetail() {
 function getThinkingSpec(modelId) {
     // Per-model reasoning capability spec — drives the precise Provider-tab
     // badges so each model only exposes the axes/values it actually supports.
-    const id = (modelId || '').toLowerCase();
+    // Dash-separated version variants (gpt-5-6-sol, glm-5-3) resolve to the
+    // same spec as dotted canonicals; backend mirrors this in families/_base.py
+    // ThinkingContext (match-only — never rewrites the upstream model field).
+    const id = (modelId || '').toLowerCase().replace(/(\d)-(\d)/g, '$1.$2');
 
     // GPT-5.6 family (sol/terra/luna). Three reasoning axes, ALL verified via a
     // live probe against gpt-5.6-sol-pro20x:

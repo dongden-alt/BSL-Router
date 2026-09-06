@@ -80,6 +80,18 @@ class ThinkingContext:
     def effort_is_explicit(self) -> bool:
         return str(self.effort or "").lower() not in OFF_VALUES
 
+    def __post_init__(self) -> None:
+        # Match-only normalization: reseller model lists expose version
+        # separators as dashes (glm-5-3, gpt-5-6-sol, qwen-3-8). Every
+        # version-sensitive contract regex is written against dotted
+        # canonicals, so normalize the MATCH TARGET once here instead of
+        # widening ~15 regexes. Canonical dotted ids are a no-op; word
+        # dashes (kimi-k3, gpt-6-astra, non-reasoning) are unaffected
+        # because the pattern requires digits on both sides. Config and
+        # upstream-payload lookups stay exact-id — this rewrites only the
+        # f_val that Contract.matches and the family helpers see.
+        self.f_val = re.sub(r"(\d)-(\d)", r"\1.\2", self.f_val or "")
+
 
 @dataclass
 class ProvenanceRecord:
