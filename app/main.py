@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse, JSONResponse, Response, HTMLRes
 from fastapi.staticfiles import StaticFiles
 import httpx
 from contextlib import asynccontextmanager
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from starlette.background import BackgroundTask
 import asyncio
 import copy
@@ -11226,6 +11226,47 @@ async def _poll_veo_lro(
 
 # ─── End of Polling Helpers ───────────────────────────────────────────────────
 
+# ─── Safe Request Body Parsing (H0 hot-fix) ───────────────────────────────────
+# Malformed JSON bodies on inference paths used to escape `await request.json()`
+# as a plain-text 500 (json.JSONDecodeError traceback) that clients like Claude
+# Code cannot parse. These helpers convert that crash into a clean JSON 400.
+
+
+class _BSLInvalidRequestBody(Exception):
+    """Raised when a request body is not valid JSON; carries a client-facing message."""
+
+    def __init__(self, detail: str):
+        super().__init__(detail)
+        self.detail = detail
+
+
+async def _safe_request_json(request: Request) -> Any:
+    """Await request.json(), mapping malformed bodies to _BSLInvalidRequestBody.
+
+    Covers both JSON that fails to decode (including the empty-body case) and
+    payloads that are not valid UTF-8. Valid bodies pass through unchanged.
+    """
+    try:
+        return await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise _BSLInvalidRequestBody(f"Request body is not valid JSON: {exc}") from exc
+
+
+@app.exception_handler(_BSLInvalidRequestBody)
+async def _bsl_invalid_request_body_handler(request: Request, exc: _BSLInvalidRequestBody):
+    """Render _BSLInvalidRequestBody as an OpenAI-style JSON 400."""
+    return JSONResponse(
+        {
+            "error": {
+                "message": exc.detail,
+                "type": "invalid_request_error",
+                "code": "invalid_json_body",
+            }
+        },
+        status_code=400,
+    )
+
+
 @app.post("/api/providers/{provider_id}/discover-models")
 async def discover_provider_models(provider_id: str):
     """Probe upstream /v1/models and return discovered models.
@@ -11406,7 +11447,7 @@ async def list_models(discover: bool = False):
 @app.post("/v1/images/generations")
 async def images_generations(request: Request):
     config = cs_get_config()
-    body = await request.json()
+    body = await _safe_request_json(request)
     model = body.get("model", "")
     provider_name = None
     target_model = model
@@ -11557,7 +11598,7 @@ async def images_generations(request: Request):
 @app.post("/v1/videos/generations")
 async def videos_generations(request: Request):
     config = cs_get_config()
-    body = await request.json()
+    body = await _safe_request_json(request)
     model = body.get("model", "")
     provider_name = None
     target_model = model
@@ -11673,7 +11714,7 @@ async def videos_generations(request: Request):
 @app.post("/v1/chat/completions")
 @app.post("/gemini/v1/chat/completions")
 async def chat_completions(request: Request):
-    body = await request.json()
+    body = await _safe_request_json(request)
     # ── 9router "Chain" ingress ───────────────────────────────────────────────
     # When 9router owns :443 and its chat brain is redirected to BSL via
     # MITM_ROUTER_BASE=http://localhost:6969, 9router POSTs the intercepted Cloud
@@ -11735,7 +11776,7 @@ async def chat_completions(request: Request):
 @app.post("/v1/messages")
 async def anthropic_messages(request: Request):
     config = cs_get_config()
-    body = await request.json()
+    body = await _safe_request_json(request)
 
     # ── Claude Code Alias Resolution ──
     # Maps Claude Code's hardcoded model names (claude-sonnet-*, claude-opus-*, etc)
@@ -12154,7 +12195,7 @@ async def antigravity_ccpa_control_proxy(request: Request, operation: str):
 @app.post("/v1/responses")
 async def responses_endpoint(request: Request):
     """Phase 6: OpenAI Responses API endpoint (Codex CLI, modern OpenAI clients)."""
-    body = await request.json()
+    body = await _safe_request_json(request)
     chat_body = ResponsesConverter.responses_to_chat(body)
     return await _process_chat_completion(chat_body, request=request)
 
