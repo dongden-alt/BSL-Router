@@ -70,24 +70,79 @@ _FINISH_INVERSE = {
 }
 
 
-def _lowercase_schema_types(value: Any) -> Any:
-    """Recursively lowercase schema ``type`` strings (Gemini is case-sensitive)."""
-    if isinstance(value, dict):
-        out = {}
-        for key, child in value.items():
-            if key == "type" and isinstance(child, str):
-                out[key] = child.lower()
-            elif key == "type" and isinstance(child, list):
-                out[key] = [
-                    item.lower() if isinstance(item, str) else _lowercase_schema_types(item)
-                    for item in child
-                ]
-            else:
-                out[key] = _lowercase_schema_types(child)
-        return out
-    if isinstance(value, list):
-        return [_lowercase_schema_types(item) for item in value]
-    return value
+# Gemini ``Schema`` proto fields a functionDeclaration ``parameters`` blob may
+# carry. Everything else — JSON-Schema 2020-12 markers (``$schema``, ``$defs``,
+# ``$ref``, ``$comment``, …), OpenAI-only keywords (``additionalProperties``,
+# ``examples``, ``default``, ``title``, ``strict`` …) — is rejected by Gemini's
+# proto parser with 400 "Unknown name … : Cannot find field" (antigravity lane,
+# 2026-09-05). Conservative by design: dropping a field that turns out to be
+# valid only loses minor validation fidelity, while keeping an invalid one
+# 400s the entire request. The upstream reports unknowns in random map order,
+# so enumeration is impossible — an allowlist is the only deterministic fix.
+_GEMINI_SCHEMA_KEEP = frozenset({
+    "type", "format", "description", "nullable",
+    "items", "properties", "required", "enum",
+    "minItems", "maxItems", "minimum", "maximum",
+    "anyOf", "propertyOrdering",
+})
+
+
+def _normalize_tool_parameters(params: Any) -> Dict[str, Any]:
+    """Rewrite a JSON-Schema ``parameters`` blob for Gemini functionDeclarations.
+
+    Layer 2 of the Gemini 3.1-Pro 400 fix (2026-09-05): the IDE ships tools as
+    JSON-Schema 2020-12, whose markers the Gemini ``Schema`` proto cannot
+    parse. Rebuilds the dict key-by-key (input is never mutated) keeping only
+    ``_GEMINI_SCHEMA_KEEP`` fields; renames ``oneOf``→``anyOf`` (Gemini's only
+    union) and flattens draft-07 ``type`` arrays (``["string","null"]``) into a
+    scalar type plus ``nullable``. Fail-open: non-dict/empty input yields a
+    trivial object schema.
+    """
+    if not isinstance(params, dict) or not params:
+        return {"type": "object", "properties": {}}
+
+    def _walk(value: Any) -> Any:
+        if isinstance(value, dict):
+            out: Dict[str, Any] = {}
+            for key, child in value.items():
+                if key == "oneOf" and isinstance(child, list):
+                    key = "anyOf"
+                if key == "properties" and isinstance(child, dict):
+                    # Map of ARBITRARY property names -> subschema: the names
+                    # are user-defined, not proto fields — never filtered.
+                    out["properties"] = {
+                        name: _walk(sub)
+                        for name, sub in child.items()
+                        if isinstance(sub, (dict, list))
+                    }
+                    continue
+                if key == "type" and isinstance(child, list):
+                    # Draft-07 union types ("type": ["string","null"]) have no
+                    # proto equivalent: first non-null entry wins, "null"
+                    # promotes to nullable.
+                    non_null = [
+                        t for t in child
+                        if isinstance(t, str) and t.lower() != "null"
+                    ]
+                    if non_null:
+                        out["type"] = non_null[0].lower()
+                    if any(
+                        isinstance(t, str) and t.lower() == "null" for t in child
+                    ):
+                        out["nullable"] = True
+                    continue
+                if key not in _GEMINI_SCHEMA_KEEP:
+                    continue
+                if key == "type" and isinstance(child, str):
+                    out[key] = child.lower()
+                    continue
+                out[key] = _walk(child)
+            return out
+        if isinstance(value, list):
+            return [_walk(item) for item in value]
+        return value
+
+    return _walk(params)
 
 
 def _image_url_to_part(url: str) -> Optional[Dict[str, Any]]:
@@ -196,7 +251,15 @@ def openai_to_cloudcode_envelope(
             seq += 1
             call_id = tc.get("id") or f"call_{name}_{seq}"
             call_names[call_id] = name
-            parts.append({"functionCall": {"name": name, "args": args}})
+            _fc_part: Dict[str, Any] = {"functionCall": {"name": name, "args": args}}
+            # Re-emit the carried signature as a camelCase SIBLING of
+            # functionCall (Gemini 3.1-Pro 400 fix, 2026-09-04): Gemini
+            # validates that echoed calls keep their original thoughtSignature —
+            # an unsigned part is rejected with INVALID_ARGUMENT.
+            _tsig = tc.get("thought_signature")
+            if isinstance(_tsig, str) and _tsig:
+                _fc_part["thoughtSignature"] = _tsig
+            parts.append(_fc_part)
 
         if role == "tool":
             call_id = msg.get("tool_call_id") or ""
@@ -205,18 +268,26 @@ def openai_to_cloudcode_envelope(
                 or _name_from_call_id(call_id)
                 or "tool"
             )
-            fr = {
-                "name": tool_name,
-                "response": {"result": _tool_result_payload(msg.get("content"))},
+            fr_part: Dict[str, Any] = {
+                "functionResponse": {
+                    "name": tool_name,
+                    "response": {"result": _tool_result_payload(msg.get("content"))},
+                }
             }
+            # Re-emit the carried signature as a camelCase sibling on the
+            # functionResponse part (Gemini 3.1-Pro 400 fix): symmetric with
+            # the functionCall sibling above, preserving whatever the IDE echoed.
+            _tsig = msg.get("thought_signature")
+            if isinstance(_tsig, str) and _tsig:
+                fr_part["thoughtSignature"] = _tsig
             # Gemini groups consecutive functionResponses in ONE user content.
             prev = contents[-1] if contents else None
             if isinstance(prev, dict) and prev.get("role") == "user" and prev.get("__fr__"):
-                prev["parts"].append({"functionResponse": fr})
+                prev["parts"].append(fr_part)
             else:
                 contents.append({
                     "role": "user",
-                    "parts": [{"functionResponse": fr}],
+                    "parts": [fr_part],
                     "__fr__": True,
                 })
             continue
@@ -256,7 +327,7 @@ def openai_to_cloudcode_envelope(
             decls.append({
                 "name": name.strip(),
                 "description": f.get("description", "") or "",
-                "parameters": _lowercase_schema_types(f.get("parameters") or {"type": "object", "properties": {}}),
+                "parameters": _normalize_tool_parameters(f.get("parameters")),
             })
     if decls:
         request_obj["tools"] = [{"functionDeclarations": decls}]
@@ -288,6 +359,32 @@ def openai_to_cloudcode_envelope(
         "requestType": "agent",
         "request": request_obj,
     }
+
+
+def strip_thought_signature_keys(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove inline ``thought_signature`` carriers from an OpenAI payload.
+
+    Hygiene for non-antigravity lanes (Gemini 3.1-Pro 400 fix, 2026-09-04):
+    the inline keys are BSL-internal carriers between the Gemini ingress/egress
+    adapters and this module's envelope builder. Providers that validate
+    tool-call shape strictly must never see them. Fail-open by design — an
+    unexpected payload shape is returned untouched rather than raising, so
+    hygiene can never break routing.
+    """
+    try:
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return payload
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            msg.pop("thought_signature", None)
+            for tc in msg.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    tc.pop("thought_signature", None)
+        return payload
+    except Exception:
+        return payload
 
 
 def _usage_to_openai(usage: Dict[str, Any]) -> Dict[str, Any]:
@@ -386,7 +483,7 @@ class CloudCodeSSETranslator:
                 fc = part["functionCall"]
                 name = fc.get("name") or "tool"
                 self._tc_count += 1
-                tool_calls.append({
+                _openai_tc: Dict[str, Any] = {
                     "index": self._tc_count - 1,
                     "id": f"call_{name}_{self._tc_count}",
                     "type": "function",
@@ -394,7 +491,17 @@ class CloudCodeSSETranslator:
                         "name": name,
                         "arguments": json.dumps(fc.get("args") or {}, ensure_ascii=False),
                     },
-                })
+                }
+                # PRESERVE thoughtSignature (Gemini 3.1-Pro 400 ROOT-CAUSE fix,
+                # 2026-09-04): Gemini streams the signature as a sibling of
+                # functionCall on the same part. Carrying it inline on the
+                # OpenAI tool_call lets the IDE frame converters re-emit it, so
+                # the next-turn echo is signed and Gemini 3.1-Pro stops
+                # returning INVALID_ARGUMENT on unsigned history parts.
+                _sig = part.get("thoughtSignature")
+                if isinstance(_sig, str) and _sig:
+                    _openai_tc["thought_signature"] = _sig
+                tool_calls.append(_openai_tc)
 
         if thoughts:
             delta["reasoning_content"] = "".join(thoughts)

@@ -179,6 +179,22 @@ _STEALTH_USER_AGENTS: dict[str, str] = {
 }
 
 
+def _auth_headers_for_key(api_key) -> dict:
+    """Build Authorization header, omitting it entirely for blank keys.
+
+    Empty api_key previously built 'Authorization: Bearer ' (trailing space),
+    which httpcore rejects at send time with ValueError: Illegal header value
+    b'Bearer ' — not an HTTP status, so the failure got misclassified as 500
+    server_error and poisoned the circuit breaker with the wrong fault class
+    (observed live 2026-09-05: claude-opus-5/pix4k combo walk). With the header
+    omitted, a keyed upstream answers a clean 401 that flows through the
+    existing auth classification / KeyFailover / combo-advance paths; keyless
+    local upstreams (ollama-style) never wanted the header at all.
+    """
+    _k = (api_key or "").strip()
+    return {"Authorization": f"Bearer {_k}"} if _k else {}
+
+
 def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dict, provider_config: dict | None = None) -> None:
     """Inject provider-specific headers for upstream requests.
 
@@ -6660,7 +6676,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             _fresh_token = stored_api_key
 
     headers = {
-        "Authorization": f"Bearer {_fresh_token}",
+        **_auth_headers_for_key(_fresh_token),
         "Content-Type": "application/json",
         # Prevent upstream from returning gzip-compressed SSE. httpx's
         # aiter_raw() yields compressed bytes without decompressing, which
@@ -6756,6 +6772,25 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     upstream_payload.pop("_bsl_original_model", None)
     upstream_payload.pop("x_antigravity_user_agent", None)
     upstream_payload.pop("x_gemini_tool_mode", None)
+
+    # thought_signature hygiene (Gemini 3.1-Pro 400 fix, 2026-09-04):
+    # inline keys are BSL-internal carriers for the antigravity lane only
+    # (gemini ingress capture -> egress envelope re-emit). Strip them on
+    # every other lane so strict upstreams never see unknown keys inside
+    # tool_call dicts / tool-role messages. Fail-open: hygiene must never
+    # break routing. No-op when the base URL is not resolvable yet.
+    try:
+        if (
+            resolved_base_url
+            and provider_name != "antigravity"
+            and httpx.URL(resolved_base_url).host not in _ANTIGRAVITY_NATIVE_HOSTS
+        ):
+            from app.compat.adapters.antigravity_upstream import (
+                strip_thought_signature_keys,
+            )
+            upstream_payload = strip_thought_signature_keys(upstream_payload)
+    except Exception:
+        pass
 
     # 9Router clean-egress parity: the Antigravity conversion may carry an
     # advisory reasoning_effort from Gemini's thinkingBudget, while BSL's model
@@ -10148,7 +10183,21 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         flush=True,
                     )
                     _tb.print_exc()
-                    resp = await client.send(req)
+                    # Defense-in-depth (2026-09-06): the fail-open re-send sends
+                    # the SAME request, so if the original failure was a
+                    # build/send-time fault (e.g. ValueError: Illegal header
+                    # value), the re-send re-raises it and the exception escapes
+                    # as an unhandled 500. Synthesize a 504 instead so the combo
+                    # fallback chain can advance to the next entry.
+                    try:
+                        resp = await client.send(req)
+                    except Exception as _sb_retry_exc:
+                        print(
+                            f"[StreamBuffer] '{target_model}/{provider_name}' fail-open re-send failed: {_sb_retry_exc} "
+                            f"- synthesizing 504 for combo fallback",
+                            flush=True,
+                        )
+                        resp = _SyntheticResponse(504, {"error": str(_sb_retry_exc)[:1000]})
 
             else:
                 # ── Hardened non-stream send + generation budget ─────────────────────
@@ -11423,7 +11472,7 @@ async def images_generations(request: Request):
     client = _get_client_for_proxy(active_conn.get("proxy_url"))
 
     headers = {
-        "Authorization": f"Bearer {active_conn.get('api_key', '')}",
+        **_auth_headers_for_key(active_conn.get('api_key', '')),
         "Content-Type": "application/json"
     }
 
@@ -11553,7 +11602,7 @@ async def videos_generations(request: Request):
     client = _get_client_for_proxy(active_conn.get("proxy_url"))
 
     headers = {
-        "Authorization": f"Bearer {active_conn.get('api_key', '')}",
+        **_auth_headers_for_key(active_conn.get('api_key', '')),
         "Content-Type": "application/json"
     }
 
@@ -12359,7 +12408,7 @@ async def _probe_oneapi_billing(base: str, key: str) -> Optional[dict]:
     live 2026-08-24: plain UA -> 403, browser UA -> 200 + billing JSON).
     """
     _headers = {
-        "Authorization": f"Bearer {key}",
+        **_auth_headers_for_key(key),
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept": "application/json",
     }

@@ -10,12 +10,19 @@ class MessageContentPart(BaseModel):
     source: Optional[Dict[str, Any]] = None  # Anthropic style document source
 
 class ToolCallFunction(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    # extra="allow" (Gemini 3.1-Pro 400 fix, 2026-09-04): lets BSL-internal
+    # carriers such as thought_signature ride tool-call dicts through
+    # validation. Non-antigravity lanes strip them at the egress pop zone
+    # (strip_thought_signature_keys), so strict upstreams never see them.
+    model_config = ConfigDict(extra="allow")
     name: str
     arguments: str
 
 class ToolCall(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    # extra="allow" (Gemini 3.1-Pro 400 fix, 2026-09-04): preserves the inline
+    # thought_signature key minted by the antigravity ingress so the egress
+    # envelope builder can re-emit it as a camelCase sibling of functionCall.
+    model_config = ConfigDict(extra="allow")
     id: str
     type: str = "function"
     function: ToolCallFunction

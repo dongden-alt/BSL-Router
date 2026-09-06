@@ -1347,8 +1347,15 @@ async def run_error_analysis(http_client: httpx.AsyncClient, config: dict):
         "max_tokens": 4096,
     }
     
+    _api_key = (active_conn.get('api_key') or '').strip()
+    if not _api_key:
+        # Blank key previously built 'Authorization: Bearer ' (trailing space),
+        # which httpcore rejects at send time with ValueError: Illegal header
+        # value — the probe would die inside this try-block either way. Skip
+        # cleanly instead; blank-key connections can't serve the probe.
+        return
     headers = {
-        "Authorization": f"Bearer {active_conn['api_key']}",
+        "Authorization": f"Bearer {_api_key}",
         "Content-Type": "application/json"
     }
 

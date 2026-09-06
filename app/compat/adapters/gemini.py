@@ -418,16 +418,24 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
                 # keeping the readable tool name for debugging.
                 _tool_call_seq += 1
                 _call_id = f"call_{name}_{_tool_call_seq}"
-                tool_calls.append({
+                _tc: Dict[str, Any] = {
                     "id": _call_id,
                     "type": "function",
                     "function": {
                         "name": name,
                         "arguments": json.dumps(args),
                     },
-                })
+                }
+                # thoughtSignature capture (Gemini 3.1-Pro 400 fix, 2026-09-04):
+                # Gemini validates that echoed functionCall parts carry their
+                # original signature. Carry it inline on the OpenAI tool_call so
+                # the antigravity egress builder can re-emit it upstream; the
+                # egress pop zone strips it on non-antigravity lanes.
+                _sig = part.get("thoughtSignature")
+                if isinstance(_sig, str) and _sig:
+                    _tc["thought_signature"] = _sig
+                tool_calls.append(_tc)
                 _pending_calls.append((name, _call_id))
-                # thoughtSignature only kept alongside fn/text (§8.3) — no-op here.
                 continue
 
             # functionResponse → OpenAI tool-role message (§3)
@@ -451,11 +459,19 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
                 if _matched_id is None:
                     _tool_call_seq += 1
                     _matched_id = f"call_{name}_{_tool_call_seq}"
-                tool_results.append({
+                _tr: Dict[str, Any] = {
                     "role": "tool",
                     "tool_call_id": _matched_id,
                     "content": json.dumps(result),
-                })
+                }
+                # thoughtSignature capture on functionResponse (Gemini 3.1-Pro
+                # 400 fix, 2026-09-04): the IDE can echo signatures on response
+                # parts too. Carry it inline on the tool-role message so the
+                # antigravity egress builder can re-emit it; other lanes strip it.
+                _rsig = part.get("thoughtSignature")
+                if isinstance(_rsig, str) and _rsig:
+                    _tr["thought_signature"] = _rsig
+                tool_results.append(_tr)
                 continue
 
             # inlineData → image_url data URI (§3)
@@ -648,6 +664,12 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
                 slot["name"] = fn["name"]
         if fn.get("arguments"):
             slot["args"] += fn["arguments"]
+        # thought_signature carrier (Gemini 3.1-Pro 400 fix): snapshot the
+        # inline signature so the finish flush below can re-emit it as a
+        # camelCase sibling of functionCall on the Gemini frame.
+        _tsig = tc.get("thought_signature")
+        if isinstance(_tsig, str) and _tsig:
+            slot["sig"] = _tsig
 
     # On finish: flush accumulated tool calls to functionCall parts.
     truncated_tool_call = False
@@ -679,7 +701,14 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
             # and toolAction. Many models (DeepSeek, Qwen, GLM) don't generate
             # these metadata fields — inject defaults to prevent IDE rejection.
             args = _inject_tool_metadata(args, name)
-            parts.append({"functionCall": {"name": name, "args": args}})
+            _fc_part: Dict[str, Any] = {"functionCall": {"name": name, "args": args}}
+            _tsig = slot.get("sig")
+            if isinstance(_tsig, str) and _tsig:
+                # Re-emit the captured signature: the IDE stores the signed
+                # call in history, so its next-turn functionCall echo passes
+                # Gemini 3.1-Pro's signature validation (400 fix).
+                _fc_part["thoughtSignature"] = _tsig
+            parts.append(_fc_part)
         # §8.8 (FORCE-STOP FIX 2026-08-24, v3): a parts-less finish must NOT
         # carry the notice text downstream (that shipped a fake finishReason=STOP
         # whose only content was the notice — rendered as force-stop while combo
@@ -858,7 +887,13 @@ def openai_response_to_gemini(openai_resp: Dict[str, Any], model: str) -> Dict[s
             args = {}
         # §8.16: inject Antigravity IDE metadata when model omits it.
         args = _inject_tool_metadata(args, fn_name)
-        parts.append({"functionCall": {"name": fn_name, "args": args}})
+        _fc_part: Dict[str, Any] = {"functionCall": {"name": fn_name, "args": args}}
+        # thought_signature twin (Gemini 3.1-Pro 400 fix): re-emit the inline
+        # signature as a camelCase sibling on the non-stream part as well.
+        _tsig = tc.get("thought_signature")
+        if isinstance(_tsig, str) and _tsig:
+            _fc_part["thoughtSignature"] = _tsig
+        parts.append(_fc_part)
 
     if not parts:
         # §8.8 (2026-08-24) non-stream twin: the IDE hard-rejects
