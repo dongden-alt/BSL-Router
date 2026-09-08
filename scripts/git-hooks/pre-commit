@@ -1,0 +1,20 @@
+#!/bin/sh
+# BSL Router - mojibake guard (pre-commit)
+#
+# Blocks commits that would introduce double-encoded CP1252-in-UTF8 text
+# (the class of corruption the 2026-09-08 mojibake purge fixed). Scans only
+# the files about to be committed (git index), so it never touches runtime
+# logs or gitignored debris.
+#
+# Install: cp scripts/git-hooks/pre-commit .git/hooks/pre-commit
+# (or just run the scanner manually: python scripts/scan_mojibake_residual.py --staged)
+set -e
+
+ROOT=$(git rev-parse --show-toplevel)
+PY=$(command -v python || command -v python3 || true)
+if [ -z "$PY" ]; then
+  echo "mojibake-guard: python interpreter not found on PATH; skipping guard." >&2
+  exit 0
+fi
+
+"$PY" "$ROOT/scripts/scan_mojibake_residual.py" --staged
