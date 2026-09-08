@@ -2583,7 +2583,7 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
             # loaded config before the import endpoint added the provider).
             # Previously this was treated as a "deliberate deletion" and
             # skipped — which meant any autosave from a stale tab wiped
-            # freshly-imported web providers (qwen-web/glm-web/kimi-web).
+            # freshly-imported providers (qwen-web/glm-web/kimi-web).
             # Fix (2026-08-27): restore the provider UNLESS the client
             # explicitly signals deletion via _deleted_provider (mirrors
             # the _deleted_connection opt-out pattern).

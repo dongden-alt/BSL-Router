@@ -11,11 +11,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.0.4] - 2026-09-08
+
+79 commits since 1.0.3 — a stability flagship wave (fixes the capture-log stall that killed IDE sessions, WinError-64 accept-loop death, supervisor hardening) plus two new subsystems: the Faithful Execution Layer and Normalizer Hub v2. The web-provider lane was fully extracted to the standalone Chat2API app and ships zero code here.
+
+### Added
+
+- **Faithful Execution Layer (FEL)** — pure directive builder + live wiring for clarity preprocessing, per-wire-format egress directive merge, strict refusal classification, and single recovery re-dispatch. FEL-5 hard wall: CSAM/weapons-class refusals classify `blocked` (terminal, immune to recovery/research mode, checked before the 600-char gate). Bilingual EN/VI sensitivity reframe. Default-OFF (config-gated); 186 tests green. Files: `app/middleware/faithful_execution.py`, 4-stage wiring in `app/main.py`, admin UI FEL panel.
+- **Normalizer Hub v2 (N-series)** — `normalizer_v2` registry with schema dialects (`gemini_last_role`, `tool_arg_repair`, `reasoning_policy`, `stream_normalizer`) and a shadow comparator with capped off-loop shadow logging (no hot-path back-pressure). Adopted in the main request path; 107 tests green.
+- **Dual-stack listener** — IPv4+IPv6 accept ends ECONNREFUSED for localhost/::1 clients; bind-retry (10013/10048, up to 120s) and self-health watchdog in `dualstack_serve`; split-brain socket health probes (dual-stack either-OK) with supervised respawn.
+- **B1 watchdog-supervisor** — self-healing respawn lineage; PS1 lifecycle audit fixes F2–F7; launcher idempotent-start health gate (unauthenticated `/health` on both stacks, no credential in the launcher).
+- **Pre-restart smoke battery** — catalog/chat/stream/mapped-Gemini/admin checks for staging-first deploys.
+- **Pre-commit mojibake scanner + residual scanner** — blocks future cp1252 double-encoded commits; 1,398 corrupted tokens repaired across 5 files, CHANGELOG purged, full audit PASS (577 fix-adjacent tests, zero source residual).
+- **Pricing/detection** — GLM-5.3, GPT-6 Astra, Muse Spark, Hunyuan Hy3/Hy4 families.
+
+### Fixed
+
+- **Capture-log I/O stall that killed Antigravity IDE sessions** — inbound capture wrote full payloads synchronously on the FastAPI event loop with no cap (file reached 29.8 GB, each append stalled the loop minutes). Now an async drop-on-full queue writer (`asyncio.to_thread`), 50MB rotation on all three loggers, boot-time self-heal truncation, and metadata-only inbound capture by default (`BSL_CAPTURE_INBOUND=1` opts back in).
+- **WinError 64 accept-loop death (F8)** — the accept loop re-arms AcceptEx after the error instead of dying; live-verified against real bursts.
+- **Never-stop combo wrap** — 16 exhaustion sites now wrap to combo fallback instead of force-stopping; Gemini stream-start fallback ungated (final-entry 429 wraps).
+- **Malformed request bodies** — OpenAI-style JSON 400 (was unhandled 500) across 5 inference endpoints.
+- **GLM parallel tool guard** — `disable_parallel_tool_use` injection fixes GLM-5.x dropping tool arguments.
+- **Stale-snapshot guard** — AEP/OAuth snapshot holders no longer wipe imported providers; provider delete persistence, OAuth dedup, dead-connection disable.
+- **Empty-key auth fix** + antigravity thought-signature tests; NFKD transcode + VN preflight now covers the `agentrouter*` family.
+- **MITM hardening** — kill-path WMI pre-scan with critical-process blocklist; DNS hijack bound to MITM liveness (boot reconcile / stop removal / start rollback); rogue respawn-supervisor tree-kill guard.
+- **Hunyuan Hy4-preview reasoning controls**; variant-ID separator normalization (dash IDs → dotted canonical contracts); gpt-6-astra effort contract parity; Fable/Mythos 5.1 thinking contract (always-on adaptive + effort clamp, 456/456 lock suite).
+- **Loopback base_urls warn-not-block; circuit-breaker stub → real coverage.**
+- **Launcher idempotent-start health gate** — unauthenticated `/health` on both stacks, per-stack try/catch.
+
+### Changed
+
+- **chat lane extracted** — all web providers (~35 commits, GLM/Kimi/Qwen web providers, collectors, OAuth UI) reverted in `ca5c5c8` (−7,400 lines) and preserved in the standalone **Chat2API** app. Zero web provider code ships in 1.0.4; the `nodriver` dependency pin is removed.
+- **Key health dimming** in the admin UI; reasoning controls for new model families.
+- **Version alignment** — `VERSION` file, dashboard version pill, and GitHub tag all read 1.0.4; the update notification under the logo fires via the live GitHub latest-release check when the remote version is newer than local.
 
 ### Maintenance
 
-- **Mojibake fix full audit (PASS)** \— post-`62188ec` verification sweep: `node --check app/static/app.js` clean; `:6969 /health` → 200 (router NOT restarted, HARD RULE honored); Hunyuan hy3/hy4 `getThinkingSpec` contract intact (`app/static/app.js:1518`, single `/hy[34]|hunyuan/` regex); `gpt-6-pro` / `gpt-6-astra-pro` codename alias → `openai:gpt-6-astra` (`scripts/detect_model_pricing.py:489-494`); 577 fix-adjacent pytest pass (thinking-vocab / reasoning-policy / gpt6-astra / family-* / pricing-detector); residual-mojibake scanner finds ZERO in committed source \— only 148 CP1252 segments in runtime rot under `.brain/logs/` (out of source-fix scope, governed by the log-cap/rotation HARD RULE). Working tree clean. Full report: `bsl_router_mojibake_fix_audit.md`.
+- **Mojibake purge** — 1,398 cp1252 double-encoded tokens repaired across 5 files (gated, idempotent fixer); CHANGELOG 161-runs purged; pre-commit hook + residual scanner now blocks future mojibake commits. Full audit PASS (577 fix-adjacent tests, zero source residual).
+- **Dead code removal** — 24 provably dead symbols (−450 lines).
+- **`.brain` runtime debris + live-token artifacts gitignored**; hidden background-spawn console (no more empty cmd popups).
 
 ## [1.0.3] - 2026-08-26
 

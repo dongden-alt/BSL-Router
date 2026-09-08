@@ -25,7 +25,7 @@
 [CmdletBinding()]
 param(
     [int]$Port = 6969,
-    [string]$ApiKey = "REDACTED-BSL-ADMIN-KEY",
+    [string]$ApiKey = "sk-bsl-YOUR_API_KEY_HERE",
     [string]$Model = "GLM-5.3",
     [int]$TimeoutSec = 180
 )

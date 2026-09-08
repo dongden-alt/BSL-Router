@@ -7,4 +7,3 @@ PyYAML>=6.0
 cryptography>=42.0.0
 python-multipart>=0.0.9
 mitmproxy>=10.0.0
-nodriver>=0.50
