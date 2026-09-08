@@ -1,0 +1,66 @@
+name: Release v1.0.4 one-shot
+
+on:
+  push:
+    branches: [timeout-fix]
+    paths: ['.github/workflows/release-v1.0.4.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Write release notes
+        run: |
+          cat > notes.md <<'BSL_NOTES_EOF'
+          # v1.0.4 — Stability Wave + FEL + Normalizer Hub v2
+
+          **79 commits since 1.0.3.** The web-provider lane was fully extracted to the standalone **Chat2API** app — zero chat-lane code ships in this release.
+
+          ## 🇬🇧 English
+
+          ### Highlights
+          - **Fixed: capture-log I/O stall that killed IDE sessions** — inbound capture wrote full payloads synchronously on the FastAPI event loop (log file reached 29.8 GB). Now an async drop-on-full queue writer with 50 MB rotation on all loggers and metadata-only capture by default.
+          - **Fixed: WinError 64 accept-loop death** — the dual-stack accept loop re-arms AcceptEx after the error instead of dying.
+          - **Fixed: never-stop combo wrap** — 16 exhaustion sites now wrap to combo fallback instead of force-stopping.
+          - **New: Faithful Execution Layer (FEL)** — strict refusal classification with a hard wall for CSAM/weapons-class content (terminal, immune to recovery mode), clarity preprocessing, and a bilingual EN/VI sensitivity reframe. Default-OFF (config-gated).
+          - **New: Normalizer Hub v2** — schema dialect registry (`gemini_last_role`, `tool_arg_repair`, `reasoning_policy`, `stream_normalizer`) + capped off-loop shadow comparator.
+          - **New: dual-stack listener (IPv4+IPv6)** with bind-retry (10013/10048, up to 120s) and a watchdog-supervisor; pre-restart smoke battery.
+          - **Security: MITM kill-path WMI pre-scan with critical-process blocklist; DNS hijack bound to MITM liveness; launcher health gate carries no credential.**
+          - **chat-lane extracted → Chat2API** — all web providers (GLM/Kimi/Qwen web, collectors, OAuth UI) moved out; `nodriver` dependency removed.
+          - **Hygiene: mojibake purge (1,398 tokens repaired) + pre-commit guard; 24 dead symbols removed (−450 lines); key health dimming; new model pricing (GLM-5.3, GPT-6 Astra, Muse Spark, Hunyuan Hy3/Hy4).**
+
+          ## 🇻🇳 Tiếng Việt
+
+          ### Nổi bật
+          - **Sửa: giật log capture gây chết phiên IDE** — ghi payload đồng bộ trên event loop (file log tới 29.8 GB). Giờ là queue writer async drop-on-full, quay vòng 50 MB cho mọi logger, mặc định chỉ lưu metadata.
+          - **Sửa: WinError 64 giết accept-loop** — vòng accept dual-stack tự re-arm AcceptEx sau lỗi thay vì chết.
+          - **Sửa: combo never-stop** — 16 điểm cạn chuỗi giờ quay về fallback thay vì force-stop.
+          - **Mới: Faithful Execution Layer (FEL)** — phân loại từ chối nghiêm ngặt, tường cứng cho nội dung CSAM/vũ khí (terminal, không thể recovery), tiền xử lý clarity, khung nhạy cảm song ngữ Anh/Việt. Mặc định TẮT (theo config).
+          - **Mới: Normalizer Hub v2** — registry dialect schema + shadow comparator có giới hạn, chạy ngoài hot-path.
+          - **Mới: listener dual-stack (IPv4+IPv6)** kèm bind-retry và watchdog-supervisor; bộ smoke test trước khi restart.
+          - **Bảo mật: quét WMI trước kill-path MITM kèm blocklist tiến trình hệ thống; DNS hijack ràng buộc theo MITM liveness; health gate launcher không chứa credential.**
+          - **chat-lane tách hẳn → Chat2API** — toàn bộ provider chat-lane (GLM/Kimi/Qwen web, collector, OAuth UI) đã chuyển đi; gỡ dependency `nodriver`.
+          - **Vệ sinh: dọn mojibake (sửa 1.398 token) + guard pre-commit; xóa 24 symbol chết (−450 dòng); làm mờ key yếu; giá model mới (GLM-5.3, GPT-6 Astra, Muse Spark, Hunyuan Hy3/Hy4).**
+
+          ---
+
+          **Full changelog:** see `CHANGELOG.md` in the repository.
+          BSL_NOTES_EOF
+
+      - name: Publish release (idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if gh release view v1.0.4 >/dev/null 2>&1; then
+            echo 'Release v1.0.4 already exists - skipping.'
+            exit 0
+          fi
+          gh release create v1.0.4 --title 'BSL Router 1.0.4' --notes-file notes.md --latest
