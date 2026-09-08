@@ -486,6 +486,10 @@ def _rules():
          "OpenAI", "gpt-5.6-luna", "GPT-5.6 Luna", "manual"),
         # GPT-6 Astra — `-pro`/`-high`/`-max` are tier suffixes on the same
         # identically-priced family; `-pro20x` chains are stripped upstream.
+        # Codename alias (user-confirmed 2026-09-08): "GPT-6-Pro" is the same
+        # model as GPT-6-Astra(-pro), so bare gpt-6-pro maps here too.
+        (r"^gpt-?6(?:-astra)?-pro(-[a-z0-9-]+)?$", "openai:gpt-6-astra",
+         "OpenAI", "gpt-6-astra", "GPT-6 Astra", "manual"),
         (r"^gpt-?6-astra(-[a-z0-9-]+)?$", "openai:gpt-6-astra",
          "OpenAI", "gpt-6-astra", "GPT-6 Astra", "manual"),
 
