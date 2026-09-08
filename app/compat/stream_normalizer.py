@@ -111,6 +111,7 @@ class StreamNormalizer:
         output_tokens = 0
         stop_reason = "end_turn"
         reasoning_buffer = ""
+        thinking_emitted = False  # a thinking block was flushed mid-stream
 
         buffer = ""
         decoder = codecs.getincrementaldecoder("utf-8")()
@@ -144,6 +145,37 @@ class StreamNormalizer:
                 "index": 0,
                 "delta": {"type": "text_delta", "text": text},
             })
+
+        def _flush_thinking():
+            """Yield a complete thinking block for pending reasoning_content.
+
+            Interleaved reasoning (C1 fix, 2026-09-06): reasoning_content deltas
+            are buffered and flushed as a thinking block the moment non-reasoning
+            content (text) arrives, or at end-of-stream when the stream also
+            carried text/tools. A reasoning-ONLY stream never reaches this — it
+            keeps the legacy text-block flush below byte-identical.
+            """
+            nonlocal reasoning_buffer, current_tool_index, thinking_emitted
+            if not reasoning_buffer:
+                return
+            block_index = current_tool_index
+            current_tool_index += 1
+            yield self._encode_anthropic_event("content_block_start", {
+                "type": "content_block_start",
+                "index": block_index,
+                "content_block": {"type": "thinking", "thinking": ""},
+            })
+            yield self._encode_anthropic_event("content_block_delta", {
+                "type": "content_block_delta",
+                "index": block_index,
+                "delta": {"type": "thinking_delta", "thinking": reasoning_buffer},
+            })
+            yield self._encode_anthropic_event("content_block_stop", {
+                "type": "content_block_stop",
+                "index": block_index,
+            })
+            reasoning_buffer = ""
+            thinking_emitted = True
 
         def _register_rescued(calls: List[Dict[str, Any]]) -> None:
             """Add rescued text-form tool calls to tool_blocks.
@@ -355,6 +387,11 @@ class StreamNormalizer:
                 # Text content delta
                 text_content = delta.get("content")
                 if text_content:
+                    if reasoning_buffer:
+                        # Interleaved reasoning (C1): flush pending reasoning as
+                        # a thinking block before any non-reasoning content.
+                        for _tev in _flush_thinking():
+                            yield _tev
                     if rescue_active:
                         # BUG A rescue: the text may contain tool-call markup.
                         # Feed the delimiter-scoped state machine; proven-safe
@@ -463,6 +500,15 @@ class StreamNormalizer:
         if tool_blocks and stop_reason == "end_turn":
             stop_reason = "tool_use"
 
+        # Interleaved reasoning (C1): reasoning still pending at end-of-stream
+        # belongs to a stream that also carried text/tools — surface it as a
+        # thinking block. Only a reasoning-ONLY stream falls through to the
+        # legacy text-block flush below (behavior preserved byte-identical,
+        # including its double-stop quirk).
+        if reasoning_buffer and (text_block_started or thinking_emitted or tool_blocks):
+            for _tev in _flush_thinking():
+                yield _tev
+
         # Max-thinking streams can end with zero content blocks (only
         # reasoning_content deltas). Emit the reasoning as the text block so
         # Anthropic clients never see an empty content list.
@@ -540,6 +586,10 @@ class StreamNormalizer:
         """
         created = int(time.time())
         buffer = ""
+        # C5 fix (2026-09-06): incremental UTF-8 decoder — a network split
+        # mid-codepoint must be held across chunks, not raise (mirrors the
+        # decoder already used in convert_openai_to_anthropic).
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         current_tool_id = None
         current_tool_name = None
         current_tool_index = -1
@@ -551,7 +601,7 @@ class StreamNormalizer:
 
         async for chunk in anthropic_stream:
             try:
-                text_chunk = chunk.decode("utf-8")
+                text_chunk = decoder.decode(chunk)
                 buffer += text_chunk
                 lines = buffer.split("\n")
                 buffer = lines.pop()
@@ -733,6 +783,119 @@ class StreamNormalizer:
             })
 
         # Emit DONE
+        yield b"data: [DONE]\n\n"
+
+    async def convert_gemini_to_openai(
+        self,
+        gemini_stream: AsyncIterator[bytes],
+    ) -> AsyncIterator[bytes]:
+        """
+        Convert a native Gemini streamGenerateContent SSE stream into
+        OpenAI chat/completions SSE.
+
+        Mapping (C1 fix, 2026-09-06):
+          - part with thought:true + text -> delta.reasoning_content
+          - plain text part               -> delta.content
+          - functionCall part             -> delta.tool_calls entry
+          - candidate finishReason        -> terminal finish_reason chunk
+            (MAX_TOKENS -> "length", everything else -> "stop")
+
+        Unknown part shapes are skipped (fail-open); a frame that fails to
+        JSON-decode is skipped — a bad frame never crashes the stream.
+        """
+        created = int(time.time())
+        buffer = ""
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        tool_call_counter = 0
+        finish_emitted = False
+
+        async for chunk in gemini_stream:
+            buffer += decoder.decode(chunk)
+            lines = buffer.split("\n")
+            buffer = lines.pop()
+
+            for line in lines:
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:].strip()
+                if not data_str or data_str == "[DONE]":
+                    continue
+                try:
+                    data = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+
+                candidates = data.get("candidates") or []
+                cand = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
+                content = _as_obj(cand.get("content"))
+                for part in (content.get("parts") or []):
+                    if not isinstance(part, dict):
+                        continue
+                    text = part.get("text")
+                    if text and part.get("thought"):
+                        yield self._encode_openai_chunk({
+                            "id": f"chatcmpl-bsl-{created}",
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": self.model_name,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"reasoning_content": text},
+                                "finish_reason": None,
+                            }],
+                        })
+                    elif text:
+                        yield self._encode_openai_chunk({
+                            "id": f"chatcmpl-bsl-{created}",
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": self.model_name,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"content": text},
+                                "finish_reason": None,
+                            }],
+                        })
+                    elif "functionCall" in part:
+                        fc = _as_obj(part.get("functionCall"))
+                        name = fc.get("name", "")
+                        args = json.dumps(fc.get("args") or {}, ensure_ascii=False)
+                        yield self._encode_openai_chunk({
+                            "id": f"chatcmpl-bsl-{created}",
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": self.model_name,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"tool_calls": [{
+                                    "index": tool_call_counter,
+                                    "id": f"call_{tool_call_counter}",
+                                    "type": "function",
+                                    "function": {"name": name, "arguments": args},
+                                }]},
+                                "finish_reason": None,
+                            }],
+                        })
+                        tool_call_counter += 1
+
+                finish_reason = cand.get("finishReason")
+                if finish_reason and not finish_emitted:
+                    finish_emitted = True
+                    finish = "length" if finish_reason == "MAX_TOKENS" else "stop"
+                    yield self._encode_openai_chunk({
+                        "id": f"chatcmpl-bsl-{created}",
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": self.model_name,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": finish,
+                        }],
+                    })
+
         yield b"data: [DONE]\n\n"
 
     # ──────────────────────────────────────────────────────────────
