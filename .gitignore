@@ -74,3 +74,17 @@ docs/reports/
 # --- Local test assets & runtime data (never commit) ---
 test-assets/
 data/
+
+# --- .brain runtime debris & live-token artifacts (2026-09-08 hygiene sweep) ---
+# Logs dir holds router lockfiles + chat-lane session-token JSONs; backups dir
+# holds timestamped config.yaml copies WITH LIVE API KEYS; *.json census/scan
+# outputs and forensic diffs are session-local. Token files must NEVER be
+# tracked. (Already-tracked .brain files are unaffected by ignore rules.)
+.brain/logs/
+.brain/backups/
+.brain/scripts/
+.brain/qwen_*.tok
+.brain/qwen_*.tok.json
+.brain/*.json
+.brain/*.diff
+.brain/vulture_*.txt
