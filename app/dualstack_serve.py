@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import urllib.request
+import weakref
 
 # Bind-retry window (KEY FIX 2026-08-27, server-stop bug):
 # a zombie router process can linger holding :6969 with
@@ -70,6 +71,19 @@ _ACCEPT_GUARD_LOG_EVERY = 500     # audit every Nth resurrection after the first
 # guard is actively keeping the listener alive right now.
 _accept_guard_last_rearm = 0.0
 
+# ACCEPT-TASK EXCEPTION RETRIEVAL (Lane 3, 2026-09-07):
+# CPython's IocpProactor.accept (windows_events.py) fire-and-forgets a SHADOW
+# task per accept arm — `ensure_future(accept_coro(future, conn))` — whose only
+# job is closing the accept socket on cancellation; it RE-RAISES every other
+# exception into a task nobody references. The F8-A guard retrieves the
+# FUTURE's exception via f.result(), but the shadow TASK's copy stayed
+# unretrieved, so asyncio's Task.__del__ printed "Task exception was never
+# retrieved" + the full WinError-64 traceback to stderr on every resurrect,
+# forever (app.err.log grew to 1.7MB of these).
+_TRACKED_ACCEPT_TASKS: "weakref.WeakSet[asyncio.Task]" = weakref.WeakSet()
+_accept_task_exceptions_consumed = 0
+_ACCEPT_TASK_EXCEPTION_LOG_EVERY = 50
+
 
 def _audit_line(line: str) -> None:
     """Append-only forensic line to .brain/logs/restart_audit.log."""
@@ -83,6 +97,55 @@ def _audit_line(line: str) -> None:
             _fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
     except Exception:
         pass
+
+
+# app.err.log boot-time cap (2026-09-07): scripts/bslrouter.ps1 redirects the
+# router's stderr with `2>> app.err.log` (cmd append mode). That handle is held
+# by the supervisor for the process lifetime, so the file can never be rotated
+# in-process per-append; unchecked, tracebacks (e.g. the WinError-64 shadow-task
+# floods) grow it unbounded. Healed once at boot, off the hot path: when the
+# file exceeds 50MB, rewrite it with only the most recent 10MB tail in place.
+_ERRLOG_PATH_PARTS = (".brain", "logs", "app.err.log")
+_ERRLOG_MAX_BYTES = 50 * 1024 * 1024   # 50MB trigger (mirrors usage/CCPA caps)
+_ERRLOG_TAIL_BYTES = 10 * 1024 * 1024  # keep the most recent 10MB on truncate
+
+
+def _default_errlog_path() -> str:
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        *_ERRLOG_PATH_PARTS,
+    )
+
+
+def _selfheal_errlog(path: str = None) -> bool:
+    """Boot-time self-heal: cap app.err.log by keeping its last ~10MB tail.
+
+    The supervisor's `2>>` redirect means cmd holds an append handle for the
+    whole process lifetime, so rotation must happen in place at boot, before
+    serving. Fail-open exactly like every other log-hygiene helper: if the
+    file is missing, under cap, or locked by an incompatible share mode, do
+    nothing — hygiene must never block startup.
+    """
+    try:
+        target = path or _default_errlog_path()
+        if not os.path.exists(target):
+            return False
+        size = os.path.getsize(target)
+        if size <= _ERRLOG_MAX_BYTES:
+            return False
+        with open(target, "r+b") as fh:
+            fh.seek(max(0, size - _ERRLOG_TAIL_BYTES))
+            tail = fh.read()
+            # Skip to the first newline so the kept tail starts on a full row.
+            nl = tail.find(b"\n")
+            if nl != -1:
+                tail = tail[nl + 1:]
+            fh.seek(0)
+            fh.write(tail)
+            fh.truncate()
+        return True
+    except Exception:
+        return False
 
 
 def _pid_alive(pid: int) -> bool:
@@ -357,6 +420,61 @@ def _self_health_watchdog(port: int, interval_s: float = 10.0, max_failures: int
             os._exit(3)
 
 
+def _consume_done_task(task: "asyncio.Task") -> None:
+    """Done-callback that retrieves (and swallows) a task's exception.
+
+    Retrieving via task.exception() is exactly what clears the flag that makes
+    Task.__del__ print "Task exception was never retrieved" + full traceback.
+    Cancelled tasks are normal shutdown (client disconnects, loop close) and
+    carry no loggable exception. Never raises.
+    """
+    global _accept_task_exceptions_consumed
+    try:
+        if task.cancelled():
+            return
+        exc = task.exception()
+    except Exception:
+        return
+    if exc is None:
+        return
+    _accept_task_exceptions_consumed += 1
+    _n = _accept_task_exceptions_consumed
+    # Same audit discipline as the accept-loop guard: first few + every Nth,
+    # so the true volume is never understated but the log is not flooded.
+    if _n <= 3 or _n % _ACCEPT_TASK_EXCEPTION_LOG_EVERY == 0:
+        _audit_line(
+            f"ACCEPT_TASK_EXCEPTION_CONSUMED count={_n} "
+            f"exc={type(exc).__name__}: {str(exc)[:120]}"
+        )
+
+
+def _track_shadow_accept_tasks() -> None:
+    """Attach _consume_done_task to every live IocpProactor.accept shadow task.
+
+    Runs on the event loop immediately after an accept arm (initial or guard
+    re-arm) — the one moment the freshly-scheduled shadow is guaranteed to be
+    in asyncio.all_tasks(). A previous arm's shadow is already done by then
+    (its completion is what triggered this re-arm) and drops out of the scan;
+    the WeakSet makes re-tracking a still-pending shadow idempotent. The match
+    is by coroutine qualname leaf == 'accept_coro' — the exact CPython name;
+    a stray user coroutine with that name would only gain harmless retrieval.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    for t in asyncio.all_tasks(loop):
+        if t.done() or t in _TRACKED_ACCEPT_TASKS:
+            continue
+        try:
+            leaf = t.get_coro().__qualname__.rsplit(".", 1)[-1]
+        except Exception:
+            continue
+        if leaf == "accept_coro":
+            _TRACKED_ACCEPT_TASKS.add(t)
+            t.add_done_callback(_consume_done_task)
+
+
 def _install_accept_loop_guard() -> bool:
     """Patch ``BaseProactorEventLoop._start_serving`` so AcceptEx OSError
     re-arms the LISTENING socket instead of closing it.
@@ -450,6 +568,11 @@ def _install_accept_loop_guard() -> bool:
                 if self.is_closed():
                     return
                 f = self._proactor.accept(sock)
+                # ACCEPT-TASK EXCEPTION RETRIEVAL (Lane 3): the accept call just
+                # scheduled its CPython shadow accept_coro task — track it so a
+                # WinError-64 death never lands in "Task exception was never
+                # retrieved".
+                _track_shadow_accept_tasks()
             except OSError as exc:
                 if sock.fileno() == -1:
                     # Socket genuinely gone — original behaviour.
@@ -508,6 +631,10 @@ def _install_accept_loop_guard() -> bool:
                         )
                     sock.close()
                     return
+                # Lane 3: the re-arm just scheduled a fresh shadow accept_coro;
+                # the dying one (still pending when the guard's future callback
+                # won the race) is picked up by the same idempotent scan.
+                _track_shadow_accept_tasks()
                 # Publish the heartbeat on EVERY successful re-arm, not just the
                 # logged ones — the watchdog thread reads this to tell a
                 # recoverable accept fault from a genuinely wedged loop.
@@ -564,6 +691,14 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=6969)
     parser.add_argument("--log-level", default="info")
     args, _unknown = parser.parse_known_args()
+
+    # BOOT-TIME LOG HYGIENE: cap app.err.log BEFORE serving (see helper
+    # docstring). Best-effort and off the hot path — never blocks startup.
+    if _selfheal_errlog():
+        print(
+            "[DualStack] app.err.log exceeded 50MB — truncated to last 10MB tail",
+            flush=True,
+        )
 
     # B1 SUPERVISION GATE (2026-08-27): the UI auto_restart toggle was dead
     # code — its gate lived in app/main.py's __main__, a path production

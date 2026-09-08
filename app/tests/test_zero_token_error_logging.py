@@ -51,9 +51,11 @@ def test_zero_token_200_end_reclassified_as_502_empty():
     assert len(ends) == 1
     assert ends[0]["status"] == 502
     assert ends[0]["error"] == "empty"
-    # status 502 skips the `if status == 200:` usage-cost block, so no
-    # success-semantics usage row is recorded for this terminal event.
-    assert obs.usage_stats == []
+    # D1 error-column contract (2026-09-06j): terminal error events DO record
+    # a usage row (status 502 + error='empty', 0/0 tokens) so the error-rate
+    # card and error column have data — previously errors wrote no row.
+    assert len(obs.usage_stats) == 1
+    assert obs.usage_stats[0].get("error") == "empty"
 
 
 def test_zero_token_with_ttft_stays_200():

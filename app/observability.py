@@ -120,7 +120,10 @@ CREATE TABLE IF NOT EXISTS usage_events (
     out INTEGER,
     cost REAL,
     savings REAL,
-    pricing_version TEXT DEFAULT 'v1'
+    pricing_version TEXT DEFAULT 'v1',
+    error TEXT,
+    fel TEXT,
+    refusal_class TEXT
 );
 CREATE TABLE IF NOT EXISTS usage_meta (
     key TEXT PRIMARY KEY,
@@ -158,11 +161,45 @@ def _usage_conn():
         db.close()
 
 
+def _ensure_error_column():
+    """D1: add usage_events.error column in place if missing. Idempotent."""
+    try:
+        with _usage_conn() as conn:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(usage_events)").fetchall()]
+            if "error" not in cols:
+                conn.execute("ALTER TABLE usage_events ADD COLUMN error TEXT")
+    except Exception as _e:
+        print(f"[UsageStore] error-column migration failed (non-blocking): {_e}", flush=True)
+
+
+def _ensure_fel_columns():
+    """FEL-3: add usage_events.fel / refusal_class columns in place if missing.
+
+    fel           — family tag ("cn"|"gpt"|"claude"|"gemini"|"other") when the
+                    Faithful Execution Layer engaged on the request, else NULL.
+    refusal_class — strict-classifier verdict on the final response
+                    ("refusal"|"tos_lecture"|"filter_block"|"recovered"|
+                    "clean"|"unknown"), else NULL.
+    Same guarded-ALTER pattern as _ensure_error_column. Idempotent. Fail-open.
+    """
+    try:
+        with _usage_conn() as conn:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(usage_events)").fetchall()]
+            if "fel" not in cols:
+                conn.execute("ALTER TABLE usage_events ADD COLUMN fel TEXT")
+            if "refusal_class" not in cols:
+                conn.execute("ALTER TABLE usage_events ADD COLUMN refusal_class TEXT")
+    except Exception as _e:
+        print(f"[UsageStore] fel-column migration failed (non-blocking): {_e}", flush=True)
+
+
 def init_usage_store():
     """Create usage_tables and perform one-shot JSONL migration. Idempotent."""
     try:
         with _usage_conn() as conn:
             conn.executescript(_USABLE_SCHEMA)
+        _ensure_error_column()
+        _ensure_fel_columns()
         _migrate_jsonl_once()
     except Exception as _e:
         print(f"[UsageStore] init failed (non-blocking): {_e}", flush=True)
@@ -252,8 +289,8 @@ def _migrate_jsonl_once():
                         conn.execute(
                             """INSERT INTO usage_events
                                (ts, ts_epoch, provider, model, ttft_ms, total_time_ms,
-                                in_cached, cache_write_tokens, in_uncached, out, cost, savings)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                in_cached, cache_write_tokens, in_uncached, out, cost, savings, error)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             (
                                 entry.get("timestamp", dt.isoformat()),
                                 epoch,
@@ -267,6 +304,7 @@ def _migrate_jsonl_once():
                                 entry.get("out"),
                                 entry.get("cost"),
                                 entry.get("savings"),
+                                entry.get("error"),
                             ),
                         )
                         count += 1
@@ -285,14 +323,20 @@ def _migrate_jsonl_once():
 
 
 def append_usage_event(entry: dict) -> None:
-    """Insert a usage event into SQLite. Fail-open: never raises."""
+    """Insert a usage event into SQLite. Fail-open: never raises.
+
+    FEL-3: accepts optional ``fel`` (family tag) and ``refusal_class``
+    (classifier verdict) keys — absent keys insert NULL, so pre-FEL callers
+    and old JSONL rows keep working unchanged.
+    """
     try:
         with _usage_conn() as conn:
             conn.execute(
                 """INSERT INTO usage_events
                    (ts, ts_epoch, provider, model, ttft_ms, total_time_ms,
-                    in_cached, cache_write_tokens, in_uncached, out, cost, savings)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    in_cached, cache_write_tokens, in_uncached, out, cost, savings, error,
+                    fel, refusal_class)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     entry.get("timestamp", datetime.now().isoformat()),
                     _safe_ts_epoch(entry.get("timestamp")),
@@ -306,10 +350,71 @@ def append_usage_event(entry: dict) -> None:
                     entry.get("out"),
                     entry.get("cost"),
                     entry.get("savings"),
+                    entry.get("error"),
+                    entry.get("fel"),
+                    entry.get("refusal_class"),
                 ),
             )
     except Exception as _e:
         print(f"[UsageStore] append failed (non-blocking): {_e}", flush=True)
+
+
+# ── FEL request context (FEL-3 analytics plumbing) ───────────────────────────
+# FEL stage code (pre-flight/egress/recovery/stream-final in app/main.py) notes
+# per-request signals here; log_request attaches them to the usage row it
+# writes for that request_id and pops the entry. Fail-open everywhere: the
+# registry must never affect request handling, only enrich telemetry.
+
+_FEL_REQUEST_CONTEXT: dict = {}
+_FEL_CONTEXT_MAX = 5000
+
+
+def note_fel_context(request_id, fel=None, refusal_class=None) -> None:
+    """Record FEL signals for a request_id (merge — later notes win per key).
+
+    Called from FEL wiring stages in app/main.py. Never raises; unknown/bad
+    input is ignored. Bounded: oldest entries evicted past _FEL_CONTEXT_MAX.
+    """
+    try:
+        rid = str(request_id or "").strip()
+        if not rid:
+            return
+        rec = _FEL_REQUEST_CONTEXT.get(rid)
+        if rec is None:
+            rec = {}
+            _FEL_REQUEST_CONTEXT[rid] = rec
+        if fel:
+            rec["fel"] = str(fel)[:32]
+        if refusal_class:
+            rec["refusal_class"] = str(refusal_class)[:32]
+        if len(_FEL_REQUEST_CONTEXT) > _FEL_CONTEXT_MAX:
+            for _old in list(_FEL_REQUEST_CONTEXT.keys())[:200]:
+                _FEL_REQUEST_CONTEXT.pop(_old, None)
+    except Exception:
+        pass
+
+
+def _take_fel_context(request_id):
+    """Pop the FEL context recorded for request_id (None when absent)."""
+    try:
+        rid = str(request_id or "").strip()
+        if not rid:
+            return None
+        return _FEL_REQUEST_CONTEXT.pop(rid, None)
+    except Exception:
+        return None
+
+
+def _apply_fel_context(entry: dict, fel_ctx) -> None:
+    """Copy fel/refusal_class from a taken context dict onto a usage entry."""
+    try:
+        if isinstance(fel_ctx, dict):
+            if fel_ctx.get("fel"):
+                entry["fel"] = fel_ctx["fel"]
+            if fel_ctx.get("refusal_class"):
+                entry["refusal_class"] = fel_ctx["refusal_class"]
+    except Exception:
+        pass
 
 
 def _safe_ts_epoch(ts_str):
@@ -443,6 +548,16 @@ def query_usage_events(start=None, end=None, provider=None, model=None, q=None,
                 "next_before_id": None, "next_before_ts": None}
 
 
+def _nearest_rank_percentile(sorted_vals, p):
+    """Nearest-rank percentile over an ascending list. Int-rounded, None if empty."""
+    if not sorted_vals:
+        return None
+    n = len(sorted_vals)
+    rank = (p * n + 99) // 100  # ceil(p/100 * n) for integers
+    idx = max(0, min(n - 1, rank - 1))
+    return int(round(sorted_vals[idx]))
+
+
 def query_usage_summary(start=None, end=None, provider=None, model=None, q=None,
                         timeframe=None):
     """Server-side aggregate summary for cards/charts/buckets. Never returns raw rows."""
@@ -488,6 +603,12 @@ def query_usage_summary(start=None, end=None, provider=None, model=None, q=None,
         "buckets": [],
         "row_count": 0,
         "db_bytes": 0,
+        "latency": {
+            "ttft_p50_ms": None, "ttft_p95_ms": None,
+            "total_p50_ms": None, "total_p95_ms": None, "n_timed": 0,
+        },
+        "errors": {"count": 0, "rate": 0.0},
+        "fel": {"applied": 0, "refusals": {}, "recovered": 0, "by_family": {}, "by_model": {}},
     }
 
     try:
@@ -509,6 +630,92 @@ def query_usage_summary(start=None, end=None, provider=None, model=None, q=None,
                 "savings": round(cnt[6], 6),
             }
             result["row_count"] = cnt[0]
+
+            # D1 delta: latency percentiles (nearest-rank) + error rate.
+            try:
+                lat_rows = conn.execute(
+                    f"SELECT ttft_ms, total_time_ms FROM usage_events WHERE {clause}", params
+                ).fetchall()
+                ttfts = sorted(r[0] for r in lat_rows if r[0] is not None)
+                tots = sorted(r[1] for r in lat_rows if r[1] is not None)
+                result["latency"] = {
+                    "n_timed": len(ttfts),
+                    "ttft_p50_ms": _nearest_rank_percentile(ttfts, 50),
+                    "ttft_p95_ms": _nearest_rank_percentile(ttfts, 95),
+                    "total_p50_ms": _nearest_rank_percentile(tots, 50),
+                    "total_p95_ms": _nearest_rank_percentile(tots, 95),
+                }
+                err_cnt = conn.execute(
+                    f"SELECT COUNT(*) FROM usage_events WHERE {clause} AND error IS NOT NULL", params
+                ).fetchone()[0]
+                rc = result["row_count"] or 0
+                result["errors"] = {
+                    "count": err_cnt,
+                    "rate": round(err_cnt / rc, 4) if rc else 0.0,
+                }
+            except Exception:
+                pass  # delta aggregates are best-effort
+
+            # FEL-3: refusal analytics over the persisted fel/refusal_class
+            # columns. Same WHERE filters, fail-open — an empty store or an
+            # unmigrated DB yields the zeros shape above, never an error.
+            try:
+                _fel_hard = "('refusal','tos_lecture')"
+                applied_cnt = conn.execute(
+                    f"SELECT COUNT(*) FROM usage_events WHERE {clause} AND fel IS NOT NULL", params
+                ).fetchone()[0]
+                class_rows = conn.execute(
+                    f"SELECT refusal_class, COUNT(*) FROM usage_events "
+                    f"WHERE {clause} AND refusal_class IS NOT NULL GROUP BY refusal_class",
+                    params,
+                ).fetchall()
+                refusals_map = {str(cls): int(n) for cls, n in class_rows if cls}
+                fam_rows = conn.execute(
+                    f"SELECT fel, COUNT(*), "
+                    f"SUM(CASE WHEN refusal_class IN {_fel_hard} THEN 1 ELSE 0 END), "
+                    f"SUM(CASE WHEN refusal_class = 'recovered' THEN 1 ELSE 0 END) "
+                    f"FROM usage_events WHERE {clause} AND fel IS NOT NULL "
+                    f"GROUP BY fel ORDER BY 2 DESC",
+                    params,
+                ).fetchall()
+                by_family = {
+                    str(f): {"requests": int(r), "refusals": int(ref or 0),
+                             "recovered": int(rec or 0)}
+                    for f, r, ref, rec in fam_rows if f
+                }
+                by_model: dict = {}
+                model_ref_rows = conn.execute(
+                    f"SELECT COALESCE(model, 'unknown') AS m, COUNT(*) FROM usage_events "
+                    f"WHERE {clause} AND refusal_class IN {_fel_hard} "
+                    f"GROUP BY m ORDER BY 2 DESC, m LIMIT 8",
+                    params,
+                ).fetchall()
+                ref_names = [r[0] for r in model_ref_rows]
+                ref_by_name = {r[0]: int(r[1]) for r in model_ref_rows}
+                if ref_names:
+                    ph = ",".join("?" * len(ref_names))
+                    stat_rows = conn.execute(
+                        f"SELECT COALESCE(model, 'unknown'), COUNT(*), "
+                        f"SUM(CASE WHEN refusal_class = 'recovered' THEN 1 ELSE 0 END) "
+                        f"FROM usage_events WHERE {clause} "
+                        f"AND COALESCE(model, 'unknown') IN ({ph}) GROUP BY 1",
+                        [*params, *ref_names],
+                    ).fetchall()
+                    for mname, reqs, rec in stat_rows:
+                        by_model[str(mname)] = {
+                            "requests": int(reqs),
+                            "refusals": ref_by_name.get(str(mname), 0),
+                            "recovered": int(rec or 0),
+                        }
+                result["fel"] = {
+                    "applied": int(applied_cnt),
+                    "refusals": refusals_map,
+                    "recovered": int(refusals_map.get("recovered", 0)),
+                    "by_family": by_family,
+                    "by_model": by_model,
+                }
+            except Exception:
+                pass  # FEL analytics are best-effort
 
             # Provider aggregates (top 12 + other)
             prov_rows = conn.execute(
@@ -855,6 +1062,105 @@ def _safe_trace_value(value, max_len: int = 160):
     return text if len(text) <= max_len else text[:max_len] + "…"
 
 
+def _short_error_token(msg):
+    """Collapse an error message into a short single-line token (max 80 chars)."""
+    if msg is None:
+        return None
+    try:
+        collapsed = " ".join(str(msg).split())
+    except Exception:
+        return None
+    return collapsed[:80] if collapsed else None
+
+
+def _single_line_error(value, max_len: int = 500):
+    """Serialize an error body as ONE physical line for console END rows.
+
+    Tracebacks and nested error dicts used to hit the END row with embedded
+    newlines (via str(dict) / multi-line messages), making app.out.log END
+    rows ungreppable — a single request spanned several physical lines. The
+    console row is the grep surface, so everything here is flattened:
+
+    - str input: internal newlines/tabs collapse to literal `\\n` markers.
+    - dict/other input: json.dumps with default=str (non-serializable objects
+      become strings, never an exception) and compact separators. JSON string
+      escaping already inlines newlines, but a post-collapse pass catches
+      any exotic control characters.
+    """
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            text = value
+        else:
+            text = json.dumps(
+                value, ensure_ascii=True, default=str, separators=(",", ":")
+            )
+        text = text.replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n")
+        text = text.replace("\t", "\\t")
+        return text[:max_len] if max_len and len(text) > max_len else text
+    except Exception:
+        try:
+            return " ".join(str(value).split())[:max_len]
+        except Exception:
+            return None
+
+
+def note_degenerate_output(
+    provider: str,
+    model: str,
+    in_tokens: int,
+    out_tokens: int,
+    request_id: str = None,
+    effort: str = None,
+    action: str = "telemetry",
+) -> None:
+    """Record a degenerate-output sighting (Lane 1: gpt-family / vsllm-r).
+
+    Fires when a finished 200 response matches the rubble signature — large
+    input (>= DEGENERATE_INPUT_TOKEN_FLOOR) but only reasoning-rubble output
+    (<= DEGENERATE_OUTPUT_TOKEN_CEILING tokens). Emits a dedicated console
+    entry (event="degenerate_output") plus a stdout trace so the dashboard
+    shows the failure class alongside normal request rows.
+
+    Telemetry-only and fail-open: by the time this runs the rubble has
+    already streamed to the client, so no retry/reclassification happens
+    here — prevention is the pre-egress effort cap in the request path.
+    """
+    try:
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "event": "degenerate_output",
+            "provider": provider,
+            "model": model,
+            "in_tokens": int(in_tokens or 0),
+            "out_tokens": int(out_tokens or 0),
+            "action": action,
+        }
+        if request_id:
+            entry["request_id"] = request_id
+        if effort:
+            entry["effort"] = _safe_trace_value(effort)
+        console_logs.append(entry)
+        if len(console_logs) > 10000:
+            console_logs.pop(0)
+        _persist_entry(_CONSOLE_LOG_PATH, entry)
+        try:
+            print(
+                f"[DegenerateGuard] {provider}/{model} degenerate output: "
+                f"in={entry['in_tokens']} out={entry['out_tokens']} "
+                f"effort={effort or '-'} action={action}",
+                flush=True,
+            )
+        except UnicodeEncodeError:
+            print(
+                "[DegenerateGuard] degenerate output (ascii-folded)",
+                flush=True,
+            )
+    except Exception as _dog_err:
+        print(f"[DegenerateGuard] note failed (non-blocking): {_dog_err}", flush=True)
+
+
 def log_request_start(
     provider: str,
     model: str,
@@ -948,6 +1254,7 @@ def log_request(
     thinking: dict = None,
     cache_write_tokens: int = 0,
     combo: str = None,
+    degenerate: bool = False,
 ):
     """Log a request to Usage tracker, dashboard console, and stdout trace."""
     now = datetime.now()
@@ -987,8 +1294,19 @@ def log_request(
         log_entry["stream"] = bool(stream)
     if upstream_url:
         log_entry["upstream_url"] = _safe_trace_value(upstream_url)
+    if degenerate:
+        # Degenerate-output guard (Lane 1): 200 stream matching the rubble
+        # signature (large input, <=DEGENERATE_OUTPUT_TOKEN_CEILING output).
+        # Telemetry-only flag — does not reclassify status or trip breakers.
+        log_entry["degenerate"] = True
     if error_msg:
-        log_entry["error"] = _safe_trace_value(error_msg, max_len=500)
+        # ONE physical line — flatten the RAW body first (dicts → compact JSON
+        # with default=str, strings → newlines collapsed), then let
+        # _safe_trace_value redact secrets. Feeds both the dashboard row and
+        # the printed END line; multi-line bodies broke both surfaces.
+        log_entry["error"] = _safe_trace_value(
+            _single_line_error(error_msg), max_len=500
+        )
     if thinking:
         try:
             log_entry["thinking"] = {
@@ -1082,7 +1400,7 @@ def log_request(
         f"client={client or '-'} provider={provider} model={model}{_combo_str} "
         f"ttft={ttft_ms}ms total={total_ms if total_ms is not None else '-'}ms "
         f"in={in_tokens} out={out_tokens} cached={cached_tokens} "
-        f"error={_safe_trace_value(error_msg, max_len=180) if error_msg else '-'}{_thinking_str}"
+        f"error={_safe_trace_value(_single_line_error(error_msg), max_len=180) if error_msg else '-'}{_thinking_str}"
     )
     if not _skip_side_effects:
         try:
@@ -1112,6 +1430,39 @@ def log_request(
             print(f"[CircuitBreaker] record_outcome failed (non-blocking): {_cb_err}", flush=True)
 
     # 2. Usage / Cost Tracking
+    _err_token = None
+    if status != 200:
+        _err_token = _short_error_token(error_msg) if error_msg else "http_%s" % status
+    if _err_token and not _skip_side_effects:
+        err_entry = {
+            "timestamp": timestamp,
+            "provider": provider,
+            "model": model,
+            "ttft_ms": ttft_ms,
+            "total_time_ms": total_ms,
+            "in_cached": 0,
+            "cache_write_tokens": 0,
+            "in_uncached": 0,
+            "out": out_tokens,
+            "cost": 0.0,
+            "savings": 0.0,
+            "error": _err_token,
+        }
+        _apply_fel_context(err_entry, _take_fel_context(request_id))
+        append_usage_event(err_entry)
+        usage_stats_shim.append(err_entry)
+        usage_stats.append(err_entry)
+        if len(usage_stats) > _USAGE_RETENTION:
+            del usage_stats[:-_USAGE_RETENTION]
+        try:
+            _persist_entry(
+                _USAGE_LOG_PATH,
+                err_entry,
+                max_file_size=_USAGE_MAX_LOG_FILE_SIZE,
+                max_entries=_USAGE_RETENTION,
+            )
+        except Exception:
+            pass
     if status == 200:
         rates_map = _load_model_costs(config)
         m_rates = rates_map.get(model, {"in": 0.0, "out": 0.0, "cache": 0.0})
@@ -1144,6 +1495,7 @@ def log_request(
             "cost": cost,
             "savings": cache_savings
         }
+        _apply_fel_context(usage_entry, _take_fel_context(request_id))
         # Write to SQLite — the only durable usage source of truth.
         append_usage_event(usage_entry)
         # Keep a bounded in-memory shim for non-API callers.

@@ -412,3 +412,191 @@ def test_slow_1m_insert_smoke(tmp_usage_db):
             break
     result = obs.query_usage_events()
     assert result["total"] > 0
+
+
+# ── D1: error column, latency percentiles, error rate ─────────────────────
+
+def test_error_column_present_and_idempotent(tmp_usage_db):
+    db_path = tmp_usage_db[0]
+    conn = sqlite3.connect(db_path)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(usage_events)").fetchall()]
+    conn.close()
+    assert "error" in cols
+    assert cols.count("error") == 1
+
+    # Idempotent: second init must not duplicate the column
+    obs.init_usage_store()
+    conn = sqlite3.connect(db_path)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(usage_events)").fetchall()]
+    conn.close()
+    assert cols.count("error") == 1
+
+
+def test_old_schema_db_gains_error_column(tmp_usage_db, tmp_path):
+    db_path, _tmp = tmp_usage_db
+    legacy_db = str(tmp_path / "legacy_usage.sqlite3")
+
+    # Raw legacy schema WITHOUT the error column + one pre-existing row
+    conn = sqlite3.connect(legacy_db)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS usage_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            ts_epoch REAL NOT NULL,
+            provider TEXT,
+            model TEXT,
+            ttft_ms REAL,
+            total_time_ms REAL,
+            in_cached INTEGER,
+            cache_write_tokens INTEGER,
+            in_uncached INTEGER,
+            out INTEGER,
+            cost REAL,
+            savings REAL,
+            pricing_version TEXT DEFAULT 'v1'
+        )"""
+    )
+    conn.execute(
+        "INSERT INTO usage_events (ts, ts_epoch, provider, model) VALUES (?, ?, ?, ?)",
+        ("2026-08-01T00:00:00", 1785542400.0, "legacy-prov", "legacy-model"),
+    )
+    conn.commit()
+    conn.close()
+
+    # Defensive: clear any stale WAL/SHM sidecars before re-pointing
+    for suffix in ("-wal", "-shm"):
+        try:
+            os.remove(legacy_db + suffix)
+        except OSError:
+            pass
+
+    prev = obs.usage_db_path
+    try:
+        obs.usage_db_path = legacy_db
+        obs.init_usage_store()
+
+        conn = sqlite3.connect(legacy_db)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(usage_events)").fetchall()]
+        count = conn.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0]
+        conn.close()
+        assert "error" in cols
+        assert cols.count("error") == 1
+        assert count == 1  # pre-existing row survived the in-place migration
+    finally:
+        obs.usage_db_path = prev
+
+
+def _remove_db(db_path):
+    try:
+        os.remove(db_path)
+    except OSError:
+        pass
+    for suffix in ("-wal", "-shm"):
+        try:
+            os.remove(db_path + suffix)
+        except OSError:
+            pass
+
+
+def test_latency_percentiles(tmp_usage_db):
+    db_path = tmp_usage_db[0]
+
+    # 10 rows: ttft 100..1000, total 200..2000
+    for i in range(1, 11):
+        e = _make_entry(i)
+        e["ttft_ms"] = float(i * 100)
+        e["total_time_ms"] = float(i * 200)
+        obs.append_usage_event(e)
+    lat = obs.query_usage_summary()["latency"]
+    assert lat["n_timed"] == 10
+    assert lat["ttft_p50_ms"] == 500
+    assert lat["ttft_p95_ms"] == 1000
+    assert lat["total_p50_ms"] == 1000
+    assert lat["total_p95_ms"] == 2000
+
+    # Uneven n=7: ttft 100..700, total 200..1400
+    _remove_db(db_path)
+    obs.init_usage_store()
+    for i in range(1, 8):
+        e = _make_entry(i)
+        e["ttft_ms"] = float(i * 100)
+        e["total_time_ms"] = float(i * 200)
+        obs.append_usage_event(e)
+    lat = obs.query_usage_summary()["latency"]
+    assert lat["n_timed"] == 7
+    assert lat["ttft_p50_ms"] == 400
+    assert lat["ttft_p95_ms"] == 700
+    assert lat["total_p50_ms"] == 800
+    assert lat["total_p95_ms"] == 1400
+
+    # No timed rows → null percentiles
+    _remove_db(db_path)
+    obs.init_usage_store()
+    e = _make_entry(0)
+    e["ttft_ms"] = None
+    e["total_time_ms"] = None
+    obs.append_usage_event(e)
+    lat = obs.query_usage_summary()["latency"]
+    assert lat["n_timed"] == 0
+    assert lat["ttft_p50_ms"] is None
+    assert lat["ttft_p95_ms"] is None
+    assert lat["total_p50_ms"] is None
+    assert lat["total_p95_ms"] is None
+
+
+def test_error_rate(tmp_usage_db):
+    # Empty DB → zero count and zero rate
+    s = obs.query_usage_summary()
+    assert s["errors"]["count"] == 0
+    assert s["errors"]["rate"] == 0.0
+
+    # Mixed rows: 1 error among 4
+    for i in range(4):
+        e = _make_entry(i)
+        if i == 0:
+            e["error"] = "http_502"
+        obs.append_usage_event(e)
+    s = obs.query_usage_summary()
+    assert s["errors"]["count"] == 1
+    assert s["errors"]["rate"] == 0.25
+
+
+def test_writer_error_row(tmp_usage_db):
+    # Non-200 without error_msg → short token 'http_502', zeroed tokens/cost
+    obs.log_request(
+        provider="prov-x", model="model-x", status=502,
+        ttft=0.1, in_tokens=10, out_tokens=5, cached_tokens=0,
+        config={}, error_msg=None, total_time=0.5,
+    )
+    rows = obs.query_usage_events(limit=10)["entries"]
+    err_rows = [r for r in rows if r.get("error")]
+    assert len(err_rows) == 1
+    er = err_rows[0]
+    assert er["error"] == "http_502"
+    assert er["cost"] == 0.0
+    assert er["in_cached"] == 0
+    assert er["cache_write_tokens"] == 0
+    assert er["in_uncached"] == 0
+    assert er["out"] == 5
+
+    # Success row keeps error NULL
+    obs.log_request(
+        provider="prov-x", model="model-x", status=200,
+        ttft=0.1, in_tokens=10, out_tokens=5, cached_tokens=0,
+        config={}, total_time=0.5,
+    )
+    rows = obs.query_usage_events(limit=10)["entries"]
+    ok_rows = [r for r in rows if r.get("error") is None]
+    assert len(ok_rows) == 1
+    assert ok_rows[0]["out"] == 5
+    assert ok_rows[0]["in_uncached"] == 10
+
+
+def test_summary_keys_backcompat(tmp_usage_db):
+    obs.append_usage_event(_make_entry(0))
+    s = obs.query_usage_summary()
+    for key in ("totals", "providers", "models", "buckets", "row_count", "db_bytes"):
+        assert key in s
+    # New D1 keys also present
+    assert "latency" in s
+    assert "errors" in s
