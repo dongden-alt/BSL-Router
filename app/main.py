@@ -48,7 +48,7 @@ from app.oauth import (
 )
 from app.utils.google_cloudcode_egress import build_google_egress_client
 from app.normalizer import UniversalNormalizer
-from app.middleware.caching import PromptCachingAdapter
+from app.middleware.caching import PromptCachingAdapter, pick_warmest_connection, propagate_prompt_cache_key, record_cache_warmth
 from app.scouts.vision import polyfill_vision, VisionPolyfillFailed
 from app.scouts.docs_parser import parse_documents
 from app.middleware.compaction import apply_compaction
@@ -89,6 +89,9 @@ from app.antifreeze import (
 from app.compat import get_profile, is_anthropic_compatible, ToolLedger
 from app.middleware.response_format_guard import inject_json_instruction, has_response_format
 from app.middleware.glm_tools import normalize_glm_tool_calls, inject_glm_language_forcing
+from app.middleware.tool_arg_repair import repair_tool_calls_argument_strings
+from app.middleware.glm_parallel_guard import apply_glm_parallel_guard
+from app.middleware.gemini_last_role import ensure_gemini_last_role
 from app.middleware.anthropic_tools import (
     AnthropicStreamToolGuard,
     anthropic_tool_repair_enabled,
@@ -109,10 +112,36 @@ from app.middleware.quality import (
     _extract_usage,
     _extract_finish_reason,
 )
+from app.middleware.normalizer_shadow import endpoint_dialect, shadow_run  # N2 (default OFF)
+from app.middleware.fel_wiring import (  # FEL-2a (default OFF — tools.fel.enabled)
+    apply_fel_directives,
+    build_recovery_body,
+    classify_refusal,
+    clarity_preprocess,
+    detect_family,
+    extract_last_user_text,
+    fel_event,
+    resolve_fel,
+    reframe_text,
+    select_profile,
+    set_last_user_text,
+)
+from app.middleware.fel_wiring import (  # local alias — visible-text extractor
+    response_visible_text as fel_response_visible_text,
+)
+from app.middleware.fel_wiring import fel_stream_final  # stream final-assembly log
 from app.compat.reasoning_policy import (
     get_policy as get_reasoning_policy,
     apply_thinking_to_anthropic_payload,
     strip_thinking_from_messages,
+    cap_effort_for_input_size,
+    is_degenerate_output as _is_degenerate_output,
+    degenerate_guard_config as _degenerate_guard_config,
+    canonical_model_id as _canonical_model_id,
+    DEGENERATE_EFFORT_CAP,
+    DEGENERATE_GUARD_MODELS_DEFAULT,
+    DEGENERATE_INPUT_TOKEN_FLOOR,
+    DEGENERATE_OUTPUT_TOKEN_CEILING,
 )
 # Single reasoning writer. Replaces the former in-line regex cascade AND
 # the parallel apply_thinking_to_anthropic_payload path, which the cascade
@@ -406,6 +435,116 @@ def _ladder_deadline(attempt: int) -> float:
     if attempt < 0:
         attempt = 0
     return STREAM_DEADLINE_LADDER[min(attempt, len(STREAM_DEADLINE_LADDER) - 1)]
+
+
+# ── SSE keepalive pre-first-chunk (Lane 3, 2026-09-07) ──────────────────────
+# CC SDK aborts a request with "Slow first byte: no stream chunk 30.0s after
+# request sent" when NOTHING reaches the client between forwarding upstream
+# and the first upstream chunk. Router TTFT is 15-55s at effort:xhigh/max with
+# large payloads -> the CC watchdog fires -> retry/abort -> spawn failures.
+#
+# While the egress stream has produced no first chunk yet, these helpers emit
+# a protocol-correct keepalive frame every tools.sse_keepalive.interval_s
+# (default 10.0s):
+#   - Anthropic-format clients: `event: ping` + {"type":"ping"} — the official
+#     Anthropic stream keepalive event, ignored by client SDK logic.
+#   - OpenAI-format clients: `: keepalive` SSE comment — spec-compliant,
+#     discarded by every SSE parser, but resets byte-activity watchdogs.
+# The heartbeat STOPS at the first real chunk: mid-stream frames must stay
+# byte-faithful. Gemini egress is NOT touched (gemini_egress_stream already
+# emits `: heartbeat`/`: keepalive` during its connect window).
+_SSE_KEEPALIVE_FRAMES = {
+    "openai": b": keepalive\n\n",
+    "anthropic": b'event: ping\ndata: {"type":"ping"}\n\n',
+}
+
+
+def _sse_keepalive_settings(config) -> "tuple[bool, float]":
+    """(enabled, interval_s) from tools.sse_keepalive. Default ON / 10.0s.
+
+    Accepts both scalar (`sse_keepalive: false`) and dict form
+    (`sse_keepalive: {enabled: true, interval_s: 10.0}`). Any error reading
+    the gate fails open to ENABLED — absence of the key must not disable the
+    fix on existing configs (config.yaml has no sse_keepalive key yet).
+    """
+    try:
+        tools_cfg = (config or {}).get("tools") or {}
+        ka = tools_cfg.get("sse_keepalive")
+        if ka is False:
+            return False, 10.0
+        if not isinstance(ka, dict):
+            ka = {}
+        enabled = bool(ka.get("enabled", True))
+    except Exception:
+        return True, 10.0
+    try:
+        interval = float(ka.get("interval_s", 10.0) or 10.0)
+    except Exception:
+        interval = 10.0
+    if interval <= 0:
+        interval = 10.0
+    return enabled, interval
+
+
+async def _sse_keepalive_pre_first_chunk(
+    agen,
+    *,
+    interval_s: float,
+    fmt: str = "openai",
+):
+    """Emit keepalive frames while waiting for the FIRST chunk of `agen`.
+
+    After the first chunk the wrapper is a pure byte-faithful passthrough —
+    keepalives are NEVER interleaved after content starts (a client parser
+    cannot be un-fed; see stream_guard's emission invariant).
+
+    THE NON-CANCELLING WAIT IS LOAD-BEARING. `asyncio.wait_for(
+    iterator.__anext__(), timeout=...)` would CANCEL the pending upstream
+    read on every keepalive timeout, killing the header/body wait we are
+    trying to bridge (the deadline ladder relies on exactly that
+    cancel-to-retry semantics; here we must preserve the in-flight read).
+    Instead the first `__anext__()` runs in its own task and is raced via
+    `asyncio.wait` — which NEVER cancels on timeout — so the upstream read
+    continues underneath the keepalives and is consumed when it completes.
+
+    Exceptions (including the empty-stream StopAsyncIteration) and client
+    cancellation propagate with the inner generator closed, matching the
+    LEAK FIX convention every egress wrapper follows.
+    """
+    frame = _SSE_KEEPALIVE_FRAMES.get(fmt, _SSE_KEEPALIVE_FRAMES["openai"])
+    iterator = agen.__aiter__()
+    first_task = None
+    try:
+        first_task = asyncio.ensure_future(iterator.__anext__())
+        while True:
+            done, _pending = await asyncio.wait({first_task}, timeout=interval_s)
+            if first_task in done:
+                break
+            # Still nothing upstream: one keepalive frame, then re-wait on the
+            # SAME task — the read stays pending underneath, never restarted.
+            yield frame
+        try:
+            first = first_task.result()
+        except StopAsyncIteration:
+            return  # upstream ended without ever producing a chunk
+        first_task = None
+        yield first
+        # First chunk delivered — passthrough, byte-faithful, no more frames.
+        async for chunk in iterator:
+            yield chunk
+    finally:
+        if first_task is not None and not first_task.done():
+            first_task.cancel()
+            try:
+                await first_task
+            except BaseException:
+                pass  # our own cleanup cancel — never mask the in-flight exit
+        _ac = getattr(agen, "aclose", None)
+        if callable(_ac):
+            try:
+                await _ac()
+            except BaseException:
+                pass
 
 
 _RECOVERABLE = {400, 401, 403, 404, 405, 408, 409, 413, 422, 429, 500, 502, 503, 504, 524, 525, 526}  # HTTP status codes that trigger combo/chain advance
@@ -1628,6 +1767,61 @@ def _get_ssl_disabled_client(proxy_url: Optional[str] = None) -> httpx.AsyncClie
             proxy_url=proxy_url, verify=False
         )
     return _ssl_disabled_clients[_key]
+
+
+# ── Per-connection proxy_bypass flag (D3, 2026-09-06) ────────────────────────
+# Connections routed via the MITM lane fail in two classes (SSL self-signed
+# mistrust + upstream-unreachable, .brain/logs/ccpa_failures.jsonl). A
+# connection-level `proxy_bypass: true` makes that lane connect DIRECT through
+# the same hardened no-proxy clients used when no proxy_url is configured —
+# eliminating both failure classes at once. The flag is set by the user in the
+# connection (config.yaml / dashboard connections list); it is NOT forced on
+# anyone by default.
+
+
+def _connection_wants_proxy_bypass(active_conn: Optional[dict]) -> bool:
+    """Coerce a connection's proxy_bypass flag to bool (validation on read).
+
+    Accepts real booleans and common hand-edited spellings ("true", "1",
+    "yes", "on" — case-insensitive) so a stringly-typed config.yaml cannot
+    silently fail to bypass. Anything else is False — the secure default is
+    to honor the configured proxy.
+    """
+    if not isinstance(active_conn, dict):
+        return False
+    raw = active_conn.get("proxy_bypass")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(raw, (int, float)):
+        return raw != 0
+    return False
+
+
+def _effective_egress_proxy(
+    active_conn: Optional[dict], provider_name: str = ""
+) -> Optional[str]:
+    """Return the proxy URL the egress layer should use for this connection.
+
+    proxy_bypass: true → None, i.e. the caller's client builder resolves to a
+    DIRECT (no-proxy) hardened client — _get_client_for_proxy(None) and
+    _get_ssl_disabled_client(None) already implement that primitive; this flag
+    just makes it reachable per connection. Logs one [ProxyBypass] line only
+    when a configured proxy is actually suppressed, so the bypass lane is
+    observable in the same style as [SSLCertHint].
+    """
+    proxy_url = active_conn.get("proxy_url") if isinstance(active_conn, dict) else None
+    if _connection_wants_proxy_bypass(active_conn):
+        if proxy_url:
+            print(
+                f"[ProxyBypass] provider={provider_name or '?'}: connection proxy "
+                f"{proxy_url} suppressed - connecting DIRECT (proxy_bypass: true)",
+                flush=True,
+            )
+        return None
+    return proxy_url
+
 
 async def _mitm_watchdog_loop():
     """Background task: restart BSL's OWN mitmdump if it dies.
@@ -2938,6 +3132,23 @@ def _usage_pagination_params(limit, before_id, before_ts):
     else:
         _ts = None
     return _limit, str(before_id) if before_id is not None else None, _ts
+
+
+def _fel_family_enabled(config: dict, family: str) -> bool:
+    """FEL-3 per-family gate (tools.fel.families, UI per-family toggles).
+
+    families: {cn|gpt|claude|gemini: bool}; absent key / absent map / any
+    malformed shape → enabled (fail-open, matches resolve_fel fail-open).
+    Family tags come from faithful_execution.detect_family.
+    """
+    try:
+        fams = ((config or {}).get("tools") or {}).get("fel") or {}
+        fams = fams.get("families")
+        if isinstance(fams, dict) and family in fams:
+            return bool(fams[family])
+    except Exception:
+        pass
+    return True
 
 
 @app.get("/api/observability/usage")
@@ -6111,6 +6322,142 @@ def _openai_chunk_carries_output(text_chunk: str) -> bool:
     )
 
 
+def _degenerate_effective_models(guard_cfg: dict) -> set:
+    """Effective degenerate-cap model set after per-model overrides.
+
+    Starts from the configured models set (default DEGENERATE_GUARD_MODELS_
+    DEFAULT = gpt-5.6-terra only), removes every override with enabled=false
+    and adds every override with enabled=true not already present. Overrides
+    without an `enabled` key never change membership (their tuning still
+    applies in _degenerate_effort_cap_decision when the model is in the
+    set). Canonical ids throughout — dash variants (gpt-5-6-terra) fold onto
+    dotted canonicals via the families/_base.py variant-ID choke point.
+    """
+    models = guard_cfg.get("models")
+    if models is None or not isinstance(models, (list, tuple)):
+        models = DEGENERATE_GUARD_MODELS_DEFAULT
+    effective = {
+        _canonical_model_id(m)
+        for m in models
+        if isinstance(m, str) and m.strip()
+    }
+    overrides = guard_cfg.get("model_overrides")
+    if isinstance(overrides, dict):
+        for key, ovr in overrides.items():
+            if not isinstance(key, str) or not isinstance(ovr, dict):
+                continue
+            if "enabled" not in ovr:
+                continue
+            oid = _canonical_model_id(key)
+            if ovr.get("enabled"):
+                effective.add(oid)
+            else:
+                effective.discard(oid)
+    return effective
+
+
+def _degenerate_effort_cap_decision(
+    model_id: str,
+    provider_name: str,
+    wire_format: str,
+    reasoning_effort,
+    input_tokens: int,
+    guard_cfg: dict,
+) -> Optional[dict]:
+    """Decide the pre-egress effort cap for the degenerate-output guard.
+
+    Lane 1 scope (evidence 2026-09-06 + 2026-09-07): vsllm-r serves gpt
+    models over the openai-responses wire, and at effort xhigh/max with
+    42k-63k input the upstream returns 200 with 9-112 tokens of reasoning
+    rubble. Scope the cap to exactly that failure class — vsllm-r provider
+    + openai-responses wire + per-model set membership + explicit xhigh/max
+    + input at/above the floor — so no other lane's effort vocabulary is
+    touched. The per-model set (2026-09-07 probe: sol PASS 4/4, terra
+    RUBBLE 4/4, astra EMPTY 4/4 on an upstream 524/502/429 storm) defaults
+    to gpt-5.6-terra ONLY; tools.degenerate_output_guard.models widens or
+    empties it and model_overrides flips membership per model. This replaces
+    the former gpt-5 family-contract gate, which capped the whole family
+    including the healthy sol.
+
+    Per-model override wins over global when present: effort_ladder (else
+    global), input_token_floor / effort_cap flat keys (else global); an
+    override with neither ladder nor flat keys inherits the global tuning
+    entirely.
+
+    Returns None (no cap) or {"from", "to", "input_tokens", "floor",
+    "tier_floor", "model"} for the caller to apply + log — tier_floor is the
+    floor of the winning effort_ladder tier (the legacy flat pair when no
+    ladder is configured) and model is the canonical model id. Pure
+    decision — no payload mutation here, so it is unit-testable without the
+    handler.
+    """
+    if not guard_cfg.get("enabled", True):
+        return None
+    if (provider_name or "").lower() != "vsllm-r":
+        return None
+    if (wire_format or "openai") != "openai-responses":
+        return None
+    cid = _canonical_model_id(model_id)
+    if cid not in _degenerate_effective_models(guard_cfg):
+        return None
+    floor = guard_cfg.get("input_token_floor", DEGENERATE_INPUT_TOKEN_FLOOR)
+    cap = guard_cfg.get("effort_cap", DEGENERATE_EFFORT_CAP)
+    ladder = guard_cfg.get("effort_ladder")
+    _ovr = (guard_cfg.get("model_overrides") or {}).get(cid)
+    if isinstance(_ovr, dict):
+        _has_flat = ("effort_cap" in _ovr) or ("input_token_floor" in _ovr)
+        if "effort_ladder" in _ovr:
+            ladder = _ovr["effort_ladder"]
+        elif _has_flat:
+            ladder = (
+                (_ovr.get("input_token_floor", floor), _ovr.get("effort_cap", cap)),
+            )
+        if "input_token_floor" in _ovr:
+            floor = _ovr["input_token_floor"]
+    if ladder is None:
+        # Legacy flat keys (effort_cap + input_token_floor) still honored:
+        # absent effort_ladder builds the single back-compat tier from them.
+        ladder = ((floor, cap),)
+    capped_effort, did_cap = cap_effort_for_input_size(
+        reasoning_effort, input_tokens, floor=floor, ladder=ladder
+    )
+    if not did_cap:
+        return None
+    tier_floor = floor
+    try:
+        n_in = int(input_tokens or 0)
+    except (TypeError, ValueError):
+        n_in = 0
+    for tf, _tc in sorted(ladder, key=lambda t: t[0], reverse=True):
+        if n_in >= tf:
+            tier_floor = tf
+            break
+    return {
+        "from": str(reasoning_effort or "").lower(),
+        "to": capped_effort,
+        "input_tokens": n_in,
+        "floor": floor,
+        "tier_floor": tier_floor,
+        "model": cid,
+    }
+
+
+def _degenerate_effort_telemetry(d: dict) -> str:
+    """effort_cap telemetry string: {from}->{to}@{in}in[tier={t}][model={m}].
+
+    Single source of truth shared by the thinking_info field and the
+    [DegenerateGuard] console row so both always agree on format. The
+    [model=...] suffix (2026-09-07) names the canonical model the cap
+    applied to, since the cap is scoped per model now.
+    """
+    return (
+        f"{d['from']}->{d['to']}"
+        f"@{d['input_tokens']}in"
+        f"[tier={d.get('tier_floor', d['floor'])}]"
+        f"[model={d.get('model', '')}]"
+    )
+
+
 async def _process_chat_completion(body: dict, client_wants_anthropic: bool = False, client_wants_gemini: bool = False, _retry_state: dict = None, request: Request = None):
 
     config = cs_get_config()
@@ -6124,6 +6471,59 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         or body.get("_bsl_original_model")
         or model
     )
+
+    # ── FEL-2a PRE-FLIGHT: clarity preprocess on the last user message ─────
+    # Runs ONLY when tools.fel.enabled is truthy (resolve_fel → None otherwise,
+    # so a disabled/malformed config costs one dict lookup and zero mutation).
+    # FEL-3: requests may also disable FEL per family (tools.fel.families,
+    # UI toggles) — the request-model family gates the whole pre-flight.
+    # Guard flags ride request.state: once-per-request idempotency, and the
+    # recovery re-dispatch frame (bsl_fel_recovered) never re-prepends context.
+    _fel = resolve_fel(config.get("tools", {}))
+    _fel_req_family = detect_family(model, "") if _fel is not None else ""
+    if (
+        _fel is not None
+        and _fel_family_enabled(config, _fel_req_family)
+        and request is not None
+        and isinstance(body, dict)
+        and not getattr(request.state, "bsl_fel_clarified", False)
+        and not getattr(request.state, "bsl_fel_recovered", False)
+    ):
+        try:
+            _fel_profile_name = ""
+            if _fel.profile_header:
+                _fel_profile_name = request.headers.get(_fel.profile_header, "") or ""
+            _fel_last_text = extract_last_user_text(body)
+            if _fel_last_text:
+                _fel_adjusted, _fel_changes, _fel_flagged = clarity_preprocess(
+                    _fel_last_text, _fel, _fel_profile_name
+                )
+                _fel_clarity_changed = _fel_adjusted != _fel_last_text
+                # Phase-3 reframe: bilingual tool-sensitivity rewrite on
+                # the (possibly clarity-adjusted) text, BEFORE the write so
+                # ONE set_last_user_text mutation carries both stages.
+                _fel_adjusted, _fel_reframes, _fel_reframe_changed = reframe_text(
+                    _fel_adjusted, _fel
+                )
+                _fel_write_ok = False
+                if _fel_adjusted != _fel_last_text:
+                    _fel_write_ok = set_last_user_text(body, _fel_adjusted)
+                    if _fel_write_ok:
+                        request.state.bsl_fel_clarified = True
+                        if not getattr(request.state, "bsl_fel_family", ""):
+                            request.state.bsl_fel_family = _fel_req_family
+                if _fel_write_ok:
+                    if _fel_clarity_changed:
+                        fel_event("clarity", model=model, provider="", details={
+                            "changes": _fel_changes, "flagged": _fel_flagged,
+                            "profile": _fel_profile_name,
+                        })
+                    if _fel_reframe_changed:
+                        fel_event("reframe", model=model, provider="", details={
+                            "rewrites": _fel_reframes,
+                        })
+        except Exception as _fel_clarity_err:
+            print(f"[FEL] clarity pre-flight failed (fail-open): {_fel_clarity_err}", flush=True)
 
     # ── BSL-Lite single-route dispatcher ───────────────────────────────────
     # L1 coding preset: route + global_last_fallback, no matrix.
@@ -6611,6 +7011,20 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         config, provider_name, target_model, breaker=_breaker,
         exclude_indexes=_tried_idx or None,
     )
+    # D2 cache-aware tiebreak (tools.cache_aware_routing, default OFF): among
+    # connections the resolver treats as interchangeable (same eligibility,
+    # top-first mode), prefer the warmer cache-telemetry entry. Health gate,
+    # connection_indexes authorization, key-failover exclusions and
+    # round-robin rotation are NEVER overridden; OFF or cold tracker returns
+    # None so the resolver pick stands unchanged. Fail-open: never breaks
+    # routing.
+    if active_conn is not None:
+        _warm = pick_warmest_connection(
+            provider_config, provider_name, target_model, breaker=_breaker,
+            exclude_indexes=_tried_idx or None, tools_config=config.get("tools", {}),
+        )
+        if _warm is not None:
+            active_conn, _active_conn_index = _warm
     if active_conn is not None and _tried_idx:
         print(
             f"[KeyFailover] {provider_name}/{target_model}: tried conn idx(es) "
@@ -6707,6 +7121,16 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
     if _is_anthropic_fmt:
         upstream_payload = UniversalNormalizer.normalize_to_anthropic(internal_request)
+        # D2 prompt_cache_key passthrough: the Anthropic egress payload is
+        # built from scratch and drops extra fields; restore the caller's key
+        # (no generation, no overwrite — see caching.propagate_prompt_cache_key).
+        upstream_payload = propagate_prompt_cache_key(upstream_payload, internal_request)
+        # GLM Parallel Tool Guard: GLM-5.x drops args in multi-tool_use
+        # batches on the Anthropic wire. Inject disable_parallel_tool_use
+        # at the final upstream payload (canonical round-trip strips it).
+        upstream_payload = apply_glm_parallel_guard(
+            upstream_payload, target_model, config.get("tools", {})
+        )
         # Apply prompt caching only to first-party Anthropic (allows_anthropic_beta)
         if _profile.allows_anthropic_beta:
             upstream_payload = PromptCachingAdapter.apply_provider_caching(upstream_payload, provider_name, target_model, tools_config=config.get("tools", {}), obs=obs)
@@ -6772,6 +7196,38 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     upstream_payload.pop("_bsl_original_model", None)
     upstream_payload.pop("x_antigravity_user_agent", None)
     upstream_payload.pop("x_gemini_tool_mode", None)
+
+    # ── FEL-2a EGRESS: faithful-execution directives (tools.fel, default OFF).
+    # Payload is final for its native wire shape here (after the caching
+    # adapters, before the kiro/codex protocol transforms) and provider+model
+    # are known. Ineligible/disabled → apply_fel_directives returns the SAME
+    # object untouched (zero mutation); eligible → a NEW payload whose system
+    # field carries the merged directive tail. FEL-3: the per-family gate
+    # (tools.fel.families) also skips directives + downstream recovery/stream
+    # classification for families the operator turned off — the leaf's
+    # family tag rides request.state so later stages reuse it.
+    _fel_applied = False
+    _fel_family_tag = detect_family(target_model, provider_name) if _fel is not None else ""
+    if _fel is not None and _fel_family_enabled(config, _fel_family_tag):
+        try:
+            _fel_new_payload = apply_fel_directives(
+                upstream_payload,
+                model=target_model,
+                provider=provider_name,
+                fel=_fel,
+                headers=dict(request.headers) if request is not None else None,
+            )
+            if _fel_new_payload is not upstream_payload:
+                upstream_payload = _fel_new_payload
+                _fel_applied = True
+                if request is not None:
+                    request.state.bsl_fel_family = _fel_family_tag
+                    request.state.bsl_fel_applied = True
+                fel_event("directives", model=target_model, provider=provider_name, details={
+                    "wire": ("anthropic" if _is_anthropic_fmt else "openai-chat"),
+                })
+        except Exception as _fel_egress_err:
+            print(f"[FEL] egress wiring failed (fail-open): {_fel_egress_err}", flush=True)
 
     # thought_signature hygiene (Gemini 3.1-Pro 400 fix, 2026-09-04):
     # inline keys are BSL-internal carriers for the antigravity lane only
@@ -6936,6 +7392,48 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     except Exception:
         pass
 
+    # ── Degenerate-output guard: pre-egress effort cap (Lane 1) ────────
+    # vsllm-r gpt upstream returns HTTP 200 with 9-112 tokens of reasoning
+    # rubble when input is 42k-63k tokens AND effort is xhigh/max. Cap the
+    # resolved effort to "high" for that failure class BEFORE the payload
+    # leaves. Runs AFTER resolve_thinking (single writer) so it caps the
+    # already-resolved value; nested reasoning.effort is kept in sync for
+    # reseller channels that read the container instead of the scalar.
+    # Fail-open: any error here must never break routing.
+    try:
+        _dog_cfg = _degenerate_guard_config(config)
+        if _dog_cfg.get("enabled", True):
+            try:
+                from app.middleware.compaction import _count_tokens as _dog_count
+                _dog_input_tokens = _dog_count(internal_request.messages)
+            except Exception:
+                _dog_input_tokens = 0
+            _dog_cap = _degenerate_effort_cap_decision(
+                target_model,
+                provider_name,
+                provider_config.get("format", "openai"),
+                upstream_payload.get("reasoning_effort"),
+                _dog_input_tokens,
+                _dog_cfg,
+            )
+            if _dog_cap:
+                upstream_payload["reasoning_effort"] = _dog_cap["to"]
+                _dog_reasoning = upstream_payload.get("reasoning")
+                if isinstance(_dog_reasoning, dict):
+                    _dog_reasoning["effort"] = _dog_cap["to"]
+                if thinking_info is not None:
+                    thinking_info["effort_cap"] = _degenerate_effort_telemetry(_dog_cap)
+                print(
+                    f"[DegenerateGuard] {f_val} input ~{_dog_cap['input_tokens']} tokens "
+                    f"(>={_dog_cap['floor']}): effort {_dog_cap['from']} -> {_dog_cap['to']} "
+                    f"[tier={_dog_cap.get('tier_floor', _dog_cap['floor'])}] "
+                    f"[model={_dog_cap.get('model', '')}] "
+                    f"(degenerate-output prevention, Lane 1)",
+                    flush=True,
+                )
+    except Exception as _dog_err:
+        print(f"[DegenerateGuard] effort cap failed (fail-open): {_dog_err}", flush=True)
+
     # -----------------------------------------
     # Apply Dynamic Thinking Squeeze
     # If enabled and input context is near the model ceiling, cap budget_tokens
@@ -7069,6 +7567,12 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # Use the egress client instead: it resolves via 8.8.8.8 (bypassing hosts),
     # connects to the real Google IP, and validates against the real Google cert.
     _upstream_host = httpx.URL(_upstream_url).host if _upstream_url else ""
+    # Per-connection proxy_bypass (D3): resolve the effective egress proxy ONCE
+    # for this request. A connection with proxy_bypass: true yields None here,
+    # so both client branches below resolve to DIRECT (no-proxy) clients. The
+    # antigravity branch is already direct by construction (its own
+    # hosts-file-bypassing egress client), so the flag is a no-op there.
+    _egress_proxy = _effective_egress_proxy(active_conn, provider_name)
     if provider_name == "antigravity" or _upstream_host in _ANTIGRAVITY_NATIVE_HOSTS:
         client = _get_antigravity_egress_client()
         # Cloud Code upstream adapter (2026-08-23): the antigravity host serves
@@ -7085,9 +7589,9 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     elif provider_config.get("ssl_verify", True) is False:
         # Provider uses a self-signed cert (e.g. api.iamhc.cn, api.hcnsec.cn).
         # Disable TLS verification for this provider only.
-        client = _get_ssl_disabled_client(active_conn.get("proxy_url"))
+        client = _get_ssl_disabled_client(_egress_proxy)
     else:
-        client = _get_client_for_proxy(active_conn.get("proxy_url"))
+        client = _get_client_for_proxy(_egress_proxy)
 
 
     # OAuth 401-retry guard: ensures we only retry once per request on 401.
@@ -7442,7 +7946,25 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         # rows still carry the combo badge (fixes combo-name drop/mislabel when a
         # fallback or ttft_stall attempt logs with a fresh random id).
         _orig_request_id = (_retry_state.get("orig_request_id") if _retry_state else None) or request_id
-    
+
+    # ── FEL-3 analytics context attach ────────────────────────────────────────
+    # Pre-flight/egress ran BEFORE request_id existed, so their signals ride
+    # request.state (bsl_fel_family / bsl_fel_applied / bsl_fel_clarified).
+    # Convert them to the observability registry now, keyed by THIS attempt's
+    # request_id — log_request later attaches fel/refusal_class to the usage
+    # row it writes. Later FEL stages (stream-final, recovery) note directly.
+    try:
+        if request is not None and (
+            getattr(request.state, "bsl_fel_family", "")
+            or getattr(request.state, "bsl_fel_applied", False)
+            or getattr(request.state, "bsl_fel_clarified", False)
+        ):
+            obs.note_fel_context(
+                request_id, fel=getattr(request.state, "bsl_fel_family", "") or None
+            )
+    except Exception:
+        pass
+
     # ── Streaming Status Peek ─────────────────────────────────
     # Keep the pre-header probe for OpenAI and Anthropic streams so upstream
     # failures can be returned before their SSE sockets open. Gemini bypasses it:
@@ -7726,6 +8248,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         )
         stats = {"ttft": 0.0, "in": 0, "out": 0, "cached": 0, "cache_write": 0, "error": None, "status": 500}
 
+        # SSE KEEPALIVE PRE-TTFT (Lane 3, 2026-09-07): read the gate once per
+        # request; the egress returns below wrap their afz_guard stream with
+        # _sse_keepalive_pre_first_chunk only while this is enabled. Gemini
+        # egress is excluded (it already heartbeats during its connect window).
+        _sse_ka_on, _sse_ka_iv = _sse_keepalive_settings(config)
+        _sse_ka_fmt = "anthropic" if client_wants_anthropic else "openai"
+
         async def _client_disconnected() -> bool:
             # Null-safe client-abort probe. Returns False when no Request is
             # threaded in (e.g. internal probe callers) or when the ASGI probe
@@ -7955,6 +8484,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                             usage = _usage_src
                                             stats["in"], stats["out"], stats["cached"] = _extract_usage_tokens(usage)
                                             stats["cache_write"] = _extract_cache_write_tokens(usage)
+                                            record_cache_warmth(provider_name, _active_conn_index, usage, tools_config=config.get("tools", {}))
                                     except json.JSONDecodeError:
                                         pass
                         except Exception:
@@ -7987,6 +8517,30 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         for _tg_out in _tool_guard.flush():
                             _emit.mark_emitted(_tg_out)
                             yield _tg_out
+                    except Exception:
+                        pass
+                # ── Degenerate-output guard: post-stream detection (Lane 1) ──
+                # 200 stream that ended with the rubble signature (input at/
+                # above the floor, output at/below the ceiling). The rubble is
+                # already delivered to the client — no retry is possible — so
+                # this is telemetry only: dedicated console event + flagged
+                # END row. Fail-open, never mutates the stream.
+                if (
+                    not stats.get("error")
+                    and stats.get("status") == 200
+                    and _is_degenerate_output(stats.get("in", 0), stats.get("out", 0))
+                ):
+                    stats["degenerate"] = True
+                    try:
+                        obs.note_degenerate_output(
+                            provider_name,
+                            target_model,
+                            stats.get("in", 0),
+                            stats.get("out", 0),
+                            request_id=request_id,
+                            effort=(thinking_info or {}).get("effort"),
+                            action="telemetry",
+                        )
                     except Exception:
                         pass
                 if _detector.truncated and not _cont_state["used"]:
@@ -8175,6 +8729,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         thinking=thinking_info,
                         cache_write_tokens=stats.get("cache_write", 0),
                         combo=_combo_label,
+                        degenerate=bool(stats.get("degenerate")),
                     )
                 except Exception as _log_err:
                     print(f"[BSL Router] finally-log failed (non-blocking): {_log_err}", flush=True)
@@ -8695,15 +9250,20 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         return
 
             _afz_sid = next_stream_id()
-            return StreamingResponse(
-                afz_guard(
-                    egress_stream_guarded(),
-                    _afz_sid,
-                    protocol="anthropic" if client_wants_anthropic else "openai",
-                    deadline_s=0,
-                ),
-                media_type="text/event-stream",
+            _ka_body = afz_guard(
+                egress_stream_guarded(),
+                _afz_sid,
+                protocol="anthropic" if client_wants_anthropic else "openai",
+                deadline_s=0,
             )
+            if _sse_ka_on:
+                # Lane 3: pre-TTFT keepalive. Wrapped OUTSIDE afz_guard so the
+                # kill-registry's emission tracking keeps seeing real frames only
+                # (keepalives must never disable combo fallback).
+                _ka_body = _sse_keepalive_pre_first_chunk(
+                    _ka_body, interval_s=_sse_ka_iv, fmt="anthropic",
+                )
+            return StreamingResponse(_ka_body, media_type="text/event-stream")
         if convert_gemini_egress:
             def _next_gemini_combo_retry_state():
                 _next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
@@ -8958,6 +9518,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                         stats["out"] = _o or stats["out"]
                                         stats["cached"] = _c or stats["cached"]
                                         stats["cache_write"] = _extract_cache_write_tokens(dj["usage"]) or stats["cache_write"]
+                                        record_cache_warmth(provider_name, _active_conn_index, dj["usage"], tools_config=config.get("tools", {}))
                                     elif dj.get("type") == "message_start":
                                         u = (dj.get("message", {}) or {}).get("usage", {}) or {}
                                         _i, _o, _c = _extract_usage_tokens(u)
@@ -10020,36 +10581,51 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         return
 
             _afz_sid = next_stream_id()
-            return StreamingResponse(
-                afz_guard(
-                    anthropic_to_openai_egress_stream_guarded(),
-                    _afz_sid,
-                    # This generator CONVERTS Anthropic upstream -> OpenAI egress,
-                    # so the client here speaks OpenAI unless it asked for
-                    # Anthropic explicitly. Keyed off the client, never upstream.
-                    protocol="anthropic" if client_wants_anthropic else "openai",
-                    deadline_s=0,
-                ),
-                media_type="text/event-stream",
+            _ka_body = afz_guard(
+                anthropic_to_openai_egress_stream_guarded(),
+                _afz_sid,
+                # This generator CONVERTS Anthropic upstream -> OpenAI egress,
+                # so the client here speaks OpenAI unless it asked for
+                # Anthropic explicitly. Keyed off the client, never upstream.
+                protocol="anthropic" if client_wants_anthropic else "openai",
+                deadline_s=0,
             )
+            if _sse_ka_on:
+                # Lane 3: pre-TTFT keepalive (OpenAI comment form — this lane's
+                # client speaks OpenAI SSE by construction).
+                _ka_body = _sse_keepalive_pre_first_chunk(
+                    _ka_body, interval_s=_sse_ka_iv, fmt="openai",
+                )
+            return StreamingResponse(_ka_body, media_type="text/event-stream")
         # Kiro streaming egress: upstream speaks AWS event-stream BINARY
         # (vnd.amazon.eventstream) in production; legacy captures/tests use
         # text SSE. Auto-detect on first bytes and decode accordingly.
         if provider_name == 'kiro':
             _afz_sid = next_stream_id()
-            return StreamingResponse(
-                afz_guard(kiro_eventstream.eventstream_to_openai_sse_lines_with_fallback(raw_upstream_guarded()), _afz_sid, deadline_s=0),
-                media_type="text/event-stream",
-            )
+            _ka_body = afz_guard(kiro_eventstream.eventstream_to_openai_sse_lines_with_fallback(raw_upstream_guarded()), _afz_sid, deadline_s=0)
+            if _sse_ka_on:
+                # Lane 3: pre-TTFT keepalive, OUTSIDE the eventstream adapter so
+                # the comment frames can never corrupt its binary->SSE decode.
+                _ka_body = _sse_keepalive_pre_first_chunk(_ka_body, interval_s=_sse_ka_iv, fmt="openai")
+            return StreamingResponse(_ka_body, media_type="text/event-stream")
         # Codex streaming egress: wrap raw upstream bytes through Responses SSE→OpenAI SSE converter
         if provider_name == 'codex':
             _afz_sid = next_stream_id()
-            return StreamingResponse(
-                afz_guard(codex_adapter.responses_sse_to_openai_sse(raw_upstream_guarded()), _afz_sid, deadline_s=0),
-                media_type="text/event-stream",
-            )
+            _ka_body = afz_guard(codex_adapter.responses_sse_to_openai_sse(raw_upstream_guarded()), _afz_sid, deadline_s=0)
+            if _sse_ka_on:
+                # Lane 3: pre-TTFT keepalive, OUTSIDE the Responses-SSE adapter.
+                _ka_body = _sse_keepalive_pre_first_chunk(_ka_body, interval_s=_sse_ka_iv, fmt="openai")
+            return StreamingResponse(_ka_body, media_type="text/event-stream")
         _afz_sid = next_stream_id()
-        return StreamingResponse(afz_guard(raw_upstream_guarded(), _afz_sid, deadline_s=0), media_type="text/event-stream")
+        _ka_body = afz_guard(raw_upstream_guarded(), _afz_sid, deadline_s=0)
+        if _sse_ka_on:
+            # Lane 3: pre-TTFT keepalive. fmt keyed off the CLIENT: the
+            # Anthropic->Anthropic passthrough (client_wants_anthropic, upstream
+            # already anthropic-format) flows through this same return.
+            _ka_body = _sse_keepalive_pre_first_chunk(
+                _ka_body, interval_s=_sse_ka_iv, fmt=_sse_ka_fmt,
+            )
+        return StreamingResponse(_ka_body, media_type="text/event-stream")
     else:
         try:
 
@@ -10164,6 +10740,29 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             flush=True,
                         )
                         resp = _SyntheticResponse(200, _assembled)
+                        # ── FEL-2a STREAM FINAL-ASSEMBLY (log-only) ──────────
+                        # Spec D: classify the assembled visible text and log
+                        # the event (feeds FEL-3 analytics). NO mid-stream
+                        # recovery, NO buffering — recovery stays non-streaming
+                        # this phase; the non-stream recovery block downstream
+                        # still acts on this synthetic response normally.
+                        # FEL-3: the returned verdict is noted on the usage
+                        # registry (refusal_class column) for this request.
+                        _fel_sf_family = (
+                            getattr(request.state, "bsl_fel_family", "")
+                            if request is not None else ""
+                        ) or _fel_family_tag
+                        if _fel is not None and _fel_family_enabled(config, _fel_sf_family):
+                            try:
+                                _fel_cls = fel_stream_final(_assembled, model=target_model, provider=provider_name)
+                                if _fel_cls:
+                                    obs.note_fel_context(
+                                        request_id,
+                                        fel=_fel_sf_family,
+                                        refusal_class=_fel_cls,
+                                    )
+                            except Exception:
+                                pass
                 except httpx.HTTPStatusError as _sb_http_err:
                     # StreamBuffer accumulation failure (TTFT timeout, stall, etc).
                     # Synthesize a 504 so the normal combo fallback logic below
@@ -10518,6 +11117,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         usage = data_json["usage"]
                         in_tokens, out_tokens, cached_tokens = _extract_usage_tokens(usage)
                         cache_write_tokens = _extract_cache_write_tokens(usage)
+                        record_cache_warmth(provider_name, _active_conn_index, usage, tools_config=config.get("tools", {}))
                 except Exception:
                     pass
                 # Zombie guard: a non-stream 200 with zero output tokens AND
@@ -10551,8 +11151,190 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     resp = _SyntheticResponse(504, {"error": error_msg})
             else:
                 error_msg = resp.text[:200]
+                # ERE-F4: on upstream 404 model_not_found, optionally auto-register
+                # a fuzzy-matched alias (default OFF via tools.auto_register_models).
+                _maybe_auto_register(provider_name, target_model, resp)
+                # ERE-Step5: MITM CA trust hint — one line, no behavior change.
+                if resp.status_code >= 400 and (
+                    "self-signed certificate" in error_msg
+                    or "CERTIFICATE_VERIFY_FAILED" in error_msg
+                ):
+                    _pc = config.get("providers", {}).get(provider_name) or {}
+                    if _pc.get("ssl_verify", True) is not False:
+                        print(
+                            f"[SSLCertHint] provider '{provider_name}': add ssl_verify: false "
+                            f"or proxy_bypass: true to its connection to stop cert failures",
+                            flush=True,
+                        )
+
+            # ── FEL-2a NON-STREAMING RECOVERY (refusal_recovery, default gated
+            # by tools.fel) ───────────────────────────────────────────────────
+            # After the FIRST completed response object: if the strict
+            # classifier sees a refusal/tos_lecture (>=2 distinct markers,
+            # short, no tool calls) and this request has not already recovered,
+            # append ONE router-injected clarification user turn and re-dispatch
+            # the SAME provider+model through this same internal path. The
+            # per-request guard flag (request.state.bsl_fel_recovered) is set
+            # BEFORE the re-dispatch, making recursion impossible: exactly ONE
+            # recovery attempt ever. A second classified refusal returns
+            # as-is with x-bsl-refusal: true; a successful recovery returns
+            # the second body with x-bsl-recovered: true.
+            if (
+                _fel is not None
+                and request is not None
+                and _fel_family_enabled(
+                    config,
+                    getattr(request.state, "bsl_fel_family", "") or _fel_family_tag,
+                )
+                and _fel.refusal_recovery_enabled
+                and _fel.max_recoveries >= 1
+                and resp.status_code == 200
+                and not getattr(request.state, "bsl_fel_recovered", False)
+                and isinstance(body, dict)
+            ):
+                try:
+                    _fel_first_json = _response_json if _response_json else {}
+                    if not _fel_first_json:
+                        try:
+                            _fel_first_json = resp.json()
+                        except Exception:
+                            _fel_first_json = {}
+                    _fel_visible, _fel_had_tools = fel_response_visible_text(_fel_first_json)
+                    _fel_verdict = classify_refusal(_fel_visible, _fel_had_tools)
+                    if _fel_verdict in ("refusal", "tos_lecture"):
+                        fel_event("refusal", model=target_model, provider=provider_name, details={
+                            "classification": _fel_verdict,
+                            "chars": len(_fel_visible or ""),
+                            "tool_calls": _fel_had_tools,
+                        })
+                        request.state.bsl_fel_recovered = True
+                        _fel_profile_name = ""
+                        if _fel.profile_header:
+                            _fel_profile_name = request.headers.get(_fel.profile_header, "") or ""
+                        _fel_recovery_body = build_recovery_body(
+                            body, _fel, _fel_profile_name
+                        )
+                        if _fel_recovery_body is not None:
+                            print(
+                                f"[FEL] refusal recovery re-dispatch for "
+                                f"{target_model}/{provider_name}",
+                                flush=True,
+                            )
+                            _fel_second = await _process_chat_completion(
+                                _fel_recovery_body,
+                                client_wants_anthropic,
+                                client_wants_gemini,
+                                _retry_state=None,
+                                request=request,
+                            )
+                            try:
+                                _fel_second_json = None
+                                _fel_second_body = getattr(_fel_second, "body", None)
+                                if isinstance(_fel_second_body, (bytes, bytearray)):
+                                    _fel_second_json = json.loads(_fel_second_body)
+                                _fel_r_visible, _fel_r_had_tools = fel_response_visible_text(
+                                    _fel_second_json
+                                )
+                                _fel_r_verdict = classify_refusal(_fel_r_visible, _fel_r_had_tools)
+                            except Exception:
+                                _fel_r_verdict = "unknown"
+                            fel_event("recovery", model=target_model, provider=provider_name, details={
+                                "second_classification": _fel_r_verdict,
+                                # Phase-2 canary fix (2026-09-07): "recovered"
+                                # now means the re-dispatch came back CLEAN.
+                                # "unknown" no longer counts — Arm B evidence
+                                # showed second=unknown while the model kept
+                                # refusing (misleading recovered=True rows).
+                                "recovered": _fel_r_verdict == "clean",
+                                "redispatched": True,
+                            })
+                            # FEL-3: persist the recovery outcome on this
+                            # request's usage row (refusal_class column) —
+                            # "recovered" when the re-dispatch engaged, the
+                            # second verdict when the wall was real.
+                            try:
+                                obs.note_fel_context(
+                                    request_id,
+                                    fel=getattr(request.state, "bsl_fel_family", "") or _fel_family_tag,
+                                    refusal_class=(
+                                        "recovered"
+                                        if _fel_r_verdict == "clean"
+                                        else _fel_r_verdict
+                                    ),
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                if _fel_r_verdict in ("refusal", "tos_lecture", "blocked"):
+                                    _fel_second.headers["x-bsl-refusal"] = "true"
+                                elif _fel_r_verdict == "clean":
+                                    _fel_second.headers["x-bsl-recovered"] = "true"
+                                # unknown second verdict: NEITHER header — the
+                                # re-dispatch outcome is genuinely ambiguous.
+                                # ("blocked" added 2026-09-08 FEL-5: a
+                                # still-blocked re-dispatch is a DEFINITE
+                                # terminal refusal, not an ambiguous one —
+                                # refusal_class was already persisted above.)
+                                if _fel_applied:
+                                    _fel_second.headers["x-bsl-fel"] = "applied"
+                                if getattr(request.state, "bsl_fel_clarified", False):
+                                    _fel_second.headers["x-bsl-clarified"] = "true"
+                            except Exception:
+                                pass
+                            return _fel_second
+                    elif _fel_verdict == "blocked":
+                        # FEL-5 hard-wall observability (2026-09-08): a
+                        # terminal "blocked" refusal skips recovery by design
+                        # (classify_refusal's block-marker wall), but must not
+                        # vanish from telemetry. Mirrors the stream path
+                        # (fel_stream_final): persist refusal_class="blocked"
+                        # on the usage row and flag request.state so the
+                        # passthrough stamps x-bsl-refusal on the verbatim
+                        # body. The refusal text itself is NEVER rewritten.
+                        fel_event("refusal", model=target_model, provider=provider_name, details={
+                            "classification": "blocked",
+                            "chars": len(_fel_visible or ""),
+                            "tool_calls": _fel_had_tools,
+                            "terminal": True,
+                        })
+                        try:
+                            obs.note_fel_context(
+                                request_id,
+                                fel=getattr(request.state, "bsl_fel_family", "") or _fel_family_tag,
+                                refusal_class="blocked",
+                            )
+                        except Exception:
+                            pass
+                        request.state.bsl_fel_blocked = True
+                except Exception as _fel_recovery_err:
+                    print(f"[FEL] recovery failed (fail-open): {_fel_recovery_err}", flush=True)
 
             _log_status = resp.status_code
+            # ── Degenerate-output guard: non-stream detection (Lane 1) ──
+            # Same rubble signature as the streaming path: 200 with usage
+            # showing large input / rubble output. Telemetry only — the
+            # zombie guard above already handles the truly-empty (out=0 AND
+            # no content) case; this flags the 9-112-token rubble that
+            # passes the zombie check as a "success". Fail-open.
+            _degenerate_flag = False
+            if (
+                _log_status == 200
+                and not error_msg
+                and _is_degenerate_output(in_tokens, out_tokens)
+            ):
+                _degenerate_flag = True
+                try:
+                    obs.note_degenerate_output(
+                        provider_name,
+                        target_model,
+                        in_tokens,
+                        out_tokens,
+                        request_id=request_id,
+                        effort=(thinking_info or {}).get("effort"),
+                        action="telemetry",
+                    )
+                except Exception:
+                    pass
             obs.log_request(
                 provider=provider_name,
                 model=target_model,
@@ -10572,6 +11354,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 thinking=thinking_info,
                 cache_write_tokens=cache_write_tokens,
                 combo=_combo_label,
+                degenerate=_degenerate_flag,
             )
 
             # ── Combo Fallback: Non-Streaming Retry ──────────────────────
@@ -10653,6 +11436,18 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         _response_mutated = True
                 except Exception:
                     _normalized_json = None  # Fail-open: use raw resp
+                # ERE-R6: repair string-encoded tool-call arguments (truncated/
+                # unquoted JSON in choices[].message.tool_calls[].arguments).
+                # Fail-open: never break routing on a repair error.
+                try:
+                    if _normalized_json:
+                        for _rc in (_normalized_json.get("choices") or []):
+                            _tc_msg = (_rc or {}).get("message") or {}
+                            if _tc_msg.get("tool_calls"):
+                                if repair_tool_calls_argument_strings(_tc_msg["tool_calls"]) > 0:
+                                    _response_mutated = True
+                except Exception:
+                    pass
 
             # Shared usage-log helper for the early-return egress conversions
             # below (Gemini/Kiro/Codex/OpenAI-passthrough). BUG (2026-08-24,
@@ -10937,6 +11732,19 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         "X-BSL-Debug-Out-Tokens": str(out_tokens),
                         "X-BSL-Debug-Target": f"{provider_name}/{target_model}",
                     }
+                    # FEL-2a response markers (spec A/B): x-bsl-clarified when
+                    # the pre-flight adjusted the last user message, x-bsl-fel
+                    # when the egress merged directives into the payload.
+                    if request is not None and getattr(request.state, "bsl_fel_clarified", False):
+                        _dbg_headers["x-bsl-clarified"] = "true"
+                    if _fel_applied:
+                        _dbg_headers["x-bsl-fel"] = "applied"
+                    # FEL-5 (2026-09-08): terminal hard-wall refusal kept
+                    # verbatim (no recovery re-dispatch) — stamp the header so
+                    # clients and the E2E matrix can tell blocked refusals
+                    # from recoverable ones without re-parsing the body.
+                    if request is not None and getattr(request.state, "bsl_fel_blocked", False):
+                        _dbg_headers["x-bsl-refusal"] = "true"
                     return JSONResponse(_passthrough_json, status_code=200, headers=_dbg_headers)
                 except Exception:
                     pass  # Fall through to raw bytes passthrough
@@ -11510,7 +12318,7 @@ async def images_generations(request: Request):
         except Exception:
             pass
     resolved_base_url = (active_conn.get('base_url') or PROVIDER_DEFAULT_URLS.get(provider_name, '')).rstrip('/')
-    client = _get_client_for_proxy(active_conn.get("proxy_url"))
+    client = _get_client_for_proxy(_effective_egress_proxy(active_conn, provider_name))
 
     headers = {
         **_auth_headers_for_key(active_conn.get('api_key', '')),
@@ -11640,7 +12448,7 @@ async def videos_generations(request: Request):
         except Exception:
             pass
     resolved_base_url = (active_conn.get('base_url') or PROVIDER_DEFAULT_URLS.get(provider_name, '')).rstrip('/')
-    client = _get_client_for_proxy(active_conn.get("proxy_url"))
+    client = _get_client_for_proxy(_effective_egress_proxy(active_conn, provider_name))
 
     headers = {
         **_auth_headers_for_key(active_conn.get('api_key', '')),
@@ -11715,6 +12523,14 @@ async def videos_generations(request: Request):
 @app.post("/gemini/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await _safe_request_json(request)
+    # ── N2 normalizer_v2 shadow (tools.normalizer_v2, default OFF) ─────────────
+    _n2_dialect = endpoint_dialect(request.url.path)
+    if _n2_dialect:
+        _n2_rebuilt = await shadow_run(
+            _n2_dialect, body, endpoint=request.url.path, config=cs_get_config(),
+            provider=None, model=(body.get("model") if isinstance(body, dict) else None))
+        if _n2_rebuilt is not None:
+            body = _n2_rebuilt
     # ── 9router "Chain" ingress ───────────────────────────────────────────────
     # When 9router owns :443 and its chat brain is redirected to BSL via
     # MITM_ROUTER_BASE=http://localhost:6969, 9router POSTs the intercepted Cloud
@@ -11732,6 +12548,14 @@ async def chat_completions(request: Request):
     try:
         inner = gemini_unwrap_request(body)
         if is_antigravity_request(body) or inner.get("contents"):
+            # ERE-R5: Gemini generateContent rejects a trailing model/assistant
+            # turn. Guard BEFORE the OpenAI conversion so every downstream
+            # egress (antigravity envelope rebuild, native fallback) ends on a
+            # valid role. Fail-open: any error keeps the original contents.
+            try:
+                inner["contents"] = ensure_gemini_last_role(inner.get("contents"))
+            except Exception:
+                pass
             # body.model is authoritative here: 9router already rewrote it to the
             # aliases.json target, so it is handed straight to BSL's resolver.
             openai_body = gemini_request_to_openai(inner, body.get("model", ""))
@@ -11772,6 +12596,24 @@ async def chat_completions(request: Request):
         print(f"[Chain] antigravity envelope detection skipped: {type(exc).__name__}", flush=True)
     return await _process_chat_completion(body, request=request)
 
+def _preserve_anthropic_prompt_cache_key(anthropic_body: dict, openai_body: dict) -> dict:
+    """D2 prompt_cache_key passthrough (anthropic-wire ingress).
+
+    normalize_to_openai_from_anthropic rebuilds the payload field-by-field and
+    drops prompt_cache_key; carry it explicitly so key-bound cache routing
+    (Kimi / GPT-5.6) survives the Anthropic→OpenAI wire hop. Passthrough only:
+    never generates or overwrites. Fail-open.
+    """
+    try:
+        if isinstance(anthropic_body, dict) and isinstance(openai_body, dict):
+            key = anthropic_body.get("prompt_cache_key")
+            if isinstance(key, str) and key:
+                openai_body["prompt_cache_key"] = key
+    except Exception:
+        pass  # fail-open
+    return openai_body
+
+
 @app.post("/anthropic/v1/messages")
 @app.post("/v1/messages")
 async def anthropic_messages(request: Request):
@@ -11794,6 +12636,7 @@ async def anthropic_messages(request: Request):
                 break
 
     openai_body = UniversalNormalizer.normalize_to_openai_from_anthropic(body)
+    openai_body = _preserve_anthropic_prompt_cache_key(body, openai_body)
     openai_body["_bsl_original_model"] = raw_model
     return await _process_chat_completion(openai_body, client_wants_anthropic=True, request=request)
 
@@ -11859,6 +12702,15 @@ async def antigravity_generate(request: Request, model: str = None):
             "the request body could not be mapped",
         )
 
+    # ── N2 normalizer_v2 shadow (tools.normalizer_v2, default OFF) ─────────────
+    _n2_dialect = endpoint_dialect(path)
+    if _n2_dialect:
+        _n2_rebuilt = await shadow_run(
+            _n2_dialect, body, endpoint=path, config=config, provider=None,
+            model=((body.get("model") or model) if isinstance(body, dict) else model))
+        if _n2_rebuilt is not None:
+            body = _n2_rebuilt
+
     # 9router pipeline: MITM resolves alias and sets x-bsl-antigravity-alias header.
     # If header is present, use it directly — MITM already rewrote body.model too.
     # Fallback: look up from config mappings (direct-endpoint callers without MITM).
@@ -11919,6 +12771,14 @@ async def antigravity_generate(request: Request, model: str = None):
         inner = gemini_unwrap_request(body)
         if not is_antigravity_request(body) and not inner.get("contents"):
             raise ValueError("request is not a supported Antigravity inference payload")
+
+        # ERE-R5: Gemini generateContent rejects a trailing model/assistant
+        # turn. Guard BEFORE the OpenAI conversion so every downstream egress
+        # (antigravity envelope rebuild) ends on a valid role. Fail-open.
+        try:
+            inner["contents"] = ensure_gemini_last_role(inner.get("contents"))
+        except Exception:
+            pass
 
         # The dedicated mapping is authoritative. Do not normalize this target or
         # consult global aliases before dispatching it through BSL's resolver.
@@ -12066,24 +12926,212 @@ def _antigravity_ccpa_error(status_code: int, status: str, message: str) -> JSON
     )
 
 
-def _log_antigravity_ccpa_stage_failure(operation: str, stage: str, exc: Exception) -> None:
-    """Log only safe CCPA failure metadata, never request data or credentials."""
-    print(
-        f"[AntigravityCCPA] operation={operation} stage={stage} error={type(exc).__name__}",
-        flush=True,
-    )
+_CCPA_LEDGER_PATH = ".brain/logs/ccpa_failures.jsonl"  # module-level so tests can redirect
+_CCPA_LEDGER_MAX_BYTES = 50 * 1024 * 1024  # 50MB rotation cap (2026-08-31 rule)
+_ccpa_ledger_dedup: dict = {}  # (operation, stage, error_class) -> last monotonic ts
+_ccpa_ledger_ws_noise_skipped = 0
+
+
+def _ccpa_ledger_rotate_locked() -> None:
+    """Boot-time and pre-append self-heal: keep the ledger under cap."""
     try:
+        if os.path.exists(_CCPA_LEDGER_PATH) and \
+                os.path.getsize(_CCPA_LEDGER_PATH) > _CCPA_LEDGER_MAX_BYTES:
+            os.replace(
+                _CCPA_LEDGER_PATH,
+                _CCPA_LEDGER_PATH + ".1",
+            )
+    except Exception:
+        pass
+
+
+def _log_antigravity_ccpa_stage_failure(operation: str, stage: str, exc: Exception) -> None:
+    """Log only safe CCPA failure metadata, never request data or credentials.
+
+    ERE ledger hygiene (2026-09-06):
+    - Benign WS disconnect noise (RECV_PING/HEADERS on CLOSED) is counted, never written.
+    - Multi-stage ValueError fan-out for one origin-gate event collapses to ONE row
+      per (operation, stage, error_class) within a 5s window.
+    - 50MB rotation cap, fail-open: hygiene must never break failure recording.
+    """
+    global _ccpa_ledger_ws_noise_skipped
+    try:
+        _detail = str(exc)
+        _err_class = type(exc).__name__
+        # Benign WebSocket disconnect race — pollutes the ledger, never a real failure.
+        if "RECV_PING" in _detail or "HEADERS on CLOSED" in _detail or "on CLOSED" in _detail:
+            _ccpa_ledger_ws_noise_skipped += 1
+            return
+        print(
+            f"[AntigravityCCPA] operation={operation} stage={stage} error={_err_class}",
+            flush=True,
+        )
         import os as _os
         _os.makedirs(".brain/logs", exist_ok=True)
+        _now = time.monotonic()
+        _key = (operation, stage, _err_class)
+        _last = _ccpa_ledger_dedup.get(_key)
+        if _last is not None and (_now - _last) < 5.0:
+            return  # collapse same-event stage fan-out to one row
+        _ccpa_ledger_dedup[_key] = _now
+        if len(_ccpa_ledger_dedup) > 256:
+            _ccpa_ledger_dedup.clear()
+        _ccpa_ledger_rotate_locked()
         rec = {
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             "operation": operation,
             "stage": stage,
-            "error_type": type(exc).__name__,
-            "detail": str(exc)[:300],
+            "error_type": _err_class,
+            "detail": _detail[:300],
         }
-        with open(".brain/logs/ccpa_failures.jsonl", "a", encoding="utf-8") as f:
+        with open(_CCPA_LEDGER_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+# ───────────── F4 auto-registration (2026-09-06, default OFF) ─────────────────
+# tools.auto_register_models: on a 404 model_not_found from a provider, probe
+# its upstream /v1/models once, fuzzy-match the requested name, and if exactly
+# ONE confident match exists, register it as an enabled alias. Rate-limited to
+# 1 probe per provider per 10 minutes. Writes one row per action to a capped
+# .brain/logs/auto_register.jsonl ledger. OFF = zero behavior change.
+_auto_register_rate: dict = {}  # provider_name -> monotonic ts of last probe
+_AUTO_REGISTER_COOLDOWN_S = 600.0
+_AUTO_REGISTER_LEDGER = ".brain/logs/auto_register.jsonl"
+
+
+def _fuzzy_model_match(requested: str, candidates: list) -> Optional[str]:
+    """Return the single confident match for `requested` among candidate ids, else None.
+
+    Confidence order: exact-after-normalization > unique prefix > unique substring.
+    Ambiguous (2+) at any tier -> None. Never raises.
+    """
+    try:
+        def _norm(s: str) -> str:
+            return "".join(ch for ch in (s or "").lower() if ch.isalnum())
+
+        want = _norm(requested)
+        if not want or not candidates:
+            return None
+        exact = [c for c in candidates if _norm(c) == want]
+        if len(exact) == 1:
+            return exact[0]
+        if len(exact) > 1:
+            return None
+        prefix = [c for c in candidates if _norm(c).startswith(want)]
+        if len(prefix) == 1:
+            return prefix[0]
+        if len(prefix) > 1:
+            return None
+        sub = [c for c in candidates if want in _norm(c)]
+        if len(sub) == 1:
+            return sub[0]
+        return None
+    except Exception:
+        return None
+
+
+def _auto_register_log(event: dict) -> None:
+    """Capped-append writer: 50MB rotate, queue-free (rare events), fail-open."""
+    try:
+        import os as _os
+        _os.makedirs(_os.path.dirname(_AUTO_REGISTER_LEDGER) or ".", exist_ok=True)
+        if _os.path.exists(_AUTO_REGISTER_LEDGER) and \
+                _os.path.getsize(_AUTO_REGISTER_LEDGER) > _CCPA_LEDGER_MAX_BYTES:
+            _os.replace(_AUTO_REGISTER_LEDGER, _AUTO_REGISTER_LEDGER + ".1")
+        with open(_AUTO_REGISTER_LEDGER, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+async def _auto_register_probe(provider_name: str, requested_model: str) -> None:
+    """Probe the provider's upstream model list, fuzzy-match, register alias.
+    Fire-and-forget (spawned via create_task); all failures fail-open."""
+    try:
+        config = get_mutable_config()
+        provider_config = config.get("providers", {}).get(provider_name)
+        if not provider_config:
+            return
+        result = await discover_models(provider_name, provider_config, http_client)
+        candidates = [m.get("id") for m in (result.get("models") or []) if m.get("id")]
+        match = _fuzzy_model_match(requested_model, candidates)
+        if not match:
+            _auto_register_log({
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "provider": provider_name,
+                "requested": requested_model,
+                "outcome": "no_match",
+            })
+            return
+        existing_ids = {m.get("id") for m in provider_config.get("models", [])}
+        if match in existing_ids:
+            _auto_register_log({
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "provider": provider_name,
+                "requested": requested_model,
+                "outcome": "already_present",
+                "match": match,
+            })
+            return
+        enabled_conn_indexes = [
+            i for i, c in enumerate(provider_config.get("connections", []))
+            if isinstance(c, dict) and c.get("enabled", True)
+        ] or [0]
+        provider_config.setdefault("models", []).append({
+            "id": match,
+            "name": match,
+            "thinking": "auto",
+            "connection_indexes": list(enabled_conn_indexes),
+            "enabled": True,
+        })
+        _replace_runtime_config(config)
+        _auto_register_log({
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "provider": provider_name,
+            "requested": requested_model,
+            "outcome": "registered",
+            "match": match,
+        })
+        print(
+            f"[AutoRegister] '{requested_model}' not found on {provider_name} — "
+            f"registered fuzzy match '{match}' (tools.auto_register_models)",
+            flush=True,
+        )
+    except Exception as _ar_exc:
+        _auto_register_log({
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "provider": provider_name,
+            "requested": requested_model,
+            "outcome": "error",
+            "error": type(_ar_exc).__name__,
+        })
+
+
+def _maybe_auto_register(provider_name: str, target_model: str, resp) -> None:
+    """Rate-limited fire-and-forget hook for 404 model_not_found responses."""
+    try:
+        if not bool((cs_get_config().get("tools") or {}).get("auto_register_models", False)):
+            return
+        if resp is None or getattr(resp, "status_code", None) != 404:
+            return
+        _now = time.monotonic()
+        _last = _auto_register_rate.get(provider_name)
+        if _last is not None and (_now - _last) < _AUTO_REGISTER_COOLDOWN_S:
+            return
+        _auto_register_rate[provider_name] = _now
+        if len(_auto_register_rate) > 128:
+            _auto_register_rate.clear()
+        try:
+            asyncio.get_running_loop().create_task(
+                _auto_register_probe(provider_name, target_model)
+            )
+        except RuntimeError:
+            try:
+                asyncio.run(_auto_register_probe(provider_name, target_model))
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -12192,12 +13240,46 @@ async def antigravity_ccpa_control_proxy(request: Request, operation: str):
 # only other /v1internal:* POST operations to an allowlisted Google origin, so
 # cloud_code_endpoint preserves authentication, quota, and model-discovery RPCs.
 
+# ── N4 Responses thread store (tools.responses_thread_store, default OFF) ─────
+# The Responses API is stateful (previous_response_id); BSL is stateless and
+# dropped the id silently. When enabled, stored prior output items are spliced
+# into the outgoing input list and fresh responses are stored for future turns.
+# OFF → zero calls into the module, zero storage, byte-identical behavior.
+from app.middleware.responses_thread_store import (  # noqa: E402
+    capture_response as _responses_capture,
+    stitch_previous_response as _responses_stitch,
+    thread_store_enabled as _thread_store_enabled,
+)
+
+
 @app.post("/v1/responses")
 async def responses_endpoint(request: Request):
     """Phase 6: OpenAI Responses API endpoint (Codex CLI, modern OpenAI clients)."""
     body = await _safe_request_json(request)
+    # ── N2 normalizer_v2 shadow (tools.normalizer_v2, default OFF) ─────────────
+    _n2_dialect = endpoint_dialect(request.url.path)
+    if _n2_dialect:
+        _n2_rebuilt = await shadow_run(
+            _n2_dialect, body, endpoint=request.url.path, config=cs_get_config(),
+            provider=None, model=(body.get("model") if isinstance(body, dict) else None))
+        if _n2_rebuilt is not None:
+            body = _n2_rebuilt
+    # ── N4 thread store (tools.responses_thread_store, default OFF) ────────────
+    _prev_response_id = None
+    if _thread_store_enabled(cs_get_config()):
+        _prev_response_id = (body.get("previous_response_id")
+                             if isinstance(body, dict) else None)
+        try:
+            _stitched = await _responses_stitch(body)
+            if _stitched is not body:
+                body = _stitched
+        except Exception:
+            pass  # fail-open: unthreaded request is better than a failed one
     chat_body = ResponsesConverter.responses_to_chat(body)
-    return await _process_chat_completion(chat_body, request=request)
+    response = await _process_chat_completion(chat_body, request=request)
+    if _prev_response_id is not None or _thread_store_enabled(cs_get_config()):
+        return await _responses_capture(response, previous_response_id=_prev_response_id)
+    return response
 
 # ── Security Scanner Endpoints ─────────────────────────────────────────────────
 

@@ -9,6 +9,17 @@
     <!-- 2026-09-04: Google Fonts link removed — offline/proxied envs got ERR_CONNECTION_CLOSED.
          Inter is now the first entry of the system font stack in style.css (line 15); when
          the font is absent the UI falls back to system fonts with zero console errors. -->
+    <style>
+        /* Degenerate-output effort-cap toggle chip (vsllm-r gpt model badges).
+           .is-on  — cap armed for this model (models list or override)
+           .is-off — no cap for this model
+           .is-dim — global tools.degenerate_output_guard.enabled is false,
+                     so the backend ignores the cap entirely */
+        .deg-cap-chip { display:inline-flex; align-items:center; padding:2px 8px; border-radius:999px; font-size:10px; font-weight:700; line-height:1.4; cursor:pointer; border:1px solid #cbd5e1; background:#f3f4f6; color:#64748b; white-space:nowrap; transition:background 0.15s, border-color 0.15s; }
+        .deg-cap-chip.is-on { background:#fef3c7; border-color:#fcd34d; color:#92400e; }
+        .deg-cap-chip.is-off:hover { background:#e5e7eb; }
+        .deg-cap-chip.is-dim { opacity:0.45; }
+    </style>
 </head>
 <body>
     <div class="app-container">
@@ -284,6 +295,108 @@
         </div>
     </div>
 
-    <script src="/admin/app.js?v=20260904-toggle-guard-1"></script>
+    <!-- FEL (Faithful Execution Layer) settings block, cloned by app.js felBlockHTML() into the Tools tab -->
+    <template id="fel-block-template">
+        <div class="settings-section" id="fel-section">
+            <h2 class="section-title">Faithful Execution Layer (FEL)</h2>
+
+            <div class="setting-row">
+                <div class="setting-info">
+                    <div class="setting-title">Enable FEL</div>
+                    <div class="setting-desc">Master switch for the Faithful Execution Layer: request normalization, refusal recovery, clarity injection, and engagement steering. When off, requests pass through untouched.</div>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="fel-master" onchange="felOnMaster(this)">
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div id="fel-body" style="display:flex; flex-direction:column; gap:0;">
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <div class="setting-title">Research Mode — Content</div>
+                        <div class="setting-desc">Research framing for sensitive-subject analysis: politics, conflict and violence in creative or journalistic work, sexuality in literary, historical, or ethics research. Adds one research-context directive to the system prompt. Hard walls (CSAM, weapons) stay blocked — recovery never re-dispatches them.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="fel-research-content" onchange="felOnResearch(this, 'content')">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <div class="setting-title">Research Mode — Coding</div>
+                        <div class="setting-desc">Own-systems security research framing for tool building: outputs run on the operator's attested infrastructure. Adds one research-context directive to the system prompt. Third-party-victim tooling stays refused — that wall is behavioral, not lexical.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="fel-research-coding" onchange="felOnResearch(this, 'coding')">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <div class="setting-title">Refusal Recovery</div>
+                        <div class="setting-desc">Rewrite hard refusals that stem from ambiguity or policy misreads into compliant, on-task responses. Marked with the x-bsl-recovered response header.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="fel-recovery" onchange="felOnToggle(this, 'refusal_recovery.enabled')">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <div class="setting-title">Clarity Injection</div>
+                        <div class="setting-desc">Inject clarity directives so the model restates ambiguous asks and answers the literal question. Marked with the x-bsl-clarified response header.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="fel-clarity" onchange="felOnToggle(this, 'clarity.enabled')">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <div class="setting-row" style="flex-direction:column; align-items:stretch; gap:8px;">
+                    <div class="setting-info">
+                        <div class="setting-title">Per-Family Overrides</div>
+                        <div class="setting-desc">Disable FEL for a whole model family (cn = GLM/Qwen/DeepSeek/Kimi/MiniMax). Unchecked families skip FEL normalization, directives, and refusal recovery entirely.</div>
+                    </div>
+                    <div style="display:flex; gap:18px; flex-wrap:wrap; font-size:12px;">
+                        <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="fel-fam-cn" onchange="felOnFamily(this, 'cn')"> cn</label>
+                        <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="fel-fam-gpt" onchange="felOnFamily(this, 'gpt')"> gpt</label>
+                        <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="fel-fam-claude" onchange="felOnFamily(this, 'claude')"> claude</label>
+                        <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="fel-fam-gemini" onchange="felOnFamily(this, 'gemini')"> gemini</label>
+                    </div>
+                </div>
+
+                <div class="setting-row" style="flex-direction:column; align-items:stretch; gap:8px;">
+                    <div class="setting-info">
+                        <div class="setting-title">Engagement Profile</div>
+                        <div class="setting-desc">Steers tone and behavior via an engagement directive injected into the system prompt. Applies to requests that pass FEL normalization.</div>
+                    </div>
+                    <textarea id="fel-ctx" class="input" rows="4" style="width:100%; resize:vertical; font-size:13px;" placeholder="Engagement context — how the model should behave toward this client…" oninput="felOnField(this, 'engagement.context')"></textarea>
+                    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                        <input type="text" id="fel-clientref" class="input" style="flex:1; min-width:180px; font-size:12px;" placeholder="Client reference (e.g. acme-corp)" oninput="felOnField(this, 'engagement.client_ref')">
+                        <input type="text" id="fel-scope" class="input" style="flex:1; min-width:180px; font-size:12px;" placeholder="Scope (e.g. claude-* / chat only)" oninput="felOnField(this, 'engagement.scope')">
+                    </div>
+                </div>
+
+                <div class="setting-row" style="flex-direction:column; align-items:stretch; gap:4px;">
+                    <div class="setting-info">
+                        <div class="setting-title">Response Surface</div>
+                        <div class="setting-desc">Header markers FEL adds to responses, one per pipeline stage that fired.</div>
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-muted); padding-left:4px;">
+                        <div><span class="badge" style="font-family:monospace;font-size:10px;">x-bsl-fel</span> &mdash; FEL pipeline engaged on this request</div>
+                        <div><span class="badge" style="font-family:monospace;font-size:10px;">x-bsl-clarified</span> &mdash; clarity directive injected</div>
+                        <div><span class="badge" style="font-family:monospace;font-size:10px;">x-bsl-recovered</span> &mdash; refusal rewritten into a compliant response</div>
+                        <div><span class="badge" style="font-family:monospace;font-size:10px;">x-bsl-refusal</span> &mdash; refusal preserved (recovery unavailable or disabled)</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <script src="/admin/app.js?v=20260907-fel5-research-1"></script>
 </body>
 </html>

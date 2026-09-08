@@ -39,6 +39,7 @@ Here's the full journey of a single chat request, step by step:
 
 ### Step 1: Request Arrives
 Your client sends a `POST /v1/chat/completions` (or `/v1/messages` for Anthropic format).
+Malformed bodies (truncated JSON, non-object payloads, invalid UTF-8) are rejected at the door with an OpenAI-style JSON 400 (`error.code: invalid_json_body`) — never an unhandled 500 (H0, 2026-09-06).
 
 ### Step 2: Authentication Check
 If admin auth is enabled, BSL Router verifies the session. API requests use the BSL key from your config.
@@ -332,6 +333,11 @@ Pre-process specific content types before routing:
 
 ---
 
+### Streaming Resilience (2026-09-06)
+- **Degenerate-output guard (vsllm-r/gpt):** `_degenerate_effort_cap_decision` in `app/main.py` caps reasoning effort xhigh→high when provider=vsllm-r + gpt-5/6 contract + openai-responses wire + input≥40k tokens (upstream returns 200 with 9-112-token rubble at xhigh on large contexts). Post-stream telemetry `note_degenerate_output` flags degenerate END rows; kill-switch `tools.degenerate_output_guard` (default ON).
+- **SSE keepalive pre-first-chunk:** `_sse_keepalive_pre_first_chunk` emits `event: ping` (Anthropic lanes) / `: keepalive` (OpenAI lanes) every 10s while waiting for the first upstream chunk, then stops — byte-faithful mid-stream. Fixes CC/IDE clients whose 30s no-data watchdog aborted slow-TTFT (15-55s) requests. Gate `tools.sse_keepalive` (default ON).
+- **Boot-time log self-heal:** `_selfheal_errlog` truncates `.brain/logs/app.err.log` >50MB to a 10MB tail at boot (in-place; the cmd supervisor holds the `2>>` handle). WinError-64 shadow `accept_coro` exceptions are now consumed via done-callbacks (`_track_shadow_accept_tasks`) — no more "Task exception was never retrieved" spam. END console lines serialize error bodies single-line (`_single_line_error`) so 400-error rows stay greppable.
+
 ## Middleware Pipeline
 
 The routing pipeline consists of 26 middleware modules. Here's the full inventory:
@@ -385,6 +391,48 @@ The routing pipeline consists of 26 middleware modules. Here's the full inventor
 | `bsl_benchmark_sheet.py` | Chat tier benchmark data |
 | `bsl_lite_benchmark_sheet.py` | Lite tier benchmark data |
 | `bsl_agentic_benchmark_sheet.py` | Agentic tier benchmark data |
+
+---
+
+## Faithful Execution Layer (FEL)
+
+The Faithful Execution Layer counters four recurring agent failure modes on the model fleet: **false refusals** on legitimate professional work, **skipped steps**, **dropped tool calls**, and **premature stops**. It operates exclusively through positive-framing capability/completion contracts appended to the system-prompt tail — never obedience-forcing or jailbreak-style language (enforced by import-time forbidden-vocabulary self-check in `app/middleware/faithful_execution.py`).
+
+### Pipeline stages (wired in `app/main.py` via `app/middleware/fel_wiring.py`)
+
+| Stage | Where | What happens |
+|---|---|---|
+| Pre-flight (clarity) | Before dispatch | Vocabulary-map rewrite + engagement-context prepend on the last user message; ambiguity flagged log-only |
+| Egress (directives) | Payload final per wire shape | Directive block merged into the system tail (openai-chat system message / responses `instructions` / gemini `systemInstruction` / anthropic `system`) |
+| Recovery | First completed non-stream response | Strict classifier (`classify_refusal` — ≥2 distinct markers, <600 chars, no tool calls) sees a refusal → ONE router-injected clarification turn re-dispatch; recursion impossible via request.state guard |
+| Hard wall (FEL-5) | Inside `classify_refusal`, before the length gate | A refusal-shaped text (≥2 distinct markers) citing `_RECOVERY_BLOCK_MARKERS` (CSAM/weapons-class subject matter) → terminal **`blocked`** verdict, preserved verbatim — recovery never re-dispatches it. Bypasses the <600-char length gate (live evidence 2026-09-07: verbose wall refusals — Kimi 1337ch / Qwen 2248ch — must stay visible to analytics), but never the ≥2-marker refusal-shape gate, so benign technical mentions of block-listed subjects can never classify `blocked` |
+| Stream final | Buffered-stream assembly | Classifies assembled visible text, log-only — no mid-stream recovery |
+
+### Gates & config
+
+- Master switch: `tools.fel.enabled` (default **OFF** — disabled/malformed config costs one dict lookup, zero mutation).
+- Per-target opt-out: `tools.fel_profiles` (`{provider-or-model: "off"}`) or request header `x-bsl-fel: off`.
+- **Per-family toggles (FEL-3)**: `tools.fel.families` — `{cn, gpt, claude, gemini}`, default all-on; unchecked families skip clarity, directives, recovery, and stream classification (`_fel_family_enabled` gate in `app/main.py`, family resolved by `detect_family` from model-id prefix, falling back to provider-name substring).
+- **Research modes (FEL-5)**: `tools.fel.research` — `{content, coding}`, both default OFF. Each enabled lane adds ONE research-context directive to the egress merge (content: politics/conflict/sexuality research framing; coding: own-systems security research framing). Hard walls are never softened — a wall refusal in a research lane still classifies `blocked`.
+- Everything is fail-open: any exception leaves the payload untouched.
+
+### Response surface
+
+| Header | Meaning |
+|---|---|
+| `x-bsl-fel: applied` | Egress merged the directive block |
+| `x-bsl-clarified` | Pre-flight adjusted the last user message |
+| `x-bsl-recovered` | Refusal rewritten into a compliant response |
+| `x-bsl-refusal` | Refusal preserved (recovery disabled, failed again, or FEL-5 hard wall) |
+
+### Refusal analytics (FEL-3)
+
+Stage signals ride `request.state` → `obs.note_fel_context()` → `log_request()` attaches them to the SQLite usage row. Two columns on `usage_events` (guarded ALTER migration, NULL for non-FEL traffic):
+
+- `fel` — family tag (`cn` / `gpt` / `claude` / `gemini` / `other`) when FEL engaged
+- `refusal_class` — final verdict: `refusal` / `tos_lecture` / `filter_block` / `blocked` / `recovered` / `clean` / `unknown`
+
+`GET /api/observability/usage/summary` returns a `fel` block: `applied` (rows with a family tag), `refusals` (counts by class), `recovered`, `by_family` (`{requests, refusals, recovered}`), and `by_model` (top 8 models by hard-refusal count). The Usage tab renders a **FEL SOFTENING** card (applied / refusals / recovered / filter-block + per-family chips + top refusal models) only when FEL data exists; an empty store yields zeros, never errors.
 
 ---
 
@@ -538,6 +586,12 @@ tools:
   caching_kimi_key_bound: false
   caching_static_sort: false
   caching_openai_key_bound: true
+  # Faithful Execution Layer (see FEL section above) — default OFF
+  fel:
+    enabled: false
+    refusal_recovery: { enabled: true, max_recoveries: 1 }
+    clarity: { enabled: true, vocabulary_map: {} }
+    families: { cn: true, gpt: true, claude: true, gemini: true }
 
 # Antigravity IDE integration
 antigravity_integration:

@@ -1542,6 +1542,64 @@ function getThinkingSpec(modelId) {
     return null;  // no reasoning controls
 }
 
+// ── Degenerate-output effort cap ("Cap 40K→high" chip, 2026-09-07) ──────────
+// Backend scope: tools.degenerate_output_guard.models (default
+// ["gpt-5.6-terra"]) + model_overrides (per-model enabled / effort_cap /
+// input_token_floor / effort_ladder), enforced in main.py
+// _degenerate_effort_cap_decision for vsllm-r openai-responses traffic.
+// Probe evidence: terra RUBBLE 4/4 (cap helps), sol PASS 4/4 and astra
+// EMPTY 4/4 on an upstream 524/502/429 storm (cap cannot help).
+function _canonicalCapModelId(modelId) {
+    // Mirrors the backend variant-ID choke point (families/_base.py
+    // ThinkingContext): digit-dash-digit -> digit-dot-digit. Word dashes
+    // (gpt-6-astra) are unaffected.
+    return String(modelId || '').toLowerCase().replace(/(\d)-(\d)/g, '$1.$2');
+}
+// Chip renders for the vsllm-r gpt models only; reseller suffixes
+// (-pro20x, -thinking) ride the tier token so a separator must follow.
+const _DEG_CAP_CHIP_MODELS = /^(gpt-5\.6-(sol|terra)|gpt-6-astra)([-._].*)?$/;
+function _degGuardCfg() {
+    let tools = globalConfig.tools;
+    if (!tools || typeof tools !== 'object') { tools = {}; globalConfig.tools = tools; }
+    let guard = tools.degenerate_output_guard;
+    if (!guard || typeof guard !== 'object') { guard = {}; tools.degenerate_output_guard = guard; }
+    return guard;
+}
+// Pure state derivation mirrored from app/compat/reasoning_policy.py
+// degenerate_cap_chip_state: model_overrides[<canonical>].enabled wins when
+// present; otherwise models-list membership (default: terra ON, sol/astra
+// OFF). Keep the two implementations in sync.
+function deriveCapChipState(cfg, canonical) {
+    const id = _canonicalCapModelId(canonical);
+    const tools = (cfg && cfg.tools && typeof cfg.tools === 'object') ? cfg.tools : {};
+    const guard = (tools.degenerate_output_guard && typeof tools.degenerate_output_guard === 'object') ? tools.degenerate_output_guard : {};
+    const ovr = (guard.model_overrides && typeof guard.model_overrides === 'object' && guard.model_overrides[id])
+        ? guard.model_overrides[id] : null;
+    if (ovr && typeof ovr === 'object' && ('enabled' in ovr)) return !!ovr.enabled;
+    const models = Array.isArray(guard.models) ? guard.models : ['gpt-5.6-terra'];
+    return models.some(m => _canonicalCapModelId(m) === id);
+}
+window.deriveCapChipState = deriveCapChipState;
+
+window.toggleDegenerateCap = async (modelId, enabled) => {
+    const canonical = _canonicalCapModelId(modelId);
+    const guard = _degGuardCfg();
+    const ovr = guard.model_overrides && typeof guard.model_overrides === 'object'
+        ? guard.model_overrides : (guard.model_overrides = {});
+    const had = Object.prototype.hasOwnProperty.call(ovr, canonical);
+    const previous = had ? Object.assign({}, ovr[canonical]) : undefined;
+    ovr[canonical] = Object.assign({}, had ? ovr[canonical] : {}, { enabled: !!enabled });
+    try {
+        if (!await saveConfig()) throw Error('configuration save failed');
+        renderActiveTab();
+        showToast('Cap 40K→high ' + (enabled ? 'enabled' : 'disabled') + ' for ' + canonical + '.');
+    } catch (e) {
+        if (had) ovr[canonical] = previous; else delete ovr[canonical];
+        renderActiveTab();
+        showToast('Failed to save cap toggle: ' + (e.message || 'request failed'), true);
+    }
+};
+
 function modelRow(m, idx, providerId) {
     const modelId = m.id || '';
     const thinking = m.thinking || 'auto';
@@ -1562,6 +1620,20 @@ function modelRow(m, idx, providerId) {
         keyBadgeHtml = `<span title="Available on: ${connectionLabels.join(', ')}" style="font-size:11px;background:#ecfeff;color:#0e7490;padding:2px 6px;border-radius:4px;font-weight:600;">🔑 ${label}</span>`;
     }
     
+    // Degenerate-output effort-cap chip: vsllm-r gpt models only (see
+    // _DEG_CAP_CHIP_MODELS note above). Dimmed when the global guard is
+    // disabled — the backend ignores the cap entirely in that case.
+    let capChipHtml = '';
+    if (String(providerId || '').toLowerCase() === 'vsllm-r') {
+        const capCanonical = _canonicalCapModelId(modelId);
+        if (_DEG_CAP_CHIP_MODELS.test(capCanonical)) {
+            const capOn = deriveCapChipState(globalConfig, capCanonical);
+            const guardCfg = (globalConfig.tools && typeof globalConfig.tools === 'object') ? globalConfig.tools.degenerate_output_guard : null;
+            const guardOff = !(guardCfg && typeof guardCfg === 'object' && guardCfg.enabled);
+            capChipHtml = `<button type="button" class="deg-cap-chip ${capOn ? 'is-on' : 'is-off'}${guardOff ? ' is-dim' : ''}" title="Degenerate effort cap for this model — applies immediately on save" onclick="event.stopPropagation();toggleDegenerateCap('${modelId}', ${capOn ? 'false' : 'true'})">Cap 40K→high</button>`;
+        }
+    }
+
     // Precise per-model reasoning badge. Always-on models (e.g. Kimi K2.7-code)
     // render a static badge instead of a no-op dropdown; multi-axis models
     // (GPT-5.6, Fable/Mythos) render one select per supported axis.
@@ -1619,6 +1691,7 @@ function modelRow(m, idx, providerId) {
                 <div style="font-weight:600; font-size:13px; color:var(--text-main);">${modelId}</div>
                 <div style="display:inline-block; font-size:11px; background:#f3f4f6; color:var(--text-muted); padding:2px 6px; border-radius:4px; width:fit-content;">${routeKey}</div>
                 ${keyBadgeHtml}
+                ${capChipHtml}
             </div>
             <div style="display:flex; align-items:center; gap:8px; margin-left:8px;">
                 <span class="model-action-btn" title="Copy" onclick="copyProviderModelId(${idx})">${SVGS.copy}</span>
@@ -6052,37 +6125,31 @@ function renderToolsTab() {
                 </label>
             </div>
 
-            <div class="setting-row" style="background: rgba(255, 106, 0, 0.05); border: 1px solid rgba(255, 106, 0, 0.2); padding:18px 20px; min-height:86px; gap:24px; align-items:center;">
-                <div class="setting-info" style="min-width:0; padding-right:18px;">
-                    <div class="setting-title" style="color: var(--danger-color); margin-bottom:6px;">&#9888; Enable Context Compaction</div>
-                    <div class="setting-desc" style="line-height:1.55; max-width:760px;">DESTRUCTIVE: Aggressively trim and summarize the Dynamic Tail (older conversational turns) to save tokens on Volatile Cache providers like GLM-5.</div>
+            <div class="setting-row">
+                <div class="setting-info" style="min-width:0;">
+                    <div class="setting-title">Context Compaction (Smart)</div>
+                    <div class="setting-desc" style="line-height:1.55; max-width:760px;">Automatically summarizes older conversation turns ONLY when it saves &ge;30% of context (calibrated token estimation). Tool results, file contents, and the original task message are always preserved verbatim. Reconstruction is validated &mdash; if anything looks wrong, the original context is sent unchanged.</div>
+                    <div style="font-size:11px; color:var(--text-muted); line-height:1.5; margin-top:6px; max-width:760px;">Applies to requests on the OpenAI- and Anthropic-format lanes &mdash; coding apps/CLIs like Claude Code, Blacksand Code, Cline, Roo Code, LibreChat, or any OpenAI/Anthropic SDK client &mdash; for every model family they route here (GLM, DeepSeek, GPT, Qwen, Kimi, &hellip;). Fires only when calibrated context exceeds the threshold AND &ge;30% savings are possible. Gemini-native requests (Antigravity IDE, Gemini CLI) bypass compaction entirely.</div>
                 </div>
-                <div style="display:flex; flex-direction:column; align-items:flex-end; gap:10px; flex:0 0 330px; max-width:330px;">
-                    <div style="display:flex; align-items:center; justify-content:flex-end; gap:12px; width:100%;">
-                        <label class="switch" style="flex:0 0 auto;">
-                            <input type="checkbox" onchange="globalConfig.tools.compaction_enabled = this.checked" ${t.compaction_enabled ? 'checked' : ''}>
-                            <span class="slider"></span>
-                        </label>
-                        <select class="input" style="width: 210px; font-size:12px; padding:6px 10px;" onchange="globalConfig.tools.compaction_model = this.value">
-                            <option value="">-- Compaction Model --</option>
-                            ${getModelsDropdownWithCombosHTML(t.compaction_model || 'gpt-4o-mini')}
-                        </select>
-                    </div>
-                    <div style="display:flex; align-items:center; justify-content:flex-end; gap:8px; width:100%; white-space:nowrap;">
-                        <span style="font-size:11px; color:var(--text-muted);">Force compact if context &gt;</span>
-                        <input type="number" min="1000" step="1000" class="input" style="width: 90px; font-size:12px; padding:6px 10px;" value="${t.compaction_threshold || 48000}" onchange="globalConfig.tools.compaction_threshold = parseInt(this.value) || 48000">
-                        <span style="font-size:11px; color:var(--text-muted);">tokens</span>
-                    </div>
-                    <div style="display:grid; grid-template-columns: 1fr 92px; gap:8px; width:100%; align-items:center;">
-                        <span style="font-size:11px; color:var(--text-muted); text-align:right;">Pin recent turns</span>
-                        <input type="number" min="1" max="20" step="1" class="input" style="width: 92px; font-size:12px; padding:6px 10px;" value="${t.compaction_code_strip_turns || 3}" onchange="globalConfig.tools.compaction_code_strip_turns = Math.max(1, Math.min(20, parseInt(this.value) || 3)); this.value = globalConfig.tools.compaction_code_strip_turns">
-                        <span style="font-size:11px; color:var(--text-muted); text-align:right;">Tail-trim threshold</span>
-                        <input type="number" min="0" step="1000" class="input" style="width: 92px; font-size:12px; padding:6px 10px;" value="${t.compaction_tail_trim_threshold || 0}" onchange="globalConfig.tools.compaction_tail_trim_threshold = Math.max(0, parseInt(this.value) || 0); this.value = globalConfig.tools.compaction_tail_trim_threshold">
-                    </div>
+                <label class="switch" style="flex:0 0 auto;">
+                    <input type="checkbox" onchange="globalConfig.tools.compaction_enabled = this.checked; scheduleAutoSave();" ${t.compaction_enabled ? 'checked' : ''}>
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div class="setting-row">
+                <div class="setting-info" style="min-width:0;">
+                    <div class="setting-title">GLM Parallel Tool Guard</div>
+                    <div class="setting-desc" style="line-height:1.55; max-width:760px;">Forces sequential tool calls on GLM-family models (Anthropic-format lanes) to prevent dropped tool arguments in parallel batches.</div>
+                    <div style="font-size:11px; color:var(--text-muted); line-height:1.5; margin-top:6px; max-width:760px;">Applies only to GLM models on Anthropic-format upstream lanes. Claude Code and other Anthropic-SDK clients are covered. Slightly more round-trips for GLM sessions.</div>
                 </div>
+                <label class="switch" style="flex:0 0 auto;">
+                    <input type="checkbox" onchange="globalConfig.tools.glm_no_parallel_tools = this.checked; scheduleAutoSave();" ${t.glm_no_parallel_tools !== false ? 'checked' : ''}>
+                    <span class="slider"></span>
+                </label>
             </div>
         </div>
-        
+
         <div class="settings-section">
             <h2 class="section-title">Output Control</h2>
             
@@ -6157,8 +6224,143 @@ function renderToolsTab() {
             </div>
         </div>
 
+        ${felBlockHTML()}
+
         </div>
     `;
+}
+
+
+// ── FEL (Faithful Execution Layer) Tools-tab block ─────────────────────
+// The markup lives in index.html as <template id="fel-block-template">;
+// felBlockHTML() clones it, stamps current config values into the clone,
+// then serializes via innerHTML. IMPORTANT: property assignment (.value=,
+// .checked=) does NOT survive innerHTML serialization — defaults must be
+// set as attributes (input value=, textarea text content, checked attr).
+
+// Schema defaults for tools.fel sub-keys that have not been persisted yet.
+// families: per-family toggles (FEL-3) — default all-on; the backend gate
+// (_fel_family_enabled in app/main.py) treats absent keys as enabled too.
+function _felConfig() {
+    const fel = (globalConfig.tools && globalConfig.tools.fel) || {};
+    return {
+        enabled: !!fel.enabled,
+        refusal_recovery: Object.assign({ enabled: true }, fel.refusal_recovery || {}),
+        clarity: Object.assign({ enabled: true }, fel.clarity || {}),
+        engagement: Object.assign({ context: '', client_ref: '', scope: '' }, fel.engagement || {}),
+        families: Object.assign({ cn: true, gpt: true, claude: true, gemini: true }, fel.families || {}),
+        research: Object.assign({ content: false, coding: false }, fel.research || {}),
+    };
+}
+
+function felBlockHTML() {
+    const tpl = document.getElementById('fel-block-template');
+    if (!tpl) return '';
+    const cfg = _felConfig();
+    const wrap = document.createElement('div');
+    wrap.appendChild(tpl.content.cloneNode(true));
+
+    const master = wrap.querySelector('#fel-master');
+    if (master) master.setAttribute('checked', cfg.enabled ? 'checked' : null);
+    const rec = wrap.querySelector('#fel-recovery');
+    if (rec) rec.setAttribute('checked', cfg.refusal_recovery.enabled ? 'checked' : null);
+    const cl = wrap.querySelector('#fel-clarity');
+    if (cl) cl.setAttribute('checked', cfg.clarity.enabled ? 'checked' : null);
+    const ctx = wrap.querySelector('#fel-ctx');
+    if (ctx) ctx.textContent = cfg.engagement.context || '';
+    const cref = wrap.querySelector('#fel-clientref');
+    if (cref) cref.setAttribute('value', cfg.engagement.client_ref || '');
+    const scope = wrap.querySelector('#fel-scope');
+    if (scope) scope.setAttribute('value', cfg.engagement.scope || '');
+
+    // Per-family toggles (FEL-3): stamp checked as an attribute so the
+    // default survives innerHTML serialization (same rule as above).
+    ['cn', 'gpt', 'claude', 'gemini'].forEach(fam => {
+        const box = wrap.querySelector('#fel-fam-' + fam);
+        if (box) box.setAttribute('checked', cfg.families[fam] ? 'checked' : null);
+    });
+
+    // FEL-5 research modes: stamp checked as an attribute (same
+    // innerHTML-serialization rule as the toggles above).
+    const rcBox = wrap.querySelector('#fel-research-content');
+    if (rcBox) rcBox.setAttribute('checked', cfg.research.content ? 'checked' : null);
+    const rkBox = wrap.querySelector('#fel-research-coding');
+    if (rkBox) rkBox.setAttribute('checked', cfg.research.coding ? 'checked' : null);
+
+    // Disabled/dimmed body when master is off: reflect the state at render
+    // time so the block paints correctly before any handler runs.
+    const body = wrap.querySelector('#fel-body');
+    if (body) {
+        const on = cfg.enabled;
+        body.style.opacity = on ? '1' : '0.5';
+        body.querySelectorAll('#fel-recovery, #fel-clarity, #fel-ctx, #fel-clientref, #fel-scope, #fel-fam-cn, #fel-fam-gpt, #fel-fam-claude, #fel-fam-gemini, #fel-research-content, #fel-research-coding')
+            .forEach(el => { el.toggleAttribute('disabled', !on); });
+    }
+    return wrap.innerHTML;
+}
+
+// Ensure globalConfig.tools.fel exists (creating it — never replacing — so
+// foreign sub-keys like profiles / vocabulary_map survive every save).
+function _felEnsure() {
+    if (!globalConfig.tools) globalConfig.tools = {};
+    if (!globalConfig.tools.fel) globalConfig.tools.fel = {};
+    return globalConfig.tools.fel;
+}
+
+function felOnMaster(cb) {
+    const fel = _felEnsure();
+    fel.enabled = cb.checked;
+    const body = document.getElementById('fel-body');
+    if (body) {
+        body.style.opacity = cb.checked ? '1' : '0.5';
+        body.querySelectorAll('#fel-recovery, #fel-clarity, #fel-ctx, #fel-clientref, #fel-scope, #fel-fam-cn, #fel-fam-gpt, #fel-fam-claude, #fel-fam-gemini, #fel-research-content, #fel-research-coding')
+            .forEach(el => { el.toggleAttribute('disabled', !cb.checked); });
+    }
+    scheduleAutoSave();
+}
+
+// key is one of the two boolean sub-toggles: 'refusal_recovery.enabled' | 'clarity.enabled'
+function felOnToggle(cb, key) {
+    const fel = _felEnsure();
+    if (key === 'refusal_recovery.enabled') {
+        if (!fel.refusal_recovery) fel.refusal_recovery = {};
+        fel.refusal_recovery.enabled = cb.checked;
+    } else if (key === 'clarity.enabled') {
+        if (!fel.clarity) fel.clarity = {};
+        fel.clarity.enabled = cb.checked;
+    }
+    scheduleAutoSave();
+}
+
+// family is one of: 'cn' | 'gpt' | 'claude' | 'gemini' (FEL-3 per-family toggles).
+// Persists ONLY the families sub-key — tools.fel is never replaced wholesale.
+function felOnFamily(cb, family) {
+    const fel = _felEnsure();
+    if (!fel.families) fel.families = {};
+    fel.families[family] = cb.checked;
+    scheduleAutoSave();
+}
+
+// lane is one of: 'content' | 'coding' (FEL-5 research modes).
+// Persists ONLY the research sub-key — tools.fel is never replaced wholesale.
+function felOnResearch(cb, lane) {
+    const fel = _felEnsure();
+    if (!fel.research) fel.research = {};
+    fel.research[lane] = cb.checked;
+    scheduleAutoSave();
+}
+
+// key is one of the engagement text fields; debounced persist.
+const _felFieldDebounced = _debounce(function(key, value) {
+    const fel = _felEnsure();
+    if (!fel.engagement) fel.engagement = {};
+    fel.engagement[key] = value;
+    scheduleAutoSave();
+}, 400);
+
+function felOnField(el, key) {
+    const field = key.split('.').pop(); // 'engagement.context' -> 'context'
+    _felFieldDebounced(field, el.value);
 }
 
 
@@ -7229,9 +7431,63 @@ function renderUsageTable() {
         <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);"><div style="font-size:11px;font-weight:800;color:var(--text-muted);">TOTAL INPUT TOKENS</div><div style="font-size:25px;font-weight:900;color:#f97316;">${sInput.toLocaleString()}</div></div>
         <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);"><div style="font-size:11px;font-weight:800;color:var(--text-muted);">OUTPUT TOKENS</div><div style="font-size:25px;font-weight:900;color:#10b981;">${sOutput.toLocaleString()}</div></div>
         <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);"><div style="font-size:11px;font-weight:800;color:var(--text-muted);">EST. COST</div><div style="font-size:25px;font-weight:900;color:#f59e0b;">${_fmtCost(sCost)}</div></div>
-    </div>
+    </div>`;
 
-    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;margin-bottom:18px;align-items:stretch;">
+    // D1 delta cards — latency p50/p95 + error rate. Rendered only when the
+    // server summary carries the fields (older summaries → hidden, never "undefined").
+    const lat = usageSummaryState?.latency;
+    const errs = usageSummaryState?.errors;
+    const latReady = !!(lat && (lat.ttft_p50_ms != null || lat.total_p50_ms != null));
+    const errReady = !!(errs && typeof errs.count === 'number' && typeof errs.rate === 'number');
+    if (latReady || errReady) {
+        const deltaCard = (label, mainHtml, subHtml, color) => `<div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);"><div style="font-size:11px;font-weight:800;color:var(--text-muted);">${label}</div><div style="font-size:25px;font-weight:900;color:${color};">${mainHtml}</div><div style="font-size:12px;font-weight:800;color:var(--text-muted);">${subHtml}</div></div>`;
+        const cards = [];
+        if (latReady) {
+            const fmtMs = (v) => v != null ? Number(v).toLocaleString() + ' ms' : '—';
+            cards.push(deltaCard('LATENCY p50 / p95',
+                `${fmtMs(lat.ttft_p50_ms)} / ${fmtMs(lat.ttft_p95_ms)}<span style="font-size:12px;font-weight:800;color:var(--text-muted);"> TTFT</span>`,
+                `Total ${fmtMs(lat.total_p50_ms)} / ${fmtMs(lat.total_p95_ms)}`,
+                '#3b82f6'));
+        }
+        if (errReady) {
+            cards.push(deltaCard('ERROR RATE',
+                `${(Number(errs.rate) * 100).toFixed(2)}%<span style="font-size:12px;font-weight:800;color:var(--text-muted);"> of requests</span>`,
+                `${errs.count.toLocaleString()} error${errs.count === 1 ? '' : 's'}`,
+                '#ef4444'));
+        }
+        html += `<div style="display:grid;grid-template-columns:repeat(${cards.length},minmax(150px,1fr));gap:14px;margin-bottom:18px;">${cards.join('')}</div>`;
+    }
+
+    // FEL-3 refusal analytics card — rendered only when the server summary
+    // carries FEL signal (applied rows or classified refusals), same pattern
+    // as the D1 latency/error delta cards above.
+    const fel = usageSummaryState?.fel;
+    const felHardRef = fel ? Object.entries(fel.refusals || {})
+        .filter(([k]) => k === 'refusal' || k === 'tos_lecture')
+        .reduce((a, [, v]) => a + Number(v || 0), 0) : 0;
+    const felFilter = fel ? Number((fel.refusals || {})['filter_block'] || 0) : 0;
+    const felReady = !!(fel && (Number(fel.applied) > 0 || felHardRef > 0 || felFilter > 0 || Number(fel.recovered) > 0));
+    if (felReady) {
+        const famChips = Object.entries(fel.by_family || {}).map(([f, d]) =>
+            `<span><span class="badge" style="font-family:monospace;font-size:10px;">${_usageEscapeHtml(f)}</span> ${Number(d.requests || 0).toLocaleString()} req · ${Number(d.refusals || 0)} ref · ${Number(d.recovered || 0)} rec</span>`
+        ).join('<span style="color:var(--text-muted);">&nbsp;·&nbsp;</span>');
+        const topModels = Object.entries(fel.by_model || {}).slice(0, 5).map(([m, d]) =>
+            `${_usageEscapeHtml(m)} (${Number(d.refusals || 0)})`
+        ).join(', ');
+        html += `<div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:16px;padding:16px;box-shadow:0 12px 30px rgba(15,23,42,.05);margin-bottom:18px;">` +
+            `<div style="font-size:11px;font-weight:800;color:var(--text-muted);">FEL SOFTENING</div>` +
+            `<div style="display:flex;gap:28px;flex-wrap:wrap;align-items:baseline;margin:8px 0;">` +
+            `<div><span style="font-size:25px;font-weight:900;color:#3b82f6;">${Number(fel.applied || 0).toLocaleString()}</span> <span style="font-size:11px;font-weight:800;color:var(--text-muted);">FEL APPLIED</span></div>` +
+            `<div><span style="font-size:25px;font-weight:900;color:#ef4444;">${felHardRef.toLocaleString()}</span> <span style="font-size:11px;font-weight:800;color:var(--text-muted);">REFUSALS</span></div>` +
+            `<div><span style="font-size:25px;font-weight:900;color:#10b981;">${Number(fel.recovered || 0).toLocaleString()}</span> <span style="font-size:11px;font-weight:800;color:var(--text-muted);">RECOVERED</span></div>` +
+            (felFilter > 0 ? `<div><span style="font-size:25px;font-weight:900;color:#f59e0b;">${felFilter.toLocaleString()}</span> <span style="font-size:11px;font-weight:800;color:var(--text-muted);">FILTER-BLOCK</span></div>` : '') +
+            `</div>` +
+            (famChips ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">By family: ${famChips}</div>` : '') +
+            (topModels ? `<div style="font-size:12px;color:var(--text-muted);">Top refusal models: ${topModels}</div>` : '') +
+            `</div>`;
+    }
+
+    html += `<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;margin-bottom:18px;align-items:stretch;">
         <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:18px;padding:16px;box-shadow:0 16px 40px rgba(15,23,42,.06);height:430px;display:flex;flex-direction:column;min-width:0;"><div style="font-size:13px;font-weight:900;margin-bottom:10px;">Provider Graph</div><div style="flex:1;min-height:0;">${usageSummaryState && !filteredData.length ? renderProviderGraphSVG(usageSummaryState.providers || []) : renderProviderGraphSVG(filteredData)}</div></div>
         <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:18px;padding:16px;box-shadow:0 16px 40px rgba(15,23,42,.06);height:430px;display:flex;flex-direction:column;min-width:0;"><div style="font-size:13px;font-weight:900;margin-bottom:10px;text-align:center;">Provider Share</div><div style="flex:1;min-height:0;display:flex;align-items:stretch;justify-content:center;">${usageSummaryState && !filteredData.length ? renderProviderSharePie(usageSummaryState.providers || []) : renderProviderSharePie(filteredData)}</div></div>
     </div>
