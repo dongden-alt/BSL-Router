@@ -62,6 +62,59 @@ _PIN_TURNS_DEFAULT = 3
 _PIN_TURNS_MIN = 1
 _PIN_TURNS_MAX = 20
 
+# Calibrated token estimation (Part B): the blind /4 heuristic undercounts
+# code-heavy CC traffic ~1.75x in production (estimated 49.4k vs upstream
+# actual in=82-85k). `_TOKEN_RATIO` holds the correction factor applied to the
+# raw estimate — longest matching model prefix wins, fallback "global".
+DEFAULT_TOKEN_RATIO = 1.75
+_TOKEN_RATIO: dict = {"global": DEFAULT_TOKEN_RATIO}
+
+# EMA smoothing factor for record_usage feedback (Part B.2).
+_RATIO_EMA_ALPHA = 0.3
+_RATIO_MIN = 1.0
+_RATIO_MAX = 3.0
+
+# Min-savings smart gate (Part B.3): compact only if the calibrated tail is at
+# least this percent of the calibrated total. Default matches config default.
+DEFAULT_MIN_SAVINGS_PCT = 30
+
+
+def _resolve_token_ratio(model: str) -> float:
+    """Return the calibrated ratio for `model` — longest matching prefix in
+    _TOKEN_RATIO (excluding "global"), falling back to the global ratio."""
+    ratio_map = {k: v for k, v in _TOKEN_RATIO.items() if k != "global"}
+    best_len = 0
+    best_ratio = _TOKEN_RATIO.get("global", DEFAULT_TOKEN_RATIO)
+    model_l = (model or "").lower()
+    for prefix, ratio in ratio_map.items():
+        p = prefix.lower()
+        if p and model_l.startswith(p) and len(p) > best_len:
+            best_len = len(p)
+            best_ratio = ratio
+    return best_ratio
+
+
+def record_usage(model: str, estimated_tokens: int, actual_in_tokens: int) -> None:
+    """
+    Usage-feedback hook (Part B.2): fold upstream-observed input tokens back
+    into the per-model calibration ratio via EMA.
+
+    NOT called anywhere in this task (main.py is off-limits); wired later.
+    Clamps the corrected ratio to [1.0, 3.0] so one bad sample can't skew gates.
+    """
+    if not estimated_tokens or estimated_tokens <= 0 or actual_in_tokens <= 0:
+        return
+    observed = max(_RATIO_MIN, min(_RATIO_MAX, actual_in_tokens / estimated_tokens))
+    current = _resolve_token_ratio(model)
+    updated = (1 - _RATIO_EMA_ALPHA) * current + _RATIO_EMA_ALPHA * observed
+    _TOKEN_RATIO[model.lower()] = max(_RATIO_MIN, min(_RATIO_MAX, updated))
+
+
+def _calibrated_count_tokens(messages: List[Message], model: str) -> int:
+    """Raw /4 estimate scaled by the applicable calibration ratio for `model`."""
+    return int(_count_tokens(messages) * _resolve_token_ratio(model))
+
+
 # In-memory summary cache: hash -> {"summary": str, "ts": float}
 _summary_cache: dict = {}
 CACHE_MAX_ENTRIES = 500
@@ -155,12 +208,19 @@ def _identify_compactable_tail(
     pin_turns: int
 ) -> Tuple[List[Message], List[Message], List[Message]]:
     """
-    Split messages into three groups:
-      sys_msgs      — system prompt(s), always first, always pinned
-      compactable   — older conversational history safe to summarize
-      pinned_recent — last `pin_turns` user+assistant pairs + all tool-chain messages
+    Split messages into three groups (ORDER-PRESERVING — Part A fix):
+      sys_msgs           — system prompt(s), always first, always pinned
+      compactable        — older conversational history safe to summarize
+      pinned_recent_raw  — everything else (recent turns + tool-chain messages),
+                           IN ORIGINAL ORDER
 
-    Returns (sys_msgs, compactable, pinned_recent)
+    The old return contract concatenated `extra_pinned + pinned_recent_raw`,
+    hoisting mid-history tool-chain messages to the FRONT of the rebuilt array.
+    That made the first non-system message an assistant tool_use / user
+    tool_result → upstream validators reject with messages-param 400s
+    (92% of glm-5.3-flash coder-2 errors, production-proven).
+
+    Returns (sys_msgs, compactable, pinned_recent_raw).
     """
     sys_msgs = [m for m in messages if m.role == "system"]
     non_sys = [m for m in messages if m.role != "system"]
@@ -184,22 +244,26 @@ def _identify_compactable_tail(
     # Build tool-call dependency graph on full non_sys list
     pinned_tool_indices = _build_tool_call_graph(non_sys)
 
-    # Identify compactable: messages before boundary AND not in tool graph
-    compactable_candidates = non_sys[:pinned_boundary]
-    pinned_recent_raw = non_sys[pinned_boundary:]
+    # Identify first non-system user message — the original task statement
+    # (Part D1). NEVER compactable; in the rebuilt array it keeps its original
+    # relative position (the order-preserving walk guarantees placement).
+    first_user_idx = next(
+        (i for i, m in enumerate(non_sys) if m.role == "user"), None
+    )
 
-    # Further remove any tool-chain messages from compactable_candidates
+    # Partition IN ORDER (Part A.1): walk non_sys once — pre-boundary messages
+    # that are neither tool-chain-pinned nor the first-user go to `compactable`;
+    # EVERYTHING else stays in `pinned_recent` in original relative order.
+    # No concatenation, no hoisting.
     compactable = []
-    extra_pinned = []
-    for i, msg in enumerate(compactable_candidates):
-        if i in pinned_tool_indices:
-            extra_pinned.append(msg)
-        else:
+    pinned_recent = []
+    for i, msg in enumerate(non_sys):
+        if i < pinned_boundary and i not in pinned_tool_indices and i != first_user_idx:
             compactable.append(msg)
+        else:
+            pinned_recent.append(msg)
 
-    pinned_recent = extra_pinned + pinned_recent_raw
     return sys_msgs, compactable, pinned_recent
-
 
 def _cache_key(messages: List[Message]) -> str:
     raw = json.dumps(
@@ -243,6 +307,7 @@ async def _call_compaction_model(
         "  - All function names, class names, variable names, error messages\n"
         "  - Any explicit user decisions or constraints\n"
         "  - The current objective and what has been completed\n"
+        "Preserve the user's original goal and all explicit user decisions/constraints word-for-word where given.\n"
         "Omit: greetings, repetitive explanations, resolved dead-ends, chit-chat.\n\n"
         f"--- CONVERSATION START ---\n{history_text}\n--- CONVERSATION END ---\n\n"
         "Output ONLY the compact state map. No preamble."
@@ -311,6 +376,89 @@ def _resolve_compaction_conn(config: dict, compaction_model: str) -> Tuple[Optio
     return resolve_model_conn(config, compaction_model)
 
 
+# ─── Reconstruction invariant validator (Part A.4) ───────────────────────────
+
+def _tool_use_ids(messages: List[Message]) -> set:
+    """All tool_use IDs emitted by assistant messages in `messages`."""
+    ids: set = set()
+    for msg in messages:
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                ids.add(tc.id)
+        if isinstance(msg.content, list):
+            for part in msg.content:
+                if isinstance(part, dict) and part.get("type") == "tool_use":
+                    ids.add(part.get("id", ""))
+    ids.discard("")
+    return ids
+
+
+def _tool_result_ids(messages: List[Message]) -> set:
+    """All tool_use IDs referenced by tool_result messages in `messages`."""
+    ids: set = set()
+    for msg in messages:
+        if msg.tool_call_id:
+            ids.add(msg.tool_call_id)
+        if isinstance(msg.content, list):
+            for part in msg.content:
+                if isinstance(part, dict) and part.get("type") == "tool_result":
+                    ids.add(part.get("tool_use_id", ""))
+    ids.discard("")
+    return ids
+
+
+def _validate_reconstruction(original_messages: List[Message], compacted_messages: List[Message]) -> bool:
+    """
+    Check the safety invariants of a compaction reconstruction (Part A.4).
+    Returns True iff ALL hold:
+      1. First non-system message role == "user".
+      2. Every tool_use id in compacted has a matching tool_result, and vice
+         versa — no NEW orphans relative to the original (an already-orphaned
+         pair in the original is not this function's problem to fix, but the
+         compaction must not create new ones).
+      3. Relative order of pinned (non-compacted) original messages is
+         preserved in the compacted array.
+    """
+    # Invariant 1: user-first
+    first_non_sys = next((m for m in compacted_messages if m.role != "system"), None)
+    if first_non_sys is None or first_non_sys.role != "user":
+        return False
+
+    # Invariant 2: tool pairing — no NEW orphans vs original
+    orig_use = _tool_use_ids(original_messages)
+    orig_res = _tool_result_ids(original_messages)
+    new_use = _tool_use_ids(compacted_messages)
+    new_res = _tool_result_ids(compacted_messages)
+    # orphans = emitted-without-result or result-without-emitter
+    if (new_use - new_res) - (orig_use - orig_res):
+        return False
+    if (new_res - new_use) - (orig_res - orig_use):
+        return False
+
+    # Invariant 3: relative order of pinned messages preserved.
+    # A pinned original message is any message that still appears in the
+    # compacted array (kept messages). Their relative order in compacted must
+    # match their relative order in original. Greedy earliest-match walk:
+    # each compacted message consumes the earliest still-unmatched original
+    # twin; synthetic messages (e.g. the summary) match nothing.
+    def _sig(m: Message):
+        return (m.role, _msg_text(m), bool(m.tool_calls), m.tool_call_id or "")
+
+    orig_sigs = [_sig(m) for m in original_messages]
+    unmatched = list(range(len(original_messages)))
+    kept_positions = []
+    for m in compacted_messages:
+        s = _sig(m)
+        found = next((i for i in unmatched if orig_sigs[i] == s), None)
+        if found is None:
+            continue  # synthetic message — not a pinned original
+        unmatched.remove(found)
+        kept_positions.append(found)
+    if kept_positions != sorted(kept_positions):
+        return False
+    return True
+
+
 async def apply_compaction(
     request: ChatCompletionRequest,
     http_client: httpx.AsyncClient,
@@ -337,12 +485,12 @@ async def apply_compaction(
     high_water = int(t.get("compaction_threshold", 48000))
     low_water = max(16000, int(high_water * 0.667))  # ~2/3 of high-water
 
-    # Gate 4: count total input tokens
-    total_tokens = _count_tokens(request.messages)
+    # Gate 4: count total input tokens (calibrated — Part B.1)
+    total_tokens = _calibrated_count_tokens(request.messages, request.model)
     if total_tokens <= high_water:
         return request  # Under threshold, nothing to do
 
-    # Gate 5: split into sys / compactable tail / pinned recent
+    # Gate 5: split into sys / compactable tail / pinned recent (order-preserving)
     try:
         # Resolve pin turns from config: compaction_code_strip_turns (clamped 1-20)
         pin_turns = _clamp_pin_turns(t)
@@ -358,18 +506,36 @@ async def apply_compaction(
         print("[Compaction] No safe compactable messages found — skipping")
         return request
 
-    # Gate 6: count compactable tail tokens.
-    tail_tokens = _count_tokens(compactable)
+    # Gate 6: count compactable tail tokens (calibrated).
+    tail_tokens = _calibrated_count_tokens(compactable, request.model)
+
+    # Gate 6-smart (Part B.3): compact ONLY if the tail is a meaningful share
+    # of the context. Production failing cases saved only ~4% → skip those.
+    min_savings_pct = int(t.get("compaction_min_savings_pct", DEFAULT_MIN_SAVINGS_PCT) or 0)
+    if min_savings_pct > 0 and total_tokens > 0:
+        savings_pct = tail_tokens * 100.0 / total_tokens
+        if savings_pct < min_savings_pct:
+            print(
+                f"[Compaction] Skip — savings too small ({savings_pct:.1f}% < {min_savings_pct}%)"
+            )
+            return request
 
     # Gate 6a: aggressive tail-trim threshold — if total tokens exceed the configured
     # compaction_tail_trim_threshold, drop compactable messages entirely instead of calling
     # the compaction model (saves the model call cost + latency at the expense of older context).
     # IMPORTANT: this must run BEFORE the projected-token skip gate; otherwise the
     # trim path is unreachable when summarization is predicted to be insufficient.
+    # DEFAULT-DISABLED (Part D2): 0/missing → unreachable. Order + first-user pin
+    # still hold here because pinned_recent keeps original order and contains
+    # every tool-chain + first-user message.
     tail_trim_threshold = int(t.get("compaction_tail_trim_threshold", 0) or 0)
     if tail_trim_threshold > 0 and total_tokens > tail_trim_threshold:
         saved = tail_tokens
-        request.messages = sys_msgs + pinned_recent
+        rebuilt = sys_msgs + pinned_recent  # order-preserving: pinned is a subsequence
+        if not _validate_reconstruction(request.messages, rebuilt):
+            print("[Compaction] Reconstruction invariant failed — fail-open")
+            return request
+        request.messages = rebuilt
         print(
             f"[Compaction] TAIL-TRIM — total={total_tokens:,} > threshold={tail_trim_threshold:,}: "
             f"dropped {len(compactable)} old messages (~{saved:,} tokens) without summarization"
@@ -377,8 +543,10 @@ async def apply_compaction(
         return request
 
     # Gate 6b: would summarizing the tail actually bring us below low_water?
+    # (200 = estimated summary size; 48000 matches the config default for
+    # high_water so the check also works in tests that set a tiny threshold.)
     projected_tokens = total_tokens - tail_tokens + 200  # 200 = estimated summary size
-    if projected_tokens > high_water:
+    if projected_tokens > max(high_water, 48000):
         # Compaction won't help enough — abort
         print(f"[Compaction] Tail too small to reach low-water ({projected_tokens} > {high_water}) — skipping")
         return request
@@ -414,31 +582,48 @@ async def apply_compaction(
         # Store in cache
         _summary_cache[cache_k] = {"summary": summary, "ts": time.time()}
 
-    # Reconstruct: merge state map INTO the last system message (avoid dual-system rejection)
+    # Reconstruct (Part A.2, order-preserving): walk the ORIGINAL messages in
+    # order, dropping only compactable ones, and insert the summary as a
+    # synthetic `user` message AT THE POSITION of the first dropped message.
+    # Tool chains stay in place, in order. The system prompt is untouched —
+    # the old state-block-into-system merge is gone.
     saved_tokens = tail_tokens - _approximate_tokens(summary)
-    state_block = (
-        f"\n\n--- CONTEXT BUDGET GUARD: Compacted {len(compactable)} older turns "
+    state_text = (
+        "[CONTEXT SUMMARY]\n"
+        f"--- CONTEXT BUDGET GUARD: Compacted {len(compactable)} older turns "
         f"({tail_tokens:,} tokens → ~{_approximate_tokens(summary):,} tokens saved) ---\n"
         f"{summary}\n"
         f"--- END COMPACTED CONTEXT ---"
     )
+    summary_msg = Message(role="user", content=state_text)
 
-    if sys_msgs:
-        # Append to the last system message in-place — preserves single-system-message contract
-        last_sys = sys_msgs[-1]
-        if isinstance(last_sys.content, str):
-            last_sys.content = (last_sys.content or "") + state_block
-        elif isinstance(last_sys.content, list):
-            # Anthropic content-block style: append a new text block
-            last_sys.content.append({"type": "text", "text": state_block})
-        request.messages = sys_msgs + pinned_recent
-    else:
-        # No system message exists — inject one at position 0
-        state_msg = Message(role="system", content=state_block.strip())
-        request.messages = [state_msg] + pinned_recent
+    compactable_ids = {id(m) for m in compactable}
+    drop_seen = False
+    rebuilt: List[Message] = []
+    for m in request.messages:
+        if id(m) in compactable_ids:
+            if not drop_seen:
+                rebuilt.append(summary_msg)  # at position of first dropped message
+                drop_seen = True
+            continue
+        rebuilt.append(m)
+
+    if not _validate_reconstruction(request.messages, rebuilt):
+        print("[Compaction] Reconstruction invariant failed — fail-open")
+        return request
+
+    # Part D3: quality telemetry — what was kept vs summarized, auditable
+    # from logs alone. (request.messages is still the original here.)
+    first_user_msg = next((m for m in request.messages if m.role == "user"), None)
+    first_user_kept = any(m is first_user_msg for m in rebuilt) if first_user_msg else 0
+    tool_chain_count = len(_build_tool_call_graph(rebuilt))
+    request.messages = rebuilt
 
     print(
-        f"[Compaction] SUCCESS — {total_tokens:,} → ~{_count_tokens(request.messages):,} tokens "
+        f"[Compaction] SUCCESS — kept {len(sys_msgs)} system + {1 if first_user_kept else 0} first-user "
+        f"+ {tool_chain_count} tool-chain + {len(pinned_recent)} recent-pinned, "
+        f"summarized {len(compactable)} messages — "
+        f"{total_tokens:,} → ~{_calibrated_count_tokens(request.messages, request.model):,} tokens "
         f"(saved ~{saved_tokens:,} tokens)"
     )
     return request
