@@ -1509,9 +1509,13 @@ function getThinkingSpec(modelId) {
     // Backend contract: app/compat/families/qwen.py (id "qwen").
     if (/qwen-?3\.8/.test(id)) return { effort: ['off','enable','low','medium','xhigh'] };
     if (/qwen/.test(id))       return { effort: ['off','enable'] };
-    // Tencent Hunyuan Hy3 — chat_template_kwargs.reasoning_effort (no_think/low/high).
+    // Tencent Hunyuan Hy3/Hy4 — chat_template_kwargs.reasoning_effort
+    // (no_think/low/high). Hy4-preview shares the Hy3 wire contract
+    // (OpenRouter probe 2026-09-08: none/low/high, default high, reasoning-
+    // content); backend families/hunyuan.py coerces off/auto -> no_think for
+    // the whole family.
     // Backend contract: app/compat/families/hunyuan.py (id "hunyuan-hy3").
-    if (/hy3|hunyuan/.test(id)) return { effort: ['no_think','low','high'] };
+    if (/hy[34]|hunyuan/.test(id)) return { effort: ['no_think','low','high'] };
     // Other Chinese reasoning models.
     if (/glm|mimo|minimax/.test(id)) return { effort: ['off','enable','adaptive'] };
     // Gemini 3.x — thinkingLevel enum low/medium/high/max (families/gemini.py
