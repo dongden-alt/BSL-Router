@@ -1226,7 +1226,7 @@ function renderProviderDetail() {
             </div>
         </div>
         <div class="detail-hero-right">
-            ${!isCustom && !isOAuth ? `<a href="#" class="get-api-key-link">ðŸ”‘ Get API Key ${SVGS.link}</a>` : ''}
+            ${!isCustom && !isOAuth ? `<a href="#" class="get-api-key-link">🔑 Get API Key ${SVGS.link}</a>` : ''}
             ${isCustom ? `<button class="btn btn-danger" onclick="deleteActiveProvider()">Delete Provider</button>` : ''}
         </div>
     </div>
