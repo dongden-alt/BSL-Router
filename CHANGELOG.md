@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Maintenance
+
+- **Mojibake fix full audit (PASS)** \— post-`62188ec` verification sweep: `node --check app/static/app.js` clean; `:6969 /health` → 200 (router NOT restarted, HARD RULE honored); Hunyuan hy3/hy4 `getThinkingSpec` contract intact (`app/static/app.js:1518`, single `/hy[34]|hunyuan/` regex); `gpt-6-pro` / `gpt-6-astra-pro` codename alias → `openai:gpt-6-astra` (`scripts/detect_model_pricing.py:489-494`); 577 fix-adjacent pytest pass (thinking-vocab / reasoning-policy / gpt6-astra / family-* / pricing-detector); residual-mojibake scanner finds ZERO in committed source \— only 148 CP1252 segments in runtime rot under `.brain/logs/` (out of source-fix scope, governed by the log-cap/rotation HARD RULE). Working tree clean. Full report: `bsl_router_mojibake_fix_audit.md`.
+
 ## [1.0.3] - 2026-08-26
 
 Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-key loss guards (orphan-key coverage), empty-content-block egress repair, live GitHub update check for the version pill, and an anchored compaction skip-regex that un-excludes GLM wire-format models.
