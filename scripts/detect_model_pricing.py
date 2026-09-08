@@ -101,6 +101,12 @@ OFFICIAL_PRICES = {
         "cache_hit_per_1m": 0.10, "cache_write_per_1m": 1.25,
         "source_url": "https://platform.openai.com/docs/pricing",
     },
+    "openai:gpt-6-astra": {
+        "input_per_1m": 10.00, "output_per_1m": 50.00,
+        "cache_hit_per_1m": 1.00, "cache_write_per_1m": 12.50,
+        "source_url": "https://openrouter.ai/openai/gpt-6-astra",
+        "pricing_note": "OpenRouter marketplace rate (Sep 8, 2026); 1.05M context, -pro variant identically priced. First-party pricing not yet public.",
+    },
 
     # ── Anthropic ───────────────────────────────────────────────────────
     # Opus 4.6 / 4.7 / 4.8 are identically priced by Anthropic and collapse to 4.8
@@ -197,6 +203,18 @@ OFFICIAL_PRICES = {
         "cache_hit_per_1m": 0.18, "cache_write_per_1m": 0.0,
         "source_url": "https://open.bigmodel.cn/pricing",
     },
+    "zhipu:glm-5.3": {
+        "input_per_1m": 1.40, "output_per_1m": 4.40,
+        "cache_hit_per_1m": 0.26, "cache_write_per_1m": 0.0,
+        "source_url": "https://openrouter.ai/z-ai/glm-5.3",
+        "pricing_note": "OpenRouter marketplace rate (Sep 8, 2026); 1.31M context. Cache write unverified.",
+    },
+    "zhipu:glm-5.3-flash": {
+        "input_per_1m": 0.075, "output_per_1m": 0.25,
+        "cache_hit_per_1m": 0.015, "cache_write_per_1m": 0.0,
+        "source_url": "https://openrouter.ai/z-ai/glm-5.3-flash",
+        "pricing_note": "OpenRouter marketplace rate (Sep 8, 2026); 1.31M context. Cache write unverified.",
+    },
 
     # ── Moonshot (Kimi) — THREE distinct models ─────────────────────────
     "moonshot:kimi-k2.5": {
@@ -249,6 +267,34 @@ OFFICIAL_PRICES = {
         "cache_hit_per_1m": None, "cache_write_per_1m": None,
         "source_url": "https://openrouter.ai/kwaipilot/kat-coder-air-v2.5",
         "pricing_note": "Official OpenRouter marketplace rate. 256K context, 80K max output. Cache rates unverified.",
+    },
+
+    # ── Meta (Muse Spark) — versions 1.1–1.3 identically priced on OpenRouter ──
+    "meta:muse-spark": {
+        "input_per_1m": 1.25, "output_per_1m": 4.25,
+        "cache_hit_per_1m": 0.15, "cache_write_per_1m": None,
+        "source_url": "https://openrouter.ai/meta/muse-spark-1.3",
+        "pricing_note": "OpenRouter marketplace rate (Sep 8, 2026); 1.05M context. Versions 1.1/1.2/1.3 share one rate; -contributor variants are free.",
+    },
+
+    # ── Tencent (Hunyuan) ──
+    "tencent:hunyuan-hy3": {
+        "input_per_1m": 0.132, "output_per_1m": 0.528,
+        "cache_hit_per_1m": 0.033, "cache_write_per_1m": 0.0,
+        "source_url": "https://openrouter.ai/tencent/hy3",
+        "pricing_note": "OpenRouter marketplace rate (Sep 8, 2026); 262K context. Cache write unverified.",
+    },
+    "tencent:hunyuan-hy3-preview": {
+        "input_per_1m": 0.18, "output_per_1m": 0.60,
+        "cache_hit_per_1m": 0.06, "cache_write_per_1m": 0.0,
+        "source_url": "https://openrouter.ai/tencent/hy3-preview",
+        "pricing_note": "OpenRouter marketplace rate (Sep 8, 2026); 262K context. Cache write unverified.",
+    },
+    "tencent:hunyuan-hy4-preview": {
+        "input_per_1m": 0.834, "output_per_1m": 2.501,
+        "cache_hit_per_1m": 0.042, "cache_write_per_1m": 0.0,
+        "source_url": "https://openrouter.ai/tencent/hy4-preview",
+        "pricing_note": "OpenRouter marketplace rate (Sep 8, 2026); 1.05M context. Cache write unverified.",
     },
 
     # ── xAI ─────────────────────────────────────────────────────────────
@@ -438,6 +484,10 @@ def _rules():
          "OpenAI", "gpt-5.6-terra", "GPT-5.6 Terra", "manual"),
         (r"^gpt-5\.6-luna$", "openai:gpt-5.6-luna",
          "OpenAI", "gpt-5.6-luna", "GPT-5.6 Luna", "manual"),
+        # GPT-6 Astra — `-pro`/`-high`/`-max` are tier suffixes on the same
+        # identically-priced family; `-pro20x` chains are stripped upstream.
+        (r"^gpt-?6-astra(-[a-z0-9-]+)?$", "openai:gpt-6-astra",
+         "OpenAI", "gpt-6-astra", "GPT-6 Astra", "manual"),
 
         # ── Google Gemini / Gemma ───────────────────────────────────────────
         (r"^gemini-3\.1-pro$", "google:gemini-3.1-pro",
@@ -466,6 +516,12 @@ def _rules():
          "Zhipu (GLM)", "glm-5.2", "GLM-5.2", "manual"),
         (r"^glm-5\.1(-free)?$", "zhipu:glm-5.1",
          "Zhipu (GLM)", "glm-5.1", "GLM-5.1", "manual"),
+        # GLM-5.3 — flash is a DISTINCT family (5.3x cheaper). Web-tier
+        # variants (-max / -ultimate / -free) collapse onto their base.
+        (r"^glm-5\.3-flash(-[a-z0-9-]+)?$", "zhipu:glm-5.3-flash",
+         "Zhipu (GLM)", "glm-5.3-flash", "GLM-5.3 Flash", "manual"),
+        (r"^glm-5\.3(-[a-z0-9-]+)?$", "zhipu:glm-5.3",
+         "Zhipu (GLM)", "glm-5.3", "GLM-5.3", "manual"),
 
         # ── Moonshot (Kimi) — THREE distinct models, ordered most-specific ──
         (r"^kimi-k2\.7-code$", "moonshot:kimi-k2.7-code",
@@ -534,6 +590,21 @@ def _rules():
         # `-ultra` is part of the model name, so the universal strip skips it.
         (r"^nemotron-3-ultra(-free)?$", "nvidia:nemotron-3-ultra",
          "NVIDIA", "nemotron-3-ultra", "Nemotron 3 Ultra", "manual"),
+
+        # ── Meta Muse Spark — all versions + contributor/free variants ──
+        (r"^muse-spark(-[0-9.]+)?(-[a-z0-9-]+)?$", "meta:muse-spark",
+         "Meta", "muse-spark", "Muse Spark", "manual"),
+
+        # ── Tencent Hunyuan — hy3 / hy3-preview / hy4-preview distinct ──
+        (r"^hy3-preview$", "tencent:hunyuan-hy3-preview",
+         "Tencent", "hunyuan-hy3-preview", "Hunyuan Hy3 Preview", "manual"),
+        (r"^hy3(-free)?$", "tencent:hunyuan-hy3",
+         "Tencent", "hunyuan-hy3", "Hunyuan Hy3", "manual"),
+        (r"^hy4-preview$", "tencent:hunyuan-hy4-preview",
+         "Tencent", "hunyuan-hy4-preview", "Hunyuan Hy4 Preview", "manual"),
+        # Legacy open-weights model; no public API pricing — null prices.
+        (r"^hunyuan-a13b-instruct$", "tencent:hunyuan-a13b-instruct",
+         "Tencent", "hunyuan-a13b-instruct", "Hunyuan A13B Instruct", "alias_unverified"),
 
         # ── Unknown / other ─────────────────────────────────────────────────
         # north-mini-code-free is its own (unverified) family.
