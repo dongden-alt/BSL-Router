@@ -1,5 +1,7 @@
 # BSL Router — Live Production Proof
 
+**🇬🇧 [English](#bsl-router--live-production-proof)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+
 > **Honest Proof Policy applied.** Every claim below carries a label:
 > **Verified** (from live production logs), **Estimated** (observed but workload-dependent), **Pending** (planned, not yet confirmed).
 
@@ -146,3 +148,77 @@ Dashboard tabs are not decorative — they read the same endpoints the router wr
 4. Point any OpenAI/Anthropic client at `http://localhost:6969`
 5. Open `http://localhost:6969` → Endpoint / Providers / Combos / BSL Models / MITM / Tools / Usage / Logs
 6. Watch `data/usage_stats.jsonl` and `data/console_logs.jsonl` fill with the same proof shapes above
+
+---
+
+# 🇻🇳 Tiếng Việt
+
+> **Áp dụng Chính sách Bằng chứng Trung thực.** Mọi tuyên bố bên dưới đều kèm nhãn:
+> **Đã xác minh** (từ log production trực tiếp), **Ước tính** (đã quan sát nhưng phụ thuộc khối lượng công việc), **Chờ xác nhận** (đã lên kế hoạch, chưa được xác nhận).
+
+Nguồn: router production tại `http://localhost:6969` — log, thống kê sử dụng, sidecar ngăn lỗi.
+
+## 1. Quy mô vận hành (Đã xác minh)
+
+| Chỉ số | Giá trị | Nguồn |
+|---|---|---|
+| Request đã ghi log | **5.289** | `data/usage_stats.jsonl` (2026-08-11 08:00 → 2026-08-12 22:42) |
+| Provider đã dùng | **10** | vsllm-gpt, qwencoder, iamhc, vsllm-a, hcnsec-vip, certviet, hcnsec, tokenrouter, aihubmix, gorouter |
+| Model khác nhau | **20+** | qwen3.8-max, qwen3.7-max, gpt-5.6-sol, DeepSeek-V4-Pro, kimi-k3, glm-5.2, glm-5.2-anthropic, deepseek-v4-flash, claude-opus-4-6-antigravity, claude-sonnet-5, gemini-3.1-pro-request-antigravity, grok-4.5, claude-opus-4-8, claude-opus-5, … |
+| Token đầu ra | **4,8M** | tổng `out` |
+| Token đầu vào (chưa cache) | **282M** | tổng `in_uncached` |
+| Token đầu vào (đã cache) | **131M** | tổng `in_cached` |
+| Tỷ lệ hit cache | **31,6%** | `cached / (cached + uncached)` |
+| TTFT trung bình | **20,9s** | trung bình `ttft_ms` (tải nặng reasoning) |
+| Độ trễ tổng trung bình | **31,9s** | trung bình `total_time_ms` |
+
+> [!NOTE]
+> Các trường `cost` và `savings` là `0.0` vì đây là các tài khoản upstream dạng proxy; router ghi nhận token và thời gian một cách trung thực nhưng không có giá tiền trên mỗi token. Đừng tuyên bố tiết kiệm chi phí cho đến khi có provider được cấu hình giá.
+
+## 2. Lõi định tuyến — combo fallback trong thực tế (Đã xác minh)
+
+Trình tự từ `.brain/logs/app.out.log` (xem khối log ở [mục tiếng Anh](#2-routing-core--combo-fallback-in-action-verified)): vsllm-gpt trả 504 header timeout → combo chuyển sang qwencoder/kimi-k3 → request hoàn tất 200.
+
+Định tuyến thường ngày (từ `data/console_logs.jsonl`): cùng một client Gemini được dịch sang hợp đồng upstream của từng họ model, kèm tham số thinking gốc của provider.
+
+## 3. Khả năng phục hồi — vòng đời Auto Error Prevention (Đã xác minh)
+
+Trạng thái sidecar sau cú 504 trên nằm trong `/.brain/state/aep_runtime.json` (khối JSON ở mục tiếng Anh). Chuỗi bằng chứng:
+
+1. **Phân loại:** timeout, 504 → loại lỗi `timeout`.
+2. **Soft-ban:** softban ngay 90 giây; định tuyến bỏ qua `vsllm-gpt/kimi-k3` trong thời gian cấm.
+3. **Leo thang:** `ban_escalation_count: 1` → lỗi kéo dài tiếp theo sẽ tiến tới long-ban/disable.
+4. **Lưu bền vững, không đụng config:** lệnh cấm nằm trong sidecar `aep_runtime.json`; `config.yaml` không thay đổi.
+5. **Phục hồi:** streak reset về 0 khi thành công; lệnh cấm tự hết hạn.
+6. **Không cấm oan:** 504 là timeout phía upstream, không phải lỗi payload của client (400/422) hay client ngắt kết nối (499) — sidecar chỉ ghi các loại lỗi phía server.
+
+## 4. Chống đóng băng — vòng đời stream (Đã xác minh)
+
+Từ `.brain/logs/app.out.log`: mọi stream đều đăng ký, heartbeat-forensics chạy, và mọi stream đều hủy đăng ký với tuổi được đo — không stream nào treo vĩnh viễn.
+
+## 5. Dịch giao thức + điều khiển thinking (Đã xác minh)
+
+Từ `data/console_logs.jsonl` — cùng một client Gemini, dịch sang các hợp đồng upstream khác nhau (khối JSON ở mục tiếng Anh): một giao thức client đầu vào → áp hợp đồng reasoning theo từng họ model → tham số thinking gốc của provider đầu ra.
+
+## 6. Khả năng quan sát — dashboard cho vận hành (Đã xác minh)
+
+Các lời gọi Admin API trong lưu lượng trực tiếp (khối ở mục tiếng Anh). Các tab dashboard không phải trang trí — chúng đọc đúng các endpoint mà router ghi vào.
+
+## 7. Nhãn trung thực
+
+| Tuyên bố | Nhãn |
+|---|---|
+| 5.289 request, 10 provider, 31,6% tỷ lệ hit cache | ✅ **Đã xác minh** (log trực tiếp, cửa sổ 2 ngày) |
+| Combo fallback khôi phục từ 504 | ✅ **Đã xác minh** (chuỗi log ở trên) |
+| Soft-ban 90 giây → leo thang → lưu sidecar | ✅ **Đã xác minh** (snapshot sidecar) |
+| Tiết kiệm chi phí | ⏳ **Chờ xác nhận** (chưa có provider tính giá; `cost: 0.0`) |
+| Tỷ lệ uptime | ⏳ **Chờ xác nhận** (chưa có monitor uptime) |
+
+## Tự kiểm chứng
+
+1. `pip install -r requirements.txt`
+2. `cp config.example.yaml config.yaml` → thêm provider của bạn
+3. `python -m uvicorn app.main:app --host 0.0.0.0 --port 6969`
+4. Trỏ mọi client OpenAI/Anthropic tới `http://localhost:6969`
+5. Mở `http://localhost:6969` → Endpoint / Providers / Combos / BSL Models / MITM / Tools / Usage / Logs
+6. Theo dõi `data/usage_stats.jsonl` và `data/console_logs.jsonl` sẽ thấy các dáng bằng chứng giống hệt bên trên

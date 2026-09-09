@@ -1,28 +1,36 @@
 ---
-name: Bug Report
-about: Report a bug in BSL Router
+name: Bug Report / Báo lỗi
+about: Report a bug in BSL Router — Báo lỗi trong BSL Router
 title: "[BUG] "
 labels: bug
 ---
 
-## Describe the Bug
-A clear description of what the bug is.
+<!-- Bilingual template · Mẫu song ngữ 🇬🇧 EN / 🇻🇳 Tiếng Việt -->
 
-## To Reproduce
-Steps to reproduce the behavior:
-1. Start BSL Router with config '...'
-2. Send request to '....'
-3. See error
+## Describe the Bug · Mô tả lỗi
 
-## Expected Behavior
-What you expected to happen.
+A clear description of what the bug is. — Mô tả rõ ràng lỗi bạn gặp phải.
 
-## Logs
+## To Reproduce · Các bước tái hiện
+
+Steps to reproduce the behavior: — Các bước tái hiện lỗi:
+
+1. Start BSL Router with config '...' — Khởi động BSL Router với cấu hình '...'
+2. Send request to '....' — Gửi request tới '....'
+3. See error — Gặp lỗi
+
+## Expected Behavior · Kết quả mong đợi
+
+What you expected to happen. — Điều bạn mong đợi sẽ xảy ra.
+
+## Logs · Nhật ký
+
 ```
-Paste relevant log output here
+Paste relevant log output here — Dán log liên quan vào đây
 ```
 
-## Environment
+## Environment · Môi trường
+
 - OS: [e.g., Windows 11, Ubuntu 22.04]
 - Python version: [e.g., 3.10.11]
 - BSL Router version: [e.g., 1.0.0]

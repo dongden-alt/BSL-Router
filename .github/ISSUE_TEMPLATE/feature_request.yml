@@ -1,21 +1,28 @@
 ---
-name: Feature Request
-about: Suggest a feature for BSL Router
+name: Feature Request / Đề xuất tính năng
+about: Suggest a feature for BSL Router — Đề xuất tính năng cho BSL Router
 title: "[FEATURE] "
 labels: enhancement
 ---
 
-## Feature Description
-A clear description of the feature you'd like to see.
+<!-- Bilingual template · Mẫu song ngữ 🇬🇧 EN / 🇻🇳 Tiếng Việt -->
 
-## Problem
-What problem does this feature solve? (e.g., "I can't route to provider X because...")
+## Feature Description · Mô tả tính năng
 
-## Proposed Solution
-How you'd like this to work.
+A clear description of the feature you'd like to see. — Mô tả rõ ràng tính năng bạn muốn có.
 
-## Alternatives Considered
-Any alternative solutions you've considered.
+## Problem · Vấn đề
 
-## Additional Context
-Any other context, screenshots, or references.
+What problem does this feature solve? (e.g., "I can't route to provider X because...") — Tính năng này giải quyết vấn đề gì?
+
+## Proposed Solution · Giải pháp đề xuất
+
+How you'd like this to work. — Bạn muốn nó hoạt động như thế nào.
+
+## Alternatives Considered · Phương án thay thế
+
+Any alternative solutions you've considered. — Các giải pháp thay thế bạn đã cân nhắc.
+
+## Additional Context · Bối cảnh bổ sung
+
+Any other context, screenshots, or references. — Bối cảnh khác, ảnh chụp màn hình hoặc liên kết tham chiếu.
