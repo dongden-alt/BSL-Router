@@ -10,7 +10,7 @@ Wire shape mirrors the existing Claude Code pattern:
       → `_process_chat_completion(openai_body, client_wants_gemini=True)`
       → egress converts OpenAI→Gemini on the way out (this module)
 
-Authoritative reference: `.brain/collect/antigravity_conversion_spec.md`
+Authoritative reference: `internal conversion spec, local .brain`
 (spec §1–§8 + PORTING NOTES A–G). Skipped per §G: tool-name cloaking,
 OAuth refresh, the sqlite `__nineRouterFinalThinkingPatch` DB lookup — BSL uses
 its own provider keys and its own per-model thinking config.

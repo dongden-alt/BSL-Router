@@ -6,7 +6,7 @@ converter that ports 9Router's Antigravity MITM conversion. No live network.
 
 Run: .venv\\Scripts\\python -m pytest app/tests/test_antigravity_5b1.py -q
 
-Authoritative reference: .brain/collect/antigravity_conversion_spec.md
+Authoritative reference: internal conversion spec, local .brain
 """
 import copy
 import json

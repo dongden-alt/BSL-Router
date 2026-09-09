@@ -6,7 +6,7 @@ internal OpenAI-shaped representation. Each adapter is a set of PURE functions
 (no FastAPI / network imports) so it is fully unit-testable in isolation.
 
 Phase 5B-1: `gemini` ports 9Router's Antigravity (Google Cloud Code) MITM
-conversion — see `.brain/collect/antigravity_conversion_spec.md`.
+conversion — see `internal conversion spec, local .brain`.
 """
 from app.compat.adapters.gemini import (
     unwrap_request,

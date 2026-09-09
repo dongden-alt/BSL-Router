@@ -180,7 +180,7 @@ def scan_single_key(api_key: str, base_url: str, provider_format: str) -> list[F
                     provider="",
                     connection="",
                     message=f"base_url contains credential-like query parameter: '{param_name}'",
-                    detail=f"Query parameter '{param_name}' may be used to collect credentials.",
+                    detail=f"Query parameter '{param_name}' may leak credentials.",
                 ))
 
     # 4. Local network exfil check (only for cloud API formats)

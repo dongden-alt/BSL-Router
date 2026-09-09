@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.4] - 2026-09-08
 
-79 commits since 1.0.3 — a stability flagship wave (fixes the capture-log stall that killed IDE sessions, WinError-64 accept-loop death, supervisor hardening) plus two new subsystems: the Faithful Execution Layer and Normalizer Hub v2. The web-provider lane was fully extracted to the standalone Chat2API app and ships zero code here.
+79 commits since 1.0.3 — a stability flagship wave (fixes the capture-log stall that killed IDE sessions, WinError-64 accept-loop death, supervisor hardening) plus two new subsystems: the Faithful Execution Layer and Normalizer Hub v2. The legacy web-provider lane was fully extracted to the standalone Chat2API app and ships zero code here.
 
 ### Added
 
@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **chat lane extracted** — all web providers (~35 commits, GLM/Kimi/Qwen web providers, collectors, OAuth UI) reverted in `ca5c5c8` (−7,400 lines) and preserved in the standalone **Chat2API** app. Zero web provider code ships in 1.0.4; the `nodriver` dependency pin is removed.
+- **Web-provider lane extracted** — all web providers (~35 commits, GLM/Kimi/Qwen web, OAuth UI) reverted in `ca5c5c8` (−7,400 lines) and preserved in the standalone **Chat2API** app. Zero web provider code ships in 1.0.4; the `nodriver` dependency pin is removed.
 - **Key health dimming** in the admin UI; reasoning controls for new model families.
 - **Version alignment** — `VERSION` file, dashboard version pill, and GitHub tag all read 1.0.4; the update notification under the logo fires via the live GitHub latest-release check when the remote version is newer than local.
 
