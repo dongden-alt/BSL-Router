@@ -217,7 +217,7 @@ BSL Router supports three protocol families:
 | **Anthropic format** | Anthropic, GLM |
 | **Gemini format** | Google Gemini, Google Cloud Code |
 
-Each provider family has its own **family adapter** (12 adapters total):
+Each provider family has its own **family adapter** (14 adapters total):
 
 | Adapter | Quirks handled |
 |---|---|
@@ -231,6 +231,10 @@ Each provider family has its own **family adapter** (12 adapters total):
 | `qwen.py` | Complex - 11KB adapter for Qwen's unique format quirks |
 | `grok.py` | Standard OpenAI-compatible |
 | `openrouter.py` | Multi-model routing |
+| `doubao.py` | ByteDance Doubao (Ark/Volcengine): `minimal/low/medium/high` effort vocabulary, `minimal` disables thinking |
+| `hunyuan.py` | Tencent Hunyuan Hy3: `reasoning_effort` nested inside `chat_template_kwargs` (`no_think`/`low`/`high`) |
+| `kat_coder.py` | KwaiPilot Kat-Coder: effort vocabulary undocumented, pass-through strategy |
+| `muse.py` | Meta Muse Spark: version-split wire shapes (1.1 vs 1.2), 1M context |
 
 Infrastructure adapters: `_base.py` (shared base), `_effort.py` (reasoning effort ladder), `_legacy_reference.py`.
 
@@ -340,7 +344,7 @@ Pre-process specific content types before routing:
 
 ## Middleware Pipeline
 
-The routing pipeline consists of 26 middleware modules. Here's the full inventory:
+The routing pipeline consists of 36 middleware modules. Here's the full inventory:
 
 ### Classification Layer
 | Module | Purpose |
@@ -368,6 +372,7 @@ The routing pipeline consists of 26 middleware modules. Here's the full inventor
 | `bsl_orchestrator.py` | Multi-agent orchestration engine |
 | `bsl_orchestrator_engine.py` | Core orchestration execution |
 | `bsl_orchestrator_gates.py` | Depth escalation gates (fast -> balanced) |
+| `blacksand_orchestrator.py` | Balanced-mode orchestration loop: one client request → N internal phase calls (lead + parallel members, cap 22) |
 
 ### Quality & Efficiency Layer
 | Module | Purpose |
@@ -391,6 +396,23 @@ The routing pipeline consists of 26 middleware modules. Here's the full inventor
 | `bsl_benchmark_sheet.py` | Chat tier benchmark data |
 | `bsl_lite_benchmark_sheet.py` | Lite tier benchmark data |
 | `bsl_agentic_benchmark_sheet.py` | Agentic tier benchmark data |
+
+### Tool Hygiene & Repair Layer (2026-09 wave)
+| Module | Purpose |
+|---|---|
+| `anthropic_tools.py` | Same-dialect (Anthropic→Anthropic) tool-call hygiene; repairs GLM-5.x malformed tool-argument JSON |
+| `tool_arg_repair.py` | Dialect-agnostic JSON-repair ladder for tool-argument strings, shared by all 4 format lanes |
+| `glm_parallel_guard.py` | Injects `disable_parallel_tool_use` into the final Anthropic payload for GLM-family targets (fixes dropped tool args in multi-tool batches) |
+| `agentrouter_policy.py` | AgentRouter provider policy: Vietnamese-content preflight (VN text triggers upstream 400 content-blocked) |
+
+### Execution Integrity Layer
+| Module | Purpose |
+|---|---|
+| `faithful_execution.py` | FEL directive builder (pure) — counters false refusals, skipped steps, dropped tool calls, premature stops |
+| `fel_wiring.py` | FEL backend wiring into the live request path (default OFF, fail-open — see FEL section) |
+| `normalizer_shadow.py` | Normalizer v2 shadow/active round-trip wiring (default OFF, one JSONL record per request) |
+| `responses_thread_store.py` | Responses API thread store — `previous_response_id` emulation (default OFF) |
+| `gemini_last_role.py` | Appends a minimal user continuation when the trailing role would be rejected by Gemini `generateContent` |
 
 ---
 
@@ -438,7 +460,7 @@ Stage signals ride `request.state` → `obs.note_fel_context()` → `log_request
 
 ## Admin Dashboard Architecture
 
-The admin dashboard is a single-page app (`app/static/`) with 8 tabs:
+The admin dashboard is a single-page app (`app/static/`) with 9 tabs:
 
 | Tab | HTML ID | Purpose |
 |---|---|---|
@@ -486,11 +508,11 @@ bsl-router/
 │   ├── antifreeze.py            # Stream deadline + kill registry
 │   ├── mitm.py                  # MITM proxy management
 │   ├── compat/                  # Protocol translation
-│   │   ├── families/            # 12 provider family adapters
+│   │   ├── families/            # 14 provider family adapters
 │   │   ├── stream_normalizer.py # Stream format normalization
 │   │   ├── tool_ledger.py       # Tool call ID tracking
 │   │   └── reasoning_policy.py  # Thinking parameter rules
-│   ├── middleware/              # 26 routing pipeline modules
+│   ├── middleware/              # 36 routing pipeline modules
 │   │   ├── bsl_chat_router.py   # Tier 1: Chat
 │   │   ├── bsl_lite_router.py   # Tier 2: Lite
 │   │   ├── bsl_agentic_router.py       # Tier 3: Agentic
@@ -509,13 +531,13 @@ bsl-router/
 │   │   ├── compaction.py              # Context management
 │   │   ├── thinking_fallback.py       # Reasoning fallback
 │   │   ├── glm_tools.py               # GLM tool translation
-│   │   └── ...                        # + 7 more modules
+│   │   └── ...                        # + 18 more modules
 │   ├── routing/
 │   │   └── combo_resolver.py    # Combo chain resolution + fallback
 │   ├── scouts/                  # Vision, docs, canvas analysis
 │   ├── security/                # Key scanning
 │   ├── static/                  # Admin dashboard (HTML/JS/CSS)
-│   └── tests/                   # 64+ test files
+│   └── tests/                   # 147 test files
 ├── scripts/
 │   ├── bslrouter.ps1            # Unified launcher (port-kill retry)
 │   └── update_bsl_router.py     # GitHub auto-update script
@@ -737,7 +759,7 @@ Ma trận cấu hình trong `config.yaml` dưới `bsl_models`. Mỗi slot chấ
 ## Thành Phần Chính
 
 ### 🔄 Tầng Dịch Giao Thức
-12 family adapter: openai, anthropic, gemini, deepseek, glm, kimi, minimax, qwen, grok, openrouter + infrastructure adapters.
+14 family adapter: openai, anthropic, gemini, deepseek, glm, kimi, minimax, qwen, grok, openrouter, doubao, hunyuan, kat_coder, muse + infrastructure adapters (_base, _effort, _legacy_reference).
 
 ### 🔗 Combo/Chain Dự Phòng
 Thử lần lượt provider. Chain deadline ngăn timeout cascading.
@@ -776,19 +798,23 @@ Vision (phân tích ảnh), Docs Parser (trích text), Canvas (UI/canvas).
 
 ## Middleware Pipeline
 
-26 module middleware:
+36 module middleware:
 
 **Classification**: request_intent, category_classifier, coding_category_classifier, task_complexity
 
 **Routing**: route_registry, bsl_chat_router, bsl_lite_router, bsl_agentic_router, bsl_agentic_ultra_router, bsl_agentic_max_router, bsl_auto_select, bsl_router_utils
 
-**Orchestration**: bsl_orchestrator, bsl_orchestrator_engine, bsl_orchestrator_gates
+**Orchestration**: bsl_orchestrator, bsl_orchestrator_engine, bsl_orchestrator_gates, blacksand_orchestrator
 
 **Quality & Efficiency**: quality, efficiency, compaction, thinking_fallback, response_format_guard
 
 **Stream Protection**: stream_guard, caching, glm_tools
 
 **Benchmark**: bsl_benchmark_sheet, bsl_lite_benchmark_sheet, bsl_agentic_benchmark_sheet
+
+**Tool Hygiene & Repair** (đợt 2026-09): anthropic_tools, tool_arg_repair, glm_parallel_guard, agentrouter_policy
+
+**Execution Integrity**: faithful_execution, fel_wiring, normalizer_shadow, responses_thread_store, gemini_last_role
 
 ---
 

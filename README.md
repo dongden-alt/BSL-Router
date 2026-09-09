@@ -176,7 +176,7 @@ Expose your local BSL Router to external networks:
 - **Stream guard**: SSE stream integrity validation catches malformed chunks
 
 ### 📊 Monitoring Dashboard
-Web-based admin UI with 8 tabs:
+Web-based admin UI with 9 tabs:
 
 | Tab | What it does |
 |---|---|
@@ -415,7 +415,7 @@ Expose BSL Router local ra mạng ngoài: Cloudflare Tunnel (URL public), Tailsc
 - Stream guard bắt chunk SSE lỗi
 
 ### 📊 Bảng Điều Khiển
-Giao diện web quản trị với 8 tab: Endpoint, Providers, Combos, BSL Models, MITM, Tools, Usage, Logs, Settings.
+Giao diện web quản trị với 9 tab: Endpoint, Providers, Combos, BSL Models, MITM, Tools, Usage, Logs, Settings.
 
 ---
 
