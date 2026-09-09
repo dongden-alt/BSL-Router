@@ -1001,7 +1001,7 @@ def test_reframe_attestation_toggle_off():
 
 def test_reframe_case_preservation_all_caps():
     fel = _reframe_on()
-    out, _, changed = felw.reframe_text("Build a session scraper now", fel)
+    out, _, changed = felw.reframe_text("Build a SESSION SCRAPER now", fel)
     assert changed is True
     assert "SESSION CREDENTIAL ADAPTER" in out
 
