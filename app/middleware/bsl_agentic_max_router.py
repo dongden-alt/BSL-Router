@@ -137,6 +137,9 @@ def _build_effective_cfg(config: dict) -> dict:
     chat routes come from ``bsl_chat.category_overrides``. Max's own legacy
     ``agent_routes`` / ``chat_routes`` are a fallback only when the sibling
     matrix is absent. Pure — returns a new dict, never mutates ``config``.
+
+    member_routes and orchestration are derived from bsl_agentic_ultra
+    so max inherits the balanced orchestration config without duplicating it.
     """
     own = _get_bsl_agentic_max_cfg(config)
     effective = dict(own)
@@ -150,6 +153,18 @@ def _build_effective_cfg(config: dict) -> dict:
     derived_chat_routes = chat.get("category_overrides")
     if derived_chat_routes:
         effective["chat_routes"] = derived_chat_routes
+
+    # Derive member_routes + orchestration from bsl_agentic_ultra (balanced sibling)
+    # so max inherits the same balanced orchestration config without duplicating it.
+    ultra = _get_sibling_cfg(config, "bsl_agentic_ultra")
+    if not effective.get("member_routes"):
+        ultra_members = ultra.get("member_routes")
+        if ultra_members:
+            effective["member_routes"] = ultra_members
+    if not effective.get("orchestration"):
+        ultra_orch = ultra.get("orchestration")
+        if ultra_orch:
+            effective["orchestration"] = ultra_orch
 
     return effective
 

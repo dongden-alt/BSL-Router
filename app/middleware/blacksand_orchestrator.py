@@ -25,7 +25,7 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional, Tuple, Literal
 
 from app.middleware.coding_category_classifier import (
     CATEGORY_AUDITOR,
@@ -41,6 +41,26 @@ from app.middleware.coding_category_classifier import (
     classify_coding_request_category,
 )
 from app.middleware.bsl_router_utils import resolve_agent_route, _extract_route
+from app.middleware.blacksand_quality_gate import (
+    QualityVerdict,
+    MemberVerdict,
+    parse_verdict,
+    parse_member_verdict,
+    failed_member_verdict,
+    merge_members,
+    derive_verdict,
+    quality_gate_summary,
+    failed_dims,
+    QUALITY_RUBRIC,
+    ARCHITECT_RUBRIC,
+    is_quality_gated_role,
+    get_rubric_prompt,
+    build_lead_turn1,
+    build_turn2,
+    build_member_brief,
+    build_member_synthesis,
+    TEAM_LEAD_INSTRUCTIONS,
+)
 
 # ─── Session phase caps (orchestrator-loop.ts L81-83) ────────────────────────
 
@@ -671,6 +691,15 @@ def _phase_system_message(phase: BSPhase) -> str:
             f"Reasoning boundary: {pg.boundary.upper()} (group {pg.idx + 1}/{pg.total} "
             f"'{pg.group_id}'). {pg.brief}"
         )
+    # Inject quality rubric + verdict format instructions for quality-gated
+    # roles so the LLM emits parseable <quality_verdict> / <member_verdict>
+    # XML blocks. Without this injection the quality gate's parsers return
+    # None (no block found), and the verdict is silently all-fail.
+    if is_quality_gated_role(phase.sub_role):
+        rubric_prompt = get_rubric_prompt(phase.sub_role)
+        if rubric_prompt:
+            parts.append(rubric_prompt)
+        parts.append(TEAM_LEAD_INSTRUCTIONS)
     return "\n\n".join(parts)
 
 
@@ -679,6 +708,7 @@ async def run_balanced(
     config: dict,
     execute: ExecuteFn,
     category_decision: Optional[CodingCategoryDecision] = None,
+    cfg: Optional[dict] = None,
 ) -> OrchestratorResult:
     """Run the full balanced-mode orchestration loop for one request.
 
@@ -698,9 +728,10 @@ async def run_balanced(
     except Exception:
         query = ""
 
-    from app.middleware.bsl_agentic_ultra_router import _get_bsl_agentic_ultra_cfg
+    if cfg is None:
+        from app.middleware.bsl_agentic_ultra_router import _get_bsl_agentic_ultra_cfg
 
-    cfg = _get_bsl_agentic_ultra_cfg(config)
+        cfg = _get_bsl_agentic_ultra_cfg(config)
     agent_routes = cfg.get("agent_routes") or {}
     member_routes = cfg.get("member_routes") or {}
     orchestration_cfg = cfg.get("orchestration") or {}
@@ -760,23 +791,6 @@ async def run_balanced(
 
         lead_model = _resolve_model_for_role(phase.sub_role, agent_routes, member_routes)
 
-        async def _call(role_model: str, is_member: bool):
-            t0 = time.monotonic()
-            out = await execute(
-                role_model or "general",
-                messages,
-                phase.max_tokens,
-                phase.timeout,
-            )
-            boundary = phase.phase_group.boundary if phase.phase_group else ""
-            result.trace.append(PhaseTraceEntry(
-                phase_idx=idx, sub_role=phase.sub_role, model=role_model,
-                boundary=boundary, tokens_in=int(out.get("tokens_in", 0)),
-                tokens_out=int(out.get("tokens_out", 0)),
-                ms=(time.monotonic() - t0) * 1000.0, member=is_member,
-            ))
-            return out
-
         # Balanced parallel member: launched on commit-boundary phases and
         # gathered WITH the lead so both run concurrently (member-config.ts:
         # balanced = lead + 1 member, 1 round).
@@ -789,6 +803,49 @@ async def run_balanced(
             if not member_model:
                 if f"member_route_missing:{member_key}" not in result.degraded:
                     result.degraded.append(f"member_route_missing:{member_key}")
+
+        # Build member-specific messages with member brief + synthesis
+        # instructions so the member emits a parseable <member_verdict> block.
+        # Without this, the member shares the lead's messages and has no
+        # reason to emit the XML transport block the quality gate parses.
+        member_messages: List[Dict] = []
+        if member_model:
+            task_text = (request and _current_user_text(request)) or ""
+            member_sys = (
+                f"[Blacksand member — {phase.sub_role}:1] "
+                f"You are a background quality-review member.\n\n"
+                f"{SUB_ROLE_DIRECTIVES.get(phase.sub_role, '')}\n\n"
+                f"{get_rubric_prompt(phase.sub_role)}"
+            )
+            member_user = build_member_brief(phase.sub_role, 1, task_text)
+            if context_outputs:
+                member_user += (
+                    "\n\nPrior phase outputs (in order):\n\n"
+                    + "\n\n---\n\n".join(context_outputs)
+                )
+            member_user += "\n\n" + build_member_synthesis(phase.sub_role, 1)
+            member_messages = [
+                {"role": "system", "content": member_sys},
+                {"role": "user", "content": member_user},
+            ]
+
+        async def _call(role_model: str, is_member: bool):
+            t0 = time.monotonic()
+            call_messages = member_messages if is_member else messages
+            out = await execute(
+                role_model or "general",
+                call_messages,
+                phase.max_tokens,
+                phase.timeout,
+            )
+            boundary = phase.phase_group.boundary if phase.phase_group else ""
+            result.trace.append(PhaseTraceEntry(
+                phase_idx=idx, sub_role=phase.sub_role, model=role_model,
+                boundary=boundary, tokens_in=int(out.get("tokens_in", 0)),
+                tokens_out=int(out.get("tokens_out", 0)),
+                ms=(time.monotonic() - t0) * 1000.0, member=is_member,
+            ))
+            return out
 
         lead_task = asyncio.ensure_future(_call(lead_model, is_member=False))
         member_task = (
@@ -816,6 +873,35 @@ async def run_balanced(
                 lead_text, lead_out = retry_text, retry_out
 
         if member_text:
+            # Quality gate (team-lead.ts + quality-gate.ts):
+            # Parse member verdict from the member's output. If unparseable,
+            # synthesize an all-fail verdict — silent loss must not be
+            # indistinguishable from success.
+            member_verdict = parse_member_verdict(
+                member_text, phase.sub_role, slot=1
+            )
+            if member_verdict is None:
+                member_verdict = failed_member_verdict(
+                    phase.sub_role, 1,
+                    "member produced no parseable <member_verdict> block",
+                )
+
+            # Parse lead verdict from the lead's output.
+            lead_verdict = parse_verdict(lead_text, round_num=1)
+
+            if lead_verdict is not None:
+                # Mechanical worst-score-wins merge: members can only
+                # LOWER a dimension, never raise it.
+                merged_dims = merge_members(
+                    lead_verdict.dimensions, [member_verdict]
+                )
+                lead_verdict.dimensions = merged_dims
+                lead_verdict.status, lead_verdict.confidence = derive_verdict(merged_dims)
+
+                lead_text += quality_gate_summary(
+                    phase.sub_role, merged_dims, member_verdict
+                )
+
             # Merge: member output appended to context (visible to next phases).
             context_outputs.append(
                 f"[{phase.sub_role} member {member_model} — {boundary}]\n{member_text}"
