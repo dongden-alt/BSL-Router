@@ -4,9 +4,9 @@
       "type": "stdio",
       "command": "node",
       "args": [
-        "D:/Tools/antigravity-bridge/dist/index.js",
+        "YOUR_TOOLS_PATH/antigravity-bridge/dist/index.js",
         "--workspace",
-        "d:/Projects/BSL Router"
+        "YOUR_PROJECT_PATH"
       ]
     }
   }

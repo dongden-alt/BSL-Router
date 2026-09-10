@@ -381,14 +381,14 @@ function Start-App {
         # failure this gate was written to prevent.
         #
         # UNAUTHENTICATED PROBE (2026-08-31): this used to GET /v1/models with a
-        # hardcoded Bearer key that was a TYPO of the real one -- a dropped 'j'
-        # (...Q4jHmqdyCy5, 38 chars vs the real ...Q4jHjmqdyCy5, 39) -- shipped
-        # by 01e1643, the very commit that added this gate. It only ever passed
-        # because /v1/models does not enforce auth; the moment it does, the
-        # probe 401s, $healthy goes $false, and the launcher kills a HEALTHY
-        # router. /health needs no credential, so the launcher also stops
-        # embedding a live API key in a git-tracked file (config.yaml is
-        # gitignored -- this script was the only committed copy of that key).
+        # hardcoded Bearer key that was a TYPO of the real one -- one dropped
+        # character (38 chars vs the real 39) -- shipped by 01e1643, the very
+        # commit that added this gate. It only ever passed because /v1/models
+        # does not enforce auth; the moment it does, the probe 401s, $healthy
+        # goes $false, and the launcher kills a HEALTHY router. /health needs
+        # no credential, so the launcher also stops embedding a live API key
+        # in a git-tracked file (config.yaml is gitignored -- this script was
+        # the only committed copy of that key).
         $healthy = $false
         foreach ($probe in @("http://127.0.0.1:$Port/health", "http://[::1]:$Port/health")) {
             if ($healthy) { break }

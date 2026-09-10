@@ -503,7 +503,6 @@ def _install_accept_loop_guard() -> bool:
 
     Returns True when the guard was installed, False on a non-Proactor loop.
     """
-    global _accept_guard_exhausted
 
     # No-op on non-Windows / non-Proactor loops.
     # NOTE: BaseProactorEventLoop is NOT exported on the `asyncio` package —

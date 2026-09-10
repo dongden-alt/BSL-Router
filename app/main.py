@@ -31,6 +31,7 @@ import json
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path as _Path
 import secrets as _secrets
 import socket as _socket
 import threading as _threading
@@ -888,7 +889,6 @@ def _get_antigravity_egress_client() -> httpx.AsyncClient:
     via 8.8.8.8 (not the OS hosts file), so it reaches the real Google servers
     even when the hosts file redirects the domain to 127.0.0.1 for MITM.
     """
-    global google_egress_client
     if google_egress_client is not None:
         return google_egress_client
     global _ANTIGRAVITY_EGRESS_CLIENT
@@ -4710,7 +4710,6 @@ async def tunnel_stop():
 
 @app.get("/api/tunnel/cloudflare/status")
 async def tunnel_status():
-    global _tunnel_process, _tunnel_url
     running = _tunnel_process is not None and _tunnel_process.poll() is None
     return JSONResponse({"running": running, "url": _tunnel_url if running else ""})
 
@@ -7717,6 +7716,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         the original 400 response is returned unchanged.
         """
         nonlocal _thinking_retry_armed
+        nonlocal _oauth_401_retried
         _active_req = stream_req if stream_req is not None else req
         _active_payload = stream_payload if stream_payload is not None else upstream_payload
         # RC6: bound the pre-header wait. httpx read=None makes header-wait
