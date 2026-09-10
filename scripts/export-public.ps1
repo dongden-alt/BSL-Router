@@ -32,7 +32,7 @@ param(
     [switch]$DryRun,
     [switch]$Force,
     [string]$Source,
-    [string]$Target = "D:\Projects\BSL Router Public"
+    [string]$Target = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,6 +58,12 @@ if (-not (Test-Path (Join-Path $Source 'app\main.py'))) {
     Write-Error "Source does not look like the BSL Router repo: $Source"
     exit 1
 }
+if (-not $Target) {
+    Write-Host "  Target path is required." -ForegroundColor Yellow
+    Write-Host "  Example: .\scripts\export-public.ps1 -Target 'C:\Projects\MyPublicRepo' -DryRun" -ForegroundColor Yellow
+    exit 1
+}
+
 if (-not (Test-Path (Join-Path $Target '.git'))) {
     Write-Error "Target is not a git repository: $Target`nRefusing to write to a non-repo directory."
     exit 1

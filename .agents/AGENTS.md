@@ -67,3 +67,64 @@ entries 2026-08-30 / 2026-08-31.
 
 `/v1/models` is still unauthenticated by design; adding auth is a breaking change for every existing
 client and needs an explicit user decision. The launcher no longer depends on that route either way.
+
+---
+
+## 🔴 HARD RULE — pre-push secret verification (2026-09-10)
+
+**Every `git push` to origin MUST pass all 4 gates below before the push command runs.**
+No exceptions for "small" pushes, doc-only pushes, or "just one file" pushes.
+This rule was written after a 2-day forensic audit found a partial API key fragment
+(`Q4jHjmqdyCy5`) leaked in a *comment inside the very fix commit* that removed the
+key from code — commit `042a77a` fixed the launcher but documented the real key tail
+in its explanatory comment. If the fix commit leaks, every commit can leak.
+
+**Run `scripts/pre-push-check.ps1` OR execute the 4 gates manually — both are valid.**
+
+### Gate 1 — tracked-tree secret sweep
+```powershell
+git grep -I -n -e 'sk-bsl-LzAC' -e 'LzACIxbnpt' -e 'Q4jHjmqdyCy5' -e 'Q4jHmqdyCy5'
+```
+Exit non-zero (find anything) → **STOP.** Redact, commit, re-run. The partial-key
+fragments are the last 12 chars of the real admin key. Any hit = leak, including
+hits inside comments, docstrings, test fixtures, or error messages.
+
+### Gate 2 — machine-specific path sweep
+```powershell
+git grep -I -n -e 'D:/Tools' -e 'D:\\Tools' -e 'd:/Projects/BSL' -e 'D:\\Projects\\BSL' -e 'C:/Users/Admin' -e 'C:\\Users\\Admin'
+```
+Exit non-zero → **STOP.** Replace with portable placeholders (`YOUR_TOOLS_PATH`,
+`YOUR_PROJECT_PATH`). Machine paths in `.mcp.json`, scripts, or configs are PII-adjacent
+and break portability.
+
+### Gate 3 — staged-diff review
+```powershell
+git diff --cached --stat   # or git diff origin/main...HEAD --stat if already committed
+git diff --cached | Select-String -Pattern 'sk-bsl-[A-Za-z0-9]{10,}' -Context 2
+```
+Manually scan the staged diff for any string matching `sk-bsl-` followed by 10+
+alphanumeric chars (the real key pattern). Dummy placeholders (`sk-bsl-YOUR_API_KEY_HERE`)
+are **expected and safe** — they fail this regex because `YOUR_API_KEY_HERE` has
+underscores, not the `[A-Za-z0-9]{10,}` pattern.
+
+### Gate 4 — gitignore invariant
+```powershell
+git check-ignore config.yaml .bsl_key .bsl_key.dpapi .brain/ .venv/ .agents/
+```
+All 7 paths MUST return as ignored. If any returns nothing → **STOP.** The `.gitignore`
+was tampered with or a rebase dropped a line. Fix before pushing.
+
+### After push — verify remote
+```powershell
+git ls-remote origin <branch>   # confirm remote HEAD = local HEAD
+```
+
+**Known-safe patterns (do NOT flag these as leaks):**
+- `localhost:6969` / `127.0.0.1:6969` / `[::1]:6969` — canonical dev port, expected in docs/tests
+- `sk-bsl-YOUR_API_KEY_HERE` — dummy placeholder by design
+- `admin@chatbot.local` in commit metadata — local hostname, not a secret (cosmetic only)
+- `REDACTED-BSL-ADMIN-KEY` — redaction placeholder, not the real key
+
+**Rationale:** the 2026-09-10 audit proved that "code works" ≠ "repo is clean."
+The partial key fragment survived 4+ commits across 2 days because nobody ran a
+fragment-level grep. This gate makes the check mechanical — 30 seconds, zero ambiguity.
