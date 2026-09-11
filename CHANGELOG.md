@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 79 commits since 1.0.3 — a stability flagship wave (fixes the capture-log stall that killed IDE sessions, WinError-64 accept-loop death, supervisor hardening) plus two new subsystems: the Faithful Execution Layer and Normalizer Hub v2. The legacy web-provider lane was fully extracted to the standalone Chat2API app and ships zero code here.
 
+Post-tag wave (2026-09-11, folded into 1.0.4): live Usage-tab observability — a 2-second signature-gated poller (preserves expanded windows), an in-flight request registry rendered as a pulsing strip, and removal of the legacy usage recompute lane (the SQLite ledger is the sole source of truth).
+
 ### Added
 
 - **Faithful Execution Layer (FEL)** — pure directive builder + live wiring for clarity preprocessing, per-wire-format egress directive merge, strict refusal classification, and single recovery re-dispatch. FEL-5 hard wall: CSAM/weapons-class refusals classify `blocked` (terminal, immune to recovery/research mode, checked before the 600-char gate). Bilingual EN/VI sensitivity reframe. Default-OFF (config-gated); 186 tests green. Files: `app/middleware/faithful_execution.py`, 4-stage wiring in `app/main.py`, admin UI FEL panel.
@@ -24,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pre-restart smoke battery** — catalog/chat/stream/mapped-Gemini/admin checks for staging-first deploys.
 - **Pre-commit mojibake scanner + residual scanner** — blocks future cp1252 double-encoded commits; 1,398 corrupted tokens repaired across 5 files, CHANGELOG purged, full audit PASS (577 fix-adjacent tests, zero source residual).
 - **Pricing/detection** — GLM-5.3, GPT-6 Astra, Muse Spark, Hunyuan Hy3/Hy4 families.
+- **Live Usage-tab observability** — 2-second signature-gated refresh (preserves expanded windows) plus an in-flight registry: a bounded `OrderedDict` (2,000 cap, 10-minute stale self-heal) exposed at `GET /api/observability/usage/inflight` and rendered as a pulsing strip in the Usage tab; records complete on both success and failure paths (no leaks).
 
 ### Fixed
 
@@ -38,18 +41,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hunyuan Hy4-preview reasoning controls**; variant-ID separator normalization (dash IDs → dotted canonical contracts); gpt-6-astra effort contract parity; Fable/Mythos 5.1 thinking contract (always-on adaptive + effort clamp, 456/456 lock suite).
 - **Loopback base_urls warn-not-block; circuit-breaker stub → real coverage.**
 - **Launcher idempotent-start health gate** — unauthenticated `/health` on both stacks, per-stack try/catch.
+- **Usage tab stale during live streams** — rows previously landed only ~2s after stream completion; the tab now refreshes every 2 seconds while streams are active.
 
 ### Changed
 
 - **Web-provider lane extracted** — all web providers (~35 commits, GLM/Kimi/Qwen web, OAuth UI) reverted in `ca5c5c8` (−7,400 lines) and preserved in the standalone **Chat2API** app. Zero web provider code ships in 1.0.4; the `nodriver` dependency pin is removed.
 - **Key health dimming** in the admin UI; reasoning controls for new model families.
 - **Version alignment** — `VERSION` file, dashboard version pill, and GitHub tag all read 1.0.4; the update notification under the logo fires via the live GitHub latest-release check when the remote version is newer than local.
+- **SQLite ledger is the sole usage source of truth** — `recompute_usage_costs`, `invalidate_recompute_cache`, `usage_stats_shim`, and `_UsageListShim` deleted; costs materialize at write time with no reprice-on-read path.
 
 ### Maintenance
 
 - **Mojibake purge** — 1,398 cp1252 double-encoded tokens repaired across 5 files (gated, idempotent fixer); CHANGELOG 161-runs purged; pre-commit hook + residual scanner now blocks future mojibake commits. Full audit PASS (577 fix-adjacent tests, zero source residual).
 - **Dead code removal** — 24 provably dead symbols (−450 lines).
 - **`.brain` runtime debris + live-token artifacts gitignored**; hidden background-spawn console (no more empty cmd popups).
+- **Legacy-absence test guards** — perf suite rewritten with guards against the recompute lane returning; 34/34 inflight+perf and 195/195 downstream green.
 
 ## [1.0.3] - 2026-08-26
 
@@ -257,6 +263,52 @@ Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-
 # 🇻🇳 Tiếng Việt
 
 ---
+
+## [1.0.4] - 2026-09-08
+
+79 commit từ 1.0.3 — đợt flagship ổn định (sửa capture-log stall từng giết session IDE, chết accept-loop WinError-64, gia cố supervisor) cùng hai hệ thống con mới: Faithful Execution Layer và Normalizer Hub v2. Toàn bộ lane web-provider được tách hẳn sang app Chat2API độc lập, không còn dòng code nào ở đây.
+
+Đợt sau tag (2026-09-11, gộp vào 1.0.4): quan sát trực tiếp tab Usage — poller 2s theo chữ ký (giữ cửa sổ đang mở rộng), registry request đang chạy + dải hiển thị, và dọn sạch lane recompute usage cũ (SQLite ledger là nguồn sự thật duy nhất).
+
+### Thêm Mới
+
+- **Faithful Execution Layer (FEL)** — bộ chỉ thị thuần + wiring trực tiếp cho tiền xử lý clarity, gộp chỉ thị egress theo wire-format, phân loại refusal nghiêm ngặt, và một lần recovery re-dispatch. Tường cứng FEL-5: refusal nhóm CSAM/vũ khí classify `blocked` (chốt, miễn nhiễm recovery/research mode, kiểm trước cổng 600 ký tự). Reword độ nhạy song ngữ EN/VI. Mặc định TẮT (theo config); 186 test xanh.
+- **Normalizer Hub v2 (chuỗi N)** — registry `normalizer_v2` với phương ngữ schema (`gemini_last_role`, `tool_arg_repair`, `reasoning_policy`, `stream_normalizer`) và bộ so sánh shadow với shadow-log có cap, nằm ngoài hot-path. Áp dụng vào đường request chính; 107 test xanh.
+- **Listener dual-stack** — accept IPv4+IPv6 hết ECONNREFUSED cho client localhost/::1; bind-retry (10013/10048, tới 120s) và watchdog tự kiểm tra trong `dualstack_serve`; dò sức khỏe socket chống split-brain với respawn có giám sát.
+- **B1 watchdog-supervisor** — dòng tái sinh tự lành; sửa vòng đời PS1 F2–F7; health gate idempotent cho launcher (`/health` không cần xác thực trên cả hai stack, launcher không chứa credential).
+- **Pin smoke battery trước restart** — kiểm tra catalog/chat/stream/mapped-Gemini/admin cho deploy staging trước.
+- **Máy quét mojibake pre-commit + residual scanner** — chặn commit cp1252 double-encode về sau; 1.398 token hỏng sửa trên 5 file, CHANGELOG làm sạch, audit toàn phần ĐẠT (577 test cận fix, không còn sót trong source).
+- **Giá/phát hiện model** — các họ GLM-5.3, GPT-6 Astra, Muse Spark, Hunyuan Hy3/Hy4.
+- **Quan sát trực tiếp tab Usage** — poll 2s theo chữ ký (giữ nguyên cửa sổ đang mở rộng) cùng registry in-flight: `OrderedDict` có giới hạn (cap 2.000, tự lành mục treo quá 10 phút) mở tại `GET /api/observability/usage/inflight`, render thành dải pulse ngay trên tab Usage; bản ghi hoàn tất trên cả đường thành công lẫn thất bại (không rò rỉ bộ nhớ).
+
+### Sửa Lỗi
+
+- **Capture-log stall từng giết session Antigravity IDE** — inbound capture ghi payload đầy đủ đồng bộ ngay trên event loop FastAPI, không cap (file đạt 29,8 GB, mỗi lần ghi làm loop treo hàng phút). Giờ là queue writer async drop-on-full (`asyncio.to_thread`), xoay vòng 50MB cho cả ba logger, tự cắt lúc boot, và mặc định chỉ ghi metadata (`BSL_CAPTURE_INBOUND=1` để bật lại payload đầy đủ).
+- **Chết accept-loop WinError 64 (F8)** — vòng accept re-arm AcceptEx sau lỗi thay vì chết; đã xác minh trực tiếp với burst thật.
+- **Combo wrap never-stop** — 16 điểm cạn chuỗi giờ wrap về combo fallback thay vì force-stop; fallback stream-start Gemini bỏ cổng (429 entry cuối cũng wrap).
+- **Body request sai định dạng** — JSON 400 kiểu OpenAI (trước là 500 không xử lý) trên 5 endpoint inference.
+- **Guard tool song song GLM** — chèn `disable_parallel_tool_use`, sửa GLM-5.x mất tham số tool.
+- **Guard snapshot cũ** — holder snapshot AEP/OAuth không còn xóa provider đã nhập; persist khi xóa provider, dedup OAuth, tắt kết nối chết.
+- **Sửa auth key rỗng** + test thought-signature antigravity; NFKD transcode + preflight VN giờ phủ cả họ `agentrouter*`.
+- **Gia cố MITM** — WMI pre-scan khi kill kèm blocklist tiến trình hệ thống; DNS hijack gắn với liveness MITM (reconcile lúc boot / gỡ khi stop / rollback khi start); guard tree-kill chống respawn-supervisor lậu.
+- **Tab Usage không cập nhật khi stream đang chạy** — dữ liệu trước đây chỉ về ~2s sau khi stream kết thúc; giờ tab tự refresh mỗi 2s khi có stream hoạt động.
+- **Điều khiển reasoning Hunyuan Hy4-preview**; chuẩn hóa dấu phân tách variant-ID (ID gạch → contract chấm); parity effort contract gpt-6-astra; thinking contract Fable/Mythos 5.1 (bộ khóa 456/456).
+- **base_url loopback: cảnh-báo-thay-vì-chặn; circuit-breaker từ stub → phủ thật.**
+- **Health gate idempotent của launcher** — `/health` không xác thực trên cả hai stack, try/catch riêng cho từng stack.
+
+### Thay Đổi
+
+- **Tách lane web-provider** — toàn bộ web provider (~35 commit, GLM/Kimi/Qwen web, UI OAuth) revert trong `ca5c5c8` (−7.400 dòng), bảo tồn trong app **Chat2API** độc lập. 1.0.4 không ship dòng code web-provider nào; pin `nodriver` gỡ bỏ.
+- **SQLite là nguồn sự thật duy nhất cho usage** — xóa `recompute_usage_costs`, `invalidate_recompute_cache`, `usage_stats_shim`, `_UsageListShim`; chi phí tính ngay lúc ghi, không còn đường đọc-tính-lại.
+- **Làm mờ key theo sức khỏe** trong UI admin; điều khiển reasoning cho các họ model mới.
+- **Thống nhất phiên bản** — file `VERSION`, pill phiên bản dashboard, GitHub tag đều là 1.0.4; thông báo cập nhật dưới logo bắn qua kiểm tra GitHub latest-release trực tiếp khi bản remote mới hơn bản local.
+
+### Bảo Trì
+
+- **Dọn mojibake** — 1.398 token cp1252 double-encode sửa trên 5 file (fixer có cổng, idempotent); CHANGELOG làm sạch sau 161 lần chạy; pre-commit hook + residual scanner chặn mojibake từ nay. Audit toàn phần ĐẠT (577 test cận fix, không còn sót).
+- **Xóa code chết** — 24 ký hiệu chứng minh chết (−450 dòng).
+- **Gitignore rác runtime `.brain` + artifact live-token**; ẩn console spawn nền (hết cửa sổ cmd trống bật lên).
+- **Test guard chống tái xuất hiện lane recompute** — perf test viết lại kèm guard vắng mặt legacy; 34/34 inflight+perf và 195/195 downstream xanh.
 
 ## [1.0.3] - 2026-08-26
 

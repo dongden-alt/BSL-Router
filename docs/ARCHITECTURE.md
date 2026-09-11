@@ -310,6 +310,7 @@ Intercepts traffic for apps that don't let you change the API URL:
 ### 📊 Observability
 - Every request/response logged in JSONL format
 - Usage stats per model with cost tracking (see Usage Store below)
+- Live in-flight request registry (`/api/observability/usage/inflight`) shown as a pulsing strip in the Usage tab
 - Error tracking with per-provider breakdown
 - Live log streaming in the admin dashboard
 
@@ -321,6 +322,7 @@ Usage history is stored in a lightweight `data/usage_stats.sqlite3` database. Th
 - **Write path**: every successful (`status == 200`) request writes a row to SQLite via `append_usage_event()`. Cost and savings are computed at write time using the current pricing registry, so reads never need to reprice.
 - **Read path**: paginated keyset cursor `(ts_epoch DESC, id DESC)` — the API returns one page of up to 500 newest-first entries. The frontend loads additional pages by sending the `next_before_id` from the previous response.
 - **Summary endpoint**: `/api/observability/usage/summary` returns server-side aggregates (totals, top providers/models, timeframe-aligned buckets, DB size) without returning any raw rows.
+- **In-flight registry (2026-09-11)**: a thread-safe bounded `OrderedDict` (`_INFLIGHT_REQUESTS`, 2,000-entry cap) registers each request at start and completes it on both success and failure paths, so entries never leak. Entries older than 600s are pruned as stale on read. Exposed read-only via `GET /api/observability/usage/inflight`; the Usage tab polls it every 2 seconds while streams are active and renders a pulsing strip. With the legacy recompute lane removed, this SQLite ledger is the sole usage source of truth.
 - **JSONL archive**: existing `data/usage_stats.jsonl` lines are migrated once into SQLite on startup (idempotent, fingerprint-guarded). Corrupt lines are skipped. The file is retained as an archive but no longer rotated or treated as source of truth.
 - **No silent deletion**: there is no hard row-count cap or size-based rotation for usage history. Rows accumulate indefinitely until a future age-based cleanup job is added.
 - **Column filters**: UI column-filter dropdowns remain local to the currently loaded page. Total counts come from the summary endpoint.
@@ -470,7 +472,7 @@ The admin dashboard is a single-page app (`app/static/`) with 9 tabs:
 | **BSL Models** | `bsl-models` | Matrix editor for all 5 Blacksand models, auto-select, read-only cross-references |
 | **MITM** | `mitm` | MITM proxy control, hosts file management, watchdog status |
 | **Tools** | `tools` | Document Intelligence, Vision Bridge, Token Budget, Prompt Caching |
-| **Usage** | `usage` | Per-model usage table with filtering and cost tracking |
+| **Usage** | `usage` | Per-model usage table with filtering, cost tracking, and a live in-flight request strip |
 | **Logs** | `logs` | Live request/response log streaming |
 | **Settings** | `settings` | Admin password, shutdown, logout |
 
@@ -653,6 +655,7 @@ See [config.example.yaml](../config.example.yaml) for a complete working templat
 | `GET/POST /api/scan-keys` | Run the security scanner |
 | `GET/POST /api/mitm/*` | Control MITM proxy |
 | `GET /api/observability/usage` | View usage statistics |
+| `GET /api/observability/usage/inflight` | Live in-flight requests |
 | `POST /api/tunnel/cloudflare/*` | Manage Cloudflare tunnels |
 | `GET/POST /api/bsl-matrix/*` | Read/apply Blacksand matrix config |
 | `GET/POST /api/antigravity/*` | Antigravity integration control |
@@ -789,7 +792,7 @@ Kiểm tra: exfil URL, key injection, URL spoofing, credential leakage, local ne
 Chặn traffic cho app có URL cố định. Watchdog tự restart. Tree-kill + verify+retry.
 
 ### 📊 Quan Sát & Ghi Log
-JSONL logging, usage stats, error tracking, live log streaming.
+JSONL logging, usage stats, error tracking, live log streaming, và registry request đang chạy (`GET /api/observability/usage/inflight`) hiển thị dải pulse trên tab Usage.
 
 ### 🔍 Scouts (Tùy chọn)
 Vision (phân tích ảnh), Docs Parser (trích text), Canvas (UI/canvas).
@@ -859,6 +862,7 @@ Xem [config.example.yaml](../config.example.yaml) để có template hoàn chỉ
 | `GET/POST /api/scan-keys` | Quét bảo mật |
 | `GET/POST /api/mitm/*` | Điều khiển MITM |
 | `GET /api/observability/usage` | Thống kê sử dụng |
+| `GET /api/observability/usage/inflight` | Request đang chạy trực tiếp (in-flight) |
 | `POST /api/tunnel/cloudflare/*` | Cloudflare tunnel |
 | `GET/POST /api/bsl-matrix/*` | Ma trận Blacksand |
 | `GET/POST /api/antigravity/*` | Antigravity integration |

@@ -329,7 +329,7 @@ Web-based admin UI with 9 tabs:
 | **BSL Models** | Configure the 5 Blacksand routing models' matrices |
 | **MITM** | Optional transparent proxy for apps with hardcoded API URLs |
 | **Tools** | Document Intelligence, Vision Bridge, Token Budget, Prompt Caching, FEL toggles |
-| **Usage** | Per-model usage statistics, cost tracking, FEL analytics |
+| **Usage** | Per-model usage statistics, cost tracking, FEL analytics, live in-flight request strip |
 | **Logs** | Live request/response logs with filtering |
 | **Settings** | Admin password, shutdown, logout |
 
@@ -374,6 +374,7 @@ Point your AI client at BSL Router — it works as a drop-in replacement:
 | View/edit config | `GET/POST /api/config` |
 | Manage MITM proxy | `GET/POST /api/mitm/*` |
 | View usage stats | `GET /api/observability/usage` |
+| View live in-flight requests | `GET /api/observability/usage/inflight` |
 | Manage tunnels | `GET/POST /api/tunnel/*` |
 | Run security scan | `GET/POST /api/scan-keys` |
 | Update BSL matrix | `GET/POST /api/bsl-matrix/*` |
@@ -726,7 +727,7 @@ Giao diện web admin với 9 tab:
 | **BSL Models** | Cấu hình ma trận 5 Blacksand model |
 | **MITM** | Proxy trong suốt tùy chọn cho app hardcoded URL |
 | **Tools** | Document Intelligence, Vision Bridge, Token Budget, Prompt Caching, FEL toggles |
-| **Usage** | Thống kê per-model, tracking chi phí, FEL analytics |
+| **Usage** | Thống kê per-model, tracking chi phí, FEL analytics, dải request đang chạy (in-flight) trực tiếp |
 | **Logs** | Log request/response trực tiếp với filter |
 | **Settings** | Password admin, shutdown, logout |
 
