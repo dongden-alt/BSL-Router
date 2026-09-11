@@ -86,18 +86,13 @@ def _seed_usage_sqlite(n, tmp_path=None):
 
 @pytest.fixture(autouse=True)
 def _restore_state():
-    """Snapshot & restore in-memory state + recompute cache per test."""
+    """Snapshot & restore in-memory state per test."""
     saved_logs = list(obs.console_logs)
-    saved_shim = list(obs.usage_stats_shim)
-    saved_ts = obs._recompute_last_ts
-    saved_len = obs._recompute_last_len
-    saved_key = obs._recompute_registry_key
+    saved_inflight = list(obs._INFLIGHT_REQUESTS.items())
     yield
     obs.console_logs[:] = saved_logs
-    obs.usage_stats_shim[:] = saved_shim
-    obs._recompute_last_ts = saved_ts
-    obs._recompute_last_len = saved_len
-    obs._recompute_registry_key = saved_key
+    obs._INFLIGHT_REQUESTS.clear()
+    obs._INFLIGHT_REQUESTS.update(saved_inflight)
 
 
 # ── Logs endpoint (unchanged behaviour) ────────────────────────────────────
@@ -214,6 +209,60 @@ def test_usage_no_full_recompute(tmp_path, monkeypatch):
         obs._USAGE_LOG_PATH = old_jsonl
 
 
+# ── Recompute cache removed (Part D) ───────────────────────────────────────
+
+def test_legacy_recompute_and_shim_are_deleted():
+    """Part D: recompute_usage_costs + usage_stats_shim + the bounded
+    _UsageListShim are dead legacy (SQLite is the sole usage source of truth)
+    and must NOT exist on the observability module."""
+    assert not hasattr(obs, "recompute_usage_costs"), (
+        "recompute_usage_costs is dead legacy — SQLite is source of truth; remove it"
+    )
+    assert not hasattr(obs, "invalidate_recompute_cache"), (
+        "invalidate_recompute_cache is dead legacy — no recompute path to invalidate"
+    )
+    assert not hasattr(obs, "usage_stats_shim"), (
+        "usage_stats_shim is dead legacy — SQLite is the sole durable usage list"
+    )
+    assert not hasattr(obs, "_UsageListShim"), (
+        "_UsageListShim is dead legacy — only SQLite-backed usage storage remains"
+    )
+    # The recompute TTL / registry-mtime module globals must also be gone.
+    for _bad in ("_recompute_last_ts", "_recompute_last_len",
+                 "_recompute_registry_key", "_RECOMPUTE_TTL_S",
+                 "_pricing_registry_signature"):
+        assert not hasattr(obs, _bad), (
+            f"{_bad} is dead legacy recompute state — remove it (Part D)"
+        )
+
+
+def test_get_usage_does_not_call_any_recompute(monkeypatch):
+    """GET /usage must not reference the removed recompute path at all."""
+    # If recompute_usage_costs were re-introduced, calling get_usage would
+    # AttributeError immediately — proving the endpoint no longer depends on it.
+    assert not hasattr(obs, "recompute_usage_costs")
+    db_path = str(__import__("pathlib").Path(__file__).resolve().parent / "_inflight_tmp.sqlite3")
+    import os as _os
+    _os.makedirs(_os.path.dirname(db_path), exist_ok=True)
+    old_db = obs.usage_db_path
+    old_jsonl = obs._USAGE_LOG_PATH
+    obs.usage_db_path = db_path
+    obs._USAGE_LOG_PATH = db_path + ".jsonl"
+    obs.init_usage_store()
+    try:
+        resp = _await(main.get_usage(limit=10, before_id="0"))
+        body = _resp_json(resp)
+        assert "entries" in body
+    finally:
+        obs.usage_db_path = old_db
+        obs._USAGE_LOG_PATH = old_jsonl
+        try:
+            _os.remove(db_path)
+            _os.remove(db_path + ".jsonl")
+        except OSError:
+            pass
+
+
 # ── Limit clamping ─────────────────────────────────────────────────────────
 
 def test_log_limit_clamps_to_2000_for_huge_values():
@@ -257,108 +306,13 @@ def test_negative_offset_normalized_to_zero():
     assert len(body["entries"]) == 5
 
 
-# ── Recompute cache ────────────────────────────────────────────────────────
-
-def test_recompute_runs_at_most_once_within_ttl(monkeypatch):
-    obs.usage_stats_shim.clear()
-    for i in range(50):
-        obs.usage_stats_shim.append(_make_entry(i))
-    obs.invalidate_recompute_cache()
-
-    call_count = {"n": 0}
-    real_loader = obs._load_pricing_registry
-
-    def _counting_loader():
-        call_count["n"] += 1
-        return real_loader()
-
-    monkeypatch.setattr(obs, "_load_pricing_registry", _counting_loader)
-
-    cfg = {"providers": {}}
-    obs.recompute_usage_costs(cfg)
-    first_count = call_count["n"]
-    obs.recompute_usage_costs(cfg)
-
-    assert first_count >= 1, "first call must read the registry"
-    assert call_count["n"] == first_count, (
-        f"second recompute within TTL must not re-read registry; "
-        f"got {call_count['n']} reads (expected {first_count})"
-    )
-
-
-def test_recompute_force_bypasses_cache(monkeypatch):
-    obs.usage_stats_shim.clear()
-    obs.invalidate_recompute_cache()
-
-    call_count = {"n": 0}
-    real_loader = obs._load_pricing_registry
-
-    def _counting_loader():
-        call_count["n"] += 1
-        return real_loader()
-
-    monkeypatch.setattr(obs, "_load_pricing_registry", _counting_loader)
-
-    cfg = {"providers": {}}
-    obs.recompute_usage_costs(cfg)
-    obs.recompute_usage_costs(cfg, force=True)
-    assert call_count["n"] >= 2
-
-
-def test_recompute_cache_keyed_on_registry_mtime(monkeypatch):
-    obs.usage_stats_shim.clear()
-    obs.invalidate_recompute_cache()
-
-    real_loader = obs._load_pricing_registry
-    real_sig = obs._pricing_registry_signature()
-
-    sig_calls = {"n": 0}
-
-    def _shifting_sig():
-        sig_calls["n"] += 1
-        if real_sig:
-            return (real_sig[0] + sig_calls["n"], real_sig[1])
-        return (float(sig_calls["n"]), 1)
-
-    monkeypatch.setattr(obs, "_pricing_registry_signature", _shifting_sig)
-
-    load_calls = {"n": 0}
-
-    def _counting_loader():
-        load_calls["n"] += 1
-        return real_loader()
-
-    monkeypatch.setattr(obs, "_load_pricing_registry", _counting_loader)
-
-    cfg = {"providers": {}}
-    obs.recompute_usage_costs(cfg)
-    obs.recompute_usage_costs(cfg)
-    assert load_calls["n"] >= 2
-
-
-def test_recompute_updates_costs_when_rates_present():
-    obs.usage_stats_shim.clear()
-    obs.invalidate_recompute_cache()
-    for i in range(3):
-        obs.usage_stats_shim.append(_make_entry(i, model="gpt-test",
-                                                    in_cached=0, cache_write_tokens=0,
-                                                    in_uncached=10, out=5, cost=0, savings=0))
-
-    cfg = {"providers": {"openai": {"models": [
-        {"id": "gpt-test", "cost_in": 2.0, "cost_out": 8.0, "cost_cache": 0.5}
-    ]}}}
-    obs.recompute_usage_costs(cfg, force=True)
-    for entry in obs.usage_stats_shim:
-        assert entry["cost"] > 0
-
-
 # ── Cross-isolation ────────────────────────────────────────────────────────
 
-def test_logs_endpoint_does_not_touch_usage_stats():
+def test_logs_endpoint_does_not_touch_inflight_registry():
     _seed_console_logs(5)
-    before = list(obs.usage_stats_shim)
+    before = dict(obs._INFLIGHT_REQUESTS)
     _ = _await(main.get_logs(limit=10))
-    assert obs.usage_stats_shim == before
+    assert obs._INFLIGHT_REQUESTS == before
 
 
 def test_usage_endpoint_does_not_mutate_console_logs():
@@ -407,17 +361,6 @@ def test_usage_stats_trim_keeps_newest(monkeypatch):
         assert [e["i"] for e in obs.usage_stats] == [2, 3, 4]
     finally:
         obs.usage_stats[:] = saved
-
-
-def test_usage_shim_trims_at_retention(monkeypatch):
-    """usage_stats_shim must bound itself to _USAGE_RETENTION (newest kept)."""
-    monkeypatch.setattr(obs, "_USAGE_RETENTION", 4)
-    shim = obs._UsageListShim()
-    assert shim._max == 4
-    for i in range(7):
-        shim.append({"i": i})
-    assert len(shim) == 4
-    assert [e["i"] for e in shim] == [3, 4, 5, 6]
 
 
 def test_console_rotation_defaults_unchanged():

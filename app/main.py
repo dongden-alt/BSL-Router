@@ -3179,8 +3179,6 @@ async def get_usage(
     Never triggers a full-history recompute.
     """
     config = cs_get_config()
-    # TTL-gated shim-recompute only (bounded list).
-    obs.recompute_usage_costs(config)
 
     _limit, bid, bts = _usage_pagination_params(limit, before_id, before_ts)
 
@@ -3224,6 +3222,21 @@ async def get_usage_summary(
         start=start, end=end, provider=provider, model=model, q=q, timeframe=tf,
     )
     return JSONResponse(result)
+
+
+@app.get("/api/observability/usage/inflight")
+async def get_usage_inflight():
+    """Live in-flight request strip (Part C of usage observability).
+
+    Returns a newest-first list of requests that started (log_request_start)
+    but have not yet committed to the SQLite ledger (log_request). The Usage
+    tab polls this every 2s alongside the usage snapshot so in-flight streams
+    appear immediately instead of ~2s after they finish.
+
+    The registry is bounded and self-healing (stale orphans are pruned in
+    inflight_snapshot), so this endpoint is O(active streams), not O(history).
+    """
+    return JSONResponse({"inflight": obs.inflight_snapshot()})
 
 @app.get("/api/observability/logs")
 async def get_logs(limit: int = 500, offset: int = 0):
@@ -3540,10 +3553,9 @@ async def pricing_detect():
     try:
         detector = _load_pricing_detector()
         payload = detector.run_detection("config.yaml", _PRICING_DETECTED_PATH)
-        # Invalidate the recompute cache so the next /usage read picks up
-        # the new pricing data immediately instead of waiting for the TTL.
-        from app.observability import invalidate_recompute_cache
-        invalidate_recompute_cache()
+        # Costs are materialised at write time (SQLite ledger); the detected
+        # pricing registry affects future log_request writes, so no cache to
+        # invalidate for the usage read path (Part D removed the recompute).
         merged = _merge_pricing_payload()
         merged["generated_at"] = payload.get("generated_at")
         merged["detected_count"] = len(payload.get("canonical_models", {}))

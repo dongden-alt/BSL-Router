@@ -1284,3 +1284,49 @@ input:checked + .slider:before { transform: translateX(16px); }
     0%, 100% { opacity: 1; transform: scale(1); }
     50%      { opacity: 0.3; transform: scale(0.75); }
 }
+
+/* ── In-flight usage strip (Part C: live stream visibility) ── */
+.inflight-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    margin-bottom: 16px;
+    background: linear-gradient(90deg, rgba(59,130,246,.06), rgba(16,185,129,.06));
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    box-shadow: 0 8px 22px rgba(15,23,42,.04);
+}
+.inflight-label {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .04em;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.inflight-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-main);
+    box-shadow: 0 4px 10px rgba(15,23,42,.05);
+}
+.inflight-chip .pulse {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #10b981;
+    animation: inflightPulse 1.2s ease-in-out infinite;
+    flex-shrink: 0;
+}
+@keyframes inflightPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: .35; transform: scale(.7); }
+}

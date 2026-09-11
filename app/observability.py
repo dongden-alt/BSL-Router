@@ -5,6 +5,7 @@ import sqlite3
 import hashlib
 import stat as _stat_module
 import httpx
+from collections import OrderedDict
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -880,24 +881,11 @@ def _build_buckets_for_sql(timeframe, where_clause, where_params, conn):
     return buckets
 
 
-# Compatibility shim: in-memory list still kept (for non-API internals),
-# but NO rotation cap. Tests must use query_usage_events / SQLite as source
-# of truth for durable history.
-
-class _UsageListShim(list):
-    """Bounded detail array for non-API callers only. Not durable history."""
-
-    def __init__(self, max_size=None):
-        super().__init__()
-        self._max = _USAGE_RETENTION if max_size is None else max_size
-
-    def append(self, item):
-        super().append(item)
-        while len(self) > self._max:
-            self.pop(0)
-
-
-usage_stats_shim: _UsageListShim = _UsageListShim()
+# SQLite (usage_events) is the sole durable source of truth for usage/cost
+# history. The legacy in-memory bounded shim + recompute path were removed
+# (Part D of usage observability) — costs are materialised at write time in
+# log_request → append_usage_event. usage_stats below is a non-API JSONL
+# archive mirror only; reads always go through query_usage_events().
 usage_stats = _load_persisted(_USAGE_LOG_PATH, max_entries=_USAGE_RETENTION)
 console_logs = _load_persisted(_CONSOLE_LOG_PATH)
 
@@ -917,6 +905,84 @@ for log in console_logs:
         log["cache_write_tokens"] = 0
 
 _combo_registry: dict = {}
+
+# --- In-flight request registry (Part C of usage observability) ---
+# request_id -> lightweight identity record for requests that started
+# (log_request_start) but have not committed to the SQLite ledger yet
+# (log_request). Bounded and self-healing; see inflight_snapshot().
+_INFLIGHT_REQUESTS: OrderedDict[str, dict] = OrderedDict()
+_INFLIGHT_MAX = 2000          # bound; oldest evicted past this many live streams
+_INFLIGHT_STALE_S = 600.0     # prune orphaned entries older than 10 minutes
+
+
+def _register_inflight(request_id: str, record: dict) -> None:
+    """Add a request to the in-flight registry. Fail-open, never raises.
+
+    Bounded: when the registry exceeds _INFLIGHT_MAX entries the oldest are
+    evicted (LRU spirit, same as _combo_registry / _terminal_end_registry).
+    """
+    try:
+        if not request_id:
+            return
+        _INFLIGHT_REQUESTS[request_id] = record
+        while len(_INFLIGHT_REQUESTS) > _INFLIGHT_MAX:
+            _INFLIGHT_REQUESTS.popitem(last=False)
+    except Exception:
+        pass
+
+
+def _complete_inflight(request_id: str) -> None:
+    """Remove a request from the in-flight registry once it commits to SQLite.
+
+    Fail-open: a missing key (already evicted / never registered) is a no-op.
+    Idempotent — safe to call from every SQLite commit site in log_request.
+    """
+    try:
+        if request_id:
+            _INFLIGHT_REQUESTS.pop(request_id, None)
+    except Exception:
+        pass
+
+
+def inflight_snapshot() -> list:
+    """Return a newest-first list of in-flight request records.
+
+    Self-healing: any record older than _INFLIGHT_STALE_S is treated as
+    orphaned (its stream died without ever reaching log_request — e.g. an
+    upstream generator killed mid-stream, or the server force-restarted
+    against a live request) and pruned before the snapshot is returned. This
+    keeps the Usage tab's live strip honest instead of clogging with dead
+    streams.
+
+    Each record: request_id, started_at (ISO), age_ms, provider, model,
+    client, stream, upstream_url, thinking.
+    """
+    try:
+        now = time.time()
+        stale_ids = []
+        for rid, rec in _INFLIGHT_REQUESTS.items():
+            started = float(rec.get("_started_epoch") or 0)
+            if started and (now - started) > _INFLIGHT_STALE_S:
+                stale_ids.append(rid)
+        for rid in stale_ids:
+            _INFLIGHT_REQUESTS.pop(rid, None)
+        out = []
+        for rid, rec in reversed(list(_INFLIGHT_REQUESTS.items())):
+            started_epoch = float(rec.get("_started_epoch") or 0)
+            out.append({
+                "request_id": rid,
+                "started_at": rec.get("started_at"),
+                "age_ms": int((now - started_epoch) * 1000) if started_epoch else 0,
+                "provider": rec.get("provider"),
+                "model": rec.get("model"),
+                "client": rec.get("client"),
+                "stream": rec.get("stream"),
+                "upstream_url": rec.get("upstream_url"),
+                "thinking": rec.get("thinking"),
+            })
+        return out
+    except Exception:
+        return []
 
 # Request-id -> index of the authoritative in-memory END event. Streaming
 # generators can finalize through both an inner `finally` and an outer
@@ -1231,6 +1297,19 @@ def log_request_start(
     except UnicodeEncodeError:
         print(msg.encode('ascii', 'replace').decode('ascii'), flush=True)
 
+    # In-flight registry (Part C): record this request so the Usage tab's live
+    # strip can show it before the SQLite ledger row exists (log_request).
+    _register_inflight(request_id, {
+        "_started_epoch": now.timestamp(),
+        "started_at": entry["timestamp"],
+        "provider": provider,
+        "model": model,
+        "client": client,
+        "stream": bool(stream),
+        "upstream_url": _safe_trace_value(upstream_url) if upstream_url else None,
+        "thinking": entry.get("thinking"),
+    })
+
     return request_id
 
 
@@ -1450,8 +1529,10 @@ def log_request(
         }
         _apply_fel_context(err_entry, _take_fel_context(request_id))
         append_usage_event(err_entry)
-        usage_stats_shim.append(err_entry)
         usage_stats.append(err_entry)
+        # SQLite now holds the terminal row for this request — drop it from
+        # the in-flight registry so the live strip reclaims the slot.
+        _complete_inflight(request_id)
         if len(usage_stats) > _USAGE_RETENTION:
             del usage_stats[:-_USAGE_RETENTION]
         try:
@@ -1498,10 +1579,11 @@ def log_request(
         _apply_fel_context(usage_entry, _take_fel_context(request_id))
         # Write to SQLite — the only durable usage source of truth.
         append_usage_event(usage_entry)
-        # Keep a bounded in-memory shim for non-API callers.
-        usage_stats_shim.append(usage_entry)
         # Legacy compat list: retain newest _USAGE_RETENTION entries.
         usage_stats.append(usage_entry)
+        # SQLite now holds the terminal row for this request — drop it from
+        # the in-flight registry so the live strip reclaims the slot.
+        _complete_inflight(request_id)
         if len(usage_stats) > _USAGE_RETENTION:
             del usage_stats[:-_USAGE_RETENTION]
         # Optional JSONL archive append (kept for backward-compat; reads come from SQLite).
@@ -1517,106 +1599,8 @@ def log_request(
             pass  # archive write must never fail
 
 
-# ── Recompute cache ──────────────────────────────────────────────────────────
-# /api/observability/usage used to call recompute_usage_costs(config) on EVERY
-# request, which re-reads config.yaml + the pricing registry from disk and
-# fuzzy-matches every model for all ~10k entries synchronously in the event
-# loop. Throttle: at most one full recompute per _RECOMPUTE_TTL_S seconds, and
-# force a fresh recompute if the pricing registry file mtime changed. We never
-# deep-hash config.yaml here (249 KB) — the TTL + registry mtime is the cache
-# key. Entries appended after the last recompute already get their cost
-# computed incrementally at log_request time, so skipping the loop is safe.
-_RECOMPUTE_TTL_S = 60.0
-_recompute_last_ts: float = 0.0
-_recompute_last_len: int = -1
-_recompute_registry_key = None  # (mtime, size) of data/model_pricing_registry.json
-
-
-def _pricing_registry_signature():
-    """Cheap (mtime, size) signature for the canonical pricing registry file.
-
-    Fail-open: any error (missing file, permission) returns None, which forces
-    a recompute the next time the cache key is compared (since it differs from
-    the stored key). Never reads or parses the file contents.
-    """
-    try:
-        registry_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            "data",
-            "model_pricing_registry.json",
-        )
-        if not os.path.exists(registry_path):
-            return None
-        st = os.stat(registry_path)
-        return (st.st_mtime, st.st_size)
-    except Exception:
-        return None
-
-
-def recompute_usage_costs(config: dict, force: bool = False):
-    """Recompute costs for the in-memory shim only (bounded detail list).
-
-    MUST NOT full-scan all historical rows on every usage GET. Cost is
-    materialised at write time via append_usage_event(). This function now
-    operates on the bounded ``usage_stats_shim`` (default ≤10 000 entries)
-    so it can safely be called during TTL windows or when pricing data changes.
-
-    The SQLite API endpoint uses write-time costs directly — no recompute path.
-    For a global reprice of all history, a background task would scan SQLite
-    and update cost columns row-by-row; that is out of scope for v1.
-    """
-    global _recompute_last_ts, _recompute_last_len, _recompute_registry_key
-    try:
-        reg_key = _pricing_registry_signature()
-        now = time.time()
-        ttl_fresh = (now - _recompute_last_ts) < _RECOMPUTE_TTL_S
-        len_unchanged = _recompute_last_len == len(usage_stats_shim)
-        if not force and ttl_fresh and len_unchanged and reg_key == _recompute_registry_key:
-            return  # cache hit — nothing to recompute
-
-        rates_map = _load_model_costs(config)
-        if not rates_map:
-            _recompute_last_ts = now
-            _recompute_last_len = len(usage_stats_shim)
-            _recompute_registry_key = reg_key
-            return
-
-        for entry in usage_stats_shim:
-            model = entry.get("model", "")
-            m_rates = rates_map.get(model)
-            if not m_rates:
-                continue
-            cached = entry.get("in_cached", 0) or 0
-            write_tokens = entry.get("cache_write_tokens", 0) or 0
-            uncached = entry.get("in_uncached", 0) or 0
-            out = entry.get("out", 0) or 0
-
-            cost_uncached_in = (uncached / 1_000_000) * m_rates["in"]
-            cost_write_in = (write_tokens / 1_000_000) * (m_rates["in"] * 1.25)
-            cost_cached_in = (cached / 1_000_000) * m_rates["cache"]
-            cost_out_total = (out / 1_000_000) * m_rates["out"]
-            entry["cost"] = round(cost_uncached_in + cost_write_in + cost_cached_in + cost_out_total, 6)
-            entry["savings"] = round(
-                (cached / 1_000_000) * (m_rates["in"] - m_rates["cache"]), 6
-            ) if cached else 0.0
-        _recompute_last_ts = now
-        _recompute_last_len = len(usage_stats_shim)
-        _recompute_registry_key = reg_key
-    except Exception as _e:
-        print(f"[Observability] recompute_usage_costs failed (non-blocking): {_e}", flush=True)
-
-
-def invalidate_recompute_cache():
-    """Force the next recompute_usage_costs() call to run the full loop.
-
-    Used by tests and by code paths that know the pricing registry changed
-    out-of-band (e.g. /api/pricing/detect rewrote the file) and want the next
-    /usage read to reflect it immediately rather than waiting for the TTL.
-    """
-    global _recompute_last_ts, _recompute_last_len, _recompute_registry_key
-    _recompute_last_ts = 0.0
-    _recompute_last_len = -1
-    _recompute_registry_key = None
+# (Part D) Legacy recompute cache removed — SQLite is the sole usage source of
+# truth; costs are materialised at write time in log_request → append_usage_event.
 
 async def run_error_analysis(http_client: httpx.AsyncClient, config: dict):
     """

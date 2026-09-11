@@ -6403,6 +6403,11 @@ let usageFilterState = '';
 // 500 per "Load 500 more" click.
 let usageRenderLimit = 500;
 
+// In-flight requests (Part C): streams that started but haven't committed to
+// the SQLite ledger yet. Populated by the 2s live poller so the Usage tab
+// shows active streams immediately instead of ~2s after they finish.
+let usageInflightState = [];
+
 // Minimal debounce — avoids importing a lib. Used by the global search input
 // so we don't re-render the whole table on every keystroke.
 function _debounce(fn, ms) {
@@ -7424,7 +7429,7 @@ function renderUsageTable() {
         <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:16px;flex-wrap:wrap;">
             <div style="display:flex;gap:8px;align-items:center;">${modeButtons}</div>
             <div style="display:flex;gap:6px;align-items:center;">${timeframeButtons}<button class="btn btn-outline" onclick="loadUsageData()" style="padding:7px 10px;font-size:12px;">Refresh</button></div>
-        </div>`;
+        </div>${_renderInflightStrip()}`;
 
     if (usageViewMode === 'pricing') {
         container.innerHTML = html + renderPricingPage() + '</div>';
@@ -7662,7 +7667,35 @@ function _computeUsageSignature() {
     const n = usageDataState.length;
     const newest = n > 0 ? (usageDataState[0].timestamp || '') : '';
     const oldest = n > 0 ? (usageDataState[n - 1].timestamp || '') : '';
-    return `${usageTotalCount}:${n}:${newest}:${oldest}`;
+    const inflight = usageInflightState.length;
+    const inflightTop = inflight ? (usageInflightState[0].request_id || '') : '';
+    return `${usageTotalCount}:${n}:${newest}:${oldest}:${inflight}:${inflightTop}`;
+}
+
+// Render the in-flight live strip (Part C). Newest active stream on the left.
+// Shown above the summary cards so it is the first thing visible; collapses
+// to nothing when there are no active streams (no empty-state noise).
+function _renderInflightStrip() {
+    const streams = usageInflightState;
+    if (!streams || streams.length === 0) return '';
+    const chips = streams.map(s => {
+        const model = s.model || s.provider || 'stream';
+        const age = s.age_ms != null ? Math.round(s.age_ms / 1000) + 's' : '';
+        const streamTag = s.stream ? '<span style="opacity:.6;font-size:9px;">●stream</span>' : '';
+        const client = s.client ? ` · ${_usageEscapeHtml(s.client)}` : '';
+        return `<span class="inflight-chip"><span class="pulse"></span>${_usageEscapeHtml(model)}${streamTag}${client}${age ? ` · <span style="opacity:.6;">${age}</span>` : ''}</span>`;
+    }).join('');
+    const label = streams.length === 1 ? 'In-flight stream' : `${streams.length} in-flight streams`;
+    return `<div class="inflight-strip"><span class="inflight-label">${label}</span>${chips}</div>`;
+}
+
+async function fetchUsageInflight() {
+    try {
+        const res = await fetch('/api/observability/usage/inflight');
+        if (!res.ok) return;
+        const body = await res.json();
+        usageInflightState = Array.isArray(body && body.inflight) ? body.inflight : [];
+    } catch (e) { /* transient — next tick retries */ }
 }
 
 async function refreshUsageLive() {
@@ -7693,6 +7726,7 @@ async function refreshUsageLive() {
         const [pageRes, summaryRes] = await Promise.all([
             fetch('/api/observability/usage?' + params.toString()),
             fetch('/api/observability/usage/summary?' + summaryParams.toString()),
+            fetchUsageInflight(),
         ]);
         if (!pageRes.ok) return;
         const pageData = await pageRes.json();
