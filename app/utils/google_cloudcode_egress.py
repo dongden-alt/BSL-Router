@@ -100,6 +100,13 @@ _UPSTREAM_TIMEOUT = httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=60.
 _KEEPALIVE_EXPIRY = 30.0
 _POOL_RETRIES = 2
 
+# Retry-backoff for transient egress failures (2026-09-11).
+# Between IP failover attempts, wait briefly so transient network issues
+# (ConnectError, WinError 64, TCP RST) have time to clear before the next
+# candidate is tried. Exponential with a cap so multi-IP failover stays bounded.
+_EGRESS_BACKOFF_BASE_S = 0.5
+_EGRESS_BACKOFF_MAX_S = 3.0
+
 
 def _is_safe_real_upstream_ip(value: str) -> bool:
     """Return whether an address can safely be used as a real upstream target.
@@ -268,6 +275,7 @@ class HostsBypassBackend(httpcore.AsyncNetworkBackend):
                     f"no safe public Google IP resolvable for {host}"
                 )
             last_exc: Optional[BaseException] = None
+            _attempt = 0
             for ip in ips:
                 try:
                     stream = await self._inner.connect_tcp(
@@ -281,11 +289,25 @@ class HostsBypassBackend(httpcore.AsyncNetworkBackend):
                     return stream
                 except Exception as exc:  # try the next failover candidate
                     last_exc = exc
+                    _attempt += 1
                     logger.warning(
-                        "google-egress connect failover: %s (%s), trying next",
+                        "google-egress connect failover: %s (%s), trying next "
+                        "(attempt %d/%d)",
                         ip,
                         type(exc).__name__,
+                        _attempt,
+                        len(ips),
                     )
+                    # Exponential backoff between failover candidates so transient
+                    # network issues (ConnectError, WinError 64, TCP RST) have a
+                    # recovery window before the next IP is tried. Only sleep when
+                    # there IS a next candidate — never sleep after the last failure.
+                    if _attempt < len(ips):
+                        _delay = min(
+                            _EGRESS_BACKOFF_BASE_S * (2 ** (_attempt - 1)),
+                            _EGRESS_BACKOFF_MAX_S,
+                        )
+                        await asyncio.sleep(_delay)
             assert last_exc is not None
             raise last_exc
 

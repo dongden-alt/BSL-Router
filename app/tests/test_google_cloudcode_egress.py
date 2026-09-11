@@ -198,7 +198,71 @@ def test_backend_raises_last_error_when_all_ips_fail(monkeypatch):
     assert inner.attempts == ["203.0.113.1", "203.0.113.2"]
 
 
-# ── 7. Non-allowlisted hosts delegate UNCHANGED (no IP rewrite) ──────────────
+# ── 7b. Exponential backoff between failover attempts (2026-09-11) ──────────
+
+class _TimingFakeInnerBackend:
+    """Fake backend that records wall-clock timestamps of each connect attempt."""
+
+    def __init__(self, fail_targets=()):
+        self.fail_targets = set(fail_targets)
+        self.attempt_times: list[float] = []
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        self.attempt_times.append(asyncio.get_event_loop().time())
+        if host in self.fail_targets:
+            raise httpcore.ConnectError(f"refused {host}")
+        return f"stream->{host}:{port}"
+
+    async def connect_unix_socket(self, *a, **k):  # pragma: no cover
+        return "unix"
+
+    async def sleep(self, seconds):  # pragma: no cover
+        return None
+
+
+def test_backend_backoff_between_failover_attempts(monkeypatch):
+    """First IP fails → backend waits ~_EGRESS_BACKOFF_BASE_S before trying next."""
+    monkeypatch.setattr(egress, "resolve_google_ips", lambda host: ["203.0.113.1", "203.0.113.2"])
+    # Force a deterministic backoff base so the test is fast and predictable.
+    monkeypatch.setattr(egress, "_EGRESS_BACKOFF_BASE_S", 0.05)
+    monkeypatch.setattr(egress, "_EGRESS_BACKOFF_MAX_S", 0.2)
+    inner = _TimingFakeInnerBackend(fail_targets={"203.0.113.1"})
+    backend = egress.HostsBypassBackend(inner)
+
+    stream = asyncio.run(backend.connect_tcp(CLOUDCODE, 443))
+    assert stream == "stream->203.0.113.2:443"
+    assert len(inner.attempt_times) == 2
+    gap = inner.attempt_times[1] - inner.attempt_times[0]
+    # Gap must be >= the backoff base (0.05s) minus a small tolerance for scheduler jitter.
+    assert gap >= 0.04, f"backoff not applied: gap={gap:.3f}s, expected >= 0.05s"
+
+
+def test_backend_no_backoff_after_last_failure(monkeypatch):
+    """No sleep after the last IP fails — only between failover candidates.
+
+    With 3 IPs and base=0.1s, the between-IP backoffs are:
+      IP1→IP2: 0.1s, IP2→IP3: 0.2s  →  total ~0.3s
+    If a spurious sleep fired after IP3 (the last), total would be ~0.3+0.4=0.7s.
+    Asserting < 0.5s proves the last-failure sleep is absent.
+    """
+    monkeypatch.setattr(egress, "resolve_google_ips", lambda host: ["203.0.113.1", "203.0.113.2", "203.0.113.3"])
+    monkeypatch.setattr(egress, "_EGRESS_BACKOFF_BASE_S", 0.1)
+    monkeypatch.setattr(egress, "_EGRESS_BACKOFF_MAX_S", 1.0)
+    inner = _TimingFakeInnerBackend(fail_targets={"203.0.113.1", "203.0.113.2", "203.0.113.3"})
+    backend = egress.HostsBypassBackend(inner)
+
+    import time as _time
+
+    _start = _time.monotonic()
+    with pytest.raises(httpcore.ConnectError):
+        asyncio.run(backend.connect_tcp(CLOUDCODE, 443))
+    _elapsed = _time.monotonic() - _start
+    # Between-IP backoffs: 0.1 + 0.2 = 0.3s. No last-failure sleep → < 0.5s.
+    # If a last-failure sleep fired: 0.3 + 0.4 = 0.7s → would fail this assert.
+    assert _elapsed < 0.5, f"unexpected sleep after last failure: {_elapsed:.2f}s"
+
+
+# ── 8. Non-allowlisted hosts delegate UNCHANGED (no IP rewrite) ──────────────
 def test_backend_passes_through_non_allowlisted_host():
     inner = _FakeInnerBackend()
     backend = egress.HostsBypassBackend(inner)
