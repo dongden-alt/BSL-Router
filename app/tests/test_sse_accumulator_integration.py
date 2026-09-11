@@ -176,6 +176,30 @@ class TestOpenAISSEIntegration:
         assert result["reasoning"] == "Let me think about this"
         assert result["message"]["reasoning_content"] == "Let me think about this"
 
+    def test_openai_bare_reasoning_key_accumulation(self):
+        """Regression (ZEN/MIMO 504, 2026-09-11): OpenRouter-style bare
+        `reasoning` delta key (Mimo-v2.5 on the Zen lane) must assemble into
+        reasoning_content. Previously dropped -> empty message assembled ->
+        zombie-gate false-negative -> 504 zombie_empty_response on a
+        200-OK stream that spent real tokens on reasoning."""
+        def _bare(reasoning):
+            payload = {"choices": [{"index": 0,
+                                   "delta": {"reasoning": reasoning},
+                                   "finish_reason": None}]}
+            return f"data: {json.dumps(payload)}\n\n".encode()
+        chunks = [
+            _bare("Step one"),
+            _bare(" then two"),
+            _oai_chunk(content="Final answer"),
+            _oai_chunk(finish_reason="stop"),
+            _done(),
+        ]
+        resp = MockSSEResponse(chunks)
+        result = self._run(resp)
+        assert result["content"] == "Final answer"
+        assert result["reasoning"] == "Step one then two"
+        assert result["message"]["reasoning_content"] == "Step one then two"
+
     def test_openai_tool_call_multi_chunk(self):
         """Tool calls accumulated across chunks with index tracking."""
         chunks = [

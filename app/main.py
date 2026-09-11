@@ -225,6 +225,38 @@ def _auth_headers_for_key(api_key) -> dict:
     return {"Authorization": f"Bearer {_k}"} if _k else {}
 
 
+def _opencode_identity_headers(headers: dict, active_conn: dict) -> None:
+    """OpenCode Zen identity headers (opencode.ai/zen gateways).
+
+    The official client stamps every LLM request with session/user/client ids
+    (packages/opencode/src/session/llm/request.ts: "x-opencode-session":
+    sessionID, "x-opencode-request": user.id, "x-opencode-client":
+    flags.client, User-Agent). Zen's edge rejects headerless traffic with
+    400 "MissingSessionID" even with a valid Bearer key — the stealth UA
+    alone is not enough (observed live 2026-09-11 on mimo-v2.5-free, free
+    tier via the opencode-zen provider).
+
+    IDs are DERIVED (uuid5) from the connection identity so they are stable
+    across requests — one long-lived CLI session per connection, which is
+    how a real coding-agent session presents to zen. Round-robin across N
+    connections therefore looks like N distinct installations. Idempotent:
+    re-injection on 401-retry derives identical ids.
+    """
+    _conn_id = str(
+        active_conn.get("api_key")
+        or active_conn.get("name")
+        or "bsl-opencode"
+    )
+    headers["x-opencode-session"] = "ses_" + uuid.uuid5(
+        uuid.NAMESPACE_DNS, "bsl/opencode-session/" + _conn_id
+    ).hex
+    headers["x-opencode-request"] = "usr_" + uuid.uuid5(
+        uuid.NAMESPACE_DNS, "bsl/opencode-user/" + _conn_id
+    ).hex
+    headers["x-opencode-client"] = "cli"
+    headers.setdefault("User-Agent", "opencode/1.0.0")
+
+
 def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dict, provider_config: dict | None = None) -> None:
     """Inject provider-specific headers for upstream requests.
 
@@ -273,6 +305,15 @@ def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dic
         headers["OpenAI-Beta"] = "codex-1"
         headers["originator"] = "codex"
 
+
+    # OpenCode Zen (opencode.ai/zen): session/user/client identity headers.
+    # Zen's edge 400s "MissingSessionID" when x-opencode-session is absent —
+    # observed live 2026-09-11 on mimo-v2.5-free via the free tier. Hardcoded
+    # on the provider-name prefix (opencode*) like kiro/grok-cli/codex above;
+    # header_profile=opencode below covers custom providers pointed at
+    # zen-compatible upstreams.
+    if provider_name.startswith("opencode"):
+        _opencode_identity_headers(headers, active_conn)
     # ── Header Profile System (user-configurable, extends the blocks above) ──
     # Providers with strict client-identity requirements (Codex CLI, Claude Code
     # CLI, custom gateways) get their required headers from the provider's
@@ -304,6 +345,10 @@ def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dic
         headers["anthropic-version"] = "2023-06-01"
         headers["anthropic-beta"] = "oauth-2025-04-20,interleaved-thinking-2025-05-14"
         headers["x-app"] = "cli"
+    elif profile == "opencode":
+        # OpenCode Zen client identity for CUSTOM providers pointed at zen or
+        # zen-compatible upstreams — mirrors the hardcoded opencode* branch.
+        _opencode_identity_headers(headers, active_conn)
     elif profile == "custom":
         # Arbitrary user-defined headers from header_custom (dict[str,str]).
         # Applied AFTER Authorization is set by the caller, so custom profiles
@@ -576,11 +621,16 @@ def _normalize_blacksand_model_id(model: str) -> str:
 def _response_has_model_output(data: dict, out_tokens: int = 0) -> bool:
     """True when an OpenAI or Anthropic-compatible response contains usable model output.
 
-    Checks actual content fields first. A response with out_tokens > 0 but empty
-    content (e.g. reasoning-only models that produce thinking tokens but no visible
-    output) is NOT considered to have model output and should trigger combo fallback.
-    The out_tokens fallback only kicks in when the response has no recognizable
-    choices/content structure at all (truly non-standard format).
+    Checks actual content fields first. Reasoning-first models (mimo-v2.5,
+    DeepSeek-R-style) can hit the token budget BEFORE emitting any visible
+    content — all tokens spent on reasoning_content, content empty,
+    finish_reason="length". That is genuine model work, not a dead leaf: with
+    out_tokens > 0 the reasoning fields count as output so the response is
+    returned (the client can read reasoning_content directly) instead of
+    being misclassified as a 504 zombie. A zero-token response with empty
+    content is still a dead/empty leaf and MUST trigger combo fallback.
+    The out_tokens fallback also kicks in when the response has no
+    recognizable choices/content structure at all (truly non-standard format).
     """
     has_choices = False
     # OpenAI format: choices[].message.content
@@ -591,16 +641,24 @@ def _response_has_model_output(data: dict, out_tokens: int = 0) -> bool:
             if not isinstance(choice, dict):
                 continue
             message = _as_obj(choice.get("message"))
-            # NOTE: Only "content" counts as visible user output.
-            # reasoning_content / reasoning are thinking tokens — a response
-            # with only reasoning but no visible content is a zombie from
-            # the user's perspective and MUST trigger combo fallback.
             value = message.get("content")
             if isinstance(value, str) and value.strip():
                 return True
             if isinstance(value, list) and value:
                 return True
             if message.get("tool_calls") or message.get("function_call"):
+                return True
+            # Reasoning-first starvation: budget consumed by thinking tokens
+            # before any visible content (finish_reason="length"). Tokens were
+            # spent, so this is live model output — NOT a zombie. Gated on
+            # out_tokens > 0: a reasoning field with zero usage is indistinguishable
+            # from a dead upstream and still falls through to zombie fallback.
+            _reasoning = message.get("reasoning_content") or message.get("reasoning")
+            if (
+                out_tokens > 0
+                and isinstance(_reasoning, str)
+                and _reasoning.strip()
+            ):
                 return True
         # Choices existed but all content fields were empty — zombie response
         return False
@@ -613,6 +671,12 @@ def _response_has_model_output(data: dict, out_tokens: int = 0) -> bool:
                 if block.get("type") == "text" and (block.get("text") or "").strip():
                     return True
                 if block.get("type") == "tool_use":
+                    return True
+                if (
+                    block.get("type") == "thinking"
+                    and out_tokens > 0
+                    and (block.get("thinking") or "").strip()
+                ):
                     return True
         # Non-empty content list but all blocks empty — zombie response
         return False
@@ -5980,7 +6044,8 @@ async def _accumulate_sse_stream(
                     if not isinstance(_ch2, dict):
                         continue
                     _dl = _as_obj(_ch2.get("delta"))
-                    if _dl.get("content") or _dl.get("reasoning_content") or _dl.get("tool_calls"):
+                    # ZEN/MIMO: bare "reasoning" delta key (OpenRouter convention) is live data too.
+                    if (_dl.get("content") or _dl.get("reasoning_content") or _dl.get("reasoning") or _dl.get("tool_calls")):
                         _has_real_content = True
                         break
                 if _has_real_content:
@@ -6076,6 +6141,14 @@ async def _accumulate_sse_stream(
                                 _a_cp.append(_dl["content"])
                             if _dl.get("reasoning_content"):
                                 _a_rp.append(_dl["reasoning_content"])
+                            # ZEN/MIMO 504 FIX (2026-09-11): Mimo-v2.5 (Zen/OpenRouter lane) emits
+                            # reasoning under the bare "reasoning" key, not DeepSeek-style
+                            # "reasoning_content". Dropping it assembled an empty message ->
+                            # zombie-gate false-negative -> 504 zombie_empty_response on a
+                            # 200-OK stream that spent real tokens on reasoning.
+                            _a_rk = _dl.get("reasoning")
+                            if isinstance(_a_rk, str) and _a_rk:
+                                _a_rp.append(_a_rk)
                             _tcs2 = _dl.get("tool_calls")
                             if _tcs2:
                                 for _tc2 in _tcs2:
@@ -6483,7 +6556,10 @@ def _openai_chunk_carries_output(text_chunk: str) -> bool:
     """True when an SSE chunk proves the model produced output.
 
     Covers text content, reasoning, AND tool calls (modern `tool_calls`
-    plus legacy `function_call`). DeepSeek-family resellers often omit
+    plus legacy `function_call`). Reasoning is accepted under BOTH wire
+    conventions: "reasoning_content" (DeepSeek) and the bare "reasoning"
+    key (OpenRouter/Zen — Mimo-v2.5 emits the latter). DeepSeek-family
+    resellers often omit
     `usage` on streamed responses; for a tool-call-only reply these markers
     are the only witness standing between a healthy stream and the false
     `zero_output_tokens` combo fallback / post-message_stop error frames.
@@ -6496,6 +6572,8 @@ def _openai_chunk_carries_output(text_chunk: str) -> bool:
         or ('"content": "' in text_chunk and '"content": ""' not in text_chunk)
         or ('"reasoning_content":"' in text_chunk and '"reasoning_content":""' not in text_chunk)
         or ('"reasoning_content": "' in text_chunk and '"reasoning_content": ""' not in text_chunk)
+or ('"reasoning":"' in text_chunk and '"reasoning":""' not in text_chunk)
+or ('"reasoning": "' in text_chunk and '"reasoning": ""' not in text_chunk)
         or ('"text":"' in text_chunk and '"text":""' not in text_chunk)
         or ('"text": "' in text_chunk and '"text": ""' not in text_chunk)
         or ('"tool_calls":[' in text_chunk and '"tool_calls":[]' not in text_chunk)
@@ -9672,6 +9750,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                         ('"content":"' in _c and '"content":""' not in _c) or
                                         ('"content": "' in _c and '"content": ""' not in _c) or
                                         ('"reasoning_content":"' in _c and '"reasoning_content":""' not in _c) or
+('"reasoning":"' in _c and '"reasoning":""' not in _c) or
                                         ('"text":"' in _c and '"text":""' not in _c)
                                     )
                                     _is_gemini_content = (
@@ -11316,8 +11395,18 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 # no fallback is triggered.
                 #
                 # Check both out_tokens AND content: some upstreams return
-                # content but omit usage data (0 tokens). Only reclassify when
-                # the response is truly empty (no tokens AND no content).
+                # content but omit usage data (0 tokens). Reclassify when the
+                # response has no usable deliverable (no content text, no
+                # reasoning text, no tool calls). Billed tokens alone do NOT
+                # rescue an empty message — live case 2026-09-11: a free Zen
+                # node billed out=5 hidden thinking tokens and relayed ZERO
+                # content/reasoning deltas; the gate correctly 504'd it and
+                # combo fallback delivered on the next entry.
+                # Reasoning-first budget starvation (reasoning tokens spent,
+                # content empty, finish_reason="length", out_tokens > 0) is
+                # live model output — the classifier above counts it as a pass
+                # and the response goes back to the client with reasoning_content
+                # intact, NOT a zombie.
                 try:
                     _response_json = resp.json() if hasattr(resp, 'json') else {}
                 except Exception:
@@ -11326,8 +11415,11 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 _zombie_check = _response_has_model_output(_response_json, out_tokens)
                 
                 if not _zombie_check:
+                    # Report the REAL billed out_tokens (2026-09-11 fix:
+                    # hardcoded "out_tokens=0" lied during forensics when the
+                    # gate 504'd a billed-but-empty response with out=5).
                     error_msg = (
-                        f"zombie_empty_response (out_tokens=0, ttft={ttft:.1f}s)"
+                        f"zombie_empty_response (out_tokens={out_tokens}, ttft={ttft:.1f}s)"
                     )
                     print(
                         f"[Combo Fallback] '{model}' non-stream zombie for "

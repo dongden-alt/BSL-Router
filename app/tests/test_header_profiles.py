@@ -72,3 +72,51 @@ def test_provider_config_none_is_default():
     headers = {"Authorization": "Bearer x"}
     _inject_provider_headers(headers, "anything", {}, None)
     assert headers == {"Authorization": "Bearer x"}
+
+
+def test_opencode_prefix_gets_zen_identity_headers():
+    # opencode.ai/zen 400s "MissingSessionID" without x-opencode-session
+    # (observed live 2026-09-11, mimo-v2.5-free free tier).
+    headers = {}
+    _inject_provider_headers(headers, "opencode-zen", {"api_key": "zen-key-1"}, {})
+    assert headers["x-opencode-session"].startswith("ses_")
+    assert headers["x-opencode-request"].startswith("usr_")
+    assert headers["x-opencode-client"] == "cli"
+    assert headers["User-Agent"].startswith("opencode/")
+
+
+def test_opencode_profile_for_custom_providers():
+    headers = {}
+    _inject_provider_headers(headers, "my-gateway", {}, {"header_profile": "opencode"})
+    assert headers["x-opencode-session"].startswith("ses_")
+    assert headers["x-opencode-request"].startswith("usr_")
+    assert headers["x-opencode-client"] == "cli"
+    assert headers["User-Agent"].startswith("opencode/")
+
+
+def test_opencode_identity_stable_and_idempotent():
+    # uuid5-derived ids: stable across requests (long-lived session look)
+    # AND identical on double injection (hardcoded prefix + profile both
+    # firing, or 401-retry re-injection).
+    conn = {"api_key": "zen-key-1", "name": "conn-003"}
+    h1, h2 = {}, {}
+    _inject_provider_headers(h1, "opencode-zen", conn, {"header_profile": "opencode"})
+    _inject_provider_headers(h2, "opencode-zen", conn, {})
+    assert h1 == h2
+
+
+def test_opencode_identity_differs_per_connection():
+    # Round-robin across N connections must present as N distinct sessions.
+    h1, h2 = {}, {}
+    _inject_provider_headers(h1, "opencode-zen", {"api_key": "key-a"}, {})
+    _inject_provider_headers(h2, "opencode-zen", {"api_key": "key-b"}, {})
+    assert h1["x-opencode-request"] != h2["x-opencode-request"]
+    assert h1["x-opencode-session"] != h2["x-opencode-session"]
+
+
+def test_non_opencode_provider_gets_no_zen_headers():
+    headers = {"Authorization": "Bearer x"}
+    _inject_provider_headers(headers, "agentrouter-o", {}, {})
+    assert "x-opencode-session" not in headers
+    assert "x-opencode-client" not in headers
+    assert headers == {"Authorization": "Bearer x"}

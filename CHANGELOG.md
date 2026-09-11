@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 79 commits since 1.0.3 — a stability flagship wave (fixes the capture-log stall that killed IDE sessions, WinError-64 accept-loop death, supervisor hardening) plus two new subsystems: the Faithful Execution Layer and Normalizer Hub v2. The legacy web-provider lane was fully extracted to the standalone Chat2API app and ships zero code here.
 
-Post-tag wave (2026-09-11, folded into 1.0.4): live Usage-tab observability — a 2-second signature-gated poller (preserves expanded windows), an in-flight request registry rendered as a pulsing strip, and removal of the legacy usage recompute lane (the SQLite ledger is the sole source of truth).
+Post-tag wave (2026-09-11, folded into 1.0.4): live Usage-tab observability — a 2-second signature-gated poller (preserves expanded windows), an in-flight request registry rendered as a pulsing strip, and removal of the legacy usage recompute lane (the SQLite ledger is the sole source of truth). Late wave (2026-09-11): bare `reasoning` SSE-key accumulation fix for Mimo-style thinking models, truthful zombie-gate out_tokens, and opencode Zen identity headers.
 
 ### Added
 
@@ -42,6 +42,7 @@ Post-tag wave (2026-09-11, folded into 1.0.4): live Usage-tab observability — 
 - **Loopback base_urls warn-not-block; circuit-breaker stub → real coverage.**
 - **Launcher idempotent-start health gate** — unauthenticated `/health` on both stacks, per-stack try/catch.
 - **Usage tab stale during live streams** — rows previously landed only ~2s after stream completion; the tab now refreshes every 2 seconds while streams are active.
+- **Bare `reasoning` SSE key (Mimo via Zen/OpenRouter dialect)** — reasoning-only streams assembled empty messages and hit the zombie 504, burning one combo-fallback entry per call; the bare `reasoning` delta key is now accepted at all four extraction sites (TTFT detection, SSE accumulator, output classifier, non-stream relay) and folded into `reasoning_content`. Zombie-gate forensics hardened: the 504 now reports the real billed `out_tokens` (was hardcoded 0 — the live case billed out=5/in=403 with zero deltas relayed); a billed-but-empty 200 stays a 504 so combo fallback advances. Regression: `test_openai_bare_reasoning_key_accumulation` + `test_response_has_model_output_billed_but_empty_is_zombie`.
 
 ### Changed
 
@@ -268,7 +269,7 @@ Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-
 
 79 commit từ 1.0.3 — đợt flagship ổn định (sửa capture-log stall từng giết session IDE, chết accept-loop WinError-64, gia cố supervisor) cùng hai hệ thống con mới: Faithful Execution Layer và Normalizer Hub v2. Toàn bộ lane web-provider được tách hẳn sang app Chat2API độc lập, không còn dòng code nào ở đây.
 
-Đợt sau tag (2026-09-11, gộp vào 1.0.4): quan sát trực tiếp tab Usage — poller 2s theo chữ ký (giữ cửa sổ đang mở rộng), registry request đang chạy + dải hiển thị, và dọn sạch lane recompute usage cũ (SQLite ledger là nguồn sự thật duy nhất).
+Đợt sau tag (2026-09-11, gộp vào 1.0.4): quan sát trực tiếp tab Usage — poller 2s theo chữ ký (giữ cửa sổ đang mở rộng), registry request đang chạy + dải hiển thị, và dọn sạch lane recompute usage cũ (SQLite ledger là nguồn sự thật duy nhất). Đợt muộn (2026-09-11): sửa gợp key `reasoning` trần trong SSE cho model thinking kiểu Mimo, zombie 504 báo đúng out_tokens, kèm header định danh opencode Zen.
 
 ### Thêm Mới
 
@@ -295,6 +296,7 @@ Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-
 - **Điều khiển reasoning Hunyuan Hy4-preview**; chuẩn hóa dấu phân tách variant-ID (ID gạch → contract chấm); parity effort contract gpt-6-astra; thinking contract Fable/Mythos 5.1 (bộ khóa 456/456).
 - **base_url loopback: cảnh-báo-thay-vì-chặn; circuit-breaker từ stub → phủ thật.**
 - **Health gate idempotent của launcher** — `/health` không xác thực trên cả hai stack, try/catch riêng cho từng stack.
+- **Key `reasoning` trần trong SSE (Mimo qua Zen, phương ngữ OpenRouter)** — stream chỉ có reasoning bị lắp thành message rỗng rồi dính zombie 504, mỗi lần đốt một lượt combo fallback; giờ key `reasoning` trần được nhận ở cả bốn điểm trích xuất (TTFT, accumulator, classifier, non-stream relay) và gụp vào `reasoning_content`. Zombie 504 giờ báo đúng `out_tokens` đã tính tiền (trước ghi cứng 0 — case thực tế out=5/in=403, không relay delta nào); message rỗng dù đã tính tiền vẫn giứ 504 để combo tiếp tục. Kèm header định danh opencode Zen (`x-opencode-session`/`x-opencode-request`/`x-opencode-client`).
 
 ### Thay Đổi
 

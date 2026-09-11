@@ -87,4 +87,6 @@ data/
 .brain/qwen_*.tok.json
 .brain/*.json
 .brain/*.diff
+.brain/*.txt
+.brain/*.bak
 .brain/vulture_*.txt
