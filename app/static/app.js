@@ -4003,6 +4003,7 @@ function getModelsDropdownWithCombosHTML(selectedValue) {
 
 function renderActiveTab() {
     stopLogsLivePolling();  // halt live log streaming when navigating; re-armed on the Logs tab
+    stopUsageLivePolling(); // halt live usage streaming when navigating; re-armed on the Usage tab
     let activeNavItem = document.querySelector('.nav-item.active');
     if (!activeNavItem) {
         // Nothing active yet (startup) — activate the first nav item
@@ -4093,6 +4094,7 @@ function renderActiveTab() {
             <div class="topbar-subtitle">Token economics and cache savings</div>`;
         content.innerHTML = `<div id="usage-container">Loading...</div>`;
         loadUsageData();
+        startUsageLivePolling();
         
         if (visibilityEditBtn) visibilityEditBtn.style.display = 'none';
         if (visibilitySaveBtn) visibilitySaveBtn.style.display = 'none';
@@ -7637,6 +7639,90 @@ function stopLogsLivePolling() {
     if (logsLiveIntervalId) {
         clearInterval(logsLiveIntervalId);
         logsLiveIntervalId = null;
+    }
+}
+
+// ── Live usage streaming ──
+// The usage endpoint returns a JSON snapshot (page 1 of the current timeframe
+// plus a server-side summary). We poll it while the Usage tab is open so the
+// analytics, charts and table stay current as new requests flow through —
+// mirroring the Logs tab's live behaviour. Refreshes are skipped while the user
+// is editing a control inside the usage view (so the search box / date pickers
+// aren't clobbered) and when nothing has changed (signature match).
+//
+// Unlike the Logs view (which always re-fetches the newest 2000 rows), the usage
+// table is keyset-paginated and the user can expand it with "Load 500 more".
+// A refresh therefore re-fetches with limit = max(500, currentlyLoaded) so the
+// already-expanded window is refreshed in place rather than collapsed back to
+// page 1, and the user's render limit is preserved across the refresh.
+let usageLiveIntervalId = null;
+let _usageSignature = '';
+
+function _computeUsageSignature() {
+    const n = usageDataState.length;
+    const newest = n > 0 ? (usageDataState[0].timestamp || '') : '';
+    const oldest = n > 0 ? (usageDataState[n - 1].timestamp || '') : '';
+    return `${usageTotalCount}:${n}:${newest}:${oldest}`;
+}
+
+async function refreshUsageLive() {
+    if (!document.getElementById('usage-container')) { stopUsageLivePolling(); return; }
+    const ae = document.activeElement;
+    if (ae && ['INPUT', 'SELECT', 'TEXTAREA'].includes(ae.tagName) && ae.closest && ae.closest('#usage-container')) {
+        return;  // defer — user is editing a control inside the usage view
+    }
+    try {
+        const [start, end] = _usageEffectiveRange();
+        // Refresh the full currently-loaded window (preserve "Load 500 more" expansion),
+        // capped so a deep expansion can't blow up the payload.
+        const loadLimit = Math.min(5000, Math.max(500, usageDataState.length));
+        const params = new URLSearchParams({
+            start: start.toISOString(),
+            end: end.toISOString(),
+            limit: String(loadLimit),
+        });
+        if (usageFilterState.trim()) params.set('q', usageFilterState.trim());
+
+        const summaryParams = new URLSearchParams({
+            start: start.toISOString(),
+            end: end.toISOString(),
+            timeframe: usageTimeframe,
+        });
+        if (usageFilterState.trim()) summaryParams.set('q', usageFilterState.trim());
+
+        const [pageRes, summaryRes] = await Promise.all([
+            fetch('/api/observability/usage?' + params.toString()),
+            fetch('/api/observability/usage/summary?' + summaryParams.toString()),
+        ]);
+        if (!pageRes.ok) return;
+        const pageData = await pageRes.json();
+        const summaryData = await summaryRes.json();
+        const entries = Array.isArray(pageData) ? pageData : (pageData && pageData.entries ? pageData.entries : []);
+        const prevRenderLimit = usageRenderLimit; // preserve the user's expanded view
+        usageDataState = entries;
+        usageTotalCount = pageData.total || 0;
+        usagePaginationCursor = pageData.next_before_id !== undefined
+            ? { before_id: pageData.next_before_id, before_ts: pageData.next_before_ts }
+            : null;
+        usageSummaryState = summaryData || {};
+        const sig = _computeUsageSignature();
+        if (sig !== _usageSignature) {
+            _usageSignature = sig;
+            usageRenderLimit = prevRenderLimit; // keep expanded view alive across refresh
+            renderUsageTable();
+        }
+    } catch (e) { /* transient — next tick retries */ }
+}
+
+function startUsageLivePolling() {
+    stopUsageLivePolling();
+    usageLiveIntervalId = setInterval(refreshUsageLive, 2000);
+}
+
+function stopUsageLivePolling() {
+    if (usageLiveIntervalId) {
+        clearInterval(usageLiveIntervalId);
+        usageLiveIntervalId = null;
     }
 }
 
