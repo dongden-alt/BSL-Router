@@ -134,7 +134,7 @@ def test_inference_routes_precede_ccpa_catch_all_and_remain_local(monkeypatch):
     monkeypatch.setattr(main, "_process_chat_completion", local_process)
     monkeypatch.setattr(main, "_forward_antigravity_ccpa_control", forbidden_forward)
 
-    chat_paths = [route.path for route in main.app.routes]
+    chat_paths = [p for p in (getattr(route, "path", None) for route in main.app.routes) if p]
     assert chat_paths.index("/v1internal:generateContent") < chat_paths.index("/v1internal:{operation}")
     assert chat_paths.index("/v1internal:streamGenerateContent") < chat_paths.index("/v1internal:{operation}")
 

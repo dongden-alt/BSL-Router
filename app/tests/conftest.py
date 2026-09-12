@@ -19,13 +19,22 @@ plus the four log path constants). Two consequences made the suite unsafe:
    and failed in a full-suite run, where an earlier test had left a populated
    queue in the module global.
 
-The autouse fixture below fixes the class of bug rather than the two known
-instances: no test can reach the real log directory, and no test inherits queue
-state from another. Modules that need their own paths (e.g.
+A second member of the same class surfaced in the 2026-09-12 CI mirror: the
+in-flight usage registry (observability._INFLIGHT_REQUESTS) is also a module
+global. Any test that boots the lifespan and drives a request path can
+register an in-flight entry whose completion never fires (the fake upstream
+aborts mid-flight), and that entry then leaks into every later test file —
+test_usage_inflight's exact counts asserted against a registry already
+holding six foreign requests.
+
+The autouse fixture below fixes the class of bug rather than the known
+instances: no test can reach the real log directory, no test inherits queue
+state from another, and no test inherits in-flight registry state either. Modules that need their own paths (e.g.
 `test_capture_log_rotation.py`) still monkeypatch on top of this — their patch
 is applied later and therefore wins.
 """
 import os
+import shutil
 import sys
 
 import pytest
@@ -34,6 +43,36 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import app.main as main  # noqa: E402
 import app.mitm as mitm  # noqa: E402
+import app.observability as obs  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Fresh-checkout config seeding (CI green fix, 2026-09-12).
+#
+# config.yaml is gitignored (live credentials), so a fresh clone — every CI
+# runner included — has no config until the documented first-run copy. The
+# app refuses to boot without one (init_config raises FileNotFoundError with
+# setup guidance), which made every lifespan-booting test fail on CI while
+# passing on dev machines that already had a config. Seed config.yaml from
+# the tracked example for the duration of the session when it is absent,
+# then remove the seed afterwards so the checkout stays pristine. A real
+# developer config.yaml is never touched (seed only happens when absent).
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True, scope="session")
+def _seed_config_for_fresh_checkouts():
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    config_path = os.path.join(repo_root, "config.yaml")
+    example_path = os.path.join(repo_root, "config.example.yaml")
+    seeded = False
+    if not os.path.exists(config_path) and os.path.exists(example_path):
+        shutil.copyfile(example_path, config_path)
+        seeded = True
+    yield
+    if seeded:
+        try:
+            os.remove(config_path)
+        except OSError:
+            pass
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +95,12 @@ def _isolate_capture_logs(tmp_path, monkeypatch):
     # A queue left over from an earlier test would make queue-state assertions
     # order-dependent, so start every test from the unset default.
     monkeypatch.setattr(main, "_capture_queue", None)
+
+    # Same class of bug for the in-flight usage registry (2026-09-12 CI
+    # mirror): a request registered by an earlier test whose completion
+    # never fired survives in the module global and corrupts every later
+    # inflight assertion. Every test starts from an empty registry.
+    obs._INFLIGHT_REQUESTS.clear()
 
     yield
 
