@@ -90,3 +90,9 @@ data/
 .brain/*.txt
 .brain/*.bak
 .brain/vulture_*.txt
+
+# --- Local MCP config (machine-specific paths, never commit) ---
+# .mcp.json holds absolute local tooling and project paths that vary per
+# machine. Ship a template instead; each dev copies .mcp.json.example -> .mcp.json
+# with their own local paths. Mirrors the config.yaml / config.example.yaml pattern.
+.mcp.json

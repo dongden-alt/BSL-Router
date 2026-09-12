@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Pre-push secret verification gate for BSL Router.
     Run this BEFORE every git push origin <branch>.
@@ -41,7 +41,8 @@ $failures = @()
 # Excluded from the scan to avoid self-referential false positives.
 $selfExclude = @(
     'scripts/pre-push-check.ps1',
-    '.agents/AGENTS.md'
+    '.agents/AGENTS.md',
+    '.gitignore'
 )
 
 function Test-SelfExclude {
@@ -205,7 +206,8 @@ $requiredIgnored = @(
     'config.yaml',
     '.bsl_key',
     '.bsl_key.dpapi',
-    '.venv'
+    '.venv',
+    '.mcp.json'
 )
 
 $gate4Fails = @()
