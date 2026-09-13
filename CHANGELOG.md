@@ -476,3 +476,4 @@ Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-
   các model dạng `glm-5.3-anthropic` (chính các model compaction nhắm tới). Regex giờ
   neo theo token family đứng đầu; dòng khởi động (`[Compaction] eligibility: X/Y`)
   giúp quan sát được độ phủ.
+- **CI 3.11 flake fix** — relaxed the 5-10ms egress timing budgets (keepalive/connect keepalive/connect/body-stall) in the `test_builtin_timeout_error_*` regression tests to 0.05/0.05/0.3/0.1s, above GitHub shared-runner scheduling jitter; the deterministic TimeoutError is raised by the mock stream, so the budgets gate nothing the assertions depend on (run 34715722609, py3.11 leg).

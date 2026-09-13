@@ -606,10 +606,15 @@ def test_builtin_timeout_error_pre_content_triggers_combo_fallback(monkeypatch):
     monkeypatch.setattr(main, "get_breaker", lambda: _Breaker())
     monkeypatch.setattr(main.obs, "log_request_start", lambda **kwargs: starts.append(kwargs) or "req")
     monkeypatch.setattr(main.obs, "log_request", lambda **kwargs: ends.append(kwargs))
-    monkeypatch.setattr(main, "GEMINI_EGRESS_KEEPALIVE_INTERVAL", 0.005)
-    monkeypatch.setattr(main, "GEMINI_EGRESS_CONNECT_KEEPALIVE_INTERVAL", 0.005)
-    monkeypatch.setattr(main, "GEMINI_EGRESS_CONNECT_TIMEOUT", 0.03)
-    monkeypatch.setattr(main, "GEMINI_EGRESS_BODY_STALL_TIMEOUT", 0.01)
+    # CI FLAKE FIX (2026-09-13): 5-10ms budgets sit below GitHub shared-runner
+    # scheduling jitter; the guard's pump raced the mock's deterministic
+    # TimeoutError (run 34715722609, py3.11 leg). The timeout is raised by the
+    # mock stream, so these budgets gate nothing the assertions need — keep
+    # them above jitter. All I/O here is mocked and instant.
+    monkeypatch.setattr(main, "GEMINI_EGRESS_KEEPALIVE_INTERVAL", 0.05)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_CONNECT_KEEPALIVE_INTERVAL", 0.05)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_CONNECT_TIMEOUT", 0.3)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_BODY_STALL_TIMEOUT", 0.1)
 
     # Record process invocations to prove combo-retry fired.
     process_call_count = [0]
@@ -743,10 +748,15 @@ def test_builtin_timeout_error_post_content_emits_terminal_error_frame(monkeypat
     monkeypatch.setattr(main, "get_breaker", lambda: _Breaker())
     monkeypatch.setattr(main.obs, "log_request_start", lambda **kwargs: "req")
     monkeypatch.setattr(main.obs, "log_request", lambda **kwargs: None)
-    monkeypatch.setattr(main, "GEMINI_EGRESS_KEEPALIVE_INTERVAL", 0.005)
-    monkeypatch.setattr(main, "GEMINI_EGRESS_CONNECT_KEEPALIVE_INTERVAL", 0.005)
-    monkeypatch.setattr(main, "GEMINI_EGRESS_CONNECT_TIMEOUT", 0.03)
-    monkeypatch.setattr(main, "GEMINI_EGRESS_BODY_STALL_TIMEOUT", 0.01)
+    # CI FLAKE FIX (2026-09-13): 5-10ms budgets sit below GitHub shared-runner
+    # scheduling jitter; the guard's pump raced the mock's deterministic
+    # TimeoutError (run 34715722609, py3.11 leg). The timeout is raised by the
+    # mock stream, so these budgets gate nothing the assertions need — keep
+    # them above jitter. All I/O here is mocked and instant.
+    monkeypatch.setattr(main, "GEMINI_EGRESS_KEEPALIVE_INTERVAL", 0.05)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_CONNECT_KEEPALIVE_INTERVAL", 0.05)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_CONNECT_TIMEOUT", 0.3)
+    monkeypatch.setattr(main, "GEMINI_EGRESS_BODY_STALL_TIMEOUT", 0.1)
 
     async def _run():
         response = await main._process_chat_completion(

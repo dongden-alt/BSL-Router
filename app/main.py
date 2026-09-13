@@ -10190,6 +10190,27 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         except Exception:
                             pass
                         return
+                    # MIDSTREAM-DECLINE FIX (2026-09-13): a post-content
+                    # transport death caught by _transport_guarded can end with
+                    # _midstream_transport_fallback DECLINING to fail over
+                    # (emitted content forbids splicing a second stream into
+                    # the live parser). The failure is recorded in stats but
+                    # never raised, so _drain_err stays None and every guard
+                    # above misses — the pump used to fall through to a bare
+                    # [DONE], which the Gemini parser cannot end on (no
+                    # finishReason) → IDE hangs. Emit the SOLE terminal
+                    # contract instead, exactly like the OpenAI and
+                    # anthropic-to-OpenAI siblings.
+                    if (
+                        stats.get("error")
+                        and isinstance(stats.get("status"), int)
+                        and 400 <= stats["status"]
+                        and stats["status"] != 499
+                    ):
+                        from app.compat.adapters.gemini import sse_data as _g_sse_data, SSE_DONE as _G_SSE_DONE, terminal_error_frame as _g_term
+                        yield _g_sse_data(_g_term(stats["status"], str(stats["error"]), target_model))
+                        yield _G_SSE_DONE
+                        return
                     # BUG N: normal completion with thoughts still buffered
                     # (e.g. a thought-only stream whose usage reported tokens).
                     # Surface the held reasoning before [DONE] - the stream is
