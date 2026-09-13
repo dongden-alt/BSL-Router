@@ -7,6 +7,8 @@ Proves:
   4. Post-emission blocked pump does not retry/fallback
   5. Iterator aclose is called on expiry
   6. CancelledError propagates untouched
+  7. Own-timer timeout never escapes raw (20x race regression, Py3.11+ fix)
+  8. Upstream-raised TimeoutError escapes raw to the transport rail
 """
 
 from __future__ import annotations
@@ -229,3 +231,93 @@ def test_ladder_exhausted_returns_without_raise():
     assert chunks == []
     assert stats["error"] and "deadline_stall_attempt" in stats["error"]
     assert it.closed is True
+
+
+class _UpstreamTimeoutIter:
+    """Async iterator that raises a raw builtins.TimeoutError mid-stream,
+    simulating an upstream transport timeout raised inside the awaited body."""
+
+    def __init__(self):
+        self.count = 0
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        self.count += 1
+        if self.count <= 1:
+            return b"partial"
+        raise TimeoutError("upstream socket timeout (builtin)")
+
+    async def aclose(self):
+        self.closed = True
+
+
+def test_own_timer_never_escapes_raw_20x():
+    """Regression (2026-09-13 CI flake): the pump's own wall-clock timer must
+    NEVER escape as a raw TimeoutError on any Python version. 20 consecutive
+    blocked-iterator runs at a short deadline must all classify as the stall
+    path (_DeadlineRetryNeeded) — zero raw escapes."""
+    main = _reload_main()
+    from app.middleware.stream_guard import StreamEmissionState
+
+    escapes = 0
+    stalls = 0
+    for _ in range(20):
+        emit = StreamEmissionState()
+        stats = {"error": None, "status": 200, "out": 0}
+        it = _BlockedIter()
+
+        async def _run():
+            try:
+                async for _c in main._deadline_stall_pump(
+                    it, attempt=0, deadline_s=0.05, emit=emit, stats=stats
+                ):
+                    pass
+                return "returned"
+            except (TimeoutError, asyncio.TimeoutError):
+                return "escape"
+            except main._DeadlineRetryNeeded:
+                return "stall"
+
+        outcome = asyncio.run(_run())
+        if outcome == "escape":
+            escapes += 1
+        elif outcome == "stall":
+            stalls += 1
+
+    assert escapes == 0, f"raw TimeoutError escaped {escapes}/20 runs (race regression)"
+    assert stalls == 20
+
+
+def test_upstream_timeout_propagates_raw_not_stall():
+    """Upstream-raised TimeoutError must escape the pump RAW so
+    _transport_guarded routes it to the midstream transport rail. It must NOT
+    be classified as our own timer: no _DeadlineRetryNeeded, and
+    _deadline_stall_fire must not run (stats['error'] stays None). Covers the
+    Py3.11+ asyncio.TimeoutError aliasing regression that swallowed it into
+    the ladder path."""
+    main = _reload_main()
+    from app.middleware.stream_guard import StreamEmissionState
+
+    emit = StreamEmissionState()
+    stats = {"error": None, "status": 200, "out": 0}
+    it = _UpstreamTimeoutIter()
+
+    async def _run():
+        try:
+            async for _c in main._deadline_stall_pump(
+                it, attempt=0, deadline_s=5.0, emit=emit, stats=stats
+            ):
+                pass
+            return "returned"
+        except (TimeoutError, asyncio.TimeoutError):
+            return "raw_timeout"
+        except main._DeadlineRetryNeeded:
+            return "ladder"
+
+    outcome = asyncio.run(_run())
+    assert outcome == "raw_timeout"
+    assert it.closed is True
+    assert stats["error"] is None

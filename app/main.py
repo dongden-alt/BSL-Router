@@ -6417,6 +6417,21 @@ async def _deadline_stall_pump(
     loop = asyncio.get_running_loop()
     iterator = raw_iter.__aiter__()
     deadline = loop.time() + float(deadline_s)
+    # Deadline discrimination (Py3.11+ fix): asyncio.TimeoutError aliases
+    # builtin TimeoutError on 3.11+, so `except asyncio.TimeoutError` can no
+    # longer tell this pump's own timer from an upstream-raised timeout (the
+    # upstream raise was swallowed into the ladder/stall retry path).
+    # asyncio.timeout(...).expired() is a state flag — no clock re-read, no
+    # kernel-tick race (a clock-based `deadline - loop.time() > 0` variant
+    # misfired ~40% on Windows in the escape probe, 2026-09-13):
+    #   expired() is False -> upstream raised TimeoutError itself -> re-raise
+    #     RAW so _transport_guarded routes it to the midstream transport rail
+    #     (pre-3.11 classification contract).
+    #   expired() is True  -> our own wall clock fired -> stall/ladder path.
+    # On 3.10 asyncio.timeout does not exist and the two TimeoutError classes
+    # are distinct, so the legacy wait_for + except clause below keeps the
+    # exact original behavior.
+    _timeout_cm_factory = getattr(asyncio, "timeout", None)
     try:
         while True:
             remaining = deadline - loop.time()
@@ -6440,11 +6455,25 @@ async def _deadline_stall_pump(
                     bench_fn=bench_fn,
                 )
                 return
+            _tcm = None
             try:
-                chunk = await asyncio.wait_for(iterator.__anext__(), timeout=remaining)
+                if _timeout_cm_factory is not None:
+                    _tcm = _timeout_cm_factory(remaining)
+                    async with _tcm:
+                        chunk = await iterator.__anext__()
+                else:
+                    chunk = await asyncio.wait_for(
+                        iterator.__anext__(), timeout=remaining
+                    )
             except StopAsyncIteration:
                 return
             except asyncio.TimeoutError:
+                if (
+                    _timeout_cm_factory is not None
+                    and _tcm is not None
+                    and not _tcm.expired()
+                ):
+                    raise
                 await _deadline_stall_fire(
                     attempt=attempt,
                     deadline_s=deadline_s,
