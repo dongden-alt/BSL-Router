@@ -11,6 +11,8 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -375,6 +377,56 @@ def test_summary_timefilter():
     s_all = obs.query_usage_summary()
     s_filtered = obs.query_usage_summary(start="2026-08-15T00:00:00")
     assert s_filtered["totals"]["requests"] <= s_all["totals"]["requests"]
+
+
+# ── Timestamp parsing (regression: 7-8h-stale dashboard) ───────────────────
+
+def test_safe_ts_epoch_preserves_utc_offset():
+    """Z/offset timestamps must convert to epoch host-TZ-independently.
+
+    Regression: the parser used to strip "+00:00" right after inserting it
+    for "Z", so the aware datetime became naive and .timestamp()
+    reinterpreted it as LOCAL time — shifting query bounds by the host UTC
+    offset (7h) and excluding the newest rows from the dashboard.
+    """
+    # Exact true UTC epoch for 2026-09-15T15:23:00Z
+    assert obs._safe_ts_epoch("2026-09-15T15:23:00.000Z") == 1789485780.0
+    expected = datetime(2026, 9, 15, 15, 23, tzinfo=timezone.utc).timestamp()
+    assert obs._safe_ts_epoch("2026-09-15T15:23:00.000Z") == expected
+    # Explicit-offset forms land on the same instant
+    assert obs._safe_ts_epoch("2026-09-15T15:23:00.000+00:00") == expected
+    assert obs._safe_ts_epoch("2026-09-15T22:23:00.000+07:00") == expected
+
+
+def test_safe_ts_epoch_naive_stays_local():
+    """Naive strings keep the writer's convention: interpreted as local time."""
+    naive_str = "2026-09-15T15:23:00.000"
+    expected = datetime(2026, 9, 15, 15, 23).timestamp()  # naive -> local
+    assert obs._safe_ts_epoch(naive_str) == expected
+
+
+def test_safe_ts_epoch_empty_invalid_fallback():
+    """Empty/invalid input must still fall back to the current time."""
+    before = time.time()
+    for bad in ("", None, "not-a-timestamp"):
+        got = obs._safe_ts_epoch(bad)
+        assert before <= got <= time.time() + 1
+
+
+def test_utc_z_end_bound_includes_recent_rows(tmp_usage_db):
+    """A UI end-bound in Z form must include rows written moments ago.
+
+    End-to-end regression for the stale-dashboard symptom: with the buggy
+    parser, a "now" Z bound parsed 7h into the past (naive-as-local), which
+    excluded the just-written row from the read window.
+    """
+    entry = _make_entry(0)
+    entry["timestamp"] = datetime.now().isoformat()  # naive local (writer convention)
+    obs.append_usage_event(entry)
+    end_z = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    result = obs.query_usage_events(end=end_z, limit=10)
+    assert result["total"] == 1
+    assert result["entries"][0]["provider"] == "openai"
 
 
 # ── Slow test ──────────────────────────────────────────────────────────────

@@ -283,7 +283,11 @@ def _migrate_jsonl_once():
                     try:
                         ts_raw = entry.get("timestamp", "")
                         if ts_raw:
-                            dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00").replace("+00:00", ""))
+                            # Keep the offset: aware datetimes convert to
+                            # epoch correctly on any host TZ, while naive
+                            # ones keep the local-time convention used by
+                            # the writer.
+                            dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
                         else:
                             dt = datetime.now()
                         epoch = dt.timestamp()
@@ -419,11 +423,20 @@ def _apply_fel_context(entry: dict, fel_ctx) -> None:
 
 
 def _safe_ts_epoch(ts_str):
-    """Convert an ISO timestamp string to a POSIX float epoch."""
+    """Convert an ISO timestamp string to a POSIX float epoch.
+
+    The offset must be PRESERVED: an aware datetime converts to epoch
+    correctly on any host TZ. The old parser stripped "+00:00" right after
+    inserting it for "Z", so the datetime became naive and .timestamp()
+    reinterpreted UTC strings as LOCAL time — shifting query bounds back by
+    the host's UTC offset (7h here) and hiding the newest rows. Naive
+    strings (log_request writes datetime.now().isoformat()) stay naive, so
+    .timestamp() keeps the existing local-time convention for written data.
+    """
     if not ts_str:
         return time.time()
     try:
-        return datetime.fromisoformat(ts_str.replace("Z", "+00:00").replace("+00:00", "")).timestamp()
+        return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
     except (ValueError, TypeError):
         return time.time()
 
