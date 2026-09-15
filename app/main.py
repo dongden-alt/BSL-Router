@@ -819,7 +819,7 @@ PROVIDER_DEFAULT_URLS = {
     'cerebras':             'https://api.cerebras.ai/v1',
     'chutes':               'https://llm.chutes.ai/v1',
     'cohere':               'https://api.cohere.ai/v1',
-    'commandcode':          'https://api.commandcode.ai/alpha',
+    'commandcode':          'https://api.commandcode.ai/provider/v1',
     'deepseek':             'https://api.deepseek.com',
     'fireworks':            'https://api.fireworks.ai/inference/v1',
     'glm':                  'https://api.z.ai/api/anthropic/v1',
