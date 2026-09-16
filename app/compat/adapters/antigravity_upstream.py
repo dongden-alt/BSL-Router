@@ -382,6 +382,15 @@ def strip_thought_signature_keys(payload: Dict[str, Any]) -> Dict[str, Any]:
             for tc in msg.get("tool_calls") or []:
                 if isinstance(tc, dict):
                     tc.pop("thought_signature", None)
+            # Anthropic wire shape: after normalize_to_anthropic re-emit, the
+            # carrier lives on tool_use content blocks. Strip it there too so
+            # anthropic-format non-antigravity lanes get the same hygiene.
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        block.pop("thought_signature", None)
+                        block.pop("thoughtSignature", None)
         return payload
     except Exception:
         return payload

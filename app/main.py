@@ -305,6 +305,16 @@ def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dic
         headers["OpenAI-Beta"] = "codex-1"
         headers["originator"] = "codex"
 
+    # CommandCode (commandcode.ai): the /alpha/generate lane gates on CLI
+    # identity headers. Without x-command-code-version the edge rejects with
+    # 403 version errors (live-verified 2026-09-17, cc_upstream_probe.py).
+    if provider_name == 'commandcode':
+        import uuid as _uuid
+        headers["x-command-code-version"] = "0.25.7"
+        headers["x-cli-environment"] = "cli"
+        headers["x-session-id"] = str(_uuid.uuid4())
+        headers["Accept"] = "text/event-stream"
+
 
     # OpenCode Zen (opencode.ai/zen): session/user/client identity headers.
     # Zen's edge 400s "MissingSessionID" when x-opencode-session is absent —
@@ -819,7 +829,7 @@ PROVIDER_DEFAULT_URLS = {
     'cerebras':             'https://api.cerebras.ai/v1',
     'chutes':               'https://llm.chutes.ai/v1',
     'cohere':               'https://api.cohere.ai/v1',
-    'commandcode':          'https://api.commandcode.ai/provider/v1',
+    'commandcode':          'https://api.commandcode.ai',
     'deepseek':             'https://api.deepseek.com',
     'fireworks':            'https://api.fireworks.ai/inference/v1',
     'glm':                  'https://api.z.ai/api/anthropic/v1',
@@ -7845,6 +7855,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         _upstream_url = f"{resolved_base_url}/generateAssistantResponse"
     elif provider_name == 'codex':
         _upstream_url = f"{resolved_base_url}/responses"
+    elif provider_name == 'commandcode':
+        _upstream_url = f"{resolved_base_url}/alpha/generate"
     elif provider_name in ('ollama', 'ollama-local'):
         _upstream_url = f"{resolved_base_url}/chat"
     elif _is_anthropic_fmt:
@@ -7878,6 +7890,19 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             wrap_antigravity_upstream_client,
         )
         client = wrap_antigravity_upstream_client(client, target_model)
+    elif provider_name == 'commandcode':
+        # CommandCode alpha lane (2026-09-17): /alpha/generate speaks the
+        # Vercel AI SDK Data Stream Protocol, not OpenAI chat-completions.
+        # Wrap the standard egress client so payloads are forged into the
+        # {threadId, memory, config, params} envelope and Vercel SSE frames
+        # are translated back to OpenAI chunks in-place. Uses the regular
+        # proxy-aware client (api.commandcode.ai is a plain public host).
+        from app.compat.adapters.commandcode_upstream import (
+            wrap_commandcode_upstream_client,
+        )
+        client = wrap_commandcode_upstream_client(
+            _get_client_for_proxy(_egress_proxy), target_model
+        )
     elif provider_config.get("ssl_verify", True) is False:
         # Provider uses a self-signed cert (e.g. api.iamhc.cn, api.hcnsec.cn).
         # Disable TLS verification for this provider only.

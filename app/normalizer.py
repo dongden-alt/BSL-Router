@@ -118,14 +118,24 @@ class UniversalNormalizer:
                     if btype == "text":
                         text_parts.append(block.get("text", ""))
                     elif btype == "tool_use":
-                        tool_calls.append({
+                        tc: Dict[str, Any] = {
                             "id": block.get("id", ""),
                             "type": "function",
                             "function": {
                                 "name": block.get("name", ""),
                                 "arguments": json.dumps(block.get("input", {}))
                             }
-                        })
+                        }
+                        # thought_signature preservation (client=anthropic path):
+                        # carry the signature inline on the tool_call dict so it
+                        # survives the internal OpenAI round-trip; egress re-emits
+                        # it on the rebuilt tool_use block. Mirrors the Gemini
+                        # ingress carrier (gemini.py). extra="allow" on ToolCall
+                        # lets it ride Pydantic validation.
+                        _sig = block.get("thought_signature") or block.get("thoughtSignature")
+                        if isinstance(_sig, str) and _sig:
+                            tc["thought_signature"] = _sig
+                        tool_calls.append(tc)
                     # thinking blocks are intentionally skipped here —
                     # reasoning state is handled by the Thinking Policy Engine,
                     # not by the message converter.
@@ -411,12 +421,28 @@ class UniversalNormalizer:
                             p for p in content if isinstance(p, dict) and p.get("type") in ("text", "image")
                         )
                     for tool in msg.tool_calls:
-                        anthropic_msg["content"].append({
+                        tool_use_block: Dict[str, Any] = {
                             "type": "tool_use",
                             "id": tool.id,
                             "name": tool.function.name,
                             "input": json.loads(tool.function.arguments) if isinstance(tool.function.arguments, str) else tool.function.arguments
-                        })
+                        }
+                        # thought_signature re-emit (client=anthropic round-trip):
+                        # the ingress converter carried the signature inline on
+                        # the tool_call dict; extra="allow" on ToolCall let it
+                        # survive validation into a Pydantic extra. Re-emit it on
+                        # the rebuilt tool_use block so upstreams that validate
+                        # echoed signatures receive them. Non-antigravity lanes
+                        # still strip it at the hygiene gate (main.py ->
+                        # strip_thought_signature_keys), so strict providers
+                        # never see the carrier.
+                        _sig = getattr(tool, "thought_signature", None)
+                        if _sig is None:
+                            _extra = getattr(tool, "model_extra", None) or {}
+                            _sig = _extra.get("thought_signature")
+                        if isinstance(_sig, str) and _sig:
+                            tool_use_block["thought_signature"] = _sig
+                        anthropic_msg["content"].append(tool_use_block)
                 anthropic_messages.append(anthropic_msg)
 
         payload: Dict[str, Any] = {

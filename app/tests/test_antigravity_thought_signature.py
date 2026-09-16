@@ -42,6 +42,7 @@ from app.compat.adapters.antigravity_upstream import (
     strip_thought_signature_keys,
 )
 from app.models import ChatCompletionRequest, ToolCall, ToolCallFunction
+from app.normalizer import UniversalNormalizer
 
 SIG = "c2lnbmVkLXRvb2w="  # fake signature payload
 
@@ -445,3 +446,95 @@ def test_sig10_ingress_keeps_json_schema_markers():
     assert out["properties"]["maybe"]["type"] == ["string", "null"]  # draft-07
     assert out["properties"]["maybe"]["title"] == "kept"
 
+
+# ── SIG12: client=anthropic round-trip preservation (2026-09-17) ─────────────
+# Anthropic ingress (normalize_to_openai_from_anthropic) carries the signature
+# inline on the OpenAI tool_call dict; extra="allow" on ToolCall keeps it
+# through Pydantic validation; egress (normalize_to_anthropic) re-emits it on
+# the rebuilt tool_use block. This is the chain Claude Code drives.
+
+def test_sig12_anthropic_wire_signature_survives_openai_roundtrip():
+    body = {
+        "model": "claude-opus-5",
+        "max_tokens": 64,
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "let me check"},
+                {"type": "tool_use", "id": "toolu_1", "name": "get_weather",
+                 "input": {"city": "NYC"}, "thought_signature": SIG},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "sunny"},
+            ]},
+        ],
+    }
+    # Ingress: anthropic -> openai body (dict level).
+    openai_body = UniversalNormalizer.normalize_to_openai_from_anthropic(body)
+    asst = next(m for m in openai_body["messages"] if m.get("tool_calls"))
+    assert asst["tool_calls"][0]["thought_signature"] == SIG
+
+    # Internal round-trip: Pydantic validation must keep the carrier.
+    req = ChatCompletionRequest.model_validate(openai_body)
+    # Egress: openai -> anthropic payload re-emits on tool_use block.
+    anth = UniversalNormalizer.normalize_to_anthropic(req)
+    asst2 = next(m for m in anth["messages"] if m["role"] == "assistant")
+    tu = next(b for b in asst2["content"] if b.get("type") == "tool_use")
+    assert tu["id"] == "toolu_1"
+    assert tu["thought_signature"] == SIG
+
+
+def test_sig12b_unsigned_tool_use_mints_no_carrier():
+    """Unsigned tool_use blocks must not mint empty carriers at any stage."""
+    body = {
+        "model": "claude-opus-5",
+        "max_tokens": 64,
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "toolu_2", "name": "t", "input": {}},
+            ]},
+        ],
+    }
+    openai_body = UniversalNormalizer.normalize_to_openai_from_anthropic(body)
+    tc = next(m for m in openai_body["messages"] if m.get("tool_calls"))["tool_calls"][0]
+    assert "thought_signature" not in tc
+
+    req = ChatCompletionRequest.model_validate(openai_body)
+    anth = UniversalNormalizer.normalize_to_anthropic(req)
+    tu = next(b for m in anth["messages"] for b in m["content"]
+              if isinstance(b, dict) and b.get("type") == "tool_use")
+    assert "thought_signature" not in tu
+
+
+# ── SIG13: anthropic-wire strip hygiene (2026-09-17) ─────────────────────────
+
+def test_sig13_strip_covers_anthropic_tool_use_blocks():
+    """After normalize_to_anthropic re-emit, the carrier sits on tool_use
+    content blocks; the hygiene gate must strip it there for non-antigravity
+    anthropic lanes (GLM etc.), fail-open as before."""
+    payload = {
+        "model": "glm-x",
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "checking"},
+                {"type": "tool_use", "id": "toolu_1", "name": "get_weather",
+                 "input": {"city": "NYC"}, "thought_signature": SIG},
+            ]},
+        ],
+    }
+    cleaned = strip_thought_signature_keys(payload)
+    tu = next(b for m in cleaned["messages"] for b in m["content"]
+              if isinstance(b, dict) and b.get("type") == "tool_use")
+    assert "thought_signature" not in tu
+    assert tu["name"] == "get_weather"  # rest untouched
+    # camelCase variant also stripped (Gemini-style ingress on anthropic wire).
+    payload2 = {
+        "messages": [{"role": "assistant", "content": [
+            {"type": "tool_use", "id": "x", "name": "t", "input": {},
+             "thoughtSignature": SIG},
+        ]}],
+    }
+    cleaned2 = strip_thought_signature_keys(payload2)
+    tu2 = cleaned2["messages"][0]["content"][0]
+    assert "thoughtSignature" not in tu2

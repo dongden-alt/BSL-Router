@@ -250,7 +250,7 @@ const KNOWN_PROVIDERS = {
         // Other majors
         { id: 'groq',        name: 'Groq',                format: 'openai',    url: 'https://api.groq.com/openai/v1' },
         { id: 'mistral',     name: 'Mistral',             format: 'openai',    url: 'https://api.mistral.ai/v1' },
-        { id: 'commandcode', name: 'Command Code',        format: 'openai',    url: 'https://api.commandcode.ai/provider/v1' },
+        { id: 'commandcode', name: 'Command Code',        format: 'openai',    url: 'https://api.commandcode.ai' },
         { id: 'xiaomi-mimo', name: 'Xiaomi MiMo',         format: 'openai',    url: 'https://api.xiaomimimo.com/v1' },
         { id: 'opencode-go', name: 'OpenCode Go',         format: 'openai',    url: 'https://opencode.ai/zen/go/v1' },
         // Local inference
