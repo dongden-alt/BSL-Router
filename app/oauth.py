@@ -1064,22 +1064,42 @@ def _save_connection(provider: str, flow_type: str, access_token: str, refresh_t
         "auth_method": flow_type, "provider_data": provider_data, "enabled": True,
         "imported_at": datetime.now(timezone.utc).isoformat(),
     }
-    # FIX 2026-08-28 (duplicate OAuth keys): upsert by email instead of
-    # blind-append. Every re-auth of the same account used to add a new
-    # connection (user observed 2x Kiro, 4x Grok tokens for one identity).
-    # Replace-in-place keeps pool order and avoids manual cleanup.
     _replaced_at = -1
     _prev_snapshot = None
+    _removed_dups = []  # list[(index, conn)] removed as duplicates — restored on persist failure
     if email:
-        for _i, _c in enumerate(connections):
-            if isinstance(_c, dict) and _c.get("email") == email:
-                # Preserve the original id when replacing so external
-                # references (breaker state, rotation) stay coherent.
-                _prev_snapshot = copy.deepcopy(_c)
-                connection["id"] = _c.get("id") or connection_id
-                connections[_i] = connection
-                _replaced_at = _i
-                break
+        # FIX 2026-09-16 (duplicate OAuth keys, round 2): the 2026-08-28
+        # upsert only replaced the FIRST email match and broke, so configs that
+        # already had duplicate rows (e.g. antigravity 31x same id, grok-cli
+        # 16x) kept every stale duplicate forever — only row[0] refreshed while
+        # round-robin picked the rest and served 401s. Now: collect ALL matches,
+        # keep the freshest by expires_at as the upsert target, remove the rest.
+        _matches = [
+            _i for _i, _c in enumerate(connections)
+            if isinstance(_c, dict) and _c.get("email") == email
+        ]
+        if _matches:
+            def _exp_key(_i):
+                _v = connections[_i].get("expires_at")
+                return _v if isinstance(_v, str) else ""
+            _keep = max(_matches, key=_exp_key)
+            # Preserve the original id when replacing so external
+            # references (breaker state, rotation) stay coherent.
+            _prev_snapshot = copy.deepcopy(connections[_keep])
+            connection["id"] = connections[_keep].get("id") or connection_id
+            for _i in reversed(_matches):
+                if _i == _keep:
+                    connections[_i] = connection
+                    _replaced_at = _i
+                else:
+                    _removed_dups.append((_i, connections[_i]))
+                    del connections[_i]
+            if _removed_dups:
+                print(
+                    f"[OAuth] Collapsed {len(_removed_dups)} duplicate "
+                    f"{provider} connection(s) for {email} during save",
+                    flush=True,
+                )
     if _replaced_at < 0:
         connections.append(connection)
     try:
@@ -1088,8 +1108,11 @@ def _save_connection(provider: str, flow_type: str, access_token: str, refresh_t
         if _replaced_at < 0:
             connections.pop()
         elif _prev_snapshot is not None:
-            # Restore the replaced snapshot entry so memory matches disk.
+            # Restore the replaced snapshot entry AND any removed duplicates so
+            # memory matches disk exactly after a failed persist.
             connections[_replaced_at] = _prev_snapshot
+            for _i, _c in sorted(_removed_dups):
+                connections.insert(_i, _c)
         print(f"[OAuth] failed to persist {provider} connection: {exc}", flush=True)
         raise HTTPException(status_code=500, detail="Could not save OAuth connection to config.yaml") from exc
     return {"id": connection["id"], "provider": provider, "email": email, "displayName": display_name or email or f"{provider} Account"}
@@ -2130,7 +2153,7 @@ def _update_connection_token(
         return
     provider_config = config.get("providers", {}).get(provider, {})
     connections = provider_config.get("connections", [])
-    updated = False
+    updated = 0
     for conn in connections:
         if isinstance(conn, dict) and conn.get("id") == connection_id:
             conn["api_key"] = new_access_token
@@ -2144,10 +2167,21 @@ def _update_connection_token(
                     pd.update(extra_provider_data)
                 else:
                     conn["provider_data"] = extra_provider_data
-            updated = True
-            break
+            updated += 1
     if not updated:
         return  # Connection vanished (deleted elsewhere); nothing to persist.
+    if updated > 1:
+        # FIX 2026-09-16 (duplicate OAuth keys, round 2): configs can carry N
+        # rows sharing one connection id (antigravity had 31). Refreshing only
+        # the first left the rest stale, so round-robin picked them and served
+        # 401s. Refresh every matching row so any pick is valid. The load-time
+        # dedup migration and _save_connection collapse remove the dups; this
+        # is the safety net while they still exist.
+        print(
+            f"[OAuth] Refreshed {updated} duplicate {provider} connection(s) "
+            f"sharing id {connection_id}",
+            flush=True,
+        )
     try:
         main_app._replace_runtime_config(config)
     except OSError as exc:
