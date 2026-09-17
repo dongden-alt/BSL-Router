@@ -40,13 +40,22 @@ class TestEnvelope:
         assert "threadId" in env
         assert env["memory"] == ""
         assert "config" in env
-        assert env["config"]["environment"] == "cli"
+        assert env["config"]["environment"] == "win32"
         params = env["params"]
         assert params["model"] == "deepseek/deepseek-v4-flash"
         assert params["stream"] is True
         assert params["max_tokens"] == 1024
         assert params["temperature"] == 0.7
         assert len(params["messages"]) == 1
+
+    def test_config_block_types_are_arrays(self):
+        """Upstream validator 400s on string structure/recentCommits."""
+        env = openai_to_commandcode_envelope({"model": "m", "messages": []}, "m")
+        cfg = env["config"]
+        assert cfg["environment"] == "win32"
+        assert isinstance(cfg["structure"], list)
+        assert isinstance(cfg["recentCommits"], list)
+        assert cfg["isGitRepo"] is True
 
     def test_optional_params_omitted_when_absent(self):
         payload = {"model": "m", "messages": []}
@@ -57,9 +66,14 @@ class TestEnvelope:
         assert "top_p" not in params
         assert "stop" not in params
 
-    def test_stream_defaults_false(self):
+    def test_stream_forced_true_on_wire(self):
+        """CLI-only lane fingerprints stream:false as proxying — always stream."""
         env = openai_to_commandcode_envelope({"model": "m", "messages": []}, "m")
-        assert env["params"]["stream"] is False
+        assert env["params"]["stream"] is True
+        env2 = openai_to_commandcode_envelope(
+            {"model": "m", "messages": [], "stream": False}, "m"
+        )
+        assert env2["params"]["stream"] is True
 
 
 # ── Message normalization ────────────────────────────────────────────────────

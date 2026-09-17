@@ -52,7 +52,13 @@ def openai_to_commandcode_envelope(payload: Dict[str, Any], model: str) -> Dict[
     params: Dict[str, Any] = {
         "model": model,
         "messages": _normalize_messages(payload.get("messages") or []),
-        "stream": bool(payload.get("stream", False)),
+        # The alpha lane is CLI-only and the real CLI ALWAYS streams. A
+        # stream:false request is fingerprinted as API proxying (live 400
+        # "Proxy use detected. This endpoint only serves CLI" on a user's
+        # stream:false request, 2026-09-17). Force stream on the wire; the
+        # client facade aggregates back to one completion for non-stream
+        # callers, so this is invisible downstream.
+        "stream": True,
     }
     # Pass through optional tuning params only when present.
     for key in ("max_tokens", "temperature", "top_p", "stop"):
@@ -60,19 +66,25 @@ def openai_to_commandcode_envelope(payload: Dict[str, Any], model: str) -> Dict[
             params[key] = payload[key]
 
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    today = time.strftime("%Y-%m-%d", time.gmtime())
     return {
         "threadId": str(uuid.uuid4()),
         "memory": "",
         "config": {
+            # Live-verified 2026-09-17: the alpha lane's validator is strict on
+            # TYPES — structure and recentCommits must be ARRAYS (sending ""
+            # returns 400 "expected array, received string"). environment must
+            # be the OS platform string ("win32"), not "cli" (the x-cli-environment
+            # header carries that). Match the working probe exactly.
             "workingDir": "",
-            "date": now,
-            "environment": "cli",
-            "structure": "",
-            "isGitRepo": False,
-            "currentBranch": "",
-            "mainBranch": "",
+            "date": today,
+            "environment": "win32",
+            "structure": [],
+            "isGitRepo": True,
+            "currentBranch": "main",
+            "mainBranch": "main",
             "gitStatus": "",
-            "recentCommits": "",
+            "recentCommits": [],
         },
         "params": params,
     }

@@ -854,13 +854,126 @@ PROVIDER_DEFAULT_URLS = {
     'xiaomi-tokenplan':     'https://token-plan-sgp.xiaomimimo.com/v1',
 }
 
+def _dedup_conn_freshness(conn):
+    """Higher = fresher. expires_at / imported_at ISO strings sort lexicographically."""
+    exp = conn.get("expires_at")
+    if isinstance(exp, str) and exp:
+        return (2, exp)
+    imp = conn.get("imported_at")
+    if isinstance(imp, str) and imp:
+        return (1, imp)
+    return (0, "")
+
+
+def _dedup_connection_rows(provider_cfg):
+    """Collapse duplicate connection rows in-place. Returns number removed.
+
+    Duplicates = rows sharing the same `id`, OR the same `email` when
+    token_type == "oauth" (antigravity re-imports minted 32 rows for one
+    account 2026-09-17). Keep the freshest row by expires_at/imported_at and
+    remap model connection_indexes that pointed at removed rows.
+    """
+    conns = provider_cfg.get("connections")
+    if not isinstance(conns, list) or len(conns) < 2:
+        return 0
+
+    keep_of_group = {}   # group_key -> kept original index
+    remap = {}           # removed original index -> kept original index
+    group_of = {}        # kept original index -> list of its group keys
+
+    for i, c in enumerate(conns):
+        if not isinstance(c, dict):
+            continue
+        keys = []
+        cid = c.get("id")
+        if isinstance(cid, str) and cid:
+            keys.append(("id", cid))
+        if c.get("token_type") == "oauth":
+            em = c.get("email")
+            if isinstance(em, str) and em:
+                keys.append(("email", em))
+        if not keys:
+            continue
+        target = None
+        for k in keys:
+            if k in keep_of_group:
+                target = keep_of_group[k]
+                break
+        if target is None:
+            for k in keys:
+                keep_of_group[k] = i
+            group_of[i] = keys
+        else:
+            if _dedup_conn_freshness(c) > _dedup_conn_freshness(conns[target]):
+                remap[target] = i
+                old_keys = group_of.pop(target, [])
+                for k in list(keys) + list(old_keys):
+                    keep_of_group[k] = i
+                group_of[i] = list(set(keys) | set(old_keys))
+            else:
+                remap[i] = target
+
+    if not remap:
+        return 0
+
+    removed = set(remap.keys())
+    old_to_new = {}
+    new_conns = []
+    for i, c in enumerate(conns):
+        if i in removed:
+            continue
+        old_to_new[i] = len(new_conns)
+        new_conns.append(c)
+
+    final_remap = {}
+    for old_i, kept_old_i in remap.items():
+        seen = set()
+        k = kept_old_i
+        while k in remap and k not in seen:
+            seen.add(k)
+            k = remap[k]
+        if k in old_to_new:
+            final_remap[old_i] = old_to_new[k]
+
+    provider_cfg["connections"] = new_conns
+
+    for m in provider_cfg.get("models", []) or []:
+        if not isinstance(m, dict):
+            continue
+        ci = m.get("connection_indexes")
+        if not isinstance(ci, list):
+            continue
+        new_ci = []
+        for idx in ci:
+            if not isinstance(idx, int):
+                continue
+            if idx in final_remap:
+                new_ci.append(final_remap[idx])
+            elif idx in old_to_new:
+                new_ci.append(old_to_new[idx])
+        seen = set()
+        m["connection_indexes"] = [x for x in new_ci if not (x in seen or seen.add(x))]
+
+    return len(removed)
+
+
 def load_config():
     init_config()
     config = cs_get_config()
+    # Load-time dedup (2026-09-17): stale on-disk duplicate connection rows
+    # (same id, or same oauth email) survive the save-path dedup because that
+    # only fires on NEW OAuth logins. Collapse them here on every boot and mark
+    # dirty so the cleaned state is persisted below.
+    _dirty = False
+    for _pid, _pcfg in (config.get("providers") or {}).items():
+        if isinstance(_pcfg, dict):
+            _removed = _dedup_connection_rows(_pcfg)
+            if _removed:
+                print(f"[Dedup] {_pid}: collapsed {_removed} duplicate connection row(s)", flush=True)
+                _dirty = True
     # Multi-key fix (2026-08-22): models discovered before the fix are stuck at
     # connection_indexes:[0]. Expand them to all enabled connections on load so
     # existing providers don't need manual re-discovery or config edits.
-    _dirty = False
     for _pid, _pcfg in (config.get("providers") or {}).items():
         if not isinstance(_pcfg, dict):
             continue
