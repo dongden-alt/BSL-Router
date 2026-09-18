@@ -603,6 +603,43 @@ async def _sse_keepalive_pre_first_chunk(
                 pass
 
 
+async def _fel_observe_stream(source, *, model: str = "", provider: str = ""):
+    """Yield chunks unchanged while accumulating a copy for analytics.
+
+    Each chunk is yielded as soon as it arrives, so time-to-first-token is
+    unaffected. If the observer has any trouble it is dropped and the stream
+    continues normally.
+    """
+    obs = None
+    try:
+        from app.middleware.fel_wiring import FelStreamObserver
+        obs = FelStreamObserver(model=model, provider=provider)
+    except Exception:
+        obs = None
+
+    try:
+        async for chunk in source:
+            if obs is not None:
+                try:
+                    obs.observe(chunk if isinstance(chunk, bytes)
+                                else str(chunk).encode("utf-8", "ignore"))
+                except Exception:
+                    obs = None
+            yield chunk
+    finally:
+        if obs is not None:
+            try:
+                obs.finalize()
+            except Exception:
+                pass
+        aclose = getattr(source, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:
+                pass
+
+
 _RECOVERABLE = {400, 401, 403, 404, 405, 408, 409, 413, 422, 429, 500, 502, 503, 504, 524, 525, 526}  # HTTP status codes that trigger combo/chain advance
 
 _BLACKSAND_MODEL_ALIASES = {
@@ -11078,6 +11115,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             _ka_body = _sse_keepalive_pre_first_chunk(
                 _ka_body, interval_s=_sse_ka_iv, fmt=_sse_ka_fmt,
             )
+        _ka_body = _fel_observe_stream(_ka_body, model=target_model, provider=provider_name)
         return StreamingResponse(_ka_body, media_type="text/event-stream")
     else:
         try:

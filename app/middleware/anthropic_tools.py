@@ -19,6 +19,15 @@ Safety contract (mirrors app/middleware/glm_tools.py):
      config ``tools.anthropic_tool_repair: false`` (default enabled).
   5. Bounded memory: per-block cap (256 KB default) — beyond it the block
      degrades to verbatim passthrough; never buffer unbounded.
+  6. Orphan-block guard (2026-09-18): a content_block_stop/delta naming an
+     index whose content_block_start never appeared ("orphan frame", captured
+     in the wild from GLM-5.x Anthropic channels) is invalid under the
+     Anthropic streaming contract in every case and crashes Claude Code with
+     "Content block not found" (CBNF), killing the whole session. Orphan
+     stops and orphan deltas are dropped; an orphan text_delta/thinking_delta
+     gets a synthetic content_block_start so its content survives. Healthy
+     streams are unaffected (every opened index closes normally → no frame
+     is ever dropped or synthesized, output stays byte-identical).
 """
 
 import json
@@ -257,6 +266,13 @@ class AnthropicStreamToolGuard:
         self._held: Dict[int, Dict[str, Any]] = {}
         # Indices flushed due to the memory cap — never held again.
         self._capped: set = set()
+        # Orphan-block guard: content_block indices for which a
+        # content_block_start has been seen (any block type, held or passed
+        # through), indices properly closed by a content_block_stop, and
+        # indices already warned about (exactly one warning line per index).
+        self._opened: set = set()
+        self._closed: set = set()
+        self._orphan_warned: set = set()
 
     # -- public API ----------------------------------------------------------
 
@@ -329,6 +345,17 @@ class AnthropicStreamToolGuard:
     def _handle_event(self, group: List[bytes]) -> List[bytes]:
         # Byte-exact reconstruction: every split line consumed one '\n'.
         event_bytes = b"".join(line + b"\n" for line in group)
+        # Orphan-block guard (active path only — the inactive branch of
+        # feed()/flush() returns before ever reaching _handle_event, so an
+        # inactive guard parses nothing and changes no bytes). None → normal
+        # handling proceeds unchanged; a list only when the frame was fully
+        # handled (dropped or rewritten) by the guard.
+        try:
+            guarded = self._orphan_block_guard(event_bytes, group)
+            if guarded is not None:
+                return guarded
+        except Exception:
+            pass  # fail-open: fall through to today's behavior verbatim
         # Cheap prefilter — do NOT json-parse the hot path (every text/thinking
         # delta must pass through this class with zero parsing overhead).
         if not (
@@ -436,6 +463,90 @@ class AnthropicStreamToolGuard:
             return [event_bytes]
 
         return [event_bytes]
+
+    # -- orphan-block guard ---------------------------------------------------
+
+    def _orphan_block_guard(
+        self, event_bytes: bytes, group: List[bytes]
+    ) -> Optional[List[bytes]]:
+        """Drop/rewrite content_block frames naming an index never opened.
+
+        A ``content_block_stop`` for an index whose ``content_block_start``
+        was never emitted (orphan frame) is invalid under the Anthropic
+        streaming contract in every case: the client looks the block up in
+        its state map, finds nothing, and aborts the session ("Content block
+        not found" / CBNF). Dropping is a no-op for the client; forwarding
+        crashes it; synthesizing a start+stop pair would inject a phantom
+        block into the assistant turn. The same defect class covers deltas
+        that name a never-opened index.
+
+        Returns None so normal handling proceeds unchanged; returns a list
+        (possibly empty = frame dropped) only when this frame was fully
+        handled here. NEVER raises.
+        """
+        if not self._active:
+            return None
+        if b"content_block" not in event_bytes:
+            return None
+        # Deltas are never guarded (see the content_block_delta note below),
+        # so they exit here without any JSON parsing. Deltas are the hottest
+        # frames in a stream and this keeps their overhead at one substring
+        # check — strictly cheaper than parsing to reach the same conclusion.
+        if b"content_block_delta" in event_bytes:
+            return None
+        data_line = None
+        for line in group:
+            if line.startswith(b"data:"):
+                data_line = line
+                break
+        if data_line is None:
+            return None
+        try:
+            ev = json.loads(data_line[5:].strip().decode("utf-8"))
+        except Exception:
+            return None  # not JSON — passthrough, exactly like today
+        if not isinstance(ev, dict):
+            return None
+        etype = ev.get("type")
+        idx = ev.get("index")
+        if not isinstance(idx, int) or isinstance(idx, bool):
+            return None
+
+        if etype == "content_block_start":
+            # Track EVERY block type (text, thinking, tool_use,
+            # redacted_thinking), held or passed through.
+            self._opened.add(idx)
+            return None
+
+        if etype == "content_block_stop":
+            if idx in self._opened:
+                self._closed.add(idx)
+                return None
+            if idx not in self._orphan_warned:
+                self._orphan_warned.add(idx)
+                print(
+                    f"[OrphanBlockGuard] dropped content_block_stop for index {idx} "
+                    f"(never opened) - would crash client with CBNF",
+                    flush=True,
+                )
+            return []
+
+        # content_block_delta is deliberately NOT guarded.
+        #
+        # Evidence scope: the captured CBNF failure contained an orphan
+        # content_block_stop ONLY — every delta in that stream named an open
+        # block. Acting on "orphan" deltas was speculative and actively
+        # harmful: the guard cannot distinguish a genuinely orphaned delta
+        # from the legitimate case where a tool_use start is BEING HELD by
+        # this very class for JSON repair while a text delta for another
+        # index flows past (see test_text_delta_passes_while_tool_block_held).
+        # In that case the index is legitimately absent from _opened yet the
+        # stream is perfectly valid, so synthesizing a start injected a
+        # phantom text block into healthy output.
+        #
+        # Deltas therefore pass through untouched. If an orphan delta is ever
+        # captured in the wild, revisit this with held-block state factored in.
+        return None
 
 
 # ── Non-streaming repair ────────────────────────────────────────────────────

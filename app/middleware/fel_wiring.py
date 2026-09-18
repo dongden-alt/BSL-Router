@@ -1219,3 +1219,123 @@ def fel_stream_final(assembled_json: Any, model: str = "", provider: str = "") -
         return verdict
     except Exception:
         return ""
+
+
+# ── FelStreamObserver (FEL-3 realtime analytics) ─────────────────────────────
+
+
+class FelStreamObserver:
+    """Accumulate visible text from an SSE stream and classify it at the end.
+
+    PASSTHROUGH ONLY: this never holds, delays, or modifies a chunk. It reads
+    bytes as they fly past and forms a verdict when the stream ends.
+    """
+
+    def __init__(self, model: str = "", provider: str = "",
+                 max_chars: int = 16384) -> None:
+        self._model = model
+        self._provider = provider
+        self._max_chars = max_chars
+        self._text_chunks: List[str] = []
+        self._char_count = 0
+        self._had_tools = False
+        self._finalized = False
+        self._dead = False
+        self._line_buffer = b""
+
+    def _add_text(self, text: str) -> None:
+        """Append text to the accumulator, hard-truncating at max_chars.
+        Never appends past the cap, even partially over the boundary."""
+        if not text or self._char_count >= self._max_chars:
+            return
+        remaining = self._max_chars - self._char_count
+        if len(text) > remaining:
+            text = text[:remaining]
+        self._text_chunks.append(text)
+        self._char_count += len(text)
+
+    def observe(self, chunk: bytes) -> None:
+        """Extract visible text. NEVER raises."""
+        if self._dead or self._finalized:
+            return
+        try:
+            # Cap the line buffer to prevent unbounded growth on malformed SSE
+            if len(self._line_buffer) > 65536:
+                self._line_buffer = b""
+
+            # Append to buffer and split by line
+            self._line_buffer += chunk
+            lines = self._line_buffer.split(b"\n")
+            # Keep the last (potentially incomplete) line in the buffer
+            self._line_buffer = lines[-1]
+
+            for line in lines[:-1]:
+                if not line.startswith(b"data: "):
+                    continue
+                data_str = line[6:].decode("utf-8", errors="ignore").strip()
+                if not data_str or data_str == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(data_str)
+                except Exception:
+                    continue
+
+                # Extract visible text from both dialects
+                # Anthropic: delta.type == "text_delta" -> delta.text
+                if "delta" in obj:
+                    delta = obj["delta"]
+                    if isinstance(delta, dict):
+                        if delta.get("type") == "text_delta":
+                            self._add_text(delta.get("text", ""))
+                        # Track tool use
+                        elif delta.get("type") == "tool_use":
+                            self._had_tools = True
+
+                # Anthropic: content_block_start with content_block.type == "tool_use"
+                if "content_block" in obj:
+                    cb = obj["content_block"]
+                    if isinstance(cb, dict) and cb.get("type") == "tool_use":
+                        self._had_tools = True
+
+                # OpenAI: choices[].delta.content
+                if "choices" in obj and isinstance(obj["choices"], list):
+                    for choice in obj["choices"]:
+                        if not isinstance(choice, dict):
+                            continue
+                        delta = choice.get("delta", {})
+                        if not isinstance(delta, dict):
+                            continue
+
+                        # Track tool calls
+                        if "tool_calls" in delta:
+                            self._had_tools = True
+
+                        # Extract content
+                        self._add_text(delta.get("content", ""))
+
+        except Exception:
+            self._dead = True
+
+    def finalize(self) -> str:
+        """Classify + emit one fel_event. Idempotent. NEVER raises."""
+        if self._dead or self._finalized:
+            return ""
+
+        try:
+            self._finalized = True
+            text = "".join(self._text_chunks)
+            if not text:
+                return ""
+
+            verdict = classify_refusal(text, self._had_tools)
+            fel_event("refusal", model=self._model, provider=self._provider, details={
+                "stream": True,
+                "realtime": True,
+                "classification": verdict,
+                "chars": len(text),
+                "tool_calls": self._had_tools,
+            })
+            return verdict
+        except Exception:
+            self._dead = True
+            return ""
