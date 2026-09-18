@@ -134,6 +134,120 @@ class ErrorPreventionManager:
             config['error_prevention_state'] = {}
         
         self.state = config['error_prevention_state']
+        self._merge_case_variant_keys()
+
+    @staticmethod
+    def _merge_state_entries(keep: Dict[str, Any], drop: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge two state entries that describe the same provider/model streak.
+
+        Conservative by design: losing a ban is worse than holding one slightly
+        too long, so counters take the MAX, timestamps take the LATEST, and the
+        most restrictive ban_state wins ('disabled' > timed ban > None).
+        """
+        if not isinstance(keep, dict):
+            return drop if isinstance(drop, dict) else {}
+        if not isinstance(drop, dict):
+            return keep
+
+        merged = dict(keep)
+
+        # Counter fields: take the MAX so a streak is never silently reset.
+        for field in ('streak', 'ban_escalation_count',
+                      'consecutive_failures', 'total_failures'):
+            if field not in keep and field not in drop:
+                continue
+            a = keep.get(field) or 0
+            b = drop.get(field) or 0
+            try:
+                merged[field] = max(int(a), int(b))
+            except (TypeError, ValueError):
+                merged[field] = a or b
+
+        # Timestamps: keep the LATEST so a live ban is never shortened.
+        for field in ('last_error_time', 'last_failure_time', 'ban_until'):
+            if field not in keep and field not in drop:
+                continue
+            a = keep.get(field)
+            b = drop.get(field)
+            if a is None:
+                merged[field] = b
+            elif b is None:
+                merged[field] = a
+            else:
+                try:
+                    merged[field] = max(float(a), float(b))
+                except (TypeError, ValueError):
+                    merged[field] = a
+
+        # Restrictiveness ranking. 'disabled' is permanent and outranks any
+        # timed ban; any timed ban outranks no ban at all.
+        def _rank(entry: Dict[str, Any]) -> int:
+            st = entry.get('ban_state')
+            if st == 'disabled':
+                return 2
+            if st:
+                return 1
+            return 0
+
+        if _rank(drop) > _rank(keep):
+            merged['ban_state'] = drop.get('ban_state')
+
+        return merged
+
+    def _merge_case_variant_keys(self) -> int:
+        """Collapse state keys that differ only by case. Returns keys removed.
+
+        State written before key normalization used the raw upstream model id,
+        so the same model could accumulate two independent streaks (e.g.
+        'x5m5x/GLM-5.2/rate_limit' and 'x5m5x/glm-5.2/rate_limit'). Those split
+        entries would half-ban a model — failures recorded under one casing are
+        invisible to a lookup using the other — and they also emit duplicate
+        JSON keys from /api/config, which strict parsers reject.
+        """
+        if not isinstance(self.state, dict) or not self.state:
+            return 0
+
+        canonical: Dict[str, str] = {}
+        removed = 0
+
+        for key in list(self.state.keys()):
+            if not isinstance(key, str):
+                continue
+            # Only the provider/model segments are normalized; error_type is
+            # internal and already lowercase.
+            parts = key.split('/')
+            if len(parts) >= 3:
+                norm = '/'.join(
+                    [parts[0].lower(), '/'.join(parts[1:-1]).lower(), parts[-1]]
+                )
+            else:
+                norm = key.lower()
+
+            if norm == key:
+                canonical.setdefault(norm, key)
+                continue
+
+            existing = canonical.get(norm)
+            if existing is None and norm in self.state:
+                existing = norm
+
+            if existing is None:
+                # No canonical twin yet: rename this entry in place.
+                self.state[norm] = self.state.pop(key)
+                canonical[norm] = norm
+            else:
+                self.state[existing] = self._merge_state_entries(
+                    self.state.get(existing), self.state.pop(key)
+                )
+                canonical[norm] = existing
+                removed += 1
+
+        if removed:
+            print(
+                f"[ErrorPrevention] Merged {removed} case-variant state key(s)",
+                flush=True,
+            )
+        return removed
     
     @property
     def enabled(self) -> bool:
@@ -192,9 +306,17 @@ class ErrorPreventionManager:
         
         return 'unknown'
     
+    def _state_prefix(self, provider: str, model: str) -> str:
+        """Generate normalized provider/model prefix for state keys and lookups.
+
+        Normalizes provider and model to lowercase so 'GLM-5.2' and 'glm-5.2'
+        map to the same streak. Error type is NOT normalized (it's internal).
+        """
+        return f"{provider.lower()}/{model.lower()}"
+
     def get_state_key(self, provider: str, model: str, error_type: str) -> str:
         """Generate unique key for this error streak."""
-        return f"{provider}/{model}/{error_type}"
+        return f"{self._state_prefix(provider, model)}/{error_type}"
     
     def is_banned(self, provider: str, model: str) -> Tuple[bool, Optional[str], Optional[float]]:
         """
@@ -209,8 +331,9 @@ class ErrorPreventionManager:
         now = time.time()
         
         # Check all error types for this provider/model
+        prefix = self._state_prefix(provider, model) + "/"
         for key, entry in self.state.items():
-            if not key.startswith(f"{provider}/{model}/"):
+            if not key.startswith(prefix):
                 continue
             
             ban_state = entry.get('ban_state')
@@ -238,7 +361,8 @@ class ErrorPreventionManager:
             return
         
         # Clear all error type streaks for this model
-        keys_to_clear = [k for k in self.state.keys() if k.startswith(f"{provider}/{model}/")]
+        prefix = self._state_prefix(provider, model) + "/"
+        keys_to_clear = [k for k in self.state.keys() if k.startswith(prefix)]
         for key in keys_to_clear:
             self.state[key]['streak'] = 0
     
@@ -499,7 +623,8 @@ class ErrorPreventionManager:
     def manually_enable_model(self, provider: str, model: str):
         """Re-enable a disabled model: clear all its ban state + flip config enabled flag."""
         # Clear every error-streak entry for this provider/model
-        for key in [k for k in self.state.keys() if k.startswith(f"{provider}/{model}/")]:
+        prefix = self._state_prefix(provider, model) + "/"
+        for key in [k for k in self.state.keys() if k.startswith(prefix)]:
             self.state[key]['ban_state'] = None
             self.state[key]['ban_until'] = None
             self.state[key]['streak'] = 0

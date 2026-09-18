@@ -902,6 +902,67 @@ def _dedup_conn_freshness(conn):
     return (0, "")
 
 
+def _conn_has_credential(conn):
+    """True if the row carries something that could authenticate.
+
+    A row with no api_key, no tokens and no provider_data can never serve a
+    request. Anything with a real credential must be preserved: connections
+    that share a display name routinely hold DIFFERENT keys (verified by hash
+    across the live config), so they are distinct accounts, not duplicates.
+    """
+    if not isinstance(conn, dict):
+        return True  # not our shape - never prune what we do not understand
+    for field in ("api_key", "access_token", "refresh_token"):
+        v = conn.get(field)
+        if isinstance(v, str) and v.strip():
+            return True
+        if v and not isinstance(v, str):
+            return True
+    if conn.get("provider_data"):
+        return True
+    return False
+
+
+def _prune_empty_connection_rows(provider_cfg):
+    """Drop connection rows with no usable credential. Returns number removed.
+
+    These are leftovers from abandoned setup flows (e.g. a 'Primary Connection'
+    placeholder created before a key was pasted). They survive
+    _dedup_connection_rows because they carry neither an `id` nor oauth+email,
+    so that function's grouping skips them entirely.
+    """
+    conns = provider_cfg.get("connections")
+    if not isinstance(conns, list) or not conns:
+        return 0
+
+    keep_idx = [i for i, c in enumerate(conns) if _conn_has_credential(c)]
+    if len(keep_idx) == len(conns):
+        return 0
+
+    # Never empty a provider completely: if every row is credential-less, leave
+    # the list untouched so the admin UI still shows something to fix.
+    if not keep_idx:
+        return 0
+
+    old_to_new = {old: new for new, old in enumerate(keep_idx)}
+    provider_cfg["connections"] = [conns[i] for i in keep_idx]
+
+    for m in provider_cfg.get("models", []) or []:
+        if not isinstance(m, dict):
+            continue
+        ci = m.get("connection_indexes")
+        if not isinstance(ci, list):
+            continue
+        new_ci = []
+        for idx in ci:
+            if isinstance(idx, int) and idx in old_to_new:
+                new_ci.append(old_to_new[idx])
+        seen = set()
+        m["connection_indexes"] = [x for x in new_ci if not (x in seen or seen.add(x))]
+
+    return len(conns) - len(keep_idx)
+
+
 def _dedup_connection_rows(provider_cfg):
     """Collapse duplicate connection rows in-place. Returns number removed.
 
@@ -909,6 +970,10 @@ def _dedup_connection_rows(provider_cfg):
     token_type == "oauth" (antigravity re-imports minted 32 rows for one
     account 2026-09-17). Keep the freshest row by expires_at/imported_at and
     remap model connection_indexes that pointed at removed rows.
+
+    Deliberately does NOT group by connection name: same-named rows hold
+    different credentials in the live config, so collapsing them would destroy
+    working accounts.
     """
     conns = provider_cfg.get("connections")
     if not isinstance(conns, list) or len(conns) < 2:
@@ -1007,6 +1072,12 @@ def load_config():
             _removed = _dedup_connection_rows(_pcfg)
             if _removed:
                 print(f"[Dedup] {_pid}: collapsed {_removed} duplicate connection row(s)", flush=True)
+                _dirty = True
+            # Credential-less leftovers are invisible to the dedup above (no id,
+            # not oauth) but can never serve a request.
+            _pruned = _prune_empty_connection_rows(_pcfg)
+            if _pruned:
+                print(f"[Dedup] {_pid}: pruned {_pruned} credential-less connection row(s)", flush=True)
                 _dirty = True
     # Multi-key fix (2026-08-22): models discovered before the fix are stuck at
     # connection_indexes:[0]. Expand them to all enabled connections on load so
