@@ -8955,7 +8955,19 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 if _probe_resp is not None:
                     resp = _probe_resp
                 else:
-                    resp = await _send_stream_with_thinking_fallback()
+                    # USAGE-FRAME FIX (2026-09-20): OpenAI-format upstreams omit
+                    # the terminal usage frame unless the stream opts in via
+                    # stream_options.include_usage — direct-stream pass-through
+                    # reported in=0 out=0 (e.g. gpt-5.6-sol via MintRouter).
+                    # NON-MUTATING copy: S3/S6 retries and combo wraps re-read
+                    # upstream_payload, mirroring the buffered path's injection.
+                    _su_payload = {**upstream_payload, "stream": True}
+                    if not _is_anthropic_fmt:
+                        _su_payload["stream_options"] = {"include_usage": True}
+                    resp = await _send_stream_with_thinking_fallback(
+                        stream_req=_build_req(_su_payload),
+                        stream_payload=_su_payload,
+                    )
                     # COMBO ADVANCE FIX (2026-08-01): NO raise_for_status() here.
                     # It throws HTTPStatusError on 400/5xx BEFORE the L5041
                     # non-200 handler (which advances the combo chain) runs,
@@ -9460,7 +9472,19 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     if _probe_resp is not None:
                         resp = _probe_resp
                     else:
-                        resp = await _send_stream_with_thinking_fallback()
+                        # USAGE-FRAME FIX (2026-09-20): same fix as raw_upstream —
+                        # the OpenAI-format upstream stream must opt in to its
+                        # terminal usage frame or the Anthropic egress conversion
+                        # never sees token counts (in=0 out=0). Non-mutating
+                        # copy of upstream_payload, gated to OpenAI-format
+                        # upstreams exactly like the buffered path.
+                        _su_payload = {**upstream_payload, "stream": True}
+                        if not _is_anthropic_fmt:
+                            _su_payload["stream_options"] = {"include_usage": True}
+                        resp = await _send_stream_with_thinking_fallback(
+                            stream_req=_build_req(_su_payload),
+                            stream_payload=_su_payload,
+                        )
                     stats["status"] = resp.status_code
 
                     if resp.status_code != 200:
