@@ -6534,7 +6534,7 @@ def _combo_infinite_retry_enabled(config: dict) -> bool:
 
 
 def _combo_restart_or_give_up(model, retry_state, active_chain, original_model,
-                              cache_bp, request, reason):
+                              cache_bp, request, reason, config: dict = None):
     """Build the wrap state for never-stop combo retry (exhaustion is a pass boundary, not a terminal).
 
     Returns (backoff_seconds, retry_state_dict). The caller sleeps `backoff`
@@ -6543,7 +6543,32 @@ def _combo_restart_or_give_up(model, retry_state, active_chain, original_model,
     recover; the circuit breaker still filters hard-banned keys), deadline None
     (re-arms CHAIN_TOTAL_BUDGET and forces a fresh wall-start stamp), pass_no+1
     for exponential backoff (2,4,8,16,30,30... capped at 30s).
+
+    2026-09-18 free-tier terminal gate (entry/all-banned path): when every
+    chain leaf sits under a LIVE free-tier ban, this arm does NOT need the
+    last error to be the 403 — an all-banned-at-entry exhaustion can fire
+    with a synthetic reason. Recursion can only re-dial the policy wall, so
+    return a marked wrap (no sleep) and let _process_chat_completion's entry
+    gate answer the client with the explanatory 403 instead of re-dialing.
     """
+    if config is not None and ep.chain_all_free_tier_banned(config, active_chain):
+        pass_no = int((retry_state or {}).get('pass_no', 1))
+        chain = list(active_chain or (retry_state or {}).get('chain') or [])
+        wrapped = {
+            'chain': chain,
+            'idx': 0,
+            'cache_bp': cache_bp,
+            'original_model': original_model,
+            'deadline': None,
+            'pass_no': pass_no + 1,
+            'terminal_free_tier': True,
+        }
+        print(
+            f"[Combo] '{model}' all chain entries free-tier benched — "
+            f"terminal wrap marker (no sleep, no re-dial)",
+            flush=True,
+        )
+        return 0.0, wrapped
     pass_no = int((retry_state or {}).get('pass_no', 1))
     backoff = min(2 * (2 ** (pass_no - 1)), 30)
     chain = list(active_chain or (retry_state or {}).get('chain') or [])
@@ -6584,9 +6609,23 @@ def _raise_combo_wrap(model, config, request, retry_state, active_chain,
     """
     if not _combo_infinite_retry_enabled(config):
         return
+    # 2026-09-18 free-tier terminal gate: last error is the app-only 403 AND
+    # every chain leaf sits under a live free-tier ban -> wrapping can only
+    # re-dial the same policy wall. Return WITHOUT raising so the caller falls
+    # through to its existing terminal frames (the sanctioned no-raise path,
+    # identical to combo_infinite_retry=false) and the client gets the clear
+    # 403 immediately instead of a wrap loop.
+    if ep.is_free_tier_error(status_code, err_text) and \
+            ep.chain_all_free_tier_banned(config, active_chain):
+        print(
+            f"[Combo] '{model}' exhausted on terminal free-tier 403 — NOT wrapping "
+            f"(all chain entries free-tier benched)",
+            flush=True,
+        )
+        return
     _backoff, _wrap = _combo_restart_or_give_up(
         model, retry_state, active_chain, original_model, cache_bp, request,
-        reason=reason,
+        reason=reason, config=config,
     )
     raise _ComboFallbackNeeded(status_code, err_text, _wrap, backoff=_backoff)
 
@@ -6985,6 +7024,26 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
     config = cs_get_config()
     print(f"[AFZ-FORENSIC] heartbeat route=chat active_streams={active_stream_count()}", flush=True)
+
+    # 2026-09-18 free-tier terminal gate: all-banned chain — terminal marker from
+    # _combo_restart_or_give_up (entry/all-banned path). Answer with the
+    # explanatory 403 instead of recursing into a chain whose every leaf is
+    # policy-benched (OpenCode Zen free tier is app-only; probes v1-v4 proved no
+    # header/UA/auth/transport variant can pass the wall).
+    if _retry_state and isinstance(_retry_state, dict) \
+            and _retry_state.get('terminal_free_tier'):
+        return JSONResponse({
+            "error": {
+                "code": 403,
+                "message": "OpenCode Zen free tier only accepts requests from within "
+                           "the OpenCode app (403 FreeTierError). All fallback entries "
+                           "for this model are benched (~60 min). Use a paid Zen tier "
+                           "or API key, or route free-tier models through the OpenCode app.",
+                "status": "FREE_TIER_POLICY",
+                "type": "free_tier_policy",
+            }
+        }, status_code=403)
+
     requested_model = body.get("model", "gpt-4o")
     model = _normalize_blacksand_model_id(requested_model)
     # Restore original alias from retry state first. Canonicalize Blacksand IDs so
@@ -7208,6 +7267,12 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             wall_start=getattr(getattr(request, "state", None), "bsl_chain_wall_start", None),
         )
         if _advance.exhausted:
+            # 2026-09-18 free-tier terminal gate: all-banned-at-entry exhaustion
+            # — _combo_restart_or_give_up returns the terminal wrap marker and
+            # the entry gate below answers the client with the explanatory 403
+            # before any leaf is re-dialed. The sleep is skipped when backoff is
+            # 0.0 (the terminal-marker return), which is why the entry gate
+            # must run BEFORE this recursion — it does, via the marker check.
             # NEVER-STOP RETRY (2026-08-24): exhaustion is a pass boundary, not
             # a terminal. Wrap to idx 0, sleep exponential backoff (client
             # disconnect cancels the sleep — the only permitted terminator),
@@ -7215,9 +7280,9 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             if _combo_infinite_retry_enabled(config):
                 _backoff, _wrap = _combo_restart_or_give_up(
                     model, _retry_state, _advance.active_chain,
-                    _retry_state.get('original_model') or model,
+                    _redo_original_model := (_retry_state.get('original_model') or model),
                     _retry_state.get('cache_bp'), request,
-                    reason="entry_override_exhausted",
+                    reason="entry_override_exhausted", config=config,
                 )
                 await asyncio.sleep(_backoff)
                 return await _process_chat_completion(
@@ -8183,7 +8248,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         if _combo_infinite_retry_enabled(config):
             _backoff, _wrap = _combo_restart_or_give_up(
                 model, _retry_state, active_chain, original_model,
-                _cache_breakpoints, request, reason="unicode_serialization_exhausted",
+                _cache_breakpoints, request, config=config,
+                reason="unicode_serialization_exhausted",
             )
             await asyncio.sleep(_backoff)
             return await _process_chat_completion(
@@ -8630,7 +8696,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         _probe_resp = None
                     _backoff, _wrap = _combo_restart_or_give_up(
                         model, _retry_state, active_chain, original_model,
-                        _cache_breakpoints, request, reason="probe_exhausted",
+                        _cache_breakpoints, request, config=config,
+                        reason="probe_exhausted",
                     )
                     await asyncio.sleep(_backoff)
                     return await _process_chat_completion(
@@ -8766,7 +8833,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             if _combo_infinite_retry_enabled(config):
                 _backoff, _wrap = _combo_restart_or_give_up(
                     model, _retry_state, active_chain, original_model,
-                    _cache_breakpoints, request, reason="probe_network_exhausted",
+                    _cache_breakpoints, request, config=config,
+                    reason="probe_network_exhausted",
                 )
                 await asyncio.sleep(_backoff)
                 return await _process_chat_completion(
@@ -11416,7 +11484,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         if _combo_infinite_retry_enabled(config):
                             _backoff, _wrap = _combo_restart_or_give_up(
                                 model, _retry_state, active_chain, original_model,
-                                _cache_breakpoints, request,
+                                _cache_breakpoints, request, config=config,
                                 reason="nonstream_budget_exhausted",
                             )
                             await asyncio.sleep(_backoff)
@@ -11474,7 +11542,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     if _combo_infinite_retry_enabled(config):
                         _backoff, _wrap = _combo_restart_or_give_up(
                             model, _retry_state, active_chain, original_model,
-                            _cache_breakpoints, request,
+                            _cache_breakpoints, request, config=config,
                             reason="nonstream_transport_exhausted",
                         )
                         await asyncio.sleep(_backoff)
@@ -11532,7 +11600,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     if _combo_infinite_retry_enabled(config):
                         _backoff, _wrap = _combo_restart_or_give_up(
                             model, _retry_state, active_chain, original_model,
-                            _cache_breakpoints, request,
+                            _cache_breakpoints, request, config=config,
                             reason="nonstream_unexpected_exhausted",
                         )
                         await asyncio.sleep(_backoff)
@@ -11962,7 +12030,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     if _combo_infinite_retry_enabled(config):
                         _backoff, _wrap = _combo_restart_or_give_up(
                             model, _retry_state, active_chain, original_model,
-                            _cache_breakpoints, request,
+                            _cache_breakpoints, request, config=config,
                             reason="nonstream_upstream_exhausted",
                         )
                         await asyncio.sleep(_backoff)
@@ -12375,7 +12443,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     if _combo_infinite_retry_enabled(config):
                         _backoff, _wrap = _combo_restart_or_give_up(
                             model, _retry_state, active_chain, original_model,
-                            _cache_breakpoints, request,
+                            _cache_breakpoints, request, config=config,
                             reason="nonstream_network_error_exhausted",
                         )
                         await asyncio.sleep(_backoff)
