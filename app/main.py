@@ -4105,13 +4105,94 @@ async def test_model(request: Request):
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+async def _test_antigravity_model_native(provider: str, model: str, token: str, config: dict, request_id, t0: float):
+    """Probe a native Antigravity OAuth model directly against Google Cloud Code.
+
+    The /api/test-model path has no incoming Antigravity Request to forward,
+    so this mirrors _forward_antigravity_native's egress mechanics (validated
+    Google origin + hosts-file-bypassing client) while sourcing Authorization
+    from the fresh ensure_fresh_token result instead of forwarded headers.
+    """
+    if not model or not all(ch.isalnum() or ch in "._-" for ch in model):
+        err = f"Invalid native model id: {model!r}"
+        obs.log_request(provider, model, 400, time.time() - t0, 0, 0, 0, config, error_msg=err, request_id=request_id)
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    url = (
+        f"{_validated_antigravity_native_base_url()}"
+        f"/v1beta/models/{model}:generateContent"
+    )
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": "Reply with exactly: OK"}]}],
+        "generationConfig": {"maxOutputTokens": 16, "temperature": 0},
+    }
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    try:
+        client = _get_antigravity_egress_client()
+        upstream_request = client.build_request(
+            "POST", url, headers=headers, content=json.dumps(payload).encode("utf-8")
+        )
+        upstream_response = await client.send(upstream_request)
+        try:
+            status = upstream_response.status_code
+            body = upstream_response.content
+        finally:
+            await upstream_response.aclose()
+    except Exception as exc:
+        err = f"Native Google probe failed: {type(exc).__name__}"
+        print(f"[AntigravityTest] {err}", flush=True)
+        obs.log_request(provider, model, 502, time.time() - t0, 0, 0, 0, config, error_msg=err, request_id=request_id)
+        return JSONResponse({"ok": False, "status": 502, "error": err}, status_code=502)
+
+    t1 = time.time()
+    if status >= 400:
+        detail = body.decode("utf-8", errors="replace")[:800] if isinstance(body, (bytes, bytearray)) else str(body)[:800]
+        obs.log_request(provider, model, status, t1 - t0, 0, 0, 0, config, error_msg=detail, request_id=request_id)
+        return JSONResponse({"ok": False, "status": status, "error": detail}, status_code=status)
+
+    in_tokens = out_tokens = 0
+    reply = ""
+    try:
+        j = json.loads(body)
+        usage = j.get("usageMetadata") or j.get("usage") or {}
+        in_tokens = int(usage.get("promptTokenCount") or usage.get("prompt_tokens") or 0)
+        out_tokens = int(usage.get("candidatesTokenCount") or usage.get("completion_tokens") or 0)
+        candidates = j.get("candidates") or []
+        if candidates and isinstance(candidates, list):
+            parts = (candidates[0].get("content") or {}).get("parts") or []
+            reply = "".join(
+                str(p.get("text") or "") for p in parts if isinstance(p, dict)
+            )
+    except Exception:
+        pass
+
+    obs.log_request(provider, model, status, t1 - t0, in_tokens, out_tokens,
+                    in_tokens + out_tokens, config, request_id=request_id)
+    return JSONResponse({
+        "ok": True,
+        "status": status,
+        "route": "native",
+        "in_tokens": in_tokens,
+        "out_tokens": out_tokens,
+        "total_tokens": in_tokens + out_tokens,
+        "reply": reply[:100],
+    })
+
+
 async def _test_antigravity_model(provider: str, model: str):
-    """Two-phase test: (1) OAuth auth, (2) real inference through upstream provider.
+    """Two-phase test: (1) OAuth auth, (2) real inference.
 
     Phase 1 — validate the stored OAuth token (no upstream call).
-    Phase 2 — route a probe through _process_chat_completion using the
-    antigravity integration mapping's combo alias, proving the full
-    Gemini→OpenAI→upstream chain works and returns real In/Out tokens.
+    Phase 2 — mapped slots route a probe through _process_chat_completion using
+    the integration mapping's combo alias, proving the full
+    Gemini→OpenAI→upstream chain. Unmapped slots that are not themselves BSL
+    mapping targets are native OAuth models: they bypass the alias-mapping
+    dispatcher and probe Google Cloud Code directly
+    (_test_antigravity_model_native).
     """
     config = cs_get_config()
     _req_id = obs.log_request_start(provider, model, config, stream=False, client="antigravity-test")
@@ -4137,27 +4218,47 @@ async def _test_antigravity_model(provider: str, model: str):
             return JSONResponse({"ok": False, "error": err}, status_code=500)
 
         # Phase 1: OAuth token validated (ensure_fresh_token succeeded).
-        # Phase 2: Route probe through _process_chat_completion using the
-        # integration mapping's combo alias.
+        # Phase 2: routing. Exact and fuzzy mapping resolution stay
+        # authoritative for mapped slots; a mapping whose target has been
+        # deleted since save is dead and must not enter the dispatcher.
         integration = _antigravity_integration_settings()
         combo_alias = integration.get("mappings", {}).get(model)
         if not combo_alias:
             # Fuzzy dash/order normalization across mapping keys (gpt-5-6-terra /
-            # gpt-terra-5-6 -> gpt-5.6-terra) BEFORE the blunt first-mapping
-            # fallback. Mini-config shape: only alias KEYS are consulted.
+            # gpt-terra-5-6 -> gpt-5.6-terra). Mini-config shape: only alias
+            # KEYS are consulted.
             _fz_key, _fz_note = maybe_fuzzy_normalize_model(
                 model, {"aliases": dict.fromkeys(integration.get("mappings", {}) or {})}
             )
             if _fz_note and _fz_key in integration.get("mappings", {}):
                 print(_fz_note, flush=True)
                 combo_alias = integration["mappings"][_fz_key]
-        if not combo_alias:
-            combo_alias = next(iter(integration.get("mappings", {}).values())) if integration.get("mappings") else None
+        if combo_alias and not _is_known_antigravity_mapping_target(config, combo_alias):
+            # Dead mapping target: the combo/provider it named was removed after
+            # the mapping was saved. Sending the probe through the dispatcher
+            # would surface an unrelated upstream 400.
+            print(
+                f"[AntigravityTest] dropping dead mapping target {combo_alias!r} "
+                f"for {model!r}; treating slot as native.",
+                flush=True,
+            )
+            combo_alias = None
 
         if not combo_alias:
-            err = f"No integration mapping for '{model}' and no fallback"
-            obs.log_request(provider, model, 500, time.time() - _t0, 0, 0, 0, config, error_msg=err, request_id=_req_id)
-            return JSONResponse({"ok": False, "error": err}, status_code=500)
+            if not _is_known_antigravity_mapping_target(config, model):
+                # NATIVE OAUTH BYPASS (2026-09-20): the model is neither mapped
+                # nor itself a BSL-routable target (combo alias / provider-model
+                # form), so it is a native OAuth slot. Bypass the alias-mapping
+                # dispatcher entirely and probe Google Cloud Code directly with
+                # the fresh token, mirroring _forward_antigravity_native's
+                # egress path (validated origin + hosts-bypassing client).
+                return await _test_antigravity_model_native(
+                    provider, model, token, config, _req_id, _t0
+                )
+            # The model is itself a routable BSL target: probe it directly
+            # through the dispatcher (replaces the blunt first-mapping fallback
+            # that misrouted probes to an unrelated combo's alias).
+            combo_alias = model
 
         # Build the same OpenAI-format probe body non-antigravity providers use.
         probe_body = {
