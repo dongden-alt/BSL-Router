@@ -11,8 +11,9 @@ Pins the three-way dispatch contract in _test_antigravity_model:
                                validated Google origin + hosts-bypassing client
 
 Also covers _test_antigravity_model_native's own egress mechanics (validated
-daily-cloudcode-pa origin, fresh-token Authorization header, Gemini
-usageMetadata parsing, error/exception surfacing) and the
+daily-cloudcode-pa origin on the Cloud Code RPC via the AntigravityUpstreamClient
+wrapper, fresh-token Authorization header, OpenAI usage aggregation, error/
+exception surfacing) and the
 _is_known_antigravity_mapping_target predicate guarding all of it.
 
 Routable-target forms are exactly two: combo aliases and "provider/model"
@@ -119,9 +120,24 @@ class _DispatchRecorder:
 
 
 class _FakeUpstreamResponse:
+    """Upstream response whose bytes are consumed as an SSE stream.
+
+    The live wire is v1internal:streamGenerateContent?alt=sse, and the
+    AntigravityUpstreamClient wrapper iterates aiter_raw() even for
+    non-stream callers (aggregating through the translator), so the fake
+    must expose aiter_raw/aread/headers like an httpx streaming response.
+    """
+
     def __init__(self, status_code, content=b""):
         self.status_code = status_code
         self.content = content
+        self.headers = {}
+
+    async def aiter_raw(self):
+        yield self.content
+
+    async def aread(self):
+        return self.content
 
     async def aclose(self):
         pass
@@ -140,7 +156,8 @@ class _FakeEgressClient:
         self.built.append(req)
         return req
 
-    async def send(self, request):
+    async def send(self, request, **kwargs):
+        # kwargs: the wrapper calls send(request, stream=True).
         if self.exc:
             raise self.exc
         return self.response
@@ -264,15 +281,21 @@ def test_unmapped_provider_model_form_self_probes(monkeypatch):
 
 # ─── native probe: _test_antigravity_model_native ────────────────────────────
 
-_GEMINI_OK = json.dumps({
-    "candidates": [{"content": {"parts": [{"text": "OK"}]}}],
-    "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 2},
-}).encode("utf-8")
+_GEMINI_SSE = (
+    b'data: {"candidates":[{"content":{"parts":[{"text":"OK"}]},'
+    b'"finishReason":"STOP"}],'
+    b'"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,'
+    b'"totalTokenCount":7}}\n\n'
+    b"data: [DONE]\n\n"
+)
 
 
-def test_native_success_parses_gemini_usage_and_targets_google_origin(monkeypatch):
+def test_native_success_targets_cloud_code_rpc_and_parses_usage(monkeypatch):
+    """The probe must egress on the verified Cloud Code RPC (rewritten by the
+    AntigravityUpstreamClient wrapper), never on the 404-ing /v1beta path,
+    and read usage/reply from the aggregated OpenAI completion."""
     _patch_obs(monkeypatch)
-    client = _FakeEgressClient(_FakeUpstreamResponse(200, _GEMINI_OK))
+    client = _FakeEgressClient(_FakeUpstreamResponse(200, _GEMINI_SSE))
     monkeypatch.setattr(main, "_get_antigravity_egress_client", lambda: client)
 
     resp = asyncio.run(main._test_antigravity_model_native(
@@ -292,10 +315,22 @@ def test_native_success_parses_gemini_usage_and_targets_google_origin(monkeypatc
     req = client.built[0]
     assert req["url"] == (
         "https://daily-cloudcode-pa.googleapis.com"
-        "/v1beta/models/gemini-3.1-pro-preview:generateContent"
+        "/v1internal:streamGenerateContent?alt=sse"
     )
     assert req["headers"]["Authorization"] == "Bearer tok123"
     assert req["headers"]["Content-Type"] == "application/json"
+    assert (
+        req["headers"]["User-Agent"]
+        == "antigravity/ide/2.1.1 windows/amd64"
+    )
+
+    envelope = json.loads(req["content"])
+    assert envelope["model"] == "gemini-3.1-pro-preview"
+    assert envelope["userAgent"] == "antigravity"
+    assert envelope["requestType"] == "agent"
+    assert envelope["request"]["contents"] == [
+        {"role": "user", "parts": [{"text": "Reply with exactly: OK"}]}
+    ]
 
 
 def test_native_upstream_error_surfaces_status(monkeypatch):

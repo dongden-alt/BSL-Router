@@ -4112,27 +4112,44 @@ async def _test_antigravity_model_native(provider: str, model: str, token: str, 
     so this mirrors _forward_antigravity_native's egress mechanics (validated
     Google origin + hosts-file-bypassing client) while sourcing Authorization
     from the fresh ensure_fresh_token result instead of forwarded headers.
+
+    Egress speaks the SAME wire as the live lane (2026-09-20 fix): the probe
+    dials {base}/chat/completions through AntigravityUpstreamClient, which
+    rewrites it to the verified Cloud Code RPC
+    (v1internal:streamGenerateContent?alt=sse, IDE envelope + UA) and
+    aggregates the SSE reply into one OpenAI completion. The public /v1beta
+    generateContent path returns a Google HTML 404 for OAuth (Antigravity)
+    models — live 2026-09-20: antigravity/gemini-3.6-flash-high.
     """
     if not model or not all(ch.isalnum() or ch in "._-" for ch in model):
         err = f"Invalid native model id: {model!r}"
         obs.log_request(provider, model, 400, time.time() - t0, 0, 0, 0, config, error_msg=err, request_id=request_id)
         return JSONResponse({"ok": False, "error": err}, status_code=400)
 
-    url = (
-        f"{_validated_antigravity_native_base_url()}"
-        f"/v1beta/models/{model}:generateContent"
-    )
+    # Same wire as _forward_antigravity_native: dial the OpenAI-style endpoint
+    # and let AntigravityUpstreamClient rewrite it to the verified Cloud Code
+    # RPC (v1internal:streamGenerateContent?alt=sse) with the IDE's envelope
+    # and UA. The public /v1beta path 404s for OAuth (Antigravity) models.
+    url = f"{_validated_antigravity_native_base_url()}/chat/completions"
     payload = {
-        "contents": [{"role": "user", "parts": [{"text": "Reply with exactly: OK"}]}],
-        "generationConfig": {"maxOutputTokens": 16, "temperature": 0},
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
+        "max_tokens": 16,
+        "temperature": 0,
+        "stream": False,
     }
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "Accept": "application/json",
     }
     try:
-        client = _get_antigravity_egress_client()
+        from app.compat.adapters.antigravity_upstream import (
+            wrap_antigravity_upstream_client,
+        )
+
+        client = wrap_antigravity_upstream_client(
+            _get_antigravity_egress_client(), model
+        )
         upstream_request = client.build_request(
             "POST", url, headers=headers, content=json.dumps(payload).encode("utf-8")
         )
@@ -4162,11 +4179,16 @@ async def _test_antigravity_model_native(provider: str, model: str, token: str, 
         in_tokens = int(usage.get("promptTokenCount") or usage.get("prompt_tokens") or 0)
         out_tokens = int(usage.get("candidatesTokenCount") or usage.get("completion_tokens") or 0)
         candidates = j.get("candidates") or []
+        choices = j.get("choices") or []
         if candidates and isinstance(candidates, list):
             parts = (candidates[0].get("content") or {}).get("parts") or []
             reply = "".join(
                 str(p.get("text") or "") for p in parts if isinstance(p, dict)
             )
+        elif choices and isinstance(choices, list):
+            # Aggregated OpenAI completion from the Cloud Code wrapper.
+            message = choices[0].get("message") or {}
+            reply = str(message.get("content") or "")
     except Exception:
         pass
 
