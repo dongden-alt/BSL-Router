@@ -17,103 +17,6 @@ from typing import Optional, Dict, Any, Tuple
 from app.crypto import encrypt_config_secrets
 
 
-# OpenCode Zen free-tier policy gate (2026-09-18). Probes v1-v4 proved the 403
-# FreeTierError ("OpenCode's free tier can only be used from within OpenCode")
-# is a server-side app-only policy: no header/UA/session/project/OAuth/transport
-# variant bypasses it. Terminal for the leaf — never retry-hammer it.
-FREE_TIER_MARKERS = ('freetier', 'free_tier', 'free tier',
-                     'only be used from within opencode')
-
-
-def is_free_tier_error(status_code: Optional[int], error_msg: Optional[str]) -> bool:
-    """True when an upstream rejection is the OpenCode app-only free-tier gate.
-
-    Status-gated on (401, 403): a 429 'free tier quota' message is a rate limit,
-    not the policy wall, and must keep the rate_limit classification.
-    """
-    if status_code not in (401, 403):
-        return False
-    msg = (error_msg or '').lower()
-    return any(m in msg for m in FREE_TIER_MARKERS)
-
-
-def _chain_leaf_provider_model(leaf) -> Optional[Tuple[str, str]]:
-    """Normalize a combo-chain leaf to (provider, model). None = unresolvable.
-
-    Combo chains in app/main.py carry leaves as 3-tuples
-    (model, provider, extra) — see the single-leaf fallback constructor
-    `active_chain = [(target_model, provider_name, None)]`. Other call paths
-    (resolve_combo expansion, wrapped retry states) pass dicts or strings;
-    tolerate all three shapes plus the 2-tuple/list form so the free-tier
-    wrap gate never mis-resolves a chain into a false all-banned verdict.
-    """
-    if leaf is None:
-        return None
-    # 3-tuple/list (model, provider, extra) — the live router shape.
-    if isinstance(leaf, (tuple, list)):
-        if len(leaf) >= 3:
-            model, provider = leaf[0], leaf[1]
-            if isinstance(model, str) and isinstance(provider, str) and model and provider:
-                return provider, model
-            return None
-        if len(leaf) == 2:
-            provider, model = leaf[0], leaf[1]
-            if isinstance(provider, str) and isinstance(model, str) and provider and model:
-                return provider, model
-            return None
-        return None
-    if isinstance(leaf, dict):
-        provider = leaf.get('provider')
-        model = leaf.get('model') or leaf.get('id')
-        if isinstance(provider, str) and isinstance(model, str) and provider and model:
-            return provider, model
-        return None
-    if isinstance(leaf, str):
-        if '/' in leaf:
-            provider, model = leaf.split('/', 1)
-            if provider and model:
-                return provider, model
-        return None
-    return None
-
-
-def chain_all_free_tier_banned(config: Optional[Dict[str, Any]], active_chain) -> bool:
-    """True iff active_chain is non-empty AND EVERY leaf has a LIVE free-tier ban.
-
-    Semantics (sanctioned amendment to the 2026-08-24 never-stop directive):
-      - Live = entry ban_state set AND ban_until > now.
-      - A leaf counts ONLY via an error_type == 'free_tier' live entry.
-      - Any leaf without a live free_tier entry -> False (covers: unbanned
-        leaf, and leaf benched for a different reason — that ban expires soon
-        and the leaf is worth retrying, so never-stop still applies).
-      - Empty chain, config None, unresolvable leaf shape -> False
-        (conservative: fall back to current never-stop behavior).
-    State source: (config or {}).get('error_prevention_state') — keys are
-    '{provider.lower()}/{model.lower()}/{error_type}' and entries carry
-    provider/model/error_type/ban_state/ban_until.
-    """
-    if not config or not active_chain:
-        return False
-    state = config.get('error_prevention_state')
-    if not isinstance(state, dict) or not state:
-        return False
-    now = time.time()
-    for leaf in active_chain:
-        resolved = _chain_leaf_provider_model(leaf)
-        if resolved is None:
-            return False
-        provider, model = resolved
-        key = f"{provider.lower()}/{model.lower()}/free_tier"
-        entry = state.get(key)
-        if not isinstance(entry, dict):
-            return False
-        ban_state = entry.get('ban_state')
-        ban_until = entry.get('ban_until')
-        if not ban_state or not isinstance(ban_until, (int, float)) or ban_until <= now:
-            return False
-    return True
-
-
 def _persist_config_yaml(config: Dict[str, Any]) -> None:
     """Atomic, never-wipe config.yaml write (mirrors main._persist_config_snapshot).
 
@@ -215,13 +118,7 @@ class ErrorPreventionManager:
         'server_error': ['500', '502', '503', '504', 'internal server error', 'bad gateway', 'service unavailable', 'gateway timeout'],
         'gateway_error': ['524', 'cloudflare', 'origin', 'upstream'],
         'not_found': ['404', 'not found', 'does not exist'],
-        'model_error': ['model', 'invalid model', 'not available'],
-        # OpenCode Zen free-tier policy gate (2026-09-18). NOT in pattern list —
-        # classified via is_free_tier_error() BEFORE pattern matching; registry
-        # entry keeps /api endpoints and stats surfaces that walk ERROR_TYPES
-        # aware of the type. Status-gated on (401, 403) so a 429 'free tier
-        # quota' stays rate_limit (see is_free_tier_error).
-        'free_tier': [],
+        'model_error': ['model', 'invalid model', 'not available']
     }
     
     def __init__(self, config: Dict[str, Any]):
@@ -237,120 +134,6 @@ class ErrorPreventionManager:
             config['error_prevention_state'] = {}
         
         self.state = config['error_prevention_state']
-        self._merge_case_variant_keys()
-
-    @staticmethod
-    def _merge_state_entries(keep: Dict[str, Any], drop: Dict[str, Any]) -> Dict[str, Any]:
-        """Merge two state entries that describe the same provider/model streak.
-
-        Conservative by design: losing a ban is worse than holding one slightly
-        too long, so counters take the MAX, timestamps take the LATEST, and the
-        most restrictive ban_state wins ('disabled' > timed ban > None).
-        """
-        if not isinstance(keep, dict):
-            return drop if isinstance(drop, dict) else {}
-        if not isinstance(drop, dict):
-            return keep
-
-        merged = dict(keep)
-
-        # Counter fields: take the MAX so a streak is never silently reset.
-        for field in ('streak', 'ban_escalation_count',
-                      'consecutive_failures', 'total_failures'):
-            if field not in keep and field not in drop:
-                continue
-            a = keep.get(field) or 0
-            b = drop.get(field) or 0
-            try:
-                merged[field] = max(int(a), int(b))
-            except (TypeError, ValueError):
-                merged[field] = a or b
-
-        # Timestamps: keep the LATEST so a live ban is never shortened.
-        for field in ('last_error_time', 'last_failure_time', 'ban_until'):
-            if field not in keep and field not in drop:
-                continue
-            a = keep.get(field)
-            b = drop.get(field)
-            if a is None:
-                merged[field] = b
-            elif b is None:
-                merged[field] = a
-            else:
-                try:
-                    merged[field] = max(float(a), float(b))
-                except (TypeError, ValueError):
-                    merged[field] = a
-
-        # Restrictiveness ranking. 'disabled' is permanent and outranks any
-        # timed ban; any timed ban outranks no ban at all.
-        def _rank(entry: Dict[str, Any]) -> int:
-            st = entry.get('ban_state')
-            if st == 'disabled':
-                return 2
-            if st:
-                return 1
-            return 0
-
-        if _rank(drop) > _rank(keep):
-            merged['ban_state'] = drop.get('ban_state')
-
-        return merged
-
-    def _merge_case_variant_keys(self) -> int:
-        """Collapse state keys that differ only by case. Returns keys removed.
-
-        State written before key normalization used the raw upstream model id,
-        so the same model could accumulate two independent streaks (e.g.
-        'x5m5x/GLM-5.2/rate_limit' and 'x5m5x/glm-5.2/rate_limit'). Those split
-        entries would half-ban a model — failures recorded under one casing are
-        invisible to a lookup using the other — and they also emit duplicate
-        JSON keys from /api/config, which strict parsers reject.
-        """
-        if not isinstance(self.state, dict) or not self.state:
-            return 0
-
-        canonical: Dict[str, str] = {}
-        removed = 0
-
-        for key in list(self.state.keys()):
-            if not isinstance(key, str):
-                continue
-            # Only the provider/model segments are normalized; error_type is
-            # internal and already lowercase.
-            parts = key.split('/')
-            if len(parts) >= 3:
-                norm = '/'.join(
-                    [parts[0].lower(), '/'.join(parts[1:-1]).lower(), parts[-1]]
-                )
-            else:
-                norm = key.lower()
-
-            if norm == key:
-                canonical.setdefault(norm, key)
-                continue
-
-            existing = canonical.get(norm)
-            if existing is None and norm in self.state:
-                existing = norm
-
-            if existing is None:
-                # No canonical twin yet: rename this entry in place.
-                self.state[norm] = self.state.pop(key)
-                canonical[norm] = norm
-            else:
-                self.state[existing] = self._merge_state_entries(
-                    self.state.get(existing), self.state.pop(key)
-                )
-                canonical[norm] = existing
-                removed += 1
-
-        if removed:
-            print(
-                f"[ErrorPrevention] Merged {removed} case-variant state key(s)",
-                flush=True,
-            )
-        return removed
     
     @property
     def enabled(self) -> bool:
@@ -388,12 +171,6 @@ class ErrorPreventionManager:
     
     def classify_error(self, status_code: int, error_msg: Optional[str]) -> str:
         """Classify error into one of the standard types."""
-        # OpenCode Zen free-tier policy gate — FIRST, before any pattern
-        # matching: the 'auth' pattern list contains '403'/'forbidden' and
-        # would otherwise win, sending the leaf down the 90s ephemeral
-        # softban path that feeds the infinite wrap loop (2026-09-18).
-        if is_free_tier_error(status_code, error_msg):
-            return 'free_tier'
         msg = (error_msg or '').lower()
         code_str = str(status_code)
         
@@ -415,17 +192,9 @@ class ErrorPreventionManager:
         
         return 'unknown'
     
-    def _state_prefix(self, provider: str, model: str) -> str:
-        """Generate normalized provider/model prefix for state keys and lookups.
-
-        Normalizes provider and model to lowercase so 'GLM-5.2' and 'glm-5.2'
-        map to the same streak. Error type is NOT normalized (it's internal).
-        """
-        return f"{provider.lower()}/{model.lower()}"
-
     def get_state_key(self, provider: str, model: str, error_type: str) -> str:
         """Generate unique key for this error streak."""
-        return f"{self._state_prefix(provider, model)}/{error_type}"
+        return f"{provider}/{model}/{error_type}"
     
     def is_banned(self, provider: str, model: str) -> Tuple[bool, Optional[str], Optional[float]]:
         """
@@ -440,9 +209,8 @@ class ErrorPreventionManager:
         now = time.time()
         
         # Check all error types for this provider/model
-        prefix = self._state_prefix(provider, model) + "/"
         for key, entry in self.state.items():
-            if not key.startswith(prefix):
+            if not key.startswith(f"{provider}/{model}/"):
                 continue
             
             ban_state = entry.get('ban_state')
@@ -470,8 +238,7 @@ class ErrorPreventionManager:
             return
         
         # Clear all error type streaks for this model
-        prefix = self._state_prefix(provider, model) + "/"
-        keys_to_clear = [k for k in self.state.keys() if k.startswith(prefix)]
+        keys_to_clear = [k for k in self.state.keys() if k.startswith(f"{provider}/{model}/")]
         for key in keys_to_clear:
             self.state[key]['streak'] = 0
     
@@ -562,34 +329,6 @@ class ErrorPreventionManager:
                 'duration_seconds': self.rate_limit_cooldown_seconds,
                 'notify': False,
                 'ephemeral': True,   # Part 2b: route to sidecar, not config.yaml
-            }
-
-        # ── Immediate longban for OpenCode Zen free-tier policy (403 app-only) ──
-        # The free-tier 403 is a server-side policy wall, not a transient fault:
-        # retrying the leaf cannot succeed. Bench it long enough that the hourly
-        # wrap re-probe costs one wasted request per hour instead of an infinite
-        # loop.
-        if error_type == 'free_tier':
-            _ft_minutes = int(self.settings.get('free_tier_ban_minutes', 60))
-            entry['ban_state'] = 'longban'
-            entry['ban_until'] = now + _ft_minutes * 60
-            entry['ban_escalation_count'] = max(entry.get('ban_escalation_count', 0), 1)
-            entry['streak'] = 0
-            print(
-                f"[ErrorPrevention] IMMEDIATE free_tier longban: "
-                f"{provider}/{model} for {_ft_minutes}m "
-                f"(OpenCode free tier is app-only; 403 FreeTierError)",
-                flush=True,
-            )
-            return {
-                'action': 'free_tier',
-                'model': model,
-                'provider': provider,
-                'error_type': 'free_tier',
-                'duration_minutes': _ft_minutes,
-                'duration_seconds': _ft_minutes * 60,
-                'notify': False,
-                'ephemeral': True,   # sidecar-persisted; no config.yaml rewrite
             }
 
         # ── Immediate softban for auth (401/403) ─────────────────────
@@ -760,8 +499,7 @@ class ErrorPreventionManager:
     def manually_enable_model(self, provider: str, model: str):
         """Re-enable a disabled model: clear all its ban state + flip config enabled flag."""
         # Clear every error-streak entry for this provider/model
-        prefix = self._state_prefix(provider, model) + "/"
-        for key in [k for k in self.state.keys() if k.startswith(prefix)]:
+        for key in [k for k in self.state.keys() if k.startswith(f"{provider}/{model}/")]:
             self.state[key]['ban_state'] = None
             self.state[key]['ban_until'] = None
             self.state[key]['streak'] = 0
@@ -911,16 +649,6 @@ def _handle_action(action: Optional[Dict[str, Any]], config: Dict[str, Any]):
             f"Model still failing after long-ban: {model}",
             f"{model} ({provider}) failed again with {etype} after the long-ban expired. "
             f"Auto-disable is turned off, so the model remains enabled.",
-            push=action.get('notify', False),
-        )
-    elif act == 'free_tier':
-        add_notification(
-            'warning',
-            f"OpenCode Zen free-tier policy: {model}",
-            f"{model} ({provider}) returned 403 FreeTierError — OpenCode's free tier can "
-            f"only be used from within the OpenCode app. Benched ~"
-            f"{action.get('duration_minutes', 60)} minutes; use a paid Zen tier/API key, "
-            f"or route free-tier models through the OpenCode app.",
             push=action.get('notify', False),
         )
 
