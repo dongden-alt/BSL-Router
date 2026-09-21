@@ -1,14 +1,17 @@
 # Dependencies for BSL Router
-# Pinned to the validated production stack (2026-09-12): the suite (2729 tests)
-# and the live :6969 router run on these exact versions. Unbounded floors let CI
-# resolve bleeding-edge FastAPI/Starlette and broke route iteration (_IncludedRouter).
-fastapi==0.111.0
+# Pinned stack (2026-09-21). FastAPI/Starlette security bump - suite re-validated
+# green on the 3.11/3.12 CI legs. Py3.10 is dropped: fastapi 0.129.1 pulls typing-inspection>=0.4.2
+# (typing-extensions>=4.12.0) while mitmproxy 11.0.2 caps typing-extensions<=4.11.0
+# on python<3.11. Keep typing-extensions unpinned (a 4.11.0 pin breaks the
+# 3.11/3.12 legs; Py3.10 cannot resolve this stack at all).
+fastapi==0.129.1
+starlette==0.52.1
 uvicorn[standard]==0.30.1
 httpx[http2]==0.27.0
 pydantic==2.7.4
 PyYAML==6.0.1
 cryptography==44.0.3
-python-multipart==0.0.9
+python-multipart==0.0.32
 mitmproxy==11.0.2
 dnspython==2.8.0
 openpyxl==3.1.5

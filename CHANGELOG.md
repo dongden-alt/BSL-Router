@@ -7,7 +7,37 @@ Mọi thay đổi đáng chú ý của BSL Router được ghi lại trong file 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-**🇬🇧 [English](#102---2026-08-15)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+**🇬🇧 [English](#105---2026-09-21)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+
+---
+
+## [1.0.5] - 2026-09-21
+
+14 commits since 1.0.4 — a provider-integration and observability wave: CommandCode alpha transport with `thought_signature` preservation, FEL stream observability phase 1, OAuth/usage hardening, and a security-bumped pinned stack (fastapi 0.129.1 / starlette 0.52.1 / python-multipart 0.0.32). **Python 3.10 support is dropped**: fastapi 0.129.1 pulls `typing-inspection>=0.4.2` (requiring `typing-extensions>=4.12.0`) while mitmproxy 11.0.2 caps `typing-extensions<=4.11.0` on python<3.11; the CI matrix is now 3.11/3.12.
+
+### Added
+
+- **CommandCode alpha transport** — `thought_signature` preserved through the egress path; CommandCode provider endpoint moved to `/provider/v1` (auth-wall verified); envelope repair + load-time connection dedup.
+- **FEL stream observability phase 1** — CBNF orphan guard + `aclose` leak fix alongside the phase-1 stream observability hooks.
+- **Antigravity native-OAuth bypass for unmapped `/api/test-model` slots** — the antigravity probe speaks the Cloud Code wire (`v1internal:streamGenerateContent`).
+
+### Fixed
+
+- **7h-stale Usage dashboard on UTC+7 hosts** — `_safe_ts_epoch` now preserves the UTC offset.
+- **Usage charts render the full-window summary** instead of a 500-row table page.
+- **OAuth duplicate connections** — collapsed on save; all matching token rows refresh together.
+- **Config case-variant state keys** normalized.
+- **MintRouter direct-stream usage frames** fixed.
+- **Revert** — empty-credential prune + OpenCode Zen free-tier terminal gate rolled back (2026-09-20) after live-fire issues.
+
+### Changed
+
+- **Pinned security stack** — fastapi 0.111.0→0.129.1, starlette 0.37.2→0.52.1, python-multipart 0.0.9→0.0.32; full suite re-validated on the Py3.11 and Py3.12 legs.
+- **Python 3.10 dropped** — CI matrix `['3.10','3.11','3.12']` → `['3.11','3.12']`; README floors raised to 3.11+.
+
+### Maintenance
+
+- **AGENTS.md rewrite (2026-09-20)** — Gate 4 aligned to the verified 5-path gitignore invariant; repo quick-facts table added.
 
 ---
 
@@ -264,6 +294,36 @@ Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-
 ---
 
 # 🇻🇳 Tiếng Việt
+
+---
+
+## [1.0.5] - 2026-09-21
+
+14 commit từ 1.0.4 — đợt tích hợp provider + observability: transport CommandCode alpha (giữ `thought_signature` qua đường egress), FEL stream observability giai đoạn 1, gia cố OAuth/usage, cùng stack pin nâng bảo mật (fastapi 0.129.1 / starlette 0.52.1 / python-multipart 0.0.32). **Python 3.10 ngừng hỗ trợ**: fastapi 0.129.1 kéo `typing-inspection>=0.4.2` (cần `typing-extensions>=4.12.0`) còn mitmproxy 11.0.2 chặn `typing-extensions<=4.11.0` trên python<3.11; matrix CI giờ là 3.11/3.12.
+
+### Thêm Mới
+
+- **Transport CommandCode alpha** — `thought_signature` giữ nguyên qua đường egress; endpoint provider CommandCode chuyển sang `/provider/v1` (đã xác minh auth-wall); sửa envelope + dedup kết nối lúc load.
+- **FEL stream observability giai đoạn 1** — guard CBNF orphan + sửa leak `aclose` đi cùng hook observability giai đoạn 1.
+- **Bypass native-OAuth Antigravity cho slot `/api/test-model` chưa map** — probe antigravity nói đúng wire Cloud Code (`v1internal:streamGenerateContent`).
+
+### Sửa Lỗi
+
+- **Usage dashboard lệch 7 giờ trên host UTC+7** — `_safe_ts_epoch` giờ giữ nguyên offset UTC.
+- **Biểu đồ Usage render tóm tắt toàn cửa sổ** thay vì trang bảng 500 dòng.
+- **OAuth trùng kết nối** — gộp khi lưu; mọi dòng token khớp được refresh cùng lúc.
+- **Chuẩn hóa key state biến thể hoa/thường trong config.**
+- **Sửa usage-frame direct-stream MintRouter.**
+- **Revert** — prune credential rỗng + cổng terminal free-tier OpenCode Zen được rollback (2026-09-20) sau vấn đề live-fire.
+
+### Thay Đổi
+
+- **Stack pin bảo mật** — fastapi 0.111.0→0.129.1, starlette 0.37.2→0.52.1, python-multipart 0.0.9→0.0.32; full suite xác minh lại trên chân Py3.11 và Py3.12.
+- **Python 3.10 bị loại** — matrix CI `['3.10','3.11','3.12']` → `['3.11','3.12']`; README nâng sàn lên 3.11+.
+
+### Bảo Trì
+
+- **Viết lại AGENTS.md (2026-09-20)** — Gate 4 căn theo invariant gitignore 5-path đã xác minh; thêm bảng quick-facts repo.
 
 ---
 

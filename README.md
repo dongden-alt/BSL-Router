@@ -4,11 +4,11 @@
 >
 > **AI router biết suy nghĩ.** Không chỉ là proxy — một engine trí tuệ 5 tầng tự động phân loại, định tuyến, dịch giao thức, và điều phối trên 12+ provider với cổng chất lượng cơ học.
 
-[![Version: 1.0.4](https://img.shields.io/badge/Version-1.0.4-00d9a3.svg)](https://github.com/dongden-alt/BSL-Router/releases/tag/v1.0.4)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776ab.svg)](https://www.python.org/downloads/)
+[![Version: 1.0.5](https://img.shields.io/badge/Version-1.0.5-00d9a3.svg)](https://github.com/dongden-alt/BSL-Router/releases/tag/v1.0.5)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776ab.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
-[![Tests: 2700+](https://img.shields.io/badge/Tests-2700+-brightgreen.svg)](#-verification)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.129+-009688.svg)](https://fastapi.tiangolo.com/)
+[![Tests: 2800+](https://img.shields.io/badge/Tests-2800+-brightgreen.svg)](#-verification)
 
 **🇬🇧 [English](#-the-problem)** · **🇻🇳 [Tiếng Việt](#-vấn-đề)**
 
@@ -401,13 +401,13 @@ For apps that don't let you change the API URL (like some VS Code extensions), B
 
 | Metric | Value |
 |---|---|
-| **Test suite** | 2,700+ tests across 20+ suites |
+| **Test suite** | 2,800+ tests across 20+ suites |
 | **Test pass rate** | 100% (0 failures, 0 regressions) |
 | **Quality gate tests** | 18/18 (worst-score-wins, verdict derivation, member merge) |
 | **Orchestration tests** | 46/46 (orchestrator:20, ultra:13, max:13) |
 | **Full suite runtime** | ~315 seconds |
-| **Python version** | 3.10+ |
-| **Framework** | FastAPI 0.115+ |
+| **Python version** | 3.11+ |
+| **Framework** | FastAPI 0.129+ |
 
 ---
 
@@ -779,13 +779,13 @@ Cho app không cho đổi API URL, BSL Router chặn traffic ở OS level. Watch
 
 | Chỉ Số | Giá Trị |
 |---|---|
-| **Test suite** | 2.700+ test qua 20+ suite |
+| **Test suite** | 2.800+ test qua 20+ suite |
 | **Tỷ lệ pass** | 100% (0 fail, 0 regression) |
 | **Test cổng chất lượng** | 18/18 (worst-score-wins, verdict, member merge) |
 | **Test orchestration** | 46/46 (orchestrator:20, ultra:13, max:13) |
 | **Runtime full suite** | ~315 giây |
-| **Python version** | 3.10+ |
-| **Framework** | FastAPI 0.115+ |
+| **Python version** | 3.11+ |
+| **Framework** | FastAPI 0.129+ |
 
 ---
 

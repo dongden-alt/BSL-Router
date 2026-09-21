@@ -11,7 +11,7 @@ Cảm ơn bạn đã quan tâm đóng góp. Tài liệu này hướng dẫn các
 ## Development Setup
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.11+
 - Git
 - (Optional) mitmproxy for MITM features
 
@@ -97,7 +97,7 @@ Use GitHub Issues with the appropriate template:
 ## Thiết Lập Môi Trường
 
 ### Yêu Cầu
-- Python 3.10+
+- Python 3.11+
 - Git
 - (Tùy chọn) mitmproxy cho tính năng MITM
 

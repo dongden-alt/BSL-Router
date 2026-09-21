@@ -201,7 +201,7 @@ Before pushing anything that can change CI results:
 | Launcher | `scripts/bslrouter.ps1` (`Start-App`); `START-9router.bat`; `shutdown_bsl.ps1` |
 | Live config | `config.yaml` (gitignored; `config.example.yaml` is the tracked template) |
 | Admin key | `.bsl_key` / `.bsl_key.dpapi` (gitignored) |
-| venvs | `.venv` (dev, Py3.10 — gitignored) and `.venv311` (CI-parity Py3.11 leg — visible-untracked, never bulk-add) |
+| venvs | `.venv` (dev — gitignored) and `.venv311` (CI-parity Py3.11 leg — visible-untracked, never bulk-add) |
 | Tests | `app/tests/` — suite must stay green; launcher-pattern assertions in `app/tests/test_mitm_lifecycle.py` |
 | Gate script | `scripts/pre-push-check.ps1` (read-only; exit 0 = pass / 1 = fail) |
 | Reference KIs | `ki-bslrouter-log-stall-ide-shutdown`, `ki-bslrouter-github-push-guideline`, `ki-ci-version-parity-push-discipline` |

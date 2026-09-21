@@ -32,6 +32,6 @@ Paste relevant log output here — Dán log liên quan vào đây
 ## Environment · Môi trường
 
 - OS: [e.g., Windows 11, Ubuntu 22.04]
-- Python version: [e.g., 3.10.11]
+- Python version: [e.g., 3.11.9 or 3.12.7]
 - BSL Router version: [e.g., 1.0.0]
 - Provider(s) affected: [e.g., OpenAI, Anthropic]
