@@ -395,32 +395,39 @@ def test_t5_streaming_tool_call_accumulates_then_emits_function_call():
 
 
 def test_t5_truncated_tool_call_drops_and_signals_max_tokens():
-    """L3 TRUNCATION GUARD: a tool call whose argument JSON is cut off mid-stream
-    (thinking model exhausts the output budget) must NOT be emitted as an
-    argument-less functionCall (which the IDE reports as TOOL_CALL_INCOMPLETE).
-    Instead the malformed call is dropped and finishReason is forced to MAX_TOKENS."""
+    """DROP-SYNDROME FIX (2026-09-22): a tool call whose argument JSON is cut
+    mid-stream is now REPAIRED via the shared ladder before being dropped.
+
+    This test was written when truncated args were masked as args={} (causing
+    TOOL_CALL_INCOMPLETE), then updated when the guard started dropping them.
+    Now the guard repairs first: the fragment `{\"TargetFile\": \"D:\\Projects\\`
+    closes to `{\"TargetFile\": \"D:\\Projects\\\"}`, which is valid JSON.
+
+    The call SURVIVES with repaired args and finishReason=STOP. A call is
+    dropped and MAX_TOKENS forced ONLY when the fragment is genuinely
+    unrecoverable (see test_gemini_tool_arg_repair.py::TestUnrecoverableStillDrops).
+    """
     state = {}
     chunks = [
         {"id": "x", "model": "claude-opus-4-6-thinking", "choices": [{"index": 0, "delta": {"tool_calls": [
             {"index": 0, "id": "call_1", "type": "function", "function": {"name": "write_to_file", "arguments": ""}}
         ]}, "finish_reason": None}]},
-        # Truncated argument JSON — unterminated string, will not parse.
+        # Truncated argument JSON — unterminated string, but REPAIRABLE.
         {"id": "x", "model": "m", "choices": [{"index": 0, "delta": {"tool_calls": [
             {"index": 0, "function": {"arguments": '{"TargetFile": "D:\\\\Projects\\\\'}}
         ]}, "finish_reason": None}]},
-        # Upstream may even falsely claim tool_calls; guard must override to MAX_TOKENS.
         {"id": "x", "model": "m", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
     ]
     emitted = [openai_chunk_to_gemini(c, state) for c in chunks]
     finish = emitted[2]["response"]
     cand = finish["candidates"][0]
-    # No functionCall part should survive (the malformed call is dropped).
-    assert not any("functionCall" in p for p in cand["content"]["parts"]), cand["content"]["parts"]
-    # §8.8 (2026-08-24, v3): empty-text part (not notice) — no renderable content.
-    assert cand["content"]["parts"][0]["text"] == "", cand["content"]["parts"]
-    assert cand["content"]["parts"][0]["text"] != BSL_NO_OUTPUT_NOTICE
-    # Honest truncation signal, NOT STOP.
-    assert cand["finishReason"] == "MAX_TOKENS"
+    # The call now SURVIVES with repaired args instead of being dropped.
+    fc_parts = [p for p in cand["content"]["parts"] if "functionCall" in p]
+    assert len(fc_parts) == 1, "repairable call must not be dropped"
+    assert fc_parts[0]["functionCall"]["name"] == "write_to_file"
+    assert fc_parts[0]["functionCall"]["args"]["TargetFile"] == 'D:\\Projects\\"}'
+    # A complete batch (all calls recovered) must NOT signal truncation.
+    assert cand["finishReason"] == "STOP", "repaired batch must not force MAX_TOKENS"
 
 
 def test_t5_complete_tool_call_still_emits_function_call_after_guard():

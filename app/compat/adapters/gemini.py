@@ -153,6 +153,44 @@ def terminal_error_frame(code: int, message: str, model: str = "") -> Dict[str, 
 # Antigravity IDE metadata injection (spec §8.16)
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ─── Tool-argument repair ledger (DROP-SYNDROME FIX 2026-09-22) ───────────
+# The drop site below previously only print()ed to stdout. Router stdout is
+# NOT captured to disk, so a defect that silently deleted tool calls from
+# every heavily-fragmented batch left no durable evidence anywhere — it took
+# a purpose-built reproducer to find. These counters make the repair/drop rate
+# observable in-process.
+_TOOL_ARG_STATS = {"repaired": 0, "dropped": 0}
+
+
+def get_tool_arg_stats() -> Dict[str, int]:
+    """Snapshot of tool-argument repair/drop counters (process-local)."""
+    return dict(_TOOL_ARG_STATS)
+
+
+def _repair_tool_args(raw_args: str) -> Optional[Dict[str, Any]]:
+    """Best-effort parse of a tool-arguments string via the shared repair ladder.
+
+    Returns the parsed dict, or None when the fragment is genuinely
+    unrecoverable. NEVER raises — the caller is on the streaming hot path.
+
+    The ladder (app/middleware/tool_arg_repair.py) closes unterminated
+    strings, balances brackets, quotes bare keys/values and strips dangling
+    commas. Imported lazily: adapters are imported very early during app
+    construction and a module-level middleware import risks a cycle.
+    """
+    if not isinstance(raw_args, str) or not raw_args.strip():
+        return None
+    try:
+        from app.middleware.tool_arg_repair import repair_json_arguments
+        repaired, was_repaired = repair_json_arguments(raw_args)
+        if not was_repaired:
+            return None
+        parsed = json.loads(repaired)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
 def _inject_tool_metadata(args: Any, tool_name: str) -> Dict[str, Any]:
     """Inject required IDE metadata fields into functionCall args.
 
@@ -681,21 +719,48 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
             try:
                 args = json.loads(raw_args) if raw_args else {}
             except (json.JSONDecodeError, TypeError) as e:
-                # L3 TRUNCATION GUARD — root cause of Opus/Sonnet TOOL_CALL_INCOMPLETE.
-                # A thinking model can exhaust the output-token budget mid tool call,
-                # cutting the argument JSON so it will not parse. The previous behavior
-                # silently substituted args={}, which the Antigravity IDE receives as a
-                # malformed call and reports as TOOL_CALL_INCOMPLETE. Instead of masking
-                # the failure, DROP the truncated call and force a MAX_TOKENS finishReason
-                # (below) so the IDE sees an honest truncation it can retry/continue from.
+                # ── DROP-SYNDROME FIX (2026-09-22) ────────────────────────
+                # ROOT CAUSE of "GLM loses tool calls from a batch". A model
+                # streams each call's arguments as many small deltas; this
+                # function reassembles them and parses once at finish. If the
+                # reassembled buffer does not parse, the old code `continue`d
+                # — DELETING that call from the batch. The IDE then received
+                # N-1 functionCall parts plus a forced MAX_TOKENS, i.e. a
+                # batch missing members and a model reporting truncation.
+                #
+                # It looked model-specific because it scales with argument
+                # fragmentation: GLM averages 8.6 arg-deltas per call vs
+                # Qwen's 4.5 (measured), so GLM presents ~2x the reassembly
+                # surface. Severity ordering (GLM > Sonnet/Opus > Qwen/Kimi)
+                # tracks fragmentation density, not model capability.
+                #
+                # It went undetected because the ANTHROPIC lane has repaired
+                # this since day one (stream_normalizer.py::_repair_tool_input)
+                # while this Gemini lane — the only one the Antigravity IDE
+                # actually speaks — never called any repair.
+                #
+                # Repair first; DROP only what is truly unrecoverable, so
+                # MAX_TOKENS remains an honest signal and we never invent a
+                # call the model did not make.
+                repaired_args = _repair_tool_args(raw_args)
+                if repaired_args is None:
+                    _TOOL_ARG_STATS["dropped"] += 1
+                    print(
+                        f"[BSL ROUTER] Tool args UNRECOVERABLE for {name}: {e}. "
+                        f"Dropping malformed call, signaling MAX_TOKENS. "
+                        f"Raw args ({len(raw_args)} chars): {raw_args[:200]!r}",
+                        flush=True,
+                    )
+                    truncated_tool_call = True
+                    continue
+                _TOOL_ARG_STATS["repaired"] += 1
                 print(
-                    f"[BSL ROUTER] Tool args TRUNCATED for {name}: {e}. "
-                    f"Dropping malformed call, signaling MAX_TOKENS. "
-                    f"Raw args ({len(raw_args)} chars): {raw_args[:200]!r}",
+                    f"[BSL ROUTER] Tool args REPAIRED for {name} "
+                    f"({len(raw_args)} chars, {e.__class__.__name__}): call preserved "
+                    f"instead of dropped from the batch.",
                     flush=True,
                 )
-                truncated_tool_call = True
-                continue
+                args = repaired_args
             # §8.16: inject Antigravity IDE metadata when model omits it.
             # The IDE validates tool calls against a schema requiring toolSummary
             # and toolAction. Many models (DeepSeek, Qwen, GLM) don't generate
@@ -884,7 +949,18 @@ def openai_response_to_gemini(openai_resp: Dict[str, Any], model: str) -> Dict[s
         try:
             args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
         except (json.JSONDecodeError, TypeError):
-            args = {}
+            # DROP-SYNDROME FIX (2026-09-22), non-streaming twin. Same missing
+            # repair as the streaming flush, different symptom: substituting
+            # args={} ships a call with no arguments, which the IDE reports as
+            # TOOL_CALL_INCOMPLETE. Repair via the shared ladder first; fall
+            # back to {} only when the fragment is unrecoverable.
+            repaired_args = _repair_tool_args(raw_args if isinstance(raw_args, str) else "")
+            if repaired_args is not None:
+                _TOOL_ARG_STATS["repaired"] += 1
+                args = repaired_args
+            else:
+                _TOOL_ARG_STATS["dropped"] += 1
+                args = {}
         # §8.16: inject Antigravity IDE metadata when model omits it.
         args = _inject_tool_metadata(args, fn_name)
         _fc_part: Dict[str, Any] = {"functionCall": {"name": fn_name, "args": args}}

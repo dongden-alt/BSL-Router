@@ -13,6 +13,7 @@ untouched):
   3. quote unquoted bare values:           {"k": *.js}     -> {"k": "*.js"}
   4. close truncation: terminate open strings, fix dangling comma/colon,
      balance unmatched {/[ in reverse open order.
+  5. strip dangling commas before a closer:  {"k": 1,}      -> {"k": 1}
 
 Pure functions, no I/O, no threads. Fail-open by contract: NEVER raises.
 """
@@ -142,6 +143,55 @@ def _quote_unquoted_values(s: str) -> str:
     return "".join(out)
 
 
+def _strip_trailing_commas(s: str) -> str:
+    """Remove commas that sit directly before a '}' or ']' closer.
+
+    ``{"path": "a.py",}`` -> ``{"path": "a.py"}``
+
+    A very common model slip, and one ``_close_truncation`` cannot fix: that
+    step only strips a comma at the ABSOLUTE END of the buffer, so a comma
+    followed by a closer survives and the document stays invalid. Observed in
+    the drop reproducer as the single unrecoverable case of seven.
+
+    String-aware: a comma inside a string literal is never touched, so
+    ``{"q": "a,}"}`` passes through unchanged. Whitespace between the comma
+    and the closer is tolerated (``{"k": 1 , }``).
+    """
+    out: List[str] = []
+    i = 0
+    n = len(s)
+    in_str = False
+    esc = False
+    while i < n:
+        c = s[i]
+        if in_str:
+            out.append(c)
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == ",":
+            # Look past whitespace: a closer here means this comma is dangling.
+            j = i + 1
+            while j < n and s[j] in _WS:
+                j += 1
+            if j < n and s[j] in "}]":
+                i += 1  # drop the comma, keep the whitespace/closer
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _close_truncation(s: str) -> str:
     """Close an unterminated JSON document: terminate open strings, strip a
     dangling trailing comma (or complete a dangling colon with null), then
@@ -205,6 +255,14 @@ def _ladder_candidates(args_str: str) -> List[str]:
     s4 = _close_truncation(base)
     if s4 != base:
         candidates.append(s4)
+    # Step 5 — dangling comma before a closer. Applied to the original AND to
+    # every candidate produced so far: a fragment can need quoting, closing
+    # AND comma-stripping together (e.g. '{path: "a",}'), and each earlier
+    # rung leaves the dangling comma untouched.
+    for cand in [args_str] + list(candidates):
+        s5 = _strip_trailing_commas(cand)
+        if s5 != cand and s5 not in candidates:
+            candidates.append(s5)
     return candidates
 
 
