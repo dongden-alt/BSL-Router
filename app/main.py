@@ -2507,6 +2507,63 @@ def _read_version_file() -> str | None:
     except Exception:
         return None
 
+# NOTE: _compare_versions is defined much later in this module (~auto-update
+# section). That is fine — Python resolves it at call time, not at def time.
+# Do not "fix" this by moving either function.
+
+_SEMVER_TAG_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+
+
+def _highest_semver_tag(names) -> str | None:
+    """Highest vX.Y.Z from raw tag names; non-semver tags (e.g. snapshot names) ignored.
+
+    Order-independent: scans every entry and keeps the max via _compare_versions,
+    so it never depends on the order GitHub returns tags in.
+    """
+    best = None
+    for raw in names or []:
+        m = _SEMVER_TAG_RE.match(str(raw or "").strip())
+        if not m:
+            continue
+        cand = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+        if best is None or _compare_versions(cand, best) > 0:
+            best = cand
+    return best
+
+
+async def _resolve_latest_version(github_repo: str, rel_tag: str, release_url: str) -> tuple[str, str]:
+    """Resolve latest as the max semver of the Release tag AND repo tags.
+
+    Tag fallback (2026-09-22): a tag-only "post-tag wave" release has no
+    Release object, so /releases/latest stays stale (v1.0.5 shipped this
+    way). Shared by /api/version/check and /api/check-update so the two
+    generations cannot drift. Returns (latest, release_url). Fail-open: a
+    failed/blocked tags fetch degrades silently to release-only behavior.
+    """
+    tag_latest = ""
+    try:
+        tresp = await http_client.get(
+            f"https://api.github.com/repos/{github_repo}/tags?per_page=100",
+            timeout=10.0,
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        if tresp.status_code == 200:
+            tag_latest = _highest_semver_tag(
+                [t.get("name", "") for t in tresp.json()]
+            ) or ""
+    except Exception:
+        # Best-effort: a failed/blocked tags fetch must never break the
+        # release path — fall through to release-only behavior.
+        pass
+
+    latest = rel_tag
+    if tag_latest and _compare_versions(tag_latest, rel_tag or "0.0.0") > 0:
+        latest = tag_latest
+        # A bare tag has no Release page; point at the tag list instead
+        # so the pill's link is not dead.
+        release_url = release_url or f"https://github.com/{github_repo}/tags"
+    return latest, release_url
+
 # Update check cache: avoid hammering GitHub from the sidebar probe
 _VERSION_CHECK_CACHE: dict = {"ts": 0.0, "payload": None}
 _VERSION_CHECK_CACHE_TTL = 300.0  # matches config update.auto_check_interval
@@ -2541,14 +2598,19 @@ async def version_check():
                 timeout=10.0,
                 headers={"Accept": "application/vnd.github+json"},
             )
+            rel_tag, release_url = "", ""
             if resp.status_code == 200:
-                latest = (resp.json().get("tag_name") or "").lstrip("v")
-                payload["latestVersion"] = latest or None
-                payload["hasUpdate"] = bool(latest) and _compare_versions(latest, current) > 0
-                payload["releaseUrl"] = resp.json().get("html_url", "")
+                rel = resp.json()
+                rel_tag = (rel.get("tag_name") or "").lstrip("v")
+                release_url = rel.get("html_url", "") or ""
             else:
                 # 404 = no releases yet; not an error worth surfacing
                 payload["error"] = "" if resp.status_code == 404 else f"GitHub API {resp.status_code}"
+
+            latest, release_url = await _resolve_latest_version(github_repo, rel_tag, release_url)
+            payload["latestVersion"] = latest or None
+            payload["hasUpdate"] = bool(latest) and _compare_versions(latest, current) > 0
+            payload["releaseUrl"] = release_url
     except Exception as e:
         payload["error"] = str(e)
     _VERSION_CHECK_CACHE["ts"] = now
@@ -13983,16 +14045,23 @@ async def check_update_endpoint():
         if resp.status_code != 200:
             return JSONResponse({"update_available": False, "error": f"GitHub API returned {resp.status_code}"})
         release = resp.json()
-        latest_tag = release.get("tag_name", "").lstrip("v")
+        rel_tag = release.get("tag_name", "").lstrip("v")
+        # Tag fallback: a tag-only release has no Release object; resolve as
+        # the max semver of releases AND tags (same helper as version_check).
+        latest_tag, release_url = await _resolve_latest_version(
+            github_repo, rel_tag, release.get("html_url", "") or ""
+        )
+        from_tags = latest_tag != rel_tag  # winner is a bare tag: no Release page
         current = _get_bsl_version()
         update_available = _compare_versions(latest_tag, current) > 0
         return JSONResponse({
             "update_available": update_available,
             "current_version": current,
             "latest_version": latest_tag,
-            "release_url": release.get("html_url", ""),
-            "release_notes": release.get("body", "")[:500],
-            "published_at": release.get("published_at", ""),
+            "release_url": release_url,
+            # A bare tag has no notes/publish date — empty when tags won.
+            "release_notes": "" if from_tags else release.get("body", "")[:500],
+            "published_at": "" if from_tags else release.get("published_at", ""),
         })
     except Exception as e:
         return JSONResponse({"update_available": False, "error": str(e)})
