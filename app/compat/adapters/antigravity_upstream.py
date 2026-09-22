@@ -37,9 +37,12 @@ pipeline (combo fallback rails, BUG L/N gates, zero-token watchdogs,
 anthropic/gemini egress converters) operates unchanged.
 """
 
+import hashlib
 import json
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 # ── Verified upstream contract constants ────────────────────────────────────
@@ -68,6 +71,80 @@ _FINISH_INVERSE = {
     "FUNCTION_CALL": "tool_calls",
     "OTHER": "stop",
 }
+
+
+# ── Router-side thought_signature cache (defense in depth, Step 3, 2026-09-21) ──
+# Clients are NOT contractually obliged to round-trip the unknown
+# thought_signature carrier, so the router caches every signature it stamps on
+# an outbound OpenAI tool_call and re-injects it on the next-turn echo even when
+# the client dropped it. Bounded LRU (512 entries, 900s TTL), pure in-memory,
+# Lock-guarded. AGENTS.md §2: NO disk I/O, NO per-entry logging, nothing on the
+# event loop -- a synchronous writer here once produced a 29.8 GB log and killed
+# the IDE. Observability is two integer counters, read directly by tests.
+_SIGNATURE_CACHE_MAX = 512
+_SIGNATURE_CACHE_TTL = 900.0
+_SIGNATURE_CACHE: "OrderedDict[Any, Any]" = OrderedDict()
+_SIGNATURE_CACHE_LOCK = threading.Lock()
+SIGNATURE_CACHE_HITS = 0
+SIGNATURE_CACHE_MISSES = 0
+
+
+def _signature_cache_key(model: str, call_id: str, name: str, args: Any) -> tuple:
+    """Composite cache key -- NEVER id-only.
+
+    ``_frame_to_chunk`` mints ids as ``f"call_{name}_{counter}"`` from a
+    PER-INSTANCE counter, so ``call_read_1`` recurs across turns and an id-only
+    key collides. Adding model + name + a digest of the canonicalized arguments
+    makes the key unique per logical call. Args are canonicalized identically on
+    both the store and lookup sides (sort_keys) so a dict at store time and the
+    JSON string echoed at lookup time hash the same.
+    """
+    if isinstance(args, dict):
+        canonical = json.dumps(args, sort_keys=True, ensure_ascii=False)
+    elif isinstance(args, str):
+        try:
+            canonical = json.dumps(json.loads(args), sort_keys=True, ensure_ascii=False)
+        except (json.JSONDecodeError, ValueError):
+            canonical = args
+    else:
+        canonical = json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return (model, call_id, name, digest)
+
+
+def _signature_cache_store(key: tuple, signature: str) -> None:
+    """Insert/refresh a signature, evicting the oldest beyond the 512 cap."""
+    if not (isinstance(signature, str) and signature):
+        return
+    now = time.monotonic()
+    with _SIGNATURE_CACHE_LOCK:
+        _SIGNATURE_CACHE[key] = (signature, now)
+        _SIGNATURE_CACHE.move_to_end(key)
+        while len(_SIGNATURE_CACHE) > _SIGNATURE_CACHE_MAX:
+            _SIGNATURE_CACHE.popitem(last=False)
+
+
+def _signature_cache_lookup(key: tuple) -> Optional[str]:
+    """Return a fresh cached signature for ``key``, or None on a silent miss.
+
+    Increments SIGNATURE_CACHE_HITS / SIGNATURE_CACHE_MISSES. An expired entry
+    is dropped and counted as a miss. NEVER logs (AGENTS.md §2).
+    """
+    global SIGNATURE_CACHE_HITS, SIGNATURE_CACHE_MISSES
+    now = time.monotonic()
+    with _SIGNATURE_CACHE_LOCK:
+        entry = _SIGNATURE_CACHE.get(key)
+        if entry is None:
+            SIGNATURE_CACHE_MISSES += 1
+            return None
+        signature, stored_at = entry
+        if now - stored_at > _SIGNATURE_CACHE_TTL:
+            _SIGNATURE_CACHE.pop(key, None)
+            SIGNATURE_CACHE_MISSES += 1
+            return None
+        _SIGNATURE_CACHE.move_to_end(key)
+        SIGNATURE_CACHE_HITS += 1
+        return signature
 
 
 # Gemini ``Schema`` proto fields a functionDeclaration ``parameters`` blob may
@@ -257,6 +334,16 @@ def openai_to_cloudcode_envelope(
             # validates that echoed calls keep their original thoughtSignature —
             # an unsigned part is rejected with INVALID_ARGUMENT.
             _tsig = tc.get("thought_signature")
+            if not (isinstance(_tsig, str) and _tsig):
+                # Step 3d (defense in depth, 2026-09-21): the client is not
+                # contractually obliged to round-trip the unknown
+                # thought_signature carrier, so fall back to the router-side
+                # cache keyed by (model, call_id, name, args-digest). The id IS
+                # a standard OpenAI field the client echoes, so it anchors the
+                # lookup. A miss is silent and non-fatal.
+                _tsig = _signature_cache_lookup(
+                    _signature_cache_key(model, call_id, name, raw_args)
+                )
             if isinstance(_tsig, str) and _tsig:
                 _fc_part["thoughtSignature"] = _tsig
             parts.append(_fc_part)
@@ -507,9 +594,25 @@ class CloudCodeSSETranslator:
                 # OpenAI tool_call lets the IDE frame converters re-emit it, so
                 # the next-turn echo is signed and Gemini 3.1-Pro stops
                 # returning INVALID_ARGUMENT on unsigned history parts.
+                # Step 2 (2026-09-21): read BOTH nesting levels. Wire telemetry
+                # (mitm_egress_frames.jsonl) shows functionCall parts sometimes
+                # carry the signature NESTED inside functionCall rather than as
+                # a part sibling, so a sibling-only read silently missed those
+                # turns. Sibling first, then nested fallback.
                 _sig = part.get("thoughtSignature")
+                if not (isinstance(_sig, str) and _sig):
+                    _sig = fc.get("thoughtSignature")
                 if isinstance(_sig, str) and _sig:
                     _openai_tc["thought_signature"] = _sig
+                    # Step 3c (2026-09-21): cache the signature so the router can
+                    # re-inject it on the next-turn echo even if the client drops
+                    # the carrier. Keyed by the minted id + name + args digest.
+                    _signature_cache_store(
+                        _signature_cache_key(
+                            self.model, _openai_tc["id"], name, fc.get("args") or {}
+                        ),
+                        _sig,
+                    )
                 tool_calls.append(_openai_tc)
 
         if thoughts:

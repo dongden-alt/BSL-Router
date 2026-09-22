@@ -193,6 +193,16 @@ class StreamNormalizer:
                     "name": fn.get("name", ""),
                     "args_buffer": args,
                     "arg_fragments": [args] if args else [],
+                    # SIG-CARRY (Gemini 3.1-Pro 400 fix, 2026-09-21): rescued
+                    # calls lost their upstream signature through the text
+                    # rescue path. The rescue parser drops non-JSON fields, so
+                    # a signature surviving here is best-effort only -- but if
+                    # one IS present we must not drop it.
+                    "thought_signature": (
+                        call.get("thought_signature")
+                        if isinstance(call.get("thought_signature"), str) and call.get("thought_signature")
+                        else ""
+                    ),
                 }
                 current_tool_index += 1
 
@@ -332,15 +342,27 @@ class StreamNormalizer:
 
 
         def _tool_events(tc_data: Dict[str, Any]):
+            # SIG-EMIT (Gemini 3.1-Pro 400 fix, 2026-09-21): re-emit the
+            # carried signature as a TOP-LEVEL field on the tool_use
+            # content_block_start event. Anthropic's protocol places the
+            # signature sibling to "input" inside content_block, but the
+            # model-side signature contract must survive the stream round
+            # trip: clients that understand it echo it back on the next
+            # turn's tool_result; without it Gemini 3.1-Pro 400s on the
+            # next-turn echo of an unsigned functionCall part.
+            _cb: Dict[str, Any] = {
+                "type": "tool_use",
+                "id": tc_data["id"],
+                "name": tc_data["name"],
+                "input": {},
+            }
+            _sig = tc_data.get("thought_signature")
+            if isinstance(_sig, str) and _sig:
+                _cb["thought_signature"] = _sig
             yield self._encode_anthropic_event("content_block_start", {
                 "type": "content_block_start",
                 "index": tc_data["index"],
-                "content_block": {
-                    "type": "tool_use",
-                    "id": tc_data["id"],
-                    "name": tc_data["name"],
-                    "input": {},
-                },
+                "content_block": _cb,
             })
             for fragment in tc_data["arg_fragments"]:
                 yield self._encode_anthropic_event("content_block_delta", {
@@ -426,10 +448,16 @@ class StreamNormalizer:
                 if not tool_calls and isinstance(legacy_call, dict) and (
                     legacy_call.get("name") or "arguments" in legacy_call
                 ):
+                    # SIG-CARRY legacy shim (Gemini 3.1-Pro 400 fix,
+                    # 2026-09-21): forward the legacy function_call's
+                    # signature onto the synthesized tool_calls entry so
+                    # legacy dialects are not silently downgraded to
+                    # unsigned calls.
                     tool_calls = [{
                         "index": 0,
                         "id": "",
                         "function": legacy_call,
+                        "thought_signature": legacy_call.get("thought_signature"),
                     }]
                 for tc in tool_calls:
                     tc_index = tc.get("index", 0)
@@ -437,6 +465,20 @@ class StreamNormalizer:
                     function = _as_obj(tc.get("function"))
                     tc_name = function.get("name", "")
                     tc_args = function.get("arguments", "")
+                    # SIG-CARRY (Gemini 3.1-Pro 400 fix, 2026-09-21): OpenAI
+                    # tool_call deltas may carry the BSL-internal snake_case
+                    # thought_signature carrier (minted by the antigravity
+                    # upstream translator). Persist it into tool_blocks so
+                    # _tool_events can re-emit it on the tool_use block;
+                    # dropping it here is why Antigravity IDE received
+                    # unsigned tool_use blocks and Gemini 3.1-Pro 400'd the
+                    # next-turn echo. Some dialects nest the carrier inside
+                    # the function object, so read both levels.
+                    tc_sig = tc.get("thought_signature")
+                    if not (isinstance(tc_sig, str) and tc_sig):
+                        tc_sig = function.get("thought_signature")
+                    if not (isinstance(tc_sig, str) and tc_sig):
+                        tc_sig = ""
 
                     if tc_index not in tool_blocks:
                         block_index = current_tool_index
@@ -447,12 +489,15 @@ class StreamNormalizer:
                             "name": tc_name,
                             "args_buffer": "",
                             "arg_fragments": [],
+                            "thought_signature": tc_sig,
                         }
                     else:
                         if tc_id:
                             tool_blocks[tc_index]["id"] = tc_id
                         if tc_name:
                             tool_blocks[tc_index]["name"] = tc_name
+                        if tc_sig:
+                            tool_blocks[tc_index]["thought_signature"] = tc_sig
 
                     # Accumulate arguments without emitting malformed fragments.
                     tool_blocks[tc_index]["args_buffer"] += tc_args
@@ -862,6 +907,24 @@ class StreamNormalizer:
                         fc = _as_obj(part.get("functionCall"))
                         name = fc.get("name", "")
                         args = json.dumps(fc.get("args") or {}, ensure_ascii=False)
+                        # SIG-CARRY (Gemini 3.1-Pro 400 fix, 2026-09-21):
+                        # stamp the thoughtSignature onto the emitted OpenAI
+                        # tool_call. Google nests it EITHER as a sibling of
+                        # functionCall on the part OR inside functionCall
+                        # itself -- read both levels, and only add the key
+                        # when a non-empty string is present (never emit an
+                        # empty carrier on the wire).
+                        _oai_tc: Dict[str, Any] = {
+                            "index": tool_call_counter,
+                            "id": f"call_{tool_call_counter}",
+                            "type": "function",
+                            "function": {"name": name, "arguments": args},
+                        }
+                        _sig = part.get("thoughtSignature")
+                        if not (isinstance(_sig, str) and _sig):
+                            _sig = fc.get("thoughtSignature")
+                        if isinstance(_sig, str) and _sig:
+                            _oai_tc["thought_signature"] = _sig
                         yield self._encode_openai_chunk({
                             "id": f"chatcmpl-bsl-{created}",
                             "object": "chat.completion.chunk",
@@ -869,12 +932,7 @@ class StreamNormalizer:
                             "model": self.model_name,
                             "choices": [{
                                 "index": 0,
-                                "delta": {"tool_calls": [{
-                                    "index": tool_call_counter,
-                                    "id": f"call_{tool_call_counter}",
-                                    "type": "function",
-                                    "function": {"name": name, "arguments": args},
-                                }]},
+                                "delta": {"tool_calls": [_oai_tc]},
                                 "finish_reason": None,
                             }],
                         })

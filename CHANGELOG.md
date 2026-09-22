@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 14 commits since 1.0.4 — a provider-integration and observability wave: CommandCode alpha transport with `thought_signature` preservation, FEL stream observability phase 1, OAuth/usage hardening, and a security-bumped pinned stack (fastapi 0.129.1 / starlette 0.52.1 / python-multipart 0.0.32). **Python 3.10 support is dropped**: fastapi 0.129.1 pulls `typing-inspection>=0.4.2` (requiring `typing-extensions>=4.12.0`) while mitmproxy 11.0.2 caps `typing-extensions<=4.11.0` on python<3.11; the CI matrix is now 3.11/3.12.
 
+Post-tag wave (2026-09-22, folded into 1.0.5): the Antigravity `thought_signature` response-path fix — the OpenAI-SSE → Anthropic-SSE converter emitted `tool_use` blocks carrying no signature, so clients stored unsigned tool calls and echoed them back unsigned, and Google rejected the history with `400 INVALID_ARGUMENT` on every multi-turn tool conversation through `antigravity/gemini-pro-agent`. A variant of the same fix inside shadow-only `normalizer_v2` was reverted (egress/ingress asymmetry broke the shadow round-trip comparator) and deferred to a separately scoped task.
+
 ### Added
 
 - **CommandCode alpha transport** — `thought_signature` preserved through the egress path; CommandCode provider endpoint moved to `/provider/v1` (auth-wall verified); envelope repair + load-time connection dedup.
@@ -23,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Antigravity `thought_signature` lost on the response path (Gemini 3.1-Pro `400`)** — `stream_normalizer._tool_events` (the OpenAI-SSE → Anthropic-SSE converter) emitted `content_block_start` with no `thought_signature` carrier, so the client stored an unsigned tool call, echoed it back unsigned on the next turn, and Google rejected the whole history with `INVALID_ARGUMENT` ("Function call is missing a thought_signature … position 4"). Ingress already read the key — it simply never received a value. Three-layer fix: (1) the streaming converter now latches the signature into `tool_blocks` and emits it on the Anthropic `tool_use` block, with the legacy `function_call` shim and the Gemini-native → OpenAI chunk path covered too; (2) `antigravity_upstream` reads the signature from both wire nesting levels into a bounded in-memory LRU cache (512 entries, TTL, two integer hit/miss counters — no log writer, AGENTS.md §2 compliant); (3) `openai_to_cloudcode_envelope` re-injects from that cache at egress, so clients or history compaction that strip the unknown key can no longer desynchronize the conversation. The non-streaming aggregator was verified unaffected (it passes `tool_calls` by reference). Tests 14 → 23 (SIG14/SIG15 series); full suite green on both CI legs.
 - **7h-stale Usage dashboard on UTC+7 hosts** — `_safe_ts_epoch` now preserves the UTC offset.
 - **Usage charts render the full-window summary** instead of a 500-row table page.
 - **OAuth duplicate connections** — collapsed on save; all matching token rows refresh together.
@@ -301,6 +304,8 @@ Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-
 
 14 commit từ 1.0.4 — đợt tích hợp provider + observability: transport CommandCode alpha (giữ `thought_signature` qua đường egress), FEL stream observability giai đoạn 1, gia cố OAuth/usage, cùng stack pin nâng bảo mật (fastapi 0.129.1 / starlette 0.52.1 / python-multipart 0.0.32). **Python 3.10 ngừng hỗ trợ**: fastapi 0.129.1 kéo `typing-inspection>=0.4.2` (cần `typing-extensions>=4.12.0`) còn mitmproxy 11.0.2 chặn `typing-extensions<=4.11.0` trên python<3.11; matrix CI giờ là 3.11/3.12.
 
+Đợt sau tag (2026-09-22, gộp vào 1.0.5): sửa đường response `thought_signature` của Antigravity — bộ chuyển đổi OpenAI-SSE → Anthropic-SSE phát block `tool_use` không kèm chữ ký, nên client lưu tool call không chữ ký rồi gửi lại y nguyên, và Google từ chối lịch sử bằng `400 INVALID_ARGUMENT` trên mọi hội thoại tool nhiều lượt qua `antigravity/gemini-pro-agent`. Biến thể của cùng bản sửa này bên trong `normalizer_v2` (chỉ chạy shadow) đã bị revert (egress/ingress bất đối xứng phá vỡ bộ so sánh round-trip shadow) và dời sang task riêng có phạm vi rõ.
+
 ### Thêm Mới
 
 - **Transport CommandCode alpha** — `thought_signature` giữ nguyên qua đường egress; endpoint provider CommandCode chuyển sang `/provider/v1` (đã xác minh auth-wall); sửa envelope + dedup kết nối lúc load.
@@ -309,6 +314,7 @@ Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-
 
 ### Sửa Lỗi
 
+- **`thought_signature` của Antigravity mất trên đường response (Gemini 3.1-Pro `400`)** — `stream_normalizer._tool_events` (bộ chuyển đổi OpenAI-SSE → Anthropic-SSE) phát `content_block_start` không có carrier `thought_signature`, nên client lưu tool call không chữ ký, lượt sau gửi lại không chữ ký, và Google từ chối toàn bộ lịch sử bằng `INVALID_ARGUMENT` ("Function call is missing a thought_signature … position 4"). Đầu vào vốn đã đọc key này — chỉ là chưa bao giờ nhận được giá trị. Sửa 3 lớp: (1) bộ chuyển đổi streaming latch chữ ký vào `tool_blocks` và phát kèm trên block `tool_use` Anthropic, phủ luôn shim `function_call` legacy và đường chunk Gemini-native → OpenAI; (2) `antigravity_upstream` đọc chữ ký từ cả hai mức lồng wire vào cache LRU trong bộ nhớ có giới hạn (512 entry, TTL, hai bộ đếm hit/miss dạng số nguyên — không log writer, đúng AGENTS.md §2); (3) `openai_to_cloudcode_envelope` tái chèn từ cache đó lúc egress, nên client hay cơ chế nén lịch sử có lược bỏ key lạ cũng không thể làm lệch pha hội thoại. Bộ gộp non-streaming đã xác minh không bị ảnh hưởng (truyền `tool_calls` theo tham chiếu). Test 14 → 23 (chuỗi SIG14/SIG15); full suite xanh trên cả hai chân CI.
 - **Usage dashboard lệch 7 giờ trên host UTC+7** — `_safe_ts_epoch` giờ giữ nguyên offset UTC.
 - **Biểu đồ Usage render tóm tắt toàn cửa sổ** thay vì trang bảng 500 dòng.
 - **OAuth trùng kết nối** — gộp khi lưu; mọi dòng token khớp được refresh cùng lúc.

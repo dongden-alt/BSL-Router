@@ -290,6 +290,7 @@ Per-key remaining quota (from one-api/new-api billing endpoints and rate-limit h
 Direct-inference overlay for [Antigravity IDE](https://antigravity.dev) — no MITM proxy needed:
 - Map Antigravity's model slots to your BSL Router providers/combos
 - Unmapped slots use native Google Cloud Code
+- `thought_signature` preserved end-to-end across multi-turn tool calls — required by Gemini thinking models, re-injected from a bounded router-side cache even if the client strips it
 - Configure from the admin dashboard → Endpoint tab
 
 ### 🌐 Remote Access
@@ -688,6 +689,7 @@ Quota còn lại theo từng key (từ billing endpoint one-api/new-api và head
 Overlay direct-inference cho Antigravity IDE — không cần MITM proxy:
 - Map slot model của Antigravity vào provider/combo của BSL Router
 - Slot không map dùng native Google Cloud Code
+- `thought_signature` giữ nguyên xuyên suốt qua các lượt tool call — yêu cầu bắt buộc của model Gemini thinking, được tái chèn từ cache có giới hạn phía router ngay cả khi client lược bỏ
 - Cấu hình từ dashboard → tab Endpoint
 
 ### 🌐 Truy Cập Từ Xa

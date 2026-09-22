@@ -538,3 +538,274 @@ def test_sig13_strip_covers_anthropic_tool_use_blocks():
     cleaned2 = strip_thought_signature_keys(payload2)
     tu2 = cleaned2["messages"][0]["content"][0]
     assert "thoughtSignature" not in tu2
+
+
+# ── SIG14: STREAMING Anthropic emit (Step 1, 2026-09-21) ──────────────────────
+# The 2026-09-04 SIG1-13 suite covered only the NON-streaming paths
+# (UniversalNormalizer + gemini.py adapters). These cover the streaming
+# OpenAI->Anthropic emit (SIG-EMIT in _tool_events) and the streaming
+# gemini->OpenAI capture, which is the path Antigravity IDE actually drives.
+
+import asyncio
+from app.compat.stream_normalizer import StreamNormalizer
+
+
+def _oenc(payload):
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+def _ochunk(delta=None, finish=None):
+    return {
+        "id": "chatcmpl-test", "object": "chat.completion.chunk",
+        "created": 0, "model": "test-model",
+        "choices": [{"index": 0, "delta": {} if delta is None else delta,
+                     "finish_reason": finish}],
+    }
+
+
+async def _byte_stream(frames):
+    for f in frames:
+        yield f
+
+
+async def _collect(stream):
+    out = b""
+    async for chunk in stream:
+        out += chunk
+    return out
+
+
+def _anthropic_events(raw):
+    events, etype = [], None
+    for line in raw.split("\n"):
+        if line.startswith("event: "):
+            etype = line[7:].strip()
+        elif line.startswith("data: "):
+            events.append((etype, json.loads(line[6:])))
+            etype = None
+    return events
+
+
+def _openai_chunks(raw):
+    return [json.loads(line[6:]) for line in raw.split("\n")
+            if line.startswith("data: ") and line[6:].strip() != "[DONE]"]
+
+
+def test_sig14_stream_tool_call_delta_carries_signature_to_anthropic():
+    """An OpenAI stream tool_call delta carrying thought_signature must surface
+    it on the emitted Anthropic tool_use content_block_start (SIG-EMIT)."""
+    frames = [
+        _oenc(_ochunk(delta={"role": "assistant", "content": ""})),
+        _oenc(_ochunk(delta={"tool_calls": [{
+            "index": 0, "id": "call_read_1", "type": "function",
+            "function": {"name": "read", "arguments": ""},
+            "thought_signature": "SIGSTREAM"}]})),
+        _oenc(_ochunk(delta={"tool_calls": [{
+            "index": 0, "function": {"arguments": '{"path":"a"}'}}]})),
+        _oenc(_ochunk(delta={}, finish="tool_calls")),
+    ]
+    n = StreamNormalizer("openai_sse", "anthropic_sse", model_name="m")
+    raw = asyncio.run(_collect(
+        n.convert_openai_to_anthropic(_byte_stream(frames)))).decode("utf-8")
+    events = _anthropic_events(raw)
+
+    tool_starts = [d for etype, d in events if etype == "content_block_start"
+                   and d.get("content_block", {}).get("type") == "tool_use"]
+    assert tool_starts, "tool_use content_block_start must be emitted"
+    cb = tool_starts[0]["content_block"]
+    assert cb["name"] == "read"
+    assert cb["thought_signature"] == "SIGSTREAM"
+
+    md = [d for etype, d in events if etype == "message_delta"]
+    assert md and md[-1]["delta"]["stop_reason"] == "tool_use"
+
+
+def test_sig14b_stream_unsigned_tool_call_emits_no_signature_key():
+    """Unsigned stream tool_call must NOT mint a thought_signature key (wire
+    hygiene: absence is the only valid state for a missing signature)."""
+    frames = [
+        _oenc(_ochunk(delta={"tool_calls": [{
+            "index": 0, "id": "call_read_2", "type": "function",
+            "function": {"name": "read", "arguments": '{"p":1}'}}]})),
+        _oenc(_ochunk(delta={}, finish="tool_calls")),
+    ]
+    n = StreamNormalizer("openai_sse", "anthropic_sse", model_name="m")
+    raw = asyncio.run(_collect(
+        n.convert_openai_to_anthropic(_byte_stream(frames)))).decode("utf-8")
+    cb = next(d["content_block"] for etype, d in _anthropic_events(raw)
+              if etype == "content_block_start"
+              and d.get("content_block", {}).get("type") == "tool_use")
+    assert "thought_signature" not in cb
+
+
+def test_sig14c_stream_split_tool_call_signature_survives_reassembly():
+    """Signature arriving on the FIRST delta of a multi-fragment tool_call must
+    survive reassembly into the final tool_use block."""
+    frames = [
+        _oenc(_ochunk(delta={"tool_calls": [{
+            "index": 0, "id": "call_edit_1", "type": "function",
+            "function": {"name": "edit", "arguments": ""},
+            "thought_signature": "SPLIT"}]})),
+        _oenc(_ochunk(delta={"tool_calls": [
+            {"index": 0, "function": {"arguments": '{"a":'}}]})),
+        _oenc(_ochunk(delta={"tool_calls": [
+            {"index": 0, "function": {"arguments": '1}'}}]})),
+        _oenc(_ochunk(delta={}, finish="tool_calls")),
+    ]
+    n = StreamNormalizer("openai_sse", "anthropic_sse", model_name="m")
+    raw = asyncio.run(_collect(
+        n.convert_openai_to_anthropic(_byte_stream(frames)))).decode("utf-8")
+    cb = next(d["content_block"] for etype, d in _anthropic_events(raw)
+              if etype == "content_block_start"
+              and d.get("content_block", {}).get("type") == "tool_use")
+    assert cb["thought_signature"] == "SPLIT"
+
+
+# ── SIG15: nested capture + router-side cache (Steps 2 & 3, 2026-09-21) ───────
+
+def test_sig15_nested_thoughtsignature_captured_by_translator():
+    """Step 2: thoughtSignature nested INSIDE functionCall (not a part sibling)
+    must still be captured onto the OpenAI tool_call carrier."""
+    frame = {"candidates": [{"content": {"role": "model", "parts": [
+        {"functionCall": {"name": "grep_search", "args": {"q": "a"},
+                          "thoughtSignature": SIG}},
+    ]}}]}
+    t = CloudCodeSSETranslator(model="gemini-pro-agent")
+    outs = t.feed(f"data: {json.dumps(frame)}\n\n")
+    assert outs
+    chunk = json.loads(outs[0].decode("utf-8")[len("data: "):].strip())
+    tc = chunk["choices"][0]["delta"]["tool_calls"][0]
+    assert tc["thought_signature"] == SIG
+    assert t.agg["tool_calls"][0]["thought_signature"] == SIG
+
+
+def test_sig15b_gemini_stream_both_nesting_levels_to_openai():
+    """convert_gemini_to_openai captures sibling-level AND nested-level
+    thoughtSignature onto the emitted OpenAI tool_call deltas."""
+    frame = {"candidates": [{"content": {"role": "model", "parts": [
+        {"text": "thinking", "thought": True},
+        {"functionCall": {"name": "a", "args": {}}, "thoughtSignature": "SIB"},
+        {"functionCall": {"name": "b", "args": {}, "thoughtSignature": "NEST"}},
+    ]}, "finishReason": "STOP"}]}
+    n = StreamNormalizer("gemini_sse", "openai_sse", model_name="m")
+    frames = [f"data: {json.dumps(frame, ensure_ascii=False)}\n\n".encode("utf-8")]
+    raw = asyncio.run(_collect(
+        n.convert_gemini_to_openai(_byte_stream(frames)))).decode("utf-8")
+    tool_deltas = [c for c in _openai_chunks(raw)
+                   if c["choices"][0]["delta"].get("tool_calls")]
+    sigs = {tc["function"]["name"]: tc.get("thought_signature")
+            for c in tool_deltas for tc in c["choices"][0]["delta"]["tool_calls"]}
+    assert sigs["a"] == "SIB"
+    assert sigs["b"] == "NEST"
+
+
+def test_sig15c_signature_cache_store_lookup_and_eviction():
+    """Step 3a/3b: composite key is stable across dict/str arg forms; the LRU
+    evicts the oldest entry beyond the 512 cap."""
+    import app.compat.adapters.antigravity_upstream as ag
+    ag._SIGNATURE_CACHE.clear()
+
+    # Same logical call expressed as dict (store side) and JSON str (lookup side)
+    k_dict = ag._signature_cache_key("m", "call_read_1", "read", {"path": "a"})
+    k_str = ag._signature_cache_key("m", "call_read_1", "read", '{"path":"a"}')
+    assert k_dict == k_str, "dict and str arg forms must hash identically"
+
+    # Different args => different key (no id-only collision).
+    k_other = ag._signature_cache_key("m", "call_read_1", "read", {"path": "b"})
+    assert k_other != k_dict
+
+    ag._signature_cache_store(k_dict, "S1")
+    assert ag._signature_cache_lookup(k_dict) == "S1"
+    assert ag._signature_cache_lookup(k_other) is None  # silent miss
+
+    # Eviction: overflow past the cap drops the oldest.
+    for i in range(ag._SIGNATURE_CACHE_MAX + 1):
+        ag._signature_cache_store(("m", f"c{i}", "n", f"{i}"), f"S{i}")
+    assert len(ag._SIGNATURE_CACHE) <= ag._SIGNATURE_CACHE_MAX
+    ag._SIGNATURE_CACHE.clear()
+
+
+def test_sig15d_signature_cache_ttl_expiry(monkeypatch):
+    """Step 3b: an entry older than the TTL is dropped and counted as a miss."""
+    import time as _t
+    import app.compat.adapters.antigravity_upstream as ag
+    ag._SIGNATURE_CACHE.clear()
+    monkeypatch.setattr(ag, "_SIGNATURE_CACHE_TTL", 0.01)
+    k = ag._signature_cache_key("m", "c", "n", {})
+    ag._signature_cache_store(k, "S")
+    assert ag._signature_cache_lookup(k) == "S"
+    _t.sleep(0.02)
+    assert ag._signature_cache_lookup(k) is None
+    ag._SIGNATURE_CACHE.clear()
+
+
+def test_sig15e_envelope_reinjects_signature_from_cache_when_client_drops_it():
+    """Step 3d: when the echoed tool_call has NO inline thought_signature, the
+    envelope builder must re-inject it from the router-side cache (keyed by
+    model+id+name+args) so the next-turn functionCall part stays signed."""
+    import app.compat.adapters.antigravity_upstream as ag
+    ag._SIGNATURE_CACHE.clear()
+    ag.SIGNATURE_CACHE_HITS = 0
+    ag.SIGNATURE_CACHE_MISSES = 0
+
+    key = ag._signature_cache_key("gemini-pro-agent", "call_read_1", "read",
+                                  '{"path":"a"}')
+    ag._signature_cache_store(key, "CACHED_SIG")
+
+    # Echo body WITHOUT the inline carrier (client dropped the unknown field).
+    body = {
+        "model": "gemini-pro-agent",
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "call_read_1", "type": "function",
+                "function": {"name": "read", "arguments": '{"path":"a"}'}}]},
+            {"role": "tool", "tool_call_id": "call_read_1", "content": '"data"'},
+        ],
+    }
+    env = openai_to_cloudcode_envelope(body, "gemini-pro-agent")
+    fc_part = next(p for c in env["request"]["contents"]
+                   for p in c["parts"] if "functionCall" in p)
+    assert fc_part["thoughtSignature"] == "CACHED_SIG"
+    assert ag.SIGNATURE_CACHE_HITS >= 1
+    ag._SIGNATURE_CACHE.clear()
+
+
+def test_sig15f_cache_counters_track_hits_and_misses():
+    """Observability is two integer counters (no per-entry logging, AGENTS.md
+    §2); both must advance correctly."""
+    import app.compat.adapters.antigravity_upstream as ag
+    ag._SIGNATURE_CACHE.clear()
+    ag.SIGNATURE_CACHE_HITS = 0
+    ag.SIGNATURE_CACHE_MISSES = 0
+    k = ag._signature_cache_key("m", "c1", "n", {})
+    ag._signature_cache_store(k, "S")
+    assert ag.SIGNATURE_CACHE_MISSES == 0  # store does not look up
+    ag._signature_cache_lookup(k)                       # hit
+    ag._signature_cache_lookup(("m", "absent", "n", ""))  # miss
+    assert ag.SIGNATURE_CACHE_HITS == 1
+    assert ag.SIGNATURE_CACHE_MISSES == 1
+    ag._SIGNATURE_CACHE.clear()
+
+
+# ── Step 4 (normalizer_v2 egress sibling-attach) — REVERTED 2026-09-22 ──────
+# A first attempt rewrote _egress_gemini to attach thoughtSignature as a sibling
+# key on the functionCall Part instead of appending a standalone
+# {"thoughtSignature": ...} Part (the plan called the standalone form a latent
+# wire-contract bug at Q4). It was reverted because:
+#   1. normalizer_v2 is SHADOW-ONLY (normalizer_shadow imports it read-only), so
+#      the change delivered zero benefit to the live antigravity 400 — that is
+#      fixed by Steps 1-3 + the stream_normalizer emit path, all covered above
+#      (SIG14/SIG15) and by openai_to_cloudcode_envelope (SIG15e).
+#   2. The sibling egress made v2 INTERNALLY ASYMMETRIC: _egress_gemini emitted a
+#      sibling key, but _ingress_gemini (the standalone-sig collapse) only reads
+#      the standalone form, so a gemini->canonical->gemini round-trip no longer
+#      re-canonicalized clean — breaking
+#      test_normalizer_shadow.py::test_gemini_thought_signature_roundtrip_compares_clean.
+#   3. Plan Q4 ("fix now or file separately to keep this change tight") was never
+#      explicitly answered; reverting is the conservative, baseline-restoring call.
+# DEFERRED (separate scoped task, NOT this incident): if v2 is ever promoted off
+# shadow, fix the wire contract end-to-end in ONE pass — egress sibling-attach +
+# ingress sibling-read + the shadow comparator's attach/detach invariant — and
+# land it with its own regression tests.
+
