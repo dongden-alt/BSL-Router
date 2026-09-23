@@ -74,6 +74,80 @@ _GLM_INNER_TC_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+# 5th GLM tool-call dialect: ChatML-style <tool_use>/<invoke>/<parameter>
+# blocks emitted by GLM-5.3-flash-max via the chat2api guest lane. The four
+# parsers above (unicode ｜tool▁calls｜, <tool_call> XML, DeepSeek inner
+# markers, pseudo-XML <name>/<arguments>) all miss this dialect, so
+# normalize_glm_tool_calls left tool_calls empty and the whole batch was
+# dropped -- the recurring GLM-5.3 tool-batch drop bug.
+#
+# Shape:
+#   <tool_use>                                 <-- outer wrapper
+#   <invoke name=get_weather>                  <-- one or more invokes
+#   <parameter name=city>Hanoi</parameter>     <-- zero or more parameters
+#   </invoke>
+#   </tool_use>
+#
+# GLM also emits the same invoke body inside the standard <tool_call> block,
+# so the outer wrapper accepts <tool_use> OR <tool_call>. Attribute values may
+# be quoted ("x" / 'x') or unquoted (x); whitespace/newlines are arbitrary.
+_TOOL_USE_INVOKE_RE = re.compile(
+    r"<(?:tool_use|tool_call)(?:\s+[^>]*)?>(.*?)</(?:tool_use|tool_call)\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# One <invoke ...>...</invoke> element. Attributes are captured as a blob so
+# the name= attribute can sit in any position relative to others; the body
+# holds zero or more <parameter> children.
+_INVOKE_RE = re.compile(
+    r"<invoke\b(?P<attrs>[^>]*)>(?P<body>.*?)</invoke\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# One <parameter ...>v</parameter> child. The value is the raw text up to the
+# closer; coerced to a native JSON type by the caller when it parses.
+_PARAMETER_RE = re.compile(
+    r"<parameter\b(?P<attrs>[^>]*)>(?P<value>.*?)</parameter\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# name= attribute extractor shared by <invoke> and <parameter>: accepts double-
+# quoted, single-quoted, or unquoted values. \bname avoids matching unrelated
+# attributes such as displayname=.
+_ATTR_NAME_RE = re.compile(
+    r"\bname\s*=\s*(?:\"(?P<qname>[^\"]*)\"|'(?P<aname>[^']*)'|(?P<bname>[^\s>]*))",
+    re.IGNORECASE,
+)
+
+
+def _attr_name(attrs: str) -> str:
+    """Pull the ``name=`` attribute value from an element's attrs blob.
+
+    Accepts double-quoted, single-quoted, or unquoted values. Returns ``""``
+    when no ``name=`` attribute is present (or its value is empty), so the
+    caller can skip a nameless invoke/parameter rather than emit junk.
+    """
+    m = _ATTR_NAME_RE.search(attrs or "")
+    if not m:
+        return ""
+    return m.group("qname") or m.group("aname") or m.group("bname") or ""
+
+
+def _coerce_param_value(raw: str) -> Any:
+    """Parse a ``<parameter>`` value to its native JSON type when it IS valid
+    JSON (object/array/number/bool/null); otherwise return the raw string.
+
+    A bare word like ``Hanoi`` is not valid JSON, so it stays a string. This
+    lets ``<parameter name=options>{"limit": 5}</parameter>`` yield a dict
+    while ``<parameter name=city>Hanoi</parameter>`` yields a string.
+    """
+    if not raw:
+        return ""
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return raw
+
 
 def _tool_call_dict(name: Any, args: Any, index: int = 0) -> Optional[Dict[str, Any]]:
     """Build an OpenAI tool_call dict from a name plus a str-or-dict argument set.
@@ -150,6 +224,38 @@ def _parse_pseudo_xml_calls(text: str) -> List[Dict[str, Any]]:
     return calls
 
 
+def _calls_from_invoke_block(block_text: str, base_index: int = 0) -> List[Dict[str, Any]]:
+    """Parse ChatML ``<invoke>/<parameter>`` elements into OpenAI tool_call dicts.
+
+    The 5th GLM tool-call dialect (GLM-5.3-flash-max via the chat2api guest
+    lane). One dict per ``<invoke>``; 2+ invokes = a parallel batch and ALL
+    members are recovered. Each invoke's ``<parameter>`` children merge into
+    one JSON object argument string. A parameter value that is itself valid
+    JSON (object/array/number/bool/null) parses to the native type; otherwise
+    the raw string is kept. An invoke with no usable name is skipped (the None
+    contract of :func:`_tool_call_dict`). Ids are built via
+    :func:`_make_tool_call_id` so batch members stay distinct.
+
+    Scans the whole ``block_text`` for ``<invoke>`` elements, so it recovers
+    bare invokes with no outer ``<tool_use>`` wrapper as well as wrapped ones.
+    """
+    calls: List[Dict[str, Any]] = []
+    for idx, m in enumerate(_INVOKE_RE.finditer(block_text or "")):
+        name = _attr_name(m.group("attrs") or "")
+        if not name:
+            continue
+        params: Dict[str, Any] = {}
+        for pm in _PARAMETER_RE.finditer(m.group("body") or ""):
+            pname = _attr_name(pm.group("attrs") or "")
+            if not pname:
+                continue
+            params[pname] = _coerce_param_value((pm.group("value") or "").strip())
+        call = _tool_call_dict(name, params, base_index + idx)
+        if call:
+            calls.append(call)
+    return calls
+
+
 def _split_concatenated_objects(text: str) -> List[Dict[str, Any]]:
     """Decode a run of back-to-back JSON objects: ``{...}{...}{...}``.
 
@@ -204,6 +310,7 @@ def _parse_tool_call_block_multi(block_text: str) -> List[Dict[str, Any]]:
       2. a JSON ARRAY of call objects   <-- the canonical parallel batch
       3. back-to-back JSON objects via raw_decode
       4. every repeated pseudo-XML <name>/<arguments> pair
+      5. ChatML <tool_use>/<invoke>/<parameter> blocks (GLM-5.3-flash-max)
     """
     text = (block_text or "").strip()
     if not text:
@@ -245,6 +352,14 @@ def _parse_tool_call_block_multi(block_text: str) -> List[Dict[str, Any]]:
     pxml = _parse_pseudo_xml_calls(text)
     if pxml:
         return pxml
+
+    # ── 5. ChatML <tool_use>/<invoke>/<parameter> dialect (GLM-5.3-flash-max).
+    # Scans the whole block for <invoke> elements, so it recovers bare invokes
+    # (no outer wrapper) as well as <tool_use>/<tool_call>-wrapped batches. Every
+    # <invoke> in the block is returned, so a 2+ invoke batch keeps all members.
+    invoke_calls = _calls_from_invoke_block(text)
+    if invoke_calls:
+        return invoke_calls
 
     return []
 
@@ -496,6 +611,16 @@ def normalize_glm_tool_calls(openai_json: Dict[str, Any], model: str = "") -> Tu
                 blocks = _GLM_UNICODE_TC_RE.findall(content)
                 unicode_path = True
 
+            # 5th dialect: ChatML <tool_use><invoke ...>...</invoke></tool_use>.
+            # GLM-5.3-flash-max (chat2api guest lane) emits tool calls in this
+            # shape; the <tool_use> wrapper is not matched by the two finders
+            # above, so without this path the whole batch was dropped. (When
+            # GLM wraps the invoke body in the standard tool_call block,
+            # _TOOL_CALL_RE above already captures it; this branch catches the
+            # bare <tool_use> wrapper that the earlier finders miss.)
+            if not blocks:
+                blocks = _TOOL_USE_INVOKE_RE.findall(content)
+
             if not blocks:
                 continue
 
@@ -521,6 +646,7 @@ def normalize_glm_tool_calls(openai_json: Dict[str, Any], model: str = "") -> Tu
             # Strip the tool_call blocks from content
             cleaned_content = _TOOL_CALL_RE.sub("", content)
             cleaned_content = _GLM_UNICODE_TC_RE.sub("", cleaned_content)
+            cleaned_content = _TOOL_USE_INVOKE_RE.sub("", cleaned_content)
             cleaned_content = re.sub(r"\n{3,}", "\n\n", cleaned_content).strip()
 
             message["tool_calls"] = parsed_calls
