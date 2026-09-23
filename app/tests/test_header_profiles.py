@@ -120,3 +120,59 @@ def test_non_opencode_provider_gets_no_zen_headers():
     assert "x-opencode-session" not in headers
     assert "x-opencode-client" not in headers
     assert headers == {"Authorization": "Bearer x"}
+
+
+# ── Retention headers (per-provider, config-driven) ──────────────────────
+# Optional dict[str,str] of zero-retention headers for upstreams that offer
+# such a mechanism. Fail-open: malformed config never raises, never blocks.
+
+
+def test_retention_headers_injected_as_is():
+    # (a) a well-formed dict is injected verbatim (values str-cast).
+    headers = {"Authorization": "Bearer x"}
+    cfg = {"retention_headers": {"X-No-Retention": "true", "X-Train-Opt-Out": "1"}}
+    _inject_provider_headers(headers, "custom-gateway", {}, cfg)
+    assert headers["X-No-Retention"] == "true"
+    assert headers["X-Train-Opt-Out"] == "1"
+    # pre-existing headers preserved
+    assert headers["Authorization"] == "Bearer x"
+
+
+def test_retention_headers_absent_no_change():
+    # (b) absent key -> no change to headers.
+    headers = {"Authorization": "Bearer x"}
+    _inject_provider_headers(headers, "custom-gateway", {}, {"header_profile": "default"})
+    assert headers == {"Authorization": "Bearer x"}
+    # explicit None behaves identically to absent
+    headers2 = {"Authorization": "Bearer x"}
+    _inject_provider_headers(headers2, "custom-gateway", {}, {"retention_headers": None})
+    assert headers2 == {"Authorization": "Bearer x"}
+
+
+def test_retention_headers_malformed_ignored_no_raise():
+    # (c) non-dict values are silently ignored, never raise.
+    headers = {"Authorization": "Bearer x"}
+    for bad in ("not-a-dict", 42, ["X-No-Retention", "true"], True):
+        _inject_provider_headers(headers, "custom-gateway", {}, {"retention_headers": bad})
+    # nothing injected, no exception, auth preserved
+    assert headers == {"Authorization": "Bearer x"}
+    # dict containing a non-str key / None value / empty value is skipped
+    headers2 = {"Authorization": "Bearer x"}
+    _inject_provider_headers(
+        headers2, "custom-gateway", {},
+        {"retention_headers": {"": "skip-empty-key", "X-Keep": None, "X-Empty": "", "X-Ok": "1"}},
+    )
+    assert headers2 == {"Authorization": "Bearer x", "X-Ok": "1"}
+
+
+def test_retention_headers_str_cast_non_string_values():
+    # (d) non-string values are str-cast; empty-after-cast values skipped.
+    headers = {"Authorization": "Bearer x"}
+    _inject_provider_headers(
+        headers, "custom-gateway", {},
+        {"retention_headers": {"X-Count": 0, "X-Flag": True, "X-Pi": 3.14, "X-Empty": ""}},
+    )
+    assert headers["X-Count"] == "0"
+    assert headers["X-Flag"] == "True"
+    assert headers["X-Pi"] == "3.14"
+    assert "X-Empty" not in headers

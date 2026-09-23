@@ -379,6 +379,24 @@ def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dic
                 if _ck and isinstance(_ck, str) and _cv is not None:
                     headers[_ck] = str(_cv)
 
+    # ── Retention headers (per-provider, config-driven) ──────────────────
+    # Optional dict[str,str] of zero-retention / no-training headers for
+    # upstreams that offer such a mechanism (e.g. proprietary gateways).
+    # Works for ANY provider without a dedicated header_profile. Honest scope:
+    # the OpenAI Responses API honors `store:false` (forced codex-only below);
+    # the Anthropic API and Google paid API do not train on API data by
+    # default and expose NO header — so this key is only meaningful for
+    # providers that publish a proprietary retention header. Fail-open: a
+    # malformed (non-dict / non-str) value is silently ignored, never raises,
+    # and never blocks a request. Values are str-cast; empty values skipped.
+    _rh = _prof_cfg.get("retention_headers")
+    if isinstance(_rh, dict):
+        for _rk, _rv in _rh.items():
+            if _rk and isinstance(_rk, str) and _rv is not None:
+                _rv_s = str(_rv)
+                if _rv_s:
+                    headers[_rk] = _rv_s
+
 
 def _strip_bsl_identity_headers(headers: dict) -> dict:
     """Remove all x-bsl-* and X-BSL-* headers before forwarding upstream.
@@ -8074,6 +8092,19 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         # Codex Responses-API protocol: transform OpenAI payload → Responses body.
         # Codex upstream MUST always receive stream:true + store:false; the
         # egress layer below buffers SSE for non-stream clients.
+        #
+        # RETENTION SCOPE (store:false): the Responses-wire body is built ONLY
+        # here in openai_to_responses — there is no shared Responses body
+        # assembly path. The "openai-responses" format string used elsewhere
+        # is a dialect label, not a body builder, so store:false enforcement
+        # is codex-only by construction. Generalizing it to non-codex
+        # providers would require inventing a shared Responses assembler that
+        # does not exist; per the retention-headers spec, we do NOT invent
+        # one. A provider that needs store:false on a non-codex Responses
+        # upstream must opt in explicitly via `retention_store: true` is NOT
+        # honored here (no shared path); instead such gateways expose a
+        # proprietary zero-retention header via the `retention_headers`
+        # provider-config key handled in _inject_provider_headers.
         upstream_payload = codex_adapter.openai_to_responses(upstream_payload)
         headers["Content-Type"] = "application/json"
 
