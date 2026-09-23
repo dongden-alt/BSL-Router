@@ -11,6 +11,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.6] - 2026-09-24
+
+9 commits since 1.0.5 — a robustness + research-tooling wave: GLM tool-call repair-first + a 5th tool-call dialect parser, StepFun step-5 reasoning contract, FEL intent-bound engagement framing, and per-provider zero-retention controls.
+
+### Added
+
+- **FEL intent-bound engagement framing (`reframe.bind_engagement`)** — binds the operator's configured engagement profile *into* the reframed task text (e.g. `Engagement: Commissioned security research and vendor tooling by <org> | scope: ... | ref: ...`), so deep-guardrail model families that read *intent* (Claude, DeepSeek-pro) accept honest authorized-research framing instead of refusing. Strictly honest: it surfaces only the operator-configured profile and never fabricates context (empty profile ⇒ NO-OP fallback to the prior reframe path). 84/84 FEL tests pass.
+- **Per-provider `retention_headers` config key** — arbitrary zero-retention headers injected by `_inject_provider_headers` for *any* provider without needing a new header profile. Fail-open: malformed/non-dict values are skipped silently and never block a request; non-string values are str-cast; empty keys/values skipped. Honest scope documented in-code: OpenAI Responses ⇒ `store:false`; Anthropic/Google paid API ⇒ no-training-by-default (policy, no header exists); custom gateways ⇒ their proprietary header here. 16/16 header-profile tests pass.
+- **StepFun step-5 reasoning contract** — new compat family (`app/compat/families/stepfun.py`) with the reasoning contract, a UI reasoning-effort gate, and an SSE token-precision fold.
+- **GLM 5th tool-call dialect parser** — recovers the ChatML `<tool_use><invoke name=X><parameter name=k>v</parameter></invoke></tool_use>` shape that the four existing parsers all miss (the recurring GLM tool-batch drop bug via yet another wire shape). Wired into the multi-parser ladder so both the buffered normalize path and the streaming rescue path recover it; fail-open on malformed input.
+
+### Fixed
+
+- **GLM tool-batch drop syndrome (repair-first protocol)** — `app/middleware/tool_arg_repair.py` repairs malformed tool-call argument blocks before parse instead of dropping the batch.
+- **Post-audit hardening wave** — AntiStop mid-stream continuation, Response Guard (log_only) for injected second-person imperatives, in-window `view_file` dedup, and GLM tool-batch repair v2.
+- **Antigravity `thought_signature` response path** — the OpenAI-SSE → Anthropic-SSE converter now preserves `thought_signature` on `tool_use` blocks so multi-turn tool conversations stop being rejected by Google with `400 INVALID_ARGUMENT`.
+- **Dashboard version/update UX** — version badge now has the `id` the updater script targets (so `checkForUpdate()` can refresh it), and the update check is tag-aware so tag-only releases are reported.
+
+---
+
 ## [1.0.5] - 2026-09-21
 
 14 commits since 1.0.4 — a provider-integration and observability wave: CommandCode alpha transport with `thought_signature` preservation, FEL stream observability phase 1, OAuth/usage hardening, and a security-bumped pinned stack (fastapi 0.129.1 / starlette 0.52.1 / python-multipart 0.0.32). **Python 3.10 support is dropped**: fastapi 0.129.1 pulls `typing-inspection>=0.4.2` (requiring `typing-extensions>=4.12.0`) while mitmproxy 11.0.2 caps `typing-extensions<=4.11.0` on python<3.11; the CI matrix is now 3.11/3.12.
@@ -304,6 +324,26 @@ Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-
 ---
 
 # 🇻🇳 Tiếng Việt
+
+---
+
+## [1.0.6] - 2026-09-24
+
+9 commit từ 1.0.5 — đợt gia cố độ bền + tooling nghiên cứu: sửa tool-call GLM (repair-first) + parser phương ngữ tool-call thứ 5, hợp đồng reasoning StepFun step-5, khung gắn engagement theo intent cho FEL, và kiểm soát zero-retention theo từng provider.
+
+### Thêm Mới
+
+- **Khung FEL gắn engagement theo intent (`reframe.bind_engagement`)** — gắn hồ sơ engagement do operator cấu hình *vào* nội dung task đã reframe, để các model guardrail sâu đọc *ý định* (Claude, DeepSeek-pro) chấp nhận framing nghiên cứu hợp lệ thay vì từ chối. Hoàn toàn trung thực: chỉ hiển thị hồ sơ operator cấu hình, không bịa context. 84/84 test FEL pass.
+- **Key cấu hình `retention_headers` theo provider** — header zero-retention tùy ý được `_inject_provider_headers` chèn cho *mọi* provider mà không cần header_profile mới. Fail-open, không bao giờ chặn request. Phạm vi trung thực ghi trong code: OpenAI Responses ⇒ `store:false`; Anthropic/Google trả phí ⇒ mặc định không train (chính sách); gateway tự xây ⇒ header riêng tại đây. 16/16 test header pass.
+- **Hợp đồng reasoning StepFun step-5** — family compat mới (`app/compat/families/stepfun.py`) kèm gate reasoning-effort trên UI và fold độ chính xác token SSE.
+- **Parser phương ngữ tool-call GLM thứ 5** — khôi phục dạng ChatML `<tool_use><invoke ...>` mà bốn parser hiện có đều bỏ sót (lỗi drop tool-batch GLM lặp lại). Tích hợp vào ladder multi-parser; fail-open khi input lỗi.
+
+### Đã Sửa
+
+- **Hội chứng drop tool-batch GLM (giao thức repair-first)** — `app/middleware/tool_arg_repair.py` sửa block tham số tool-call lỗi trước khi parse thay vì drop cả batch.
+- **Đợt gia cố sau audit** — AntiStop mid-stream continuation, Response Guard (log_only), dedup `view_file` trong window, và GLM tool-batch repair v2.
+- **Đường response `thought_signature` của Antigravity** — converter OpenAI-SSE → Anthropic-SSE giờ giữ `thought_signature` trên block `tool_use`, hết lỗi Google `400 INVALID_ARGUMENT` trên hội thoại tool nhiều lượt.
+- **UX phiên bản/cập nhật dashboard** — badge phiên bản có đúng `id` cho script updater; update check nhận biết tag nên release chỉ-có-tag vẫn được báo.
 
 ---
 
