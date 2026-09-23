@@ -75,62 +75,192 @@ _GLM_INNER_TC_RE = re.compile(
 )
 
 
+def _tool_call_dict(name: Any, args: Any, index: int = 0) -> Optional[Dict[str, Any]]:
+    """Build an OpenAI tool_call dict from a name plus a str-or-dict argument set.
+
+    Returns ``None`` when there is no usable name, so callers can skip junk
+    entries rather than emitting a nameless call.
+    """
+    if not name:
+        return None
+    if args is None:
+        args = {}
+    if not isinstance(args, str):
+        args = json.dumps(args, ensure_ascii=False, sort_keys=True)
+    name_s = str(name)
+    return {
+        "id": _make_tool_call_id(index, name_s, args),
+        "type": "function",
+        "function": {"name": name_s, "arguments": args},
+    }
+
+
+def _call_from_parsed_obj(parsed: Dict[str, Any], index: int = 0) -> Optional[Dict[str, Any]]:
+    """Extract a tool_call dict from one already-decoded JSON object.
+
+    Accepts the two shapes models actually emit:
+      {"name": "foo", "arguments": {...}}
+      {"function": {"name": "foo", "arguments": {...}}}
+    """
+    fn = parsed.get("function")
+    if isinstance(fn, dict) and fn.get("name"):
+        return _tool_call_dict(fn["name"], fn.get("arguments", ""), index)
+    name = parsed.get("name") or parsed.get("tool")
+    if isinstance(name, dict):
+        # {"name": {"function": ...}} -- unusual, but cheap to accept.
+        return _call_from_parsed_obj(name, index)
+    if name:
+        args = parsed.get("arguments")
+        if args is None:
+            args = parsed.get("parameters")
+        if args is None:
+            args = parsed.get("args")
+        return _tool_call_dict(name, args, index)
+    return None
+
+
+# Every pseudo-XML <name>...</name> occurrence, in document order. A PARALLEL
+# BATCH may repeat the name/arguments pair several times inside one block, so
+# this must be findall -- a single re.search silently keeps only the first call
+# and discards the rest of the batch.
+_PXML_NAME_RE = re.compile(r"<name>\s*(.*?)\s*</name>", re.DOTALL | re.IGNORECASE)
+_PXML_ARGS_RE = re.compile(r"<arguments>\s*(.*?)\s*</arguments>", re.DOTALL | re.IGNORECASE)
+
+
+def _parse_pseudo_xml_calls(text: str) -> List[Dict[str, Any]]:
+    """Parse repeated ``<name>x</name><arguments>{...}</arguments>`` pairs.
+
+    Pairs are matched positionally: the i-th <name> takes the i-th <arguments>,
+    falling back to ``{}`` when a call omits its argument element. Returns every
+    pair found, so a batch of N yields N calls instead of 1.
+    """
+    names = [m.group(1).strip() for m in _PXML_NAME_RE.finditer(text)]
+    if not names:
+        return []
+    args_all = [m.group(1).strip() for m in _PXML_ARGS_RE.finditer(text)]
+
+    calls: List[Dict[str, Any]] = []
+    for i, name in enumerate(names):
+        if not name:
+            continue
+        args_str = args_all[i] if i < len(args_all) else "{}"
+        call = _tool_call_dict(name, args_str, i)
+        if call:
+            calls.append(call)
+    return calls
+
+
+def _split_concatenated_objects(text: str) -> List[Dict[str, Any]]:
+    """Decode a run of back-to-back JSON objects: ``{...}{...}{...}``.
+
+    A batch streamed into one block with no array wrapper and no separator
+    parses as ``Extra data`` under a plain json.loads. ``raw_decode`` consumes
+    one object at a time from the current offset, recovering every member
+    instead of rejecting the whole span.
+
+    Returns [] if fewer than two objects decode, so callers can fall through to
+    the next strategy rather than mistaking a single object for a batch.
+    """
+    decoder = json.JSONDecoder()
+    objs: List[Dict[str, Any]] = []
+    pos = 0
+    n = len(text)
+    while pos < n:
+        while pos < n and text[pos] in " \t\r\n,;":
+            pos += 1
+        if pos >= n:
+            break
+        if text[pos] != "{":
+            break
+        try:
+            obj, end = decoder.raw_decode(text, pos)
+        except (json.JSONDecodeError, ValueError):
+            break
+        if isinstance(obj, dict):
+            objs.append(obj)
+        pos = end
+    return objs if len(objs) >= 2 else []
+
+
+def _parse_tool_call_block_multi(block_text: str) -> List[Dict[str, Any]]:
+    """Parse ONE <tool_call> block into a LIST of OpenAI tool_call dicts.
+
+    ── GLM BATCH-DROP FIX (2026-09-22) ────────────────────────────────────
+    The previous contract was ``Optional[Dict]``: at most ONE call per block.
+    GLM emits parallel batches, and several reseller channels wrap the whole
+    batch in a SINGLE <tool_call> block. Every batch shape then lost calls:
+
+      JSON ARRAY   [{...},{...}]  json.loads -> list, not dict; the isinstance
+                                  check rejected it, pseudo-XML found no
+                                  <name>, so the parser returned None.
+                                  changed=False: the ENTIRE BATCH VANISHED
+                                  silently, with no log line at all.
+      CONCATENATED {...}{...}     Extra data -> None -> whole batch lost.
+      PSEUDO-XML   <name>..x2     re.search matched only the FIRST pair, so a
+                                  batch of N silently became 1.
+
+    Strategies, in order, first non-empty result wins:
+      1. one JSON object      (the original single-call shape)
+      2. a JSON ARRAY of call objects   <-- the canonical parallel batch
+      3. back-to-back JSON objects via raw_decode
+      4. every repeated pseudo-XML <name>/<arguments> pair
+    """
+    text = (block_text or "").strip()
+    if not text:
+        return []
+
+    # ── 1/2. JSON: a single object OR an array of objects.
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        parsed = None
+
+    if isinstance(parsed, dict):
+        call = _call_from_parsed_obj(parsed, 0)
+        if call:
+            return [call]
+    elif isinstance(parsed, list):
+        calls: List[Dict[str, Any]] = []
+        for i, item in enumerate(parsed):
+            if not isinstance(item, dict):
+                continue
+            call = _call_from_parsed_obj(item, i)
+            if call:
+                calls.append(call)
+        if calls:
+            return calls
+
+    # ── 3. Concatenated objects: {..}{..}{..}
+    concat = _split_concatenated_objects(text)
+    if concat:
+        calls = []
+        for i, obj in enumerate(concat):
+            call = _call_from_parsed_obj(obj, i)
+            if call:
+                calls.append(call)
+        if calls:
+            return calls
+
+    # ── 4. Repeated pseudo-XML pairs.
+    pxml = _parse_pseudo_xml_calls(text)
+    if pxml:
+        return pxml
+
+    return []
+
+
 def _parse_tool_call_block(block_text: str) -> Optional[Dict[str, Any]]:
-    """Parse a single <tool_call> block into an OpenAI tool_call dict.
+    """Parse a single <tool_call> block into ONE OpenAI tool_call dict.
+
+    Retained for callers that only need the first call. Batch-aware code should
+    use :func:`_parse_tool_call_block_multi`, which returns every member.
 
     Supports both JSON and pseudo-XML formats:
       {"name": "foo", "arguments": {...}}
       <name>foo</name><arguments>{...}</arguments>
     """
-    text = block_text.strip()
-    if not text:
-        return None
-
-    # Try JSON first (most common from GLM-5.x)
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            name = parsed.get("name") or parsed.get("function") or parsed.get("tool")
-            args = parsed.get("arguments") or parsed.get("parameters") or parsed.get("args")
-            if name:
-                if args is None:
-                    args = {}
-                if not isinstance(args, str):
-                    args = json.dumps(args, ensure_ascii=False, sort_keys=True)
-                return {
-                    "id": _make_tool_call_id(0, str(name), args),
-                    "type": "function",
-                    "function": {"name": str(name), "arguments": args},
-                }
-            # Maybe it's {"function": {"name": ..., "arguments": ...}}
-            fn = parsed.get("function")
-            if isinstance(fn, dict) and fn.get("name"):
-                fn_args = fn.get("arguments", "")
-                if not isinstance(fn_args, str):
-                    fn_args = json.dumps(fn_args, ensure_ascii=False, sort_keys=True)
-                return {
-                    "id": _make_tool_call_id(0, str(fn["name"]), fn_args),
-                    "type": "function",
-                    "function": {"name": str(fn["name"]), "arguments": fn_args},
-                }
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # Try pseudo-XML: <name>foo</name><arguments>{...}</arguments>
-    name_match = re.search(r"<name>\s*(.*?)\s*</name>", text, re.DOTALL | re.IGNORECASE)
-    if name_match:
-        name = name_match.group(1).strip()
-        args_match = re.search(
-            r"<arguments>\s*(.*?)\s*</arguments>", text, re.DOTALL | re.IGNORECASE
-        )
-        args_str = args_match.group(1).strip() if args_match else "{}"
-        return {
-            "id": _make_tool_call_id(0, name, args_str),
-            "type": "function",
-            "function": {"name": name, "arguments": args_str},
-        }
-
-    return None
+    calls = _parse_tool_call_block_multi(block_text)
+    return calls[0] if calls else None
 
 
 def _make_tool_call_id(index: int, name: str, args_str: str) -> str:
@@ -182,8 +312,9 @@ def _parse_unicode_tool_call_block(block_text: str) -> List[Dict[str, Any]]:
     inner_blocks = _GLM_INNER_TC_RE.findall(text)
     if not inner_blocks:
         # Not the DeepSeek inner format; defer to the JSON / pseudo-XML parser.
-        call = _parse_tool_call_block(text)
-        return [call] if call else []
+        # BATCH-AWARE: a unicode block holding a JSON ARRAY is a parallel batch,
+        # so extend with every member rather than keeping only the first.
+        return _parse_tool_call_block_multi(text)
 
     calls: List[Dict[str, Any]] = []
     for idx, inner in enumerate(inner_blocks):
@@ -305,8 +436,9 @@ def parse_streamed_tool_block(inner_text: str, unicode_path: bool) -> List[Dict[
     try:
         if unicode_path:
             return _parse_unicode_tool_call_block(inner_text)
-        call = _parse_tool_call_block(inner_text)
-        return [call] if call else []
+        # BATCH-AWARE: an ASCII block may hold a JSON array / concatenated
+        # objects / repeated pseudo-XML pairs -- all parallel-batch shapes.
+        return _parse_tool_call_block_multi(inner_text)
     except Exception as e:  # Fail-open, same contract as normalize_glm_tool_calls.
         print(f"[StreamToolRescue] parse failed (fail-open): {e}", flush=True)
         return []
@@ -374,9 +506,14 @@ def normalize_glm_tool_calls(openai_json: Dict[str, Any], model: str = "") -> Tu
                     # inner tool-call markers (parallel tool calls).
                     parsed_calls.extend(_parse_unicode_tool_call_block(block))
                 else:
-                    call = _parse_tool_call_block(block)
-                    if call:
-                        parsed_calls.append(call)
+                    # BATCH-AWARE: one ASCII block can carry the WHOLE parallel
+                    # batch (JSON array, concatenated objects, or repeated
+                    # pseudo-XML pairs). The old single-call contract reduced
+                    # such a block to 0 or 1 and -- because a JSON array failed
+                    # the isinstance(dict) check and then found no <name> --
+                    # returned None, so changed stayed False and the entire
+                    # batch vanished with no log line whatsoever.
+                    parsed_calls.extend(_parse_tool_call_block_multi(block))
 
             if not parsed_calls:
                 continue

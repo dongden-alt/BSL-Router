@@ -379,3 +379,58 @@ class StreamTruncationDetector:
                     text = part.get("text")
                     if isinstance(text, str):
                         self.partial_text += text
+
+
+# ── Transport-death continuation trigger ────────────────────────────────
+# Extends the SAME AntiStop continuation splice that handles finish_reason="length"
+# truncation to ALSO cover the one remaining force-stop: a mid-stream transport
+# death AFTER partial content was already delivered (stats["out"] > 0).
+#
+# The transport-death case never sets `truncated` (no terminal length frame
+# arrives — the socket just dies), but the detector has still accumulated
+# `partial_text` from the deltas that did flow. That partial text is the model's
+# OWN output, so a continuation request to the SAME provider/model is a coherent
+# resume — no second provider is spliced into the live parser (the BUG J
+# transcript-integrity invariant holds).
+#
+# The flag is written by app/main.py::_midstream_transport_fallback on its
+# out>0 fall-through (out==0 still takes the existing combo failover). This name
+# is the canonical key so every splice site and every test reads one symbol.
+
+TRANSPORT_DIED_PARTIAL_FLAG = "transport_died_partial"
+
+
+def should_splice_continuation(
+    *,
+    truncated: bool,
+    transport_died_partial: bool,
+    partial_text: str,
+    infinite_retry_enabled: bool,
+    used: bool,
+) -> bool:
+    """Single source of truth for the AntiStop continuation-splice gate.
+
+    Fires when EITHER:
+      * finish_reason="length" truncation was observed (truncated=True), OR
+      * a mid-stream transport death left partial output
+        (transport_died_partial=True) AND never-stop combo retry is opted in.
+
+    Both branches additionally require:
+      * the splice has not already been used this request (one-shot), AND
+      * non-empty/whitespace partial_text (nothing to continue -> terminal).
+
+    The transport-death branch is gated on infinite_retry_enabled so that
+    settings.combo_infinite_retry=false preserves today's terminal-502 contract
+    exactly. The length-truncation branch is NOT gated (unchanged behaviour).
+
+    Pure and stateless: the caller owns _cont_state["used"] / stats; this only
+    answers the yes/no so the caller can reuse its EXISTING splice block.
+    """
+    if used:
+        return False
+    if not (partial_text or "").strip():
+        return False
+    if truncated:
+        return True
+    # Transport-death branch: only when never-stop retry is opted in.
+    return bool(transport_died_partial and infinite_retry_enabled)

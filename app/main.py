@@ -112,6 +112,8 @@ from app.middleware.quality import (
     _extract_assistant_text,
     _extract_usage,
     _extract_finish_reason,
+    should_splice_continuation,
+    TRANSPORT_DIED_PARTIAL_FLAG,
 )
 from app.middleware.normalizer_shadow import endpoint_dialect, shadow_run  # N2 (default OFF)
 from app.middleware.fel_wiring import (  # FEL-2a (default OFF — tools.fel.enabled)
@@ -131,6 +133,13 @@ from app.middleware.fel_wiring import (  # local alias — visible-text extracto
     response_visible_text as fel_response_visible_text,
 )
 from app.middleware.fel_wiring import fel_stream_final  # stream final-assembly log
+from app.middleware.response_guard import (  # provider-injection guard (default OFF — tools.response_guard)
+    resolve_guard,
+    classify_injection,
+    serialize_tool_args,
+    guard_event,
+    ResponseGuardObserver,
+)
 from app.compat.reasoning_policy import (
     get_policy as get_reasoning_policy,
     apply_thinking_to_anthropic_payload,
@@ -166,6 +175,7 @@ from app.compat.adapters import (
     SSE_DONE as GEMINI_SSE_DONE,
     build_response_headers as gemini_response_headers,
 )
+from app.middleware.dedup_viewfile import dedup_viewfile_pairs
 from app import kiro_adapter
 from app import kiro_eventstream
 from app import codex_adapter
@@ -614,6 +624,47 @@ async def _fel_observe_stream(source, *, model: str = "", provider: str = ""):
     try:
         from app.middleware.fel_wiring import FelStreamObserver
         obs = FelStreamObserver(model=model, provider=provider)
+    except Exception:
+        obs = None
+
+    try:
+        async for chunk in source:
+            if obs is not None:
+                try:
+                    obs.observe(chunk if isinstance(chunk, bytes)
+                                else str(chunk).encode("utf-8", "ignore"))
+                except Exception:
+                    obs = None
+            yield chunk
+    finally:
+        if obs is not None:
+            try:
+                obs.finalize()
+            except Exception:
+                pass
+        aclose = getattr(source, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:
+                pass
+
+
+async def _guard_observe_stream(source, *, model: str = "", provider: str = ""):
+    """Yield chunks unchanged while a ResponseGuardObserver accumulates a copy
+    for provider-injection scanning. Mirrors _fel_observe_stream. Default-OFF:
+    when resolve_guard returns None (tools.response_guard absent/disabled) this
+    is a zero-cost passthrough. Fail-open: any observer trouble drops the
+    observer and the stream continues normally. log_only mode = read-only
+    telemetry; finalize() emits ONE guard_event and never mutates the stream.
+    """
+    obs = None
+    try:
+        _gcfg = resolve_guard(get_mutable_config().get("tools", {}))
+        if _gcfg is not None:
+            obs = ResponseGuardObserver(
+                model=model, provider=provider, max_chars=_gcfg.max_chars
+            )
     except Exception:
         obs = None
 
@@ -8540,6 +8591,16 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     reason="midstream_transport_chain_exhausted",
                 )
         # No fallback taken: bench the dead leaf so auto-heal avoids it next time.
+        # MIDSTREAM CONTINUATION (2026-09-23): on out>0 the BUG J guard above
+        # deliberately declines to splice a SECOND provider into the live parser
+        # (transcript corruption). Instead, flag the death so the post-loop
+        # AntiStop continuation splice — which resumes the SAME provider/model
+        # from the partial text already accumulated, no live-parser splice —
+        # can complete the response. out==0 takes the combo failover above and
+        # must NOT set this flag. The splice site gates the actual behaviour on
+        # _combo_infinite_retry_enabled(config) so the opt-out contract holds.
+        if stats.get("out", 0) > 0:
+            stats[TRANSPORT_DIED_PARTIAL_FLAG] = True
         try:
             bench_leaf(config, provider_name, target_model, status_code, err, stats.get("out", 0))
         except Exception:
@@ -9208,16 +9269,29 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         )
                     except Exception:
                         pass
-                if _detector.truncated and not _cont_state["used"]:
+                if should_splice_continuation(
+                    truncated=_detector.truncated,
+                    transport_died_partial=stats.get(TRANSPORT_DIED_PARTIAL_FLAG),
+                    partial_text=_detector.partial_text,
+                    infinite_retry_enabled=_combo_infinite_retry_enabled(config),
+                    used=_cont_state["used"],
+                ):
                     _cont_state["used"] = True
                     try:
                         _cont_payload = build_continuation_stream_payload(upstream_payload, _detector.partial_text)
                         if _cont_payload:
-                            print(
-                                f"[AntiStop] {f_val} truncated at max_tokens — splicing continuation "
-                                f"({len(_detector.partial_text)} chars)",
-                                flush=True,
-                            )
+                            if stats.get(TRANSPORT_DIED_PARTIAL_FLAG):
+                                print(
+                                    f"[AntiStop] {f_val} transport death after "
+                                    f"{len(_detector.partial_text)} chars - splicing continuation",
+                                    flush=True,
+                                )
+                            else:
+                                print(
+                                    f"[AntiStop] {f_val} truncated at max_tokens — splicing continuation "
+                                    f"({len(_detector.partial_text)} chars)",
+                                    flush=True,
+                                )
                             _cont_resp = await _send_stream_with_thinking_fallback(
                                 stream_req=_build_req(_cont_payload), stream_payload=_cont_payload
                             )
@@ -9713,16 +9787,29 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     async def _raw_ok_chain():
                         async for _c in _raw_ok():
                             yield _c
-                        if _detector.truncated and not _cont_state["used"]:
+                        if should_splice_continuation(
+                            truncated=_detector.truncated,
+                            transport_died_partial=stats.get(TRANSPORT_DIED_PARTIAL_FLAG),
+                            partial_text=_detector.partial_text,
+                            infinite_retry_enabled=_combo_infinite_retry_enabled(config),
+                            used=_cont_state["used"],
+                        ):
                             _cont_state["used"] = True
                             try:
                                 _cont_payload = build_continuation_stream_payload(upstream_payload, _detector.partial_text)
                                 if _cont_payload:
-                                    print(
-                                        f"[AntiStop] {f_val} truncated — splicing continuation "
-                                        f"(Anthropic egress, {len(_detector.partial_text)} chars)",
-                                        flush=True,
-                                    )
+                                    if stats.get(TRANSPORT_DIED_PARTIAL_FLAG):
+                                        print(
+                                            f"[AntiStop] {f_val} transport death after "
+                                            f"{len(_detector.partial_text)} chars - splicing continuation",
+                                            flush=True,
+                                        )
+                                    else:
+                                        print(
+                                            f"[AntiStop] {f_val} truncated — splicing continuation "
+                                            f"(Anthropic egress, {len(_detector.partial_text)} chars)",
+                                            flush=True,
+                                        )
                                     _cont_resp = await _send_stream_with_thinking_fallback(
                                         stream_req=_build_req(_cont_payload), stream_payload=_cont_payload
                                     )
@@ -10222,16 +10309,29 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     async def _openai_source_chain():
                         async for _c in openai_source:
                             yield _c
-                        if _detector.truncated and not _cont_state["used"]:
+                        if should_splice_continuation(
+                            truncated=_detector.truncated,
+                            transport_died_partial=stats.get(TRANSPORT_DIED_PARTIAL_FLAG),
+                            partial_text=_detector.partial_text,
+                            infinite_retry_enabled=_combo_infinite_retry_enabled(config),
+                            used=_cont_state["used"],
+                        ):
                             _cont_state["used"] = True
                             try:
                                 _cont_payload = build_continuation_stream_payload(upstream_payload, _detector.partial_text)
                                 if _cont_payload:
-                                    print(
-                                        f"[AntiStop] {f_val} truncated — splicing continuation "
-                                        f"(Gemini egress, {len(_detector.partial_text)} chars)",
-                                        flush=True,
-                                    )
+                                    if stats.get(TRANSPORT_DIED_PARTIAL_FLAG):
+                                        print(
+                                            f"[AntiStop] {f_val} transport death after "
+                                            f"{len(_detector.partial_text)} chars - splicing continuation",
+                                            flush=True,
+                                        )
+                                    else:
+                                        print(
+                                            f"[AntiStop] {f_val} truncated — splicing continuation "
+                                            f"(Gemini egress, {len(_detector.partial_text)} chars)",
+                                            flush=True,
+                                        )
                                     _cont_resp = await _send_stream_with_thinking_fallback(
                                         stream_req=_build_req(_cont_payload), stream_payload=_cont_payload
                                     )
@@ -11325,6 +11425,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 _ka_body, interval_s=_sse_ka_iv, fmt=_sse_ka_fmt,
             )
         _ka_body = _fel_observe_stream(_ka_body, model=target_model, provider=provider_name)
+        _ka_body = _guard_observe_stream(_ka_body, model=target_model, provider=provider_name)
         return StreamingResponse(_ka_body, media_type="text/event-stream")
     else:
         try:
@@ -11846,6 +11947,32 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     _response_json = resp.json() if hasattr(resp, 'json') else {}
                 except Exception:
                     _response_json = {}
+
+                # ── Response Guard (default-OFF via tools.response_guard) ──
+                # Provider-injection scan on the assembled non-stream response.
+                # log_only: READ-ONLY telemetry, emits ONE guard_event, never
+                # mutates resp and never interferes with the zombie check or FEL
+                # recovery below. resolve_guard → None when absent/disabled, so a
+                # disabled config costs one dict lookup and zero scanning.
+                try:
+                    _gcfg = resolve_guard(config.get("tools", {}))
+                    if _gcfg is not None:
+                        _g_visible, _g_had_tools = fel_response_visible_text(_response_json)
+                        _g_args = serialize_tool_args(_response_json)
+                        _g_verdict = classify_injection(
+                            _g_visible, _g_had_tools, _g_args
+                        )
+                        guard_event(
+                            "scan", model=target_model, provider=provider_name,
+                            verdict=_g_verdict, details={
+                                "stream": False,
+                                "chars": len(_g_visible or ""),
+                                "tool_args_chars": len(_g_args or ""),
+                                "tool_calls": _g_had_tools,
+                            },
+                        )
+                except Exception as _guard_err:
+                    print(f"[ResponseGuard] scan failed (fail-open): {_guard_err}", flush=True)
 
                 _zombie_check = _response_has_model_output(_response_json, out_tokens)
                 
@@ -13269,6 +13396,17 @@ async def chat_completions(request: Request):
                 inner["contents"] = ensure_gemini_last_role(inner.get("contents"))
             except Exception:
                 pass
+            # In-window view_file dedup (2026-09-22): strip redundant tool pairs
+            # whose path was already read earlier in THIS request while still
+            # resident in the model's context window. Runs BEFORE the OpenAI
+            # conversion so the gemini.py FIFO id-minter stays in sync. Paired
+            # removal is atomic; fail-open returns the original on any error.
+            inner, _dedup_stats = dedup_viewfile_pairs(inner)
+            if _dedup_stats.get("duplicates_removed", 0) > 0:
+                print(
+                    f"[DEDUP] removed {_dedup_stats['duplicates_removed']} dup view_file pairs, "
+                    f"~{_dedup_stats['bytes_saved_est']:,} bytes saved"
+                )
             # body.model is authoritative here: 9router already rewrote it to the
             # aliases.json target, so it is handed straight to BSL's resolver.
             openai_body = gemini_request_to_openai(inner, body.get("model", ""))
@@ -13493,6 +13631,17 @@ async def antigravity_generate(request: Request, model: str = None):
         except Exception:
             pass
 
+        # In-window view_file dedup (2026-09-22): strip redundant tool pairs
+        # whose path was already read earlier in THIS request while still
+        # resident in the model's context window. Runs BEFORE the OpenAI
+        # conversion so the gemini.py FIFO id-minter stays in sync. Paired
+        # removal is atomic; fail-open returns the original on any error.
+        inner, _dedup_stats = dedup_viewfile_pairs(inner)
+        if _dedup_stats.get("duplicates_removed", 0) > 0:
+            print(
+                f"[DEDUP] removed {_dedup_stats['duplicates_removed']} dup view_file pairs, "
+                f"~{_dedup_stats['bytes_saved_est']:,} bytes saved"
+            )
         # The dedicated mapping is authoritative. Do not normalize this target or
         # consult global aliases before dispatching it through BSL's resolver.
         openai_body = gemini_request_to_openai(inner, mapping_target)

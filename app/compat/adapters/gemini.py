@@ -617,7 +617,15 @@ def _usage_metadata(usage: Dict[str, Any]) -> Dict[str, Any]:
 def _new_state() -> Dict[str, Any]:
     """Fresh per-stream translation state for openai_chunk_to_gemini."""
     return {
-        "toolCallAccum": {},   # index → {"id","name","args"}
+        # slot key -> {"id","name","args"}. Keys are homogeneous (str,int)
+        # tuples so the finish flush can sorted() them without TypeError.
+        "toolCallAccum": {},
+        # call id -> slot key, for index-less streams.
+        "toolCallIdKeys": {},
+        # next sequence number for index-less slot allocation.
+        "toolCallSeq": 0,
+        # slot key currently receiving argument fragments.
+        "toolCallLastKey": None,
         "responseId": None,
         "modelVersion": None,
         "usage": None,
@@ -640,6 +648,9 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
     # Lazily initialize per-stream state so callers may pass a bare `{}`.
     if "toolCallAccum" not in state:
         state["toolCallAccum"] = {}
+        state.setdefault("toolCallIdKeys", {})
+        state.setdefault("toolCallSeq", 0)
+        state.setdefault("toolCallLastKey", None)
         state.setdefault("responseId", None)
         state.setdefault("modelVersion", None)
         state.setdefault("usage", None)
@@ -686,15 +697,56 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
         parts.append({"text": content})
 
     # tool_calls accumulate by index across chunks (§4a)
+    #
+    # ── INDEX-COLLAPSE FIX (2026-09-22) ─────────────────────────────────
+    # The old key was `tc.get("index", 0)`. When upstream omits `index`
+    # entirely, EVERY call in a parallel batch resolved to key 0, so
+    # `slot["args"] += fn["arguments"]` concatenated N independent argument
+    # objects into one buffer:  {"a":1}{"b":2}{"c":3}
+    # That buffer then fails json.loads with "Extra data", the whole slot is
+    # dropped, and a batch of N becomes 0 calls. This is the exact signature
+    # of the "Extra data" drops seen in production logs.
+    #
+    # Keying precedence, first match wins:
+    #   1. an explicit integer `index`          -> ("i", index)
+    #   2. the call `id` (opening delta)        -> ("s", seq) allocated once
+    #   3. neither (pure argument continuation) -> the slot opened most
+    #                                             recently
+    # Branch 3 is what keeps fragment streams coherent when upstream sends
+    # only argument deltas after the opening frame.
     for tc in (delta.get("tool_calls") or []):
         if not isinstance(tc, dict):
             continue
-        idx = tc.get("index", 0)
         fn = tc.get("function") or {}
-        slot = state["toolCallAccum"].get(idx)
+        raw_idx = tc.get("index")
+        if isinstance(raw_idx, int) and not isinstance(raw_idx, bool):
+            key: Any = ("i", raw_idx)
+            state["toolCallLastKey"] = key
+        else:
+            tc_id = tc.get("id")
+            id_keys = state.setdefault("toolCallIdKeys", {})
+            if tc_id and tc_id in id_keys:
+                key = id_keys[tc_id]
+                state["toolCallLastKey"] = key
+            elif tc_id:
+                key = ("s", state.get("toolCallSeq", 0))
+                state["toolCallSeq"] = state.get("toolCallSeq", 0) + 1
+                id_keys[tc_id] = key
+                state["toolCallLastKey"] = key
+            else:
+                # Argument-only continuation: attach to the open slot. Never
+                # fall back to a shared default key -- that is what collapsed
+                # the batch.
+                key = state.get("toolCallLastKey")
+                if key is None:
+                    key = ("s", state.get("toolCallSeq", 0))
+                    state["toolCallSeq"] = state.get("toolCallSeq", 0) + 1
+                    state["toolCallLastKey"] = key
+
+        slot = state["toolCallAccum"].get(key)
         if slot is None:
             slot = {"id": tc.get("id", ""), "name": fn.get("name", ""), "args": ""}
-            state["toolCallAccum"][idx] = slot
+            state["toolCallAccum"][key] = slot
         else:
             if tc.get("id"):
                 slot["id"] = tc["id"]

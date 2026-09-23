@@ -6,6 +6,15 @@
 
 tools:
   output_thinking_squeeze: false
+  # Provider-injection response guard (default OFF). When enabled, scans
+  # assembled provider responses (stream + non-stream) for user-directed
+  # exfiltration / code-execution injection and emits telemetry to
+  # .brain/logs/response_guard.jsonl. mode log_only = observe, never mutate
+  # (the only shipping mode; redact/block branches exist but are inert).
+  response_guard:
+    enabled: false
+    mode: log_only
+    max_chars: 16384
 
 upstream_stream_buffer:
   enabled: false
