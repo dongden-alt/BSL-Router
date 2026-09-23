@@ -128,6 +128,14 @@ CONFORMANCE = [
 
     # ── Muse Spark: extended vocabulary incl. xhigh ──
     ("meta/muse-spark-1.2", "xhigh", {"reasoning_effort": "xhigh"}),
+
+    # ── StepFun step-5 (documented vocab low/medium/high; out-of-vocab
+    # efforts clamp to high — the gateway 400s unknown values; step-3.x
+    # flash models are out of scope, legacy parity). Full lock:
+    # test_stepfun_reasoning.py + test_family_divergences.py. ──
+    ("iamhc/step-5-preview", "high", {"reasoning_effort": "high"}),
+    ("iamhc/step-5-preview", "max", {"reasoning_effort": "high"}),
+    ("hcnsec/step-5-preview", "enable", {"reasoning_effort": "high"}),
 ]
 
 

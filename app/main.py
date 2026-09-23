@@ -6276,6 +6276,24 @@ def _extract_cache_write_tokens(usage: dict) -> int:
     return 0
 
 
+def _usage_from_sse_data(data_json) -> Optional[dict]:
+    """Locate the usage dict in any SSE data-frame shape.
+
+    OpenAI/Anthropic message_delta put usage top-level; Anthropic
+    message_start nests it under message.usage; Responses-API nests
+    under response.usage. Shared by both streaming stats sites so
+    they cannot diverge (same doctrine as _extract_usage_tokens).
+    """
+    if not isinstance(data_json, dict):
+        return None
+    for _container in (data_json, data_json.get("message"), data_json.get("response")):
+        if isinstance(_container, dict):
+            _u = _container.get("usage")
+            if isinstance(_u, dict):
+                return _u
+    return None
+
+
 def _anthropic_terminal_error_frames(err_text: str, model: str = "bsl-routed") -> list:
     """Build a COMPLETE, VALID Anthropic SSE terminal sequence for a failed stream.
 
@@ -6518,8 +6536,14 @@ async def _accumulate_sse_stream(
                                 # READS map to cached_tokens (creation is fresh writes).
                                 _a_cache_read = _uu.get("cache_read_input_tokens", 0) or 0
                                 _a_cache_create = _uu.get("cache_creation_input_tokens", 0) or 0
+                                _pt = _uu.get("prompt_tokens")
                                 _fresh = _uu.get("input_tokens")
-                                if _fresh is not None:
+                                if _pt:
+                                    # OpenAI shape: prompt_tokens is already
+                                    # inclusive of cache, so use it as-is.
+                                    # Folding would double-count -> 90k-vs-50k.
+                                    _a_in = _pt
+                                elif _fresh is not None:
                                     _a_in = _fresh + _a_cache_read + _a_cache_create
                                 _a_cached = _a_cache_read or _a_cached
                         if _et:
@@ -9205,7 +9229,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                         # top-level. Accept both so stats["out"] is
                                         # populated and the zero-token fallback does not
                                         # fire for codex.
-                                        _usage_src = data_json.get("usage") or (data_json.get("response") or {}).get("usage")
+                                        _usage_src = _usage_from_sse_data(data_json)
                                         if _usage_src:
                                             usage = _usage_src
                                             stats["in"], stats["out"], stats["cached"] = _extract_usage_tokens(usage)
@@ -9698,8 +9722,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                     if line.startswith("data: ") and line.strip() != "data: [DONE]":
                                         try:
                                             dj = json.loads(line[6:])
-                                            if dj.get("usage"):
-                                                u = dj["usage"]
+                                            u = _usage_from_sse_data(dj)
+                                            if u:
                                                 stats["in"], stats["out"], stats["cached"] = _extract_usage_tokens(u)
                                                 stats["cache_write"] = _extract_cache_write_tokens(u)
                                         except json.JSONDecodeError:

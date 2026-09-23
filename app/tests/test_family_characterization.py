@@ -231,6 +231,18 @@ def test_registry_matches_legacy_for_all_config_models(effort):
         if re.search(r"(?:ox-alpha|x-preview-f-free)$", f_val):
             continue
 
+        # StepFun step-5 is a DELIBERATE divergence: the legacy cascade had
+        # ZERO branches for stepfun models, so every operator effort was
+        # silently dropped (never sent upstream). The new contract emits
+        # reasoning_effort with the documented vocab low/medium/high,
+        # clamping out-of-vocab efforts (enable/adaptive/unknown/budget) to
+        # high — the strict gateway 400s unknown values. step-3.x flash
+        # models remain legacy-identical because the pattern is scoped to
+        # step-?5 ids only. Full lock: test_stepfun_reasoning.py +
+        # test_family_divergences.py.
+        if re.search(r"step-?5", f_val):
+            continue
+
         legacy_payload = legacy_apply_thinking(_base_payload(), f_val, effort)
         new_payload, _prov = resolve_thinking(_base_payload(), f_val, effort)
 

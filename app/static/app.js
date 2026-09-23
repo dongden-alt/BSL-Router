@@ -1542,6 +1542,16 @@ function getThinkingSpec(modelId) {
     // KwaiPilot Kat-Coder — vocabulary undocumented, backend passes through.
     if (/kat-coder|kwaipilot/.test(id)) return { effort: ['off','minimal','low','medium','high','max'] };
 
+    // StepFun step-5: Chat Completions reasoning_effort vocabulary low/medium/high
+    // (Messages/anthropic wire uses output_config.effort, same vocabulary). Mirrors
+    // backend app/compat/families/stepfun.py contract — out-of-vocab values clamp
+    // to 'high' server-side (Grok precedent; the strict gateway 400s unknown
+    // values). Scoped to step-?5 ids ONLY (matches step-5-preview / step5 across
+    // providers). Deliberately NOT the bare 'stepfun' provider token: that segment
+    // would also match step-3.x-flash / step-router / stepaudio / step-image,
+    // which are non-reasoning models and must keep no menu (legacy parity).
+    if (/step-?5/.test(id)) return { effort: ['off','low','medium','high'] };
+
     return null;  // no reasoning controls
 }
 

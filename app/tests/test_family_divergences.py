@@ -778,3 +778,52 @@ def test_gpt_budget_thinking_coerces_to_valid_level(f_val, effort, expected):
     assert got == expected, (
         f"{f_val} effort={effort!r}: expected coerced {expected!r}, got {got!r}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# DIVERGENCE — StepFun step-5: scoped pattern + out-of-vocab clamps
+# (2026-09-23).
+#
+# WHY LEGACY WAS WRONG:
+#   The legacy cascade had ZERO branches for stepfun models, so every
+#   operator effort was silently dropped — reasoning never reached
+#   upstream. The new step-5 contract emits reasoning_effort with the
+#   DOCUMENTED vocabulary low/medium/high; anything out of vocab
+#   (enable/adaptive/unknown words/budgets) clamps to 'high' — the
+#   strict gateway 400s unknown values (house precedent:
+#   test_grok_unknown_effort_defaults_to_high; Kat-coder is the only
+#   passthrough family, and only because its vocab is undocumented).
+#
+#   The pattern is scoped to step-?5 ids so the 8 step-3.x-flash config
+#   models keep EXACT legacy behavior — their reasoning-effort
+#   acceptance was never verified. Full lock: test_stepfun_reasoning.py.
+# ─────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("effort", ["enable", "adaptive", "max", "xhigh", "ultra", "32k"])
+def test_step5_out_of_vocab_clamps_to_high(effort):
+    """step-5 documents low/medium/high only; everything else clamps."""
+    out, _ = resolve_thinking(_payload(), "iamhc/step-5-preview", effort)
+    assert out.get("reasoning_effort") == "high", (
+        f"step-5 effort={effort!r}: expected clamp to 'high', got "
+        f"{out.get('reasoning_effort')!r} — the gateway 400s unknown values"
+    )
+
+
+@pytest.mark.parametrize("f_val", [
+    "kilocode/stepfun/step-3.7-flash",
+    "commandcode/stepfun/Step-3.5-Flash",
+])
+@pytest.mark.parametrize("effort", ["low", "enable", "max"])
+def test_step3_flash_models_remain_legacy_untouched(f_val, effort):
+    """step-3.x flash ids never match the scoped pattern — legacy parity."""
+    out, prov = resolve_thinking(_payload(), f_val, effort)
+    assert "reasoning_effort" not in out, (
+        f"{f_val} effort={effort!r}: out-of-scope model emitted "
+        f"reasoning_effort: {out}"
+    )
+    assert "output_config" not in out
+    contract_ids = {r.contract_id for r in prov.records}
+    assert "step-5" not in contract_ids, (
+        f"{f_val}: matched the step-5 contract — step-3.x must stay legacy. "
+        f"Contracts: {contract_ids}"
+    )

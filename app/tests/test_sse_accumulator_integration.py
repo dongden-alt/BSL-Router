@@ -764,3 +764,100 @@ class TestExtractUsageTokens:
         assert _in == 100
         assert _out == 5
         assert _cached == 30  # null details -> falls back to cache_read
+
+
+# ── Shared SSE usage locator + prompt_tokens-first gate (2026-09-23) ────
+
+class TestUsageFromSSEData:
+    """_usage_from_sse_data finds the usage dict across all SSE nesting shapes
+    so the OpenAI-lane and Anthropic-lane stats sites cannot diverge."""
+
+    def test_top_level_usage(self):
+        from app.main import _usage_from_sse_data
+        u = {"prompt_tokens": 10}
+        assert _usage_from_sse_data({"usage": u}) is u
+
+    def test_message_nested_usage(self):
+        from app.main import _usage_from_sse_data
+        u = {"input_tokens": 42}
+        assert _usage_from_sse_data({"message": {"usage": u}}) is u
+
+    def test_response_nested_usage(self):
+        from app.main import _usage_from_sse_data
+        u = {"prompt_tokens": 7}
+        assert _usage_from_sse_data({"response": {"usage": u}}) is u
+
+    def test_absent_returns_none(self):
+        from app.main import _usage_from_sse_data
+        assert _usage_from_sse_data({"choices": []}) is None
+
+    def test_non_dict_returns_none(self):
+        from app.main import _usage_from_sse_data
+        assert _usage_from_sse_data(None) is None
+        assert _usage_from_sse_data("data: {}") is None
+        assert _usage_from_sse_data(42) is None
+
+    def test_non_dict_usage_skipped(self):
+        from app.main import _usage_from_sse_data
+        # usage present but not a dict must not be returned.
+        assert _usage_from_sse_data({"usage": "n/a"}) is None
+
+    def test_top_level_takes_precedence_over_nested(self):
+        from app.main import _usage_from_sse_data
+        top = {"prompt_tokens": 1}
+        assert _usage_from_sse_data(
+            {"usage": top, "message": {"usage": {"input_tokens": 2}}}
+        ) is top
+
+
+class TestAnthropicAccumulatorPromptTokensGate:
+    """message_start usage with a truthy prompt_tokens must use it as-is for
+    the inclusive input count — folding would double-count (90k-vs-50k bug)."""
+
+    def _run(self, chunks):
+        from app.main import _accumulate_sse_stream
+        results = asyncio.run(_accumulate_sse_stream(
+            MockSSEResponse(chunks),
+            _is_anthropic_fmt=True,
+            _target_model="test-model",
+            _request=None,
+            _label="test",
+        ))
+        return TestOpenAISSEIntegration._normalize(results)
+
+    def test_prompt_tokens_not_folded(self):
+        """OpenAI-inclusive shape: prompt_tokens=50000 + cache_read=40000.
+        Folding -> 90000 (the bug); gate -> 50000 (correct, inclusive)."""
+        chunks = [
+            _anth_event("message_start", extra={"message": {"usage": {
+                "prompt_tokens": 50000,
+                "cache_read_input_tokens": 40000,
+                "output_tokens": 0,
+            }}}),
+            _anth_event("content_block_delta", delta={"type": "text_delta", "text": "Hi"}),
+            _anth_event("message_delta", delta={"stop_reason": "end_turn"},
+                        extra={"usage": {"output_tokens": 20}}),
+            _done(),
+        ]
+        result = self._run(chunks)
+        assert result["in_tokens"] == 50000  # NOT 90000
+        assert result["out_tokens"] == 20
+
+    def test_anthropic_native_fold_preserved(self):
+        """No prompt_tokens -> existing fold branch runs untouched.
+        input=10000 + read=40000 + creation=5000 -> 55000 (fold preserved)."""
+        chunks = [
+            _anth_event("message_start", extra={"message": {"usage": {
+                "input_tokens": 10000,
+                "cache_read_input_tokens": 40000,
+                "cache_creation_input_tokens": 5000,
+            }}}),
+            _anth_event("content_block_delta", delta={"type": "text_delta", "text": "Hi"}),
+            _anth_event("message_delta", delta={"stop_reason": "end_turn"},
+                        extra={"usage": {"output_tokens": 5}}),
+            _done(),
+        ]
+        result = self._run(chunks)
+        assert result["in_tokens"] == 55000  # fold preserved
+        assert result["cached_tokens"] == 40000  # only reads map to cached
+        assert result["out_tokens"] == 5

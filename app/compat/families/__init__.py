@@ -50,6 +50,7 @@ from app.compat.families import (
     doubao as _doubao,
     kat_coder as _kat_coder,
     muse as _muse,
+    stepfun as _stepfun,
 )
 
 # Registry assembly. Order here is irrelevant — resolution is by the
@@ -71,6 +72,7 @@ _FAMILY_MODULES = [
     _doubao,
     _kat_coder,
     _muse,
+    _stepfun,
 ]
 
 CONTRACTS: List[Contract] = []
