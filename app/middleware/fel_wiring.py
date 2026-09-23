@@ -232,6 +232,12 @@ class FELConfig:
     # evidence: models refuse the vocabulary, not the capability).
     reframe_enabled: bool = False
     reframe_attestation: bool = True
+    # Intent-bound engagement framing (default OFF). When ON and a reframe
+    # actually fires, the operator's REAL configured engagement profile is
+    # bound into the reframed task text (replacing the generic detached
+    # attestation prefix). Surfaces — never manufactures — the attested
+    # engagement; a NO-OP when no profile context is configured.
+    reframe_bind_engagement: bool = False
     sensitivity_map_en: Dict[str, str] = field(default_factory=dict)
     sensitivity_map_vi: Dict[str, str] = field(default_factory=dict)
     # Phase-5 (FEL-5) research modes — default OFF. Each enabled lane adds
@@ -400,11 +406,14 @@ def resolve_fel(cfg_tools: Any) -> Optional[FELConfig]:
         reframe_raw = _dict_or_fail(fel, "reframe")
         reframe_enabled = False
         reframe_attestation = True
+        reframe_bind_engagement = False
         sensitivity_map_en: Dict[str, str] = dict(DEFAULT_SENSITIVITY_MAP_EN)
         sensitivity_map_vi: Dict[str, str] = dict(DEFAULT_SENSITIVITY_MAP_VI)
         if isinstance(reframe_raw, dict) and bool(reframe_raw.get("enabled", False)):
             reframe_enabled = True
             reframe_attestation = bool(reframe_raw.get("attestation", True))
+            # Intent-bound framing knob (default OFF; malformed → False).
+            reframe_bind_engagement = bool(reframe_raw.get("bind_engagement", False))
             smap_raw = _dict_or_fail(reframe_raw, "sensitivity_map")
             if isinstance(smap_raw, dict):
                 for lang, entries in smap_raw.items():
@@ -435,6 +444,7 @@ def resolve_fel(cfg_tools: Any) -> Optional[FELConfig]:
             steer_alternatives=steer_alternatives,
             reframe_enabled=reframe_enabled,
             reframe_attestation=reframe_attestation,
+            reframe_bind_engagement=reframe_bind_engagement,
             sensitivity_map_en=sensitivity_map_en,
             sensitivity_map_vi=sensitivity_map_vi,
             research_content=research_content,
@@ -578,8 +588,27 @@ def _map_span_folded_to_nfc(
         return (span[0], span[1])
 
 
+def _engagement_bound_line(context: str, client_ref: str, scope: str) -> str:
+    """Profile-bound engagement line for intent-bound framing.
+
+    Returns '' when context is empty (no profile configured) — the
+    intent-binding is then a NO-OP and the caller falls back to the existing
+    detached-attestation path. NEVER fabricates content: only the non-empty
+    scope/ref segments of the operator's configured profile are appended.
+    Format: "Engagement: <context> | scope: <scope> | ref: <client_ref>".
+    """
+    if not context:
+        return ""
+    parts: List[str] = [f"Engagement: {context}"]
+    if scope:
+        parts.append(f"scope: {scope}")
+    if client_ref:
+        parts.append(f"ref: {client_ref}")
+    return " | ".join(parts)
+
+
 def reframe_text(
-    last_user_text: str, fel: Optional[FELConfig],
+    last_user_text: str, fel: Optional[FELConfig], profile_name: Any = "",
 ) -> Tuple[str, List[Dict[str, Any]], bool]:
     """Phase-3 bilingual (EN+VI) reframe on the last user message text.
 
@@ -588,7 +617,17 @@ def reframe_text(
     2. Replace each matched span with the professional term,
        right-to-left, case-preserving via _apply_case.
     3. Prepend the operator attestation line once when
-       reframe.attestation is on.
+       reframe.attestation is on — UNLESS reframe.bind_engagement is on and
+       the selected engagement profile has a non-empty context, in which case
+       a profile-bound "Engagement: ..." line is bound into the task text
+       INSTEAD (replacing, not doubling, the generic attestation prefix).
+
+    profile_name selects a named engagement profile (via the request header)
+    falling back to the default engagement block — same resolution as
+    clarity_preprocess. When no profile context is configured the
+    intent-binding is a NO-OP and the existing attestation path runs
+    unchanged. The injected content comes ONLY from the operator-configured
+    engagement block; nothing is fabricated.
 
     Returns (adjusted_text, rewrites, changed). Zero mutation when
     reframe is disabled or nothing matched. Output is NFC-canonical
@@ -625,6 +664,19 @@ def reframe_text(
         changed = edited != text
         if not changed:
             return (text, [], False)
+        # Intent-bound framing: when bind_engagement is ON, bind the
+        # operator's REAL engagement profile into the task text instead of
+        # the generic detached attestation prefix. Replaces (never doubles)
+        # the attestation prepend. A NO-OP when no profile context is
+        # configured (empty context) → falls through to the existing path.
+        if getattr(fel, "reframe_bind_engagement", False):
+            _b_ctx, _b_ref, _b_scope = select_profile(fel, profile_name)
+            _bound = _engagement_bound_line(_b_ctx, _b_ref, _b_scope)
+            if _bound:
+                edited = _bound + "\n\n" + edited
+                rewrites.append({"type": "engagement_bind", "context": _b_ctx})
+                return (edited, rewrites, True)
+            # no profile context configured → no fabrication; existing path.
         if getattr(fel, "reframe_attestation", True):
             edited = ATTESTATION_TEXT + "\n\n" + edited
             rewrites.append({"type": "attestation_prepend"})
