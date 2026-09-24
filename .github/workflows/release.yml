@@ -1,4 +1,4 @@
-name: Release
+﻿name: Release
 
 on:
   workflow_dispatch:
@@ -12,6 +12,7 @@ on:
         required: false
         default: 'true'
   push:
+    branches: [main]
     tags:
       - 'v*'
 
@@ -29,38 +30,40 @@ jobs:
       - name: Resolve tag
         id: tag
         run: |
+          REF_TAG="${GITHUB_REF#refs/tags/}"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.tag }}"
+          elif [ "${{ github.event_name }}" = "push" ] && [ "$REF_TAG" != "$GITHUB_REF" ]; then
+            TAG="$REF_TAG"
           else
-            TAG="${GITHUB_REF#refs/tags/}"
+            TAG=""
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "Releasing tag: ${TAG}"
+          echo "Resolved tag: '${TAG}'"
 
-      - name: Build release notes from CHANGELOG.md
+      - name: Publish single release (tag push or dispatch, idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -eu
           TAG="${{ steps.tag.outputs.tag }}"
-          VER="${TAG#v}"
-          python3 - "$VER" <<'PY'
+          if [ -z "$TAG" ]; then
+            echo "No single tag resolved (branch push) - skipping single-release step."
+            exit 0
+          fi
+          python3 - "$TAG" <<'PY'
           import re, sys
-          ver = sys.argv[1]
+          tag = sys.argv[1]
+          ver = tag[1:] if tag.startswith("v") else tag
           try:
               text = open("CHANGELOG.md", encoding="utf-8").read()
           except OSError:
               text = ""
           m = re.search(r"## \[%s\][^\n]*\n(.*?)(?=\n## \[|\Z)" % re.escape(ver), text, re.DOTALL)
           body = m.group(1).strip() if m else ""
-          header = "# %s - see CHANGELOG.md\n\n" % ver
-          notes = header + (body if body else "See CHANGELOG.md for details.")
+          notes = "# %s - see CHANGELOG.md\n\n" % ver + (body if body else "See CHANGELOG.md for details.")
           open("notes.md", "w", encoding="utf-8").write(notes)
           PY
-
-      - name: Publish release (idempotent)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -eu
-          TAG="${{ steps.tag.outputs.tag }}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists - skipping."
             exit 0
@@ -70,3 +73,30 @@ jobs:
           if [ -z "$LATEST" ]; then LATEST="true"; fi
           if [ "$LATEST" = "true" ]; then FLAGS="--latest"; fi
           gh release create "$TAG" --title "BSL Router ${TAG#v}" --notes-file notes.md $FLAGS
+
+      - name: Backfill missing releases for older tags (never steals latest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          for TAG in $(git tag -l 'v*' | sort -V); do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              continue
+            fi
+            echo "Backfilling release for $TAG (latest=false)"
+            python3 - "$TAG" <<'PY'
+          import re, sys
+          tag = sys.argv[1]
+          ver = tag[1:] if tag.startswith("v") else tag
+          try:
+              text = open("CHANGELOG.md", encoding="utf-8").read()
+          except OSError:
+              text = ""
+          m = re.search(r"## \[%s\][^\n]*\n(.*?)(?=\n## \[|\Z)" % re.escape(ver), text, re.DOTALL)
+          body = m.group(1).strip() if m else ""
+          notes = "# %s - see CHANGELOG.md\n\n" % ver + (body if body else "See CHANGELOG.md for details.")
+          open("notes_%s.md" % tag, "w", encoding="utf-8").write(notes)
+          PY
+            gh release create "$TAG" --title "BSL Router ${TAG#v}" --notes-file "notes_${TAG}.md" --latest=false
+          done
+          echo "Backfill step complete."
