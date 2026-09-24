@@ -1,4 +1,4 @@
-﻿name: Release
+name: Release
 
 on:
   workflow_dispatch:
@@ -7,6 +7,10 @@ on:
         description: 'Tag to release (e.g. v1.0.7)'
         required: true
         default: 'v1.0.7'
+      latest:
+        description: 'Mark this release as latest (true/false). Use false for backfills of older tags.'
+        required: false
+        default: 'true'
   push:
     tags:
       - 'v*'
@@ -61,4 +65,8 @@ jobs:
             echo "Release $TAG already exists - skipping."
             exit 0
           fi
-          gh release create "$TAG" --title "BSL Router ${TAG#v}" --notes-file notes.md --latest
+          LATEST="${{ github.event.inputs.latest }}"
+          FLAGS=""
+          if [ -z "$LATEST" ]; then LATEST="true"; fi
+          if [ "$LATEST" = "true" ]; then FLAGS="--latest"; fi
+          gh release create "$TAG" --title "BSL Router ${TAG#v}" --notes-file notes.md $FLAGS
