@@ -1,14 +1,14 @@
-﻿# BSL Router
+# BSL Router
 
 > **The AI router that thinks.** Not just a proxy — a 5-tier intelligence engine that classifies, routes, translates, and orchestrates across 12+ AI providers with mechanical quality gates.
 >
 > **AI router biết suy nghĩ.** Không chỉ là proxy — một engine trí tuệ 5 tầng tự động phân loại, định tuyến, dịch giao thức, và điều phối trên 12+ provider với cổng chất lượng cơ học.
 
-[![Version: 1.0.5](https://img.shields.io/badge/Version-1.0.6-00d9a3.svg)](https://github.com/dongden-alt/BSL-Router/releases/tag/v1.0.6)
+[![Version: 1.0.7](https://img.shields.io/badge/Version-1.0.7-00d9a3.svg)](https://github.com/dongden-alt/BSL-Router/releases/tag/v1.0.7)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776ab.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.129+-009688.svg)](https://fastapi.tiangolo.com/)
-[![Tests: 2800+](https://img.shields.io/badge/Tests-2800+-brightgreen.svg)](#-verification)
+[![Tests: 3100+](https://img.shields.io/badge/Tests-3100+-brightgreen.svg)](#-verification)
 
 **🇬🇧 [English](#-the-problem)** · **🇻🇳 [Tiếng Việt](#-vấn-đề)**
 

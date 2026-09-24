@@ -126,6 +126,8 @@ from app.middleware.fel_wiring import (  # FEL-2a (default OFF — tools.fel.ena
     fel_event,
     resolve_fel,
     reframe_text,
+    reframe_context_wide,
+    is_data_inspection_wall,
     select_profile,
     set_last_user_text,
 )
@@ -710,6 +712,42 @@ async def _guard_observe_stream(source, *, model: str = "", provider: str = ""):
 
 
 _RECOVERABLE = {400, 401, 403, 404, 405, 408, 409, 413, 422, 429, 500, 502, 503, 504, 524, 525, 526}  # HTTP status codes that trigger combo/chain advance
+
+# TERMINAL RELAY WALLS (2026-09-24): `upstream_safety_blocked`
+# (CC Max / mintrouter claude-fable-5) and `data_inspection_failed`
+# (GLM/zhipu, Qwen) return HTTP 400, but 400 is in _RECOVERABLE, so the
+# combo fallback chain advanced to another model in the SAME walled
+# family and the never-stop retry wrap re-looped forever, spamming
+# `[400] ... upstream_safety_blocked` every ~15s. These are NOT
+# transient errors — they are hard provider-side safety/inspection
+# walls that will never pass regardless of which walled-family model is
+# tried. Make them NON-RECOVERABLE: no 502 reclassification, no chain
+# advance, no never-stop wrap. Surface the 400 verbatim ONCE and stop.
+# Fail-open: any detector fault falls through to existing behavior.
+_TERMINAL_RELAY_WALL_MARKERS = ("upstream_safety_blocked", "data_inspection_failed")
+
+
+def _is_terminal_relay_wall(status_code, err_text) -> bool:
+    """True only for a status+body combo that is a hard provider wall.
+
+    Gated on status in (400, 403) AND a non-empty body containing one of
+    _TERMINAL_RELAY_WALL_MARKERS (case-insensitive). A 429 carrying the
+    marker is NOT a terminal wall (status gate keeps retryable). An empty
+    body is NOT a terminal wall (revert to recoverable 400). Any exception
+    in the body scan returns False so the caller keeps legacy behavior.
+    """
+    try:
+        if status_code not in (400, 403):
+            return False
+        if not err_text:
+            return False
+        _low = err_text.lower() if isinstance(err_text, str) else str(err_text).lower()
+        if not _low:
+            return False
+        return any(m in _low for m in _TERMINAL_RELAY_WALL_MARKERS)
+    except Exception:
+        return False
+
 
 _BLACKSAND_MODEL_ALIASES = {
     "blacksand-chat": "blacksand-chat",
@@ -6789,6 +6827,11 @@ def _raise_combo_wrap(model, config, request, retry_state, active_chain,
     raising when settings.combo_infinite_retry is false so the caller
     falls through to its terminal frames exactly as before.
     """
+    # Terminal relay walls must never be wrapped/retried - surface once and stop.
+    # Fail-open: a detector fault returns False and the legacy wrap path runs.
+    if _is_terminal_relay_wall(status_code, err_text):
+        print(f"[TerminalWall] suppressing never-stop wrap ({reason}) - terminal relay wall", flush=True)
+        return
     if not _combo_infinite_retry_enabled(config):
         return
     _backoff, _wrap = _combo_restart_or_give_up(
@@ -7251,6 +7294,24 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     if _fel_reframe_changed:
                         fel_event("reframe", model=model, provider="", details={
                             "rewrites": _fel_reframes,
+                        })
+                # Tier-2 context-wide reframe (2026-09-24): when
+                # reframe.context_scope == "full", span-rewrite user/assistant/
+                # tool history text in place via reframe_context_wide AFTER the
+                # last-turn reframe_text + set_last_user_text. The single
+                # attestation/engagement prepend stays on the last user turn
+                # (reframe_context_wide only span-rewrites; it never prepends),
+                # so no double-prepend. Runs under the same bsl_fel_clarified /
+                # bsl_fel_recovered once-per-request guards; fail-open.
+                if (
+                    _fel_write_ok
+                    and getattr(_fel, "reframe_context_scope", "last_turn") == "full"
+                ):
+                    _ctx = reframe_context_wide(body, _fel, _fel_profile_name)
+                    if _ctx.get("changed"):
+                        fel_event("context_reframe", model=model, provider="", details={
+                            "messages_reframed": _ctx.get("messages_reframed", 0),
+                            "rewrites": _ctx.get("rewrites", []),
                         })
         except Exception as _fel_clarity_err:
             print(f"[FEL] clarity pre-flight failed (fail-open): {_fel_clarity_err}", flush=True)
@@ -9158,9 +9219,29 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         err_text = f"upstream_{resp.status_code}"
                     stats["error"] = err_text
                     bench_leaf(config, provider_name, target_model, resp.status_code, err_text, stats.get("out", 0))
-                    # Try combo fallback
+                    # TERMINAL RELAY WALL (2026-09-24): upstream_safety_blocked /
+                    # data_inspection_failed on 400/403 are hard provider walls,
+                    # NOT transient errors. Advancing the combo chain resolves to
+                    # a sibling in the SAME walled family (identical wall) and the
+                    # never-stop wrap re-loops forever -> 400 spam every ~15s.
+                    # Skip combo advance + _raise_combo_wrap and fall straight to
+                    # the terminal error+[DONE] frames so the client unblocks
+                    # immediately and the 400 surfaces ONCE. Fail-open: any
+                    # detector fault reverts to the legacy recoverable path below.
+                    _is_wall = _is_terminal_relay_wall(resp.status_code, err_text)
+                    if _is_wall:
+                        print(
+                            f"[TerminalWall] '{target_model}/{provider_name}' "
+                            f"raw stream returned HTTP {resp.status_code} "
+                            f"({err_text[:120]}) — terminal relay wall, "
+                            f"not advancing, not retrying",
+                            flush=True,
+                        )
+                    # Try combo fallback (skipped for terminal relay walls)
                     _next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
-                    if active_chain and _next_idx < len(active_chain):
+                    if _is_wall:
+                        pass  # terminal wall: never advance, never wrap
+                    elif active_chain and _next_idx < len(active_chain):
                         _fb_state = {
                             "chain": active_chain,
                             "idx": _next_idx,
@@ -9175,10 +9256,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             # Reachable post-emission: the blacksand-chat prefill
                             # above may already have sent bytes to the client.
                             raise _ComboFallbackNeeded(resp.status_code, err_text[:500], _fb_state)
-                    if not _emit.emitted:
+                    if not _is_wall and not _emit.emitted:
                         # NEVER-STOP RETRY (2026-08-31): pre-emission
                         # exhaustion — wrap to pass 2+ instead of terminal
-                        # error+[DONE] frames.
+                        # error+[DONE] frames. Skipped for terminal relay walls.
                         _raise_combo_wrap(
                             model, config, request, _retry_state, active_chain,
                             original_model, _cache_breakpoints, resp.status_code,
@@ -9675,8 +9756,19 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         # ANTI-FREEZE (2026-08-01): bench the leaf so auto-heal
                         # bans/cooldowns it; the NEXT request skips this dead leaf.
                         bench_leaf(config, provider_name, target_model, resp.status_code, err_text[:500], stats.get("out", 0))
+                        # TERMINAL RELAY WALL (2026-09-24): a hard provider wall
+                        # never advances the combo chain and never wraps — let it
+                        # fall through to the terminal error+message_stop frame so
+                        # the 400 surfaces ONCE. Fail-open: detector fault -> False.
+                        _is_wall_ae = _is_terminal_relay_wall(resp.status_code, err_text)
+                        if _is_wall_ae:
+                            print(
+                                f"[TerminalWall] '{target_model}/{provider_name}' Anthropic egress "
+                                f"{resp.status_code} - terminal relay wall, not advancing, not retrying",
+                                flush=True,
+                            )
                         _fb_next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
-                        if active_chain and _fb_next_idx < len(active_chain):
+                        if not _is_wall_ae and active_chain and _fb_next_idx < len(active_chain):
                             _fb_retry_state = {
                                 "chain": active_chain,
                                 "idx": _fb_next_idx,
@@ -9708,11 +9800,14 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         # NEVER-STOP RETRY (2026-08-31): chain exhausted at the
                         # Anthropic non-200 gate (pre-emission by construction)
                         # — wrap to pass 2+ instead of a terminal error frame.
-                        _raise_combo_wrap(
-                            model, config, request, _retry_state, active_chain,
-                            original_model, _cache_breakpoints, resp.status_code,
-                            err_text[:500], reason="anthropic_egress_exhausted",
-                        )
+                        # Terminal relay wall: skip the wrap so the error+message_stop
+                        # frame below surfaces the 400 verbatim ONCE.
+                        if not _is_wall_ae:
+                            _raise_combo_wrap(
+                                model, config, request, _retry_state, active_chain,
+                                original_model, _cache_breakpoints, resp.status_code,
+                                err_text[:500], reason="anthropic_egress_exhausted",
+                            )
                         err_event = {
                             "type": "error",
                             "error": {"type": "upstream_error", "message": err_text[:1000]},
@@ -10104,6 +10199,11 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 chokepoint. `emit` is optional so a caller that provably cannot
                 have emitted yet may omit it.
                 """
+                # Terminal relay walls: never advance the chain, never wrap.
+                # Fail-open: a detector fault returns False and the chain logic runs.
+                if _is_terminal_relay_wall(status_code, err_text):
+                    print(f"[TerminalWall] gemini egress - terminal relay wall, not advancing, not retrying", flush=True)
+                    return
                 _next_state = _next_gemini_combo_retry_state()
                 if emit is not None and not emit.may_fallback(err_text or f"gemini_{status_code}"):
                     # Post-emission: the client is mid-parse. Return so the caller
@@ -11033,9 +11133,20 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             err_text = str(raw_err)
                         stats["error"] = err_text[:500]
                         bench_leaf(config, provider_name, target_model, resp.status_code, err_text[:500], stats.get("out", 0))
+                        # TERMINAL RELAY WALL (2026-09-24): a hard provider wall never
+                        # advances the combo chain and never wraps — fall through to
+                        # the OpenAI SSE error+[DONE] frame so the 400 surfaces ONCE.
+                        # Fail-open: detector fault -> False.
+                        _is_wall_ao = _is_terminal_relay_wall(resp.status_code, err_text)
+                        if _is_wall_ao:
+                            print(
+                                f"[TerminalWall] '{target_model}/{provider_name}' Anthropic→OpenAI egress "
+                                f"{resp.status_code} - terminal relay wall, not advancing, not retrying",
+                                flush=True,
+                            )
                         # ALL non-200 triggers combo fallback (per user directive).
                         _fb_next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
-                        if active_chain and _fb_next_idx < len(active_chain):
+                        if not _is_wall_ao and active_chain and _fb_next_idx < len(active_chain):
                             _fb_retry_state = {
                                 "chain": active_chain,
                                 "idx": _fb_next_idx,
@@ -11052,11 +11163,12 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                 print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_fb_next_idx}, refusing further fallback", flush=True)
                             elif _emit.may_fallback(f"upstream_{resp.status_code}"):
                                 raise _ComboFallbackNeeded(resp.status_code, err_text[:500], _fb_retry_state)
-                        if not _emit.emitted:
+                        if not _is_wall_ao and not _emit.emitted:
                             # NEVER-STOP RETRY (2026-08-31): chain exhausted
                             # pre-emission (the user-observed "upstream error
                             # 429" force-stop path) — wrap to pass 2+ instead
-                            # of terminal error+[DONE] frames.
+                            # of terminal error+[DONE] frames. A terminal relay
+                            # wall skips the wrap and falls through to [DONE].
                             _raise_combo_wrap(
                                 model, config, request, _retry_state, active_chain,
                                 original_model, _cache_breakpoints, resp.status_code,
@@ -12257,8 +12369,88 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             # 524 = Cloudflare origin timeout (HTML body, not a transport err).
             # 408 = Request Timeout from upstream gateway.
             # Zombie empty 200s are reclassified above and must also advance.
+            #
+            # TERMINAL RELAY WALL (2026-09-24): upstream_safety_blocked /
+            # data_inspection_failed on a 400/403 are hard provider-side
+            # walls, NOT transient errors. Another combo entry resolves to a
+            # sibling in the SAME walled family and hits the identical wall,
+            # so advancing only re-spams 400s and the never-stop wrap re-loops
+            # forever. Short-circuit BEFORE chain advance / wrap: leave resp
+            # verbatim (the HTML/400 reclassify block below also skips) and
+            # fall through so the 400 surfaces ONCE. Fail-open: any detector
+            # fault reverts to the legacy recoverable behavior below.
             _is_zombie = bool(error_msg and str(error_msg).startswith("zombie_empty_response"))
-            if active_chain and (
+            _ns_err_text = error_msg if isinstance(error_msg, str) else ""
+            if _is_terminal_relay_wall(resp.status_code, _ns_err_text):
+                # ── FEL Tier-2 FAILURE-AWARE ESCALATION (2026-09-24) ──
+                # A data_inspection_failed wall (GLM/zhipu input inspection)
+                # is the ONE terminal wall a context-wide reframe can address:
+                # the raw 300KB+ history/tool-outputs tripped provider-side
+                # inspection, so span-rewrite the whole context ONCE and
+                # re-dispatch ONCE through this same path BEFORE declaring the
+                # wall terminal. Single-shot via request.state.bsl_fel_context_escalated
+                # (no infinite loop); FEL-gated; escalate_on_inspection_fail must
+                # be ON; the refusal-recovery frame (bsl_fel_recovered) must not be
+                # set (avoids double-reframe). If the escalation ALSO hits the wall,
+                # the guard is already set → fall straight through to the verbatim
+                # surfacing below. Mirrors the refusal-recovery re-dispatch shape at
+                # 12160. Fail-open: any fault → fall through to terminal surfacing.
+                _ns_is_inspection_wall = is_data_inspection_wall(
+                    resp.status_code, _ns_err_text
+                )
+                if (
+                    _ns_is_inspection_wall
+                    and _fel is not None
+                    and request is not None
+                    and getattr(_fel, "reframe_escalate_on_inspection_fail", True)
+                    and not getattr(request.state, "bsl_fel_context_escalated", False)
+                    and not getattr(request.state, "bsl_fel_recovered", False)
+                    and isinstance(body, dict)
+                ):
+                    try:
+                        request.state.bsl_fel_context_escalated = True
+                        _escal_profile = ""
+                        if _fel.profile_header:
+                            _escal_profile = request.headers.get(_fel.profile_header, "") or ""
+                        _escal_ctx = reframe_context_wide(body, _fel, _escal_profile)
+                        print(
+                            f"[FEL] context-escalation for {target_model}/{provider_name} "
+                            f"(data_inspection_failed) — reframed "
+                            f"{_escal_ctx.get('messages_reframed', 0)} messages, "
+                            f"re-dispatching once",
+                            flush=True,
+                        )
+                        fel_event("context_escalation", model=target_model, provider=provider_name, details={
+                            "messages_reframed": _escal_ctx.get("messages_reframed", 0),
+                            "rewrites": _escal_ctx.get("rewrites", []),
+                        })
+                        # Ensure the escalation frame is treated as a fresh
+                        # single-shot dispatch (no inherited combo idx).
+                        _escal_retry_state = None if not _retry_state else {
+                            **_retry_state,
+                            "idx": _retry_state.get("idx", 0),
+                        }
+                        return await _process_chat_completion(
+                            body,
+                            client_wants_anthropic,
+                            client_wants_gemini,
+                            _retry_state=_escal_retry_state,
+                            request=request,
+                        )
+                    except Exception as _fel_escalation_err:
+                        print(
+                            f"[FEL] context-escalation failed (fail-open): "
+                            f"{_fel_escalation_err}",
+                            flush=True,
+                        )
+                print(
+                    f"[TerminalWall] '{target_model}/{provider_name}' "
+                    f"non-stream returned HTTP {resp.status_code} "
+                    f"({_ns_err_text[:120]}) — terminal relay wall, "
+                    f"not advancing, not retrying",
+                    flush=True,
+                )
+            elif active_chain and (
                 _is_zombie or resp.status_code != 200
             ):
                 _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
@@ -12305,8 +12497,26 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             if resp.status_code >= 400:
                 try:
                     _raw_start = resp.content[:200].decode("utf-8", errors="replace").strip()
-                    _is_html = _raw_start.startswith("<")
-                    _is_400 = resp.status_code == 400
+                    # TERMINAL RELAY WALL (2026-09-24): surface the verbatim 400/403
+                    # once. Do NOT reclassify as 502 (that makes it recoverable and
+                    # the never-stop wrap re-loops forever against a wall that will
+                    # never pass). Skip the HTML/400 reclassify branch so resp is
+                    # left unchanged and the 400 surfaces verbatim. Fail-open: on
+                    # any detector fault _is_terminal_relay_wall returns False and
+                    # the legacy reclassify path runs exactly as before.
+                    if _is_terminal_relay_wall(resp.status_code, _raw_start):
+                        print(
+                            f"[TerminalWall] '{target_model}/{provider_name}' "
+                            f"returned HTTP {resp.status_code} "
+                            f"({_raw_start[:120]}) — terminal relay wall, "
+                            f"not reclassifying, not retrying",
+                            flush=True,
+                        )
+                        _is_html = False
+                        _is_400 = False
+                    else:
+                        _is_html = _raw_start.startswith("<")
+                        _is_400 = resp.status_code == 400
                     if _is_html or _is_400:
                         _reason = "HTML body" if _is_html else "400 error"
                         print(

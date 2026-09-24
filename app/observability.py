@@ -859,11 +859,15 @@ def _build_buckets_for_sql(timeframe, where_clause, where_params, conn):
 
     base_time = day_start.timestamp()
     for i in range(num):
+        # Emit OLDEST -> NEWEST (ascending time) so the frontend x-axis flows
+        # left-to-right chronologically. i=0 is the oldest bucket, i=num-1 the
+        # newest. (Previously used (num-1-i), which emitted newest-first and
+        # rendered the timeline reversed.)
         if timeframe in ("3M", "6M"):
-            b_end = (base_time + (num - 1 - i) * 7 * 86400) + 604800
+            b_end = (base_time + i * 7 * 86400) + 604800
             b_start = b_end - 7 * 86400
         else:
-            b_end = (base_time + (num - 1 - i) * bucket_dur)
+            b_end = (base_time + i * bucket_dur)
             b_start = b_end - bucket_dur
 
         label_base = datetime.fromtimestamp(b_start)
@@ -878,10 +882,25 @@ def _build_buckets_for_sql(timeframe, where_clause, where_params, conn):
             f"SELECT COUNT(*) FROM usage_events WHERE {where_clause} AND ts_epoch >= ? AND ts_epoch < ?",
             [*where_params, b_start, b_end],
         ).fetchone()
+        # Combined cost + tokens in one round-trip (reuses the same {clause}/params
+        # binding pattern — no string interpolation). tokens = in_cached +
+        # cache_write_tokens + in_uncached + out, matching the totals row math.
         cost_row = conn.execute(
-            f"SELECT COALESCE(SUM(cost),0.0) FROM usage_events WHERE {where_clause} AND ts_epoch >= ? AND ts_epoch < ?",
+            f"SELECT COALESCE(SUM(cost),0.0), "
+            f"(COALESCE(SUM(in_cached),0)+COALESCE(SUM(cache_write_tokens),0)"
+            f"+COALESCE(SUM(in_uncached),0)+COALESCE(SUM(out),0)) "
+            f"FROM usage_events WHERE {where_clause} AND ts_epoch >= ? AND ts_epoch < ?",
             [*where_params, b_start, b_end],
         ).fetchone()
+
+        # Per-bucket series breakdowns (fail-open: a broken path yields empty
+        # series, never raises out of query_usage_summary). Each series entry:
+        # {name, requests, cost, tokens}. Top-N kept, remainder folded into a
+        # single "other" entry. Never returns raw rows — only aggregated dicts.
+        by_model = _bucket_series(conn, where_clause, where_params,
+                                  b_start, b_end, "model", top_n=8)
+        by_provider = _bucket_series(conn, where_clause, where_params,
+                                     b_start, b_end, "provider", top_n=10)
 
         buckets.append({
             "key": f"{timeframe}_b{i}",
@@ -890,8 +909,66 @@ def _build_buckets_for_sql(timeframe, where_clause, where_params, conn):
             "end": b_end,
             "requests": count_row[0],
             "cost": round(cost_row[0], 6),
+            "tokens": int(cost_row[1] or 0),
+            "by_model": by_model,
+            "by_provider": by_provider,
         })
     return buckets
+
+
+def _bucket_series(conn, where_clause, where_params,
+                   b_start, b_end, dimension, top_n):
+    """Per-bucket aggregated series by `dimension` ('model'|'provider').
+
+    Returns a list of {name, requests, cost, tokens} dicts: the top-N by
+    tokens desc plus one "other" entry folding the remainder (only when there
+    is a remainder). Reuses the existing {clause}/params binding — no user
+    input is ever interpolated. Fail-open: any error returns [].
+    """
+    try:
+        col = "model" if dimension == "model" else "provider"
+        rows = conn.execute(
+            f"SELECT COALESCE({col}, 'unknown') AS name, COUNT(*) AS requests, "
+            f"COALESCE(SUM(cost),0.0) AS cost, "
+            f"(COALESCE(SUM(in_cached),0)+COALESCE(SUM(cache_write_tokens),0)"
+            f"+COALESCE(SUM(in_uncached),0)+COALESCE(SUM(out),0)) AS tokens "
+            f"FROM usage_events WHERE {where_clause} AND ts_epoch >= ? AND ts_epoch < ? "
+            f"GROUP BY 1 ORDER BY tokens DESC",
+            [*where_params, b_start, b_end],
+        ).fetchall()
+        series = []
+        other_req = 0
+        other_cost = 0.0
+        other_tok = 0
+        for name, reqs, cost, tokens in rows:
+            pname = str(name) if name is not None else "unknown"
+            if pname == "other":
+                # A literal 'other' dimension value merges into the fold bucket.
+                other_req += int(reqs or 0)
+                other_cost += float(cost or 0.0)
+                other_tok += int(tokens or 0)
+                continue
+            series.append({
+                "name": pname,
+                "requests": int(reqs or 0),
+                "cost": round(float(cost or 0.0), 6),
+                "tokens": int(tokens or 0),
+            })
+            if len(series) > top_n:
+                removed = series.pop()
+                other_req += removed["requests"]
+                other_cost += removed["cost"]
+                other_tok += removed["tokens"]
+        if other_req > 0 or other_tok > 0:
+            series.append({
+                "name": "other",
+                "requests": other_req,
+                "cost": round(other_cost, 6),
+                "tokens": other_tok,
+            })
+        return series
+    except Exception:
+        return []
 
 
 # SQLite (usage_events) is the sole durable source of truth for usage/cost

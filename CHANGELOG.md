@@ -7,7 +7,24 @@ Mọi thay đổi đáng chú ý của BSL Router được ghi lại trong file 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-**🇬🇧 [English](#105---2026-09-21)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+**🇬🇧 [English](#107---2026-09-24)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+
+---
+
+## [1.0.7] - 2026-09-24
+
+A reliability + research-tooling wave: terminal relay walls (`upstream_safety_blocked`, `data_inspection_failed`) are now recognized as **hard provider-side blocks** and stopped at the source instead of being retried forever — plus a **failure-aware context-wide FEL reframe** (Tier-2) so large conversation payloads that trip GLM/Qwen input inspection get ONE whole-context reframe + retry before any wall is declared terminal.
+
+### Added
+
+- **FEL context-wide reframe (Tier-2, failure-aware)** — `reframe.context_scope: "full"` opt-in reframes the WHOLE payload (user history + assistant history + tool outputs) via the same proven bilingual sensitivity-map span rewriter (`_reframe_span_text`, extracted from `reframe_text` — last-turn behavior byte-identical, pinned by regression test). System prompt, the last user turn, and non-text parts (images/base64) are never touched; caps (`context_max_messages` 200 / `context_max_chars` 400k) bound the walk; fully fail-open. Attestation/engagement line still prepends exactly ONCE (last turn) — never duplicated per message. **Smart escalation** (`reframe.escalate_on_inspection_fail`, default ON): when a FEL-enabled request hits `data_inspection_failed`, the router reframes the full context and re-dispatches exactly ONCE (`bsl_fel_context_escalated` guard) before falling through to the terminal-wall path — zero cost on the happy path, no infinite loop on the failure path.
+- **Consumption chart — group-by (By model / By provider) with stacked series + legend** — the "Consumption over time" card gains a two-option group-by toggle (`usageGroupBy`, reuses the existing `renderUsageTable()` refresh path, no extra fetch). Server-side `_build_buckets_for_sql` now emits per-bucket `tokens` (`in_cached + cache_write_tokens + in_uncached + out`) plus `by_model` (top-8 + `other`) and `by_provider` (top-10 + `other`) series via a fail-open `_bucket_series` helper (reuses the existing `{clause}/params` binding, folds the remainder into `other`, never returns raw rows). The frontend stacks colored segments by a global top-8 + `other` ranking (stable colors across buckets) with per-segment tooltips and a matching swatch legend. Backward-compat keys (`requests`/`cost`/`label`/`start`/`end`) unchanged.
+
+### Fixed
+
+- **Terminal relay walls no longer re-loop or spam the console** — CC Max's `upstream_safety_blocked` and GLM/Qwen's `data_inspection_failed` return HTTP 400, but `400` was in `_RECOVERABLE`, so the combo fallback chain advanced to a sibling model in the *same* walled family and the never-stop retry wrap re-looped indefinitely (`[400] … upstream_safety_blocked` every ~15s). A new body-aware detector `_is_terminal_relay_wall(status, err_text)` (status-gated to 400/403, case-insensitive marker match, fully fail-open) now short-circuits the wall at **every** egress path: OpenAI raw stream, Anthropic egress, Anthropic→OpenAI egress, the Gemini combo funnel, the non-streaming combo retry, the 400→502 reclassification, and the single `_raise_combo_wrap` never-stop chokepoint. The wall surfaces **once** with its real status so the client unblocks immediately. `_RECOVERABLE` contents and the `combo_infinite_retry` default are unchanged — generic recoverable 400s (e.g. `unknown field system`) still advance the chain. 19/19 terminal-wall tests pass; full suite green.
+- **Consumption chart token mode now plots real tokens, not request counts** — the Y-axis previously read `bucket.requests` (flat low ceiling, e.g. 0–72) while the header said "Tokens". It now uses the new per-bucket `tokens` aggregate (with a `requests` fallback for legacy payloads), and `maxVal` is derived from the correct metric so gridlines and bar heights match the header unit.
+- **Consumption chart x-axis is now chronological (oldest → newest, left → right)** — `_build_buckets_for_sql` emitted buckets newest-first, so the timeline rendered reversed (e.g. `22:00 … 00:00 … 23:00` with the newest hour mid-axis). Buckets now emit oldest→newest; a regression test asserts ascending `start` across all six timeframes.
 
 ---
 
@@ -324,6 +341,20 @@ Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-
 ---
 
 # 🇻🇳 Tiếng Việt
+
+---
+
+## [1.0.7] - 2026-09-24
+
+Đợt gia cố độ tin cậy + tooling nghiên cứu: các tường chặn relay terminal (`upstream_safety_blocked`, `data_inspection_failed`) nay được nhận diện là **khóa cứng phía provider** và dừng ngay tại nguồn thay vì retry vô hạn — kèm **FEL context-wide reframe failure-aware (Tier-2)** để payload hội thoại lớn bị GLM/Qwen input inspection chặn được reframe toàn bộ context + retry đúng MỘT lần trước khi kết luận tường terminal.
+
+### Thêm Mới
+
+- **FEL context-wide reframe (Tier-2, failure-aware)** — opt-in `reframe.context_scope: "full"` reframe TOÀN BỘ payload (user history + assistant history + tool outputs) qua cùng span-rewriter sensitivity-map song ngữ đã kiểm chứng (`_reframe_span_text`, tách từ `reframe_text` — hành vi last-turn giữ nguyên byte-identical, có regression test pin). Không động vào system prompt, last user turn, hay non-text parts (ảnh/base64); caps (`context_max_messages` 200 / `context_max_chars` 400k) giới hạn vòng quét; hoàn toàn fail-open. Dòng attestation/engagement vẫn prepend đúng MỘT lần (last turn) — không nhân đôi theo message. **Escalation thông minh** (`reframe.escalate_on_inspection_fail`, mặc định BẬT): khi request có FEL gặp `data_inspection_failed`, router reframe toàn context và re-dispatch đúng MỘT lần (guard `bsl_fel_context_escalated`) trước khi rơi vào đường terminal-wall — không tốn chi phí ở happy path, không vòng lặp vô hạn ở failure path.
+
+### Đã Sửa
+
+- **Tường relay terminal không còn lặp lại hay spam console** — `upstream_safety_blocked` của CC Max và `data_inspection_failed` của GLM/Qwen trả về HTTP 400, nhưng `400` nằm trong `_RECOVERABLE`, nên chuỗi combo fallback nhảy sang một model anh em trong *cùng* family bị chặn và wrap never-stop retry lặp vô hạn (`[400] … upstream_safety_blocked` mỗi ~15s). Detector nhận biết theo nội dung body `_is_terminal_relay_wall(status, err_text)` (gate theo status 400/403, khớp marker không phân biệt hoa-thường, hoàn toàn fail-open) nay chặn tường ở **mọi** đường egress: OpenAI raw stream, Anthropic egress, Anthropic→OpenAI egress, funnel combo Gemini, retry combo non-streaming, bước reclassify 400→502, và chokepoint never-stop `_raise_combo_wrap`. Tường hiện **một lần** với status thật để client gỡ block ngay. Nội dung `_RECOVERABLE` và mặc định `combo_infinite_retry` không đổi — các 400 recoverable thông thường (vd `unknown field system`) vẫn advance chuỗi. 19/19 test terminal-wall pass; full suite xanh.
 
 ---
 

@@ -72,7 +72,10 @@ __all__ = [
     "select_profile",
     "clarity_preprocess",
     "detect_sensitivity",
+    "_reframe_span_text",
     "reframe_text",
+    "reframe_context_wide",
+    "is_data_inspection_wall",
     "classify_refusal",
     "apply_fel_directives",
     "build_recovery_body",
@@ -247,6 +250,23 @@ class FELConfig:
     # affected by these flags.
     research_content: bool = False
     research_coding: bool = False
+    # Tier-2 context-wide reframe (2026-09-24). "last_turn" (default) keeps
+    # the proven last-user-only reframe; "full" span-rewrites user/assistant/
+    # tool history text in place via reframe_context_wide. The single
+    # attestation/engagement prepend stays on the last user turn either way.
+    reframe_context_scope: str = "last_turn"
+    # Failure-aware escalation (default ON). When a NON-200 upstream body
+    # matches data_inspection_failed (GLM/zhipu input inspection wall) AND
+    # this is ON AND the request has not already escalated, run ONE
+    # reframe_context_wide on the live body and re-dispatch ONCE before
+    # declaring the wall terminal. Separate from context_scope — the cheap
+    # last-turn path runs first; escalation fires only when it failed.
+    reframe_escalate_on_inspection_fail: bool = True
+    # Caps (fail-open) for the context-wide walk. Defaults are generous so
+    # the happy path is untouched; oversized history reframes the MOST RECENT
+    # N messages that fit, never raises.
+    reframe_context_max_messages: int = 200
+    reframe_context_max_chars: int = 400000
 
 
 # Router-injected safe-alternative steering clause (Phase-2). Appended to
@@ -332,6 +352,39 @@ PARTIAL_COMPLETION_TEXT = (
     "boundary for the excluded one — do not refuse the entire request."
 )
 
+# GLM/zhipu (and Qwen) input-inspection wall marker. A NON-200 carrying
+# this marker is the wall the Tier-2 context-wide reframe targets: the raw
+# 300KB+ history/tool-outputs tripped provider-side input inspection, so
+# ONE span-rewrite of the whole context + a single re-dispatch has a chance
+# before the wall is declared terminal. Kept as the single marker string
+# (a subset of main.py's _TERMINAL_RELAY_WALL_MARKERS tuple) so the
+# escalation never fires on upstream_safety_blocked (a content-safety wall
+# that reframing history will not clear).
+_DATA_INSPECTION_MARKER = "data_inspection_failed"
+
+
+def is_data_inspection_wall(status_code, err_text) -> bool:
+    """True only for a NON-200 whose body carries the GLM input-inspection
+    wall marker (``data_inspection_failed``).
+
+    Narrower than main.py's ``_is_terminal_relay_wall``: it deliberately
+    excludes ``upstream_safety_blocked`` (a content-safety wall that a
+    history reframe cannot clear), so the Tier-2 escalation fires only on
+    the wall it can address. Status-gated to 400/403 (mirrors the terminal-
+    wall detector); an empty body is not a wall. Any exception → False.
+    """
+    try:
+        if status_code not in (400, 403):
+            return False
+        if not err_text:
+            return False
+        _low = err_text.lower() if isinstance(err_text, str) else str(err_text).lower()
+        if not _low:
+            return False
+        return _DATA_INSPECTION_MARKER in _low
+    except Exception:
+        return False
+
 
 def _profile_from(raw: Any) -> Tuple[str, str, str]:
     """Extract (context, client_ref, scope) from a profile dict. Never raises."""
@@ -407,6 +460,10 @@ def resolve_fel(cfg_tools: Any) -> Optional[FELConfig]:
         reframe_enabled = False
         reframe_attestation = True
         reframe_bind_engagement = False
+        reframe_context_scope = "last_turn"
+        reframe_escalate_on_inspection_fail = True
+        reframe_context_max_messages = 200
+        reframe_context_max_chars = 400000
         sensitivity_map_en: Dict[str, str] = dict(DEFAULT_SENSITIVITY_MAP_EN)
         sensitivity_map_vi: Dict[str, str] = dict(DEFAULT_SENSITIVITY_MAP_VI)
         if isinstance(reframe_raw, dict) and bool(reframe_raw.get("enabled", False)):
@@ -423,6 +480,26 @@ def resolve_fel(cfg_tools: Any) -> Optional[FELConfig]:
                         if isinstance(phrase, str) and phrase.strip() and isinstance(term, str) and term.strip():
                             target = sensitivity_map_en if lang.strip().lower() == "en" else sensitivity_map_vi
                             target[phrase] = term
+            # Tier-2 context-wide reframe knobs (2026-09-24). Malformed →
+            # defaults; never raises. context_scope accepts only "last_turn"
+            # (default) or "full" — anything else reverts to last_turn so a
+            # typo never silently widens the reframe path.
+            _scope_raw = reframe_raw.get("context_scope")
+            if isinstance(_scope_raw, str) and _scope_raw.strip().lower() == "full":
+                reframe_context_scope = "full"
+            reframe_escalate_on_inspection_fail = bool(
+                reframe_raw.get("escalate_on_inspection_fail", True)
+            )
+            try:
+                _cmm = int(reframe_raw.get("context_max_messages", 200))
+                reframe_context_max_messages = _cmm if _cmm > 0 else 200
+            except (TypeError, ValueError):
+                reframe_context_max_messages = 200
+            try:
+                _cmc = int(reframe_raw.get("context_max_chars", 400000))
+                reframe_context_max_chars = _cmc if _cmc > 0 else 400000
+            except (TypeError, ValueError):
+                reframe_context_max_chars = 400000
 
         # FEL-5 research modes (default OFF; malformed → disabled, never raises).
         research_raw = _dict_or_fail(fel, "research") or {}
@@ -449,6 +526,10 @@ def resolve_fel(cfg_tools: Any) -> Optional[FELConfig]:
             sensitivity_map_vi=sensitivity_map_vi,
             research_content=research_content,
             research_coding=research_coding,
+            reframe_context_scope=reframe_context_scope,
+            reframe_escalate_on_inspection_fail=reframe_escalate_on_inspection_fail,
+            reframe_context_max_messages=reframe_context_max_messages,
+            reframe_context_max_chars=reframe_context_max_chars,
         )
     except Exception:
         return None
@@ -607,39 +688,28 @@ def _engagement_bound_line(context: str, client_ref: str, scope: str) -> str:
     return " | ".join(parts)
 
 
-def reframe_text(
-    last_user_text: str, fel: Optional[FELConfig], profile_name: Any = "",
+def _reframe_span_text(
+    text: str, fel: Optional[FELConfig]
 ) -> Tuple[str, List[Dict[str, Any]], bool]:
-    """Phase-3 bilingual (EN+VI) reframe on the last user message text.
+    """Pure span-rewrite core of the Phase-3 bilingual reframe (steps 1-2).
 
     1. detect_sensitivity — diacritic-fold matching over BOTH maps
        (no language detection; code-switched prompts just work).
     2. Replace each matched span with the professional term,
        right-to-left, case-preserving via _apply_case.
-    3. Prepend the operator attestation line once when
-       reframe.attestation is on — UNLESS reframe.bind_engagement is on and
-       the selected engagement profile has a non-empty context, in which case
-       a profile-bound "Engagement: ..." line is bound into the task text
-       INSTEAD (replacing, not doubling, the generic attestation prefix).
 
-    profile_name selects a named engagement profile (via the request header)
-    falling back to the default engagement block — same resolution as
-    clarity_preprocess. When no profile context is configured the
-    intent-binding is a NO-OP and the existing attestation path runs
-    unchanged. The injected content comes ONLY from the operator-configured
-    engagement block; nothing is fabricated.
-
-    Returns (adjusted_text, rewrites, changed). Zero mutation when
-    reframe is disabled or nothing matched. Output is NFC-canonical
-    (required for VI span math); ASCII input passes through unchanged.
-    Never raises.
+    NO attestation/engagement prepend here — that single prepend stays on
+    the last user turn via :func:`reframe_text` so a context-wide walk
+    (which rewrites history/tool text in place) never doubles it. Output is
+    NFC-canonical (required for VI span math); ASCII input passes through
+    unchanged. Returns (adjusted_text, rewrites, changed). Zero mutation
+    when reframe is disabled or nothing matched. Never raises.
     """
     try:
-        text = last_user_text if isinstance(last_user_text, str) else (
-            "" if last_user_text is None else str(last_user_text)
-        )
         if fel is None or not getattr(fel, "reframe_enabled", False):
-            return (text, [], False)
+            return (text if isinstance(text, str) else "", [], False)
+        if not isinstance(text, str) or not text.strip():
+            return (text if isinstance(text, str) else "", [], False)
         hits = detect_sensitivity(text, fel)
         if not hits:
             return (text, [], False)
@@ -662,6 +732,44 @@ def reframe_text(
                 "from": h.get("phrase"), "to": term, "lang": h.get("lang"),
             })
         changed = edited != text
+        if not changed:
+            return (text, [], False)
+        return (edited, rewrites, True)
+    except Exception:
+        return (text if isinstance(text, str) else "", [], False)
+
+
+def reframe_text(
+    last_user_text: str, fel: Optional[FELConfig], profile_name: Any = "",
+) -> Tuple[str, List[Dict[str, Any]], bool]:
+    """Phase-3 bilingual (EN+VI) reframe on the last user message text.
+
+    Delegates the pure span rewrite to :func:`_reframe_span_text` (steps 1-2),
+    then prepends the operator attestation line once when
+    reframe.attestation is on — UNLESS reframe.bind_engagement is on and
+    the selected engagement profile has a non-empty context, in which case
+    a profile-bound "Engagement: ..." line is bound into the task text
+    INSTEAD (replacing, not doubling, the generic attestation prefix).
+
+    profile_name selects a named engagement profile (via the request header)
+    falling back to the default engagement block — same resolution as
+    clarity_preprocess. When no profile context is configured the
+    intent-binding is a NO-OP and the existing attestation path runs
+    unchanged. The injected content comes ONLY from the operator-configured
+    engagement block; nothing is fabricated.
+
+    Returns (adjusted_text, rewrites, changed). Zero mutation when
+    reframe is disabled or nothing matched. Output is NFC-canonical
+    (required for VI span math); ASCII input passes through unchanged.
+    Never raises.
+    """
+    try:
+        text = last_user_text if isinstance(last_user_text, str) else (
+            "" if last_user_text is None else str(last_user_text)
+        )
+        if fel is None or not getattr(fel, "reframe_enabled", False):
+            return (text, [], False)
+        edited, rewrites, changed = _reframe_span_text(text, fel)
         if not changed:
             return (text, [], False)
         # Intent-bound framing: when bind_engagement is ON, bind the
@@ -687,6 +795,177 @@ def reframe_text(
             [],
             False,
         )
+
+
+def _last_user_index(body: Dict[str, Any]) -> int:
+    """Index of the LAST user message in body["messages"], or -1.
+
+    Openai-normalized body the dispatcher operates on. Mirrors the
+    last-user resolution of extract_last_user_text / set_last_user_text
+    so the context-wide walk can SKIP the turn the last-turn path already
+    handled. Never raises.
+    """
+    try:
+        msgs = body.get("messages")
+        if not isinstance(msgs, list):
+            return -1
+        for i in range(len(msgs) - 1, -1, -1):
+            msg = msgs[i]
+            if isinstance(msg, dict) and (msg.get("role") or "") == "user":
+                return i
+        return -1
+    except Exception:
+        return -1
+
+
+def _is_text_part(part: Any) -> bool:
+    """True only for an OpenAI content part that is safe to span-rewrite.
+
+    Excludes images / base64 / data: URLs / non-text types so a context
+    walk never touches binary or structured parts. Never raises.
+    """
+    try:
+        if not isinstance(part, dict):
+            return False
+        if (part.get("type") or "") != "text":
+            return False
+        _t = part.get("text")
+        if not isinstance(_t, str) or not _t:
+            return False
+        # never rewrite embedded data: URLs (images/base64 smuggled as text)
+        if _t.strip().lower().startswith("data:"):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def reframe_context_wide(
+    body: Any, fel: Optional[FELConfig], profile_name: Any = ""
+) -> Dict[str, Any]:
+    """Tier-2 context-wide span-rewrite on the conversation history.
+
+    Walks ``body["messages"]`` (list of dicts) and for EACH message EXCEPT
+    the last user turn (which the existing last-turn :func:`reframe_text`
+    path already handles) span-rewrites the TEXT content in place via
+    :func:`_reframe_span_text`:
+
+      - role == "user" (history): rewrite content (str) or the text parts
+        (content list of {type:text,text}) in place.
+      - role == "assistant": rewrite its text content/parts in place
+        (prior assistant phrasing often trips GLM input inspection).
+      - role == "tool" / tool outputs: rewrite text content in place
+        (biggest context mass).
+      - SKIP: system messages (system prompt may be load-bearing), any
+        non-text part (images/base64/data: URLs), the LAST user message.
+
+    CAPS (fail-open): if the messages list exceeds
+    ``reframe_context_max_messages`` OR the total scanned text exceeds
+    ``reframe_context_max_chars``, reframe the MOST RECENT N messages that
+    fit (skip oldest), never raises. NEVER prepends attestation/engagement
+    here — the single prepend stays on the last user turn via reframe_text.
+    This function only span-rewrites history/tool text in place.
+
+    Whole body walk wrapped in try/except → on any fault returns
+    ``{changed: False, ...}`` and leaves body untouched. Returns
+    ``{changed: bool, messages_reframed: int, rewrites: list}``.
+    """
+    try:
+        result = {"changed": False, "messages_reframed": 0, "rewrites": []}
+        if fel is None or not getattr(fel, "reframe_enabled", False):
+            return result
+        if not isinstance(body, dict):
+            return result
+        msgs = body.get("messages")
+        if not isinstance(msgs, list) or not msgs:
+            return result
+
+        max_messages = int(getattr(fel, "reframe_context_max_messages", 200) or 200)
+        max_chars = int(getattr(fel, "reframe_context_max_chars", 400000) or 400000)
+        if max_messages <= 0:
+            max_messages = 200
+        if max_chars <= 0:
+            max_chars = 400000
+
+        last_user_idx = _last_user_index(body)
+        # Decide the walk window honoring BOTH caps. Scan from the MOST
+        # RECENT backwards so an oversized history keeps the freshest
+        # messages (tool outputs / latest turns) — oldest dropped first.
+        # The last user turn is owned by the last-turn reframe_text path,
+        # so it never consumes walk budget (a huge last-user instruction
+        # must not starve the history window). Compute cumulative text
+        # length so a char cap never over-scans.
+        keep_from = 0
+        scanned_chars = 0
+        count_kept = 0
+        for i in range(len(msgs) - 1, -1, -1):
+            if i == last_user_idx:
+                continue  # last-turn path owns it; not this walk's budget
+            if count_kept >= max_messages:
+                keep_from = i + 1
+                break
+            msg = msgs[i]
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role") or ""
+            if role == "system":
+                continue
+            # estimate text length for the char cap without mutating
+            scanned_chars += len(_content_text(msg.get("content")) or "")
+            if scanned_chars > max_chars:
+                keep_from = i + 1
+                break
+            count_kept += 1
+
+        total_rewrites: List[Dict[str, Any]] = []
+        messages_reframed = 0
+        changed_any = False
+
+        def _rewrite_text_value(orig: str) -> Tuple[str, List[Dict[str, Any]], bool]:
+            if not isinstance(orig, str) or not orig.strip():
+                return (orig, [], False)
+            return _reframe_span_text(orig, fel)
+
+        for i in range(keep_from, len(msgs)):
+            if i == last_user_idx:
+                continue  # last-turn path already owns this message
+            msg = msgs[i]
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role") or ""
+            if role == "system":
+                continue
+            if role not in ("user", "assistant", "tool"):
+                continue
+            content = msg.get("content")
+            msg_rewrites: List[Dict[str, Any]] = []
+            msg_changed = False
+            if isinstance(content, str):
+                new_text, rw, ch = _rewrite_text_value(content)
+                if ch:
+                    msg["content"] = new_text
+                    msg_rewrites.extend(rw)
+                    msg_changed = True
+            elif isinstance(content, list):
+                for part in content:
+                    if _is_text_part(part):
+                        new_text, rw, ch = _rewrite_text_value(part.get("text", ""))
+                        if ch:
+                            part["text"] = new_text
+                            msg_rewrites.extend(rw)
+                            msg_changed = True
+            if msg_changed:
+                messages_reframed += 1
+                changed_any = True
+                total_rewrites.extend(msg_rewrites)
+
+        return {
+            "changed": changed_any,
+            "messages_reframed": messages_reframed,
+            "rewrites": total_rewrites,
+        }
+    except Exception:
+        return {"changed": False, "messages_reframed": 0, "rewrites": []}
 
 
 # Phase-3: precomputed folded marker forms — Vietnamese markers match

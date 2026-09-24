@@ -6443,6 +6443,8 @@ let usageDateStartFilter = '';
 let usageDateEndFilter = '';
 // Analytic mode: 'token' | 'cost' | 'pricing'. Drives consumption metric + shares.
 let usageViewMode = 'token';
+// Group-by dimension for the Consumption-over-time chart: 'model' | 'provider'.
+let usageGroupBy = 'model';
 // Timeframe: 'today' | '1D' | '7D' | '1M' | '3M' | '6M'. Default 1D (last 24h).
 let usageTimeframe = '1D';
 // Per-column multi-select filters: { colId: Set([value, ...]) }. Empty/missing = all pass.
@@ -6843,6 +6845,16 @@ function setUsageViewMode(mode) {
     renderUsageTable();
 }
 
+// Toggle the Consumption-over-time chart group-by dimension and re-render the
+// usage view the same way setUsageViewMode does (no extra data fetch — the
+// per-bucket by_model/by_provider series are already in usageSummaryState).
+function setUsageGroupBy(mode) {
+    usageGroupBy = (mode === 'provider') ? 'provider' : 'model';
+    usageOpenFilterCol = null;
+    usageRenderLimit = 500;
+    renderUsageTable();
+}
+
 function setUsageTimeframe(key) {
     usageTimeframe = key;
     usageOpenFilterCol = null;
@@ -7183,13 +7195,59 @@ function renderConsumptionChart(data) {
 }
 
 // Render consumption chart from server-side bucket array (no raw rows needed).
+// Token mode plots REAL tokens (bucket.tokens), cost mode plots bucket.cost.
+// Bars are stacked by the active group-by dimension (by_model / by_provider),
+// colored per global series with a matching legend. Group-by toggle pills sit
+// right before the timeframe label in the header.
 function renderConsumptionChartFromBuckets(buckets) {
     if (!buckets || !buckets.length) {
         return '<div style="color:var(--text-muted);text-align:center;padding:30px;">No data in this timeframe.</div>';
     }
+    const costMode = usageViewMode === 'cost';
+    const seriesField = usageGroupBy === 'provider' ? 'by_provider' : 'by_model';
+    // Per-series metric accessor for a series entry in the active view mode.
+    const seriesMetric = e => costMode ? (Number(e.cost) || 0) : (Number(e.tokens) || 0);
+    // Per-bucket total metric (tokens for token mode, cost for cost mode).
+    // Legacy payloads without `tokens` fall back to requests so the chart still renders.
+    const bucketTotal = b => costMode ? (Number(b.cost) || 0)
+        : (b.tokens !== undefined ? (Number(b.tokens) || 0) : (Number(b.requests) || 0));
+
+    // ── Global series ranking (stable colors across buckets) ───────────────
+    // Union series names across all buckets, rank by total metric desc, keep
+    // top 8 + fold the remainder into a single "other" series.
+    const totals = new Map();
+    for (const b of buckets) {
+        const entries = (b && Array.isArray(b[seriesField])) ? b[seriesField] : [];
+        for (const e of entries) {
+            const name = e.name || 'unknown';
+            totals.set(name, (totals.get(name) || 0) + seriesMetric(e));
+        }
+    }
+    const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]);
+    const TOP = 8;
+    let globalSeries = ranked.slice(0, TOP).map(([name]) => name);
+    const otherNames = new Set(ranked.slice(TOP).map(([name]) => name));
+    if (otherNames.size) globalSeries.push('other');
+    const hasSeries = globalSeries.length > 0;
+
+    // Value of a global series within a specific bucket.
+    const seriesValueInBucket = (b, gname) => {
+        const entries = (b && Array.isArray(b[seriesField])) ? b[seriesField] : [];
+        if (gname === 'other') {
+            let sum = 0;
+            for (const e of entries) {
+                if (!otherNames.has(e.name || 'unknown')) continue;
+                sum += seriesMetric(e);
+            }
+            return sum;
+        }
+        const e = entries.find(x => (x.name || 'unknown') === gname);
+        return e ? seriesMetric(e) : 0;
+    };
+
     const w = 920, h = 310, pad = { top: 24, right: 22, bottom: 54, left: 62 };
     const innerW = w - pad.left - pad.right, innerH = h - pad.top - pad.bottom;
-    const maxVal = Math.max(1, ...buckets.map(b => b.cost > 0 ? b.cost : (b.requests || 0)));
+    const maxVal = Math.max(1, ...buckets.map(bucketTotal));
     const barStep = innerW / Math.max(1, buckets.length);
     const barW = Math.max(4, Math.min(24, barStep * 0.6));
     let grid = '', bars = '', labels = '';
@@ -7197,18 +7255,38 @@ function renderConsumptionChartFromBuckets(buckets) {
         const y = pad.top + innerH - (innerH * i / 4);
         const val = maxVal * i / 4;
         grid += `<line x1="${pad.left}" y1="${y}" x2="${w - pad.right}" y2="${y}" stroke="var(--border-color)" opacity="0.45"/>`;
-        grid += `<text x="${pad.left - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--text-muted)">${usageViewMode === 'cost' ? '$' + val.toFixed(val < 1 ? 2 : 0) : _fmtCompact(val)}</text>`;
+        grid += `<text x="${pad.left - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--text-muted)">${costMode ? '$' + val.toFixed(val < 1 ? 2 : 0) : _fmtCompact(val)}</text>`;
     }
     buckets.forEach((bucket, bi) => {
         const x = pad.left + bi * barStep + (barStep - barW) / 2;
-        const val = usageViewMode === 'cost' ? (bucket.cost || 0) : (bucket.requests || 0);
-        const bh = Math.max(1, (val / maxVal) * innerH);
-        bars += `<rect x="${x}" y="${pad.top + innerH - bh}" width="${barW}" height="${bh}" rx="${barW > 10 ? 4 : 2}" fill="${_usageColorFor(0)}" opacity="0.92"><title>${_usageEscapeHtml(bucket.label)} — ${usageViewMode === 'cost' ? '$' + bucket.cost.toFixed(6) : (bucket.requests || 0)}</title></rect>`;
+        const segVals = hasSeries
+            ? globalSeries.map(g => seriesValueInBucket(bucket, g))
+            : [bucketTotal(bucket)];
+        let y = pad.top + innerH;
+        // Stack bottom-up in global series order so colors align with the legend.
+        for (let si = 0; si < segVals.length; si++) {
+            const val = segVals[si];
+            if (val <= 0) continue;
+            const bh = Math.max(1, (val / maxVal) * innerH);
+            y -= bh;
+            const colorIdx = hasSeries ? si : 0;
+            const name = hasSeries ? globalSeries[si] : bucket.label;
+            bars += `<rect x="${x}" y="${y}" width="${barW}" height="${bh}" rx="${barW > 10 ? 4 : 2}" fill="${_usageColorFor(colorIdx)}" opacity="0.92"><title>${_usageEscapeHtml(bucket.label)} · ${_usageEscapeHtml(name)} — ${costMode ? _fmtCost(val) : _fmtCompact(val) + ' tokens'}</title></rect>`;
+        }
         const showLabel = buckets.length <= 30 || bi % Math.ceil(buckets.length / 14) === 0;
         if (showLabel) labels += `<text x="${x + barW / 2}" y="${h - 28}" text-anchor="middle" font-size="9" fill="var(--text-muted)" transform="rotate(-35 ${x + barW / 2} ${h - 28})">${_usageEscapeHtml(bucket.label)}</text>`;
     });
-    return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div style="font-size:12px;font-weight:800;color:var(--text-main);">Consumption over time (${_usageMetricUnit()})</div><div style="font-size:11px;color:var(--text-muted);">${USAGE_TIMEFRAME_LABELS[usageTimeframe]}</div></div>
-        <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;">${grid}${bars}${labels}</svg>`;
+
+    // Legend: one swatch per global series (mirrors renderConsumptionChart markup).
+    const legend = hasSeries
+        ? globalSeries.map((gname, i) => `<span style="display:inline-flex;align-items:center;gap:6px;margin:6px 12px 0 0;font-size:11px;color:var(--text-muted);"><span style="width:10px;height:10px;border-radius:3px;background:${_usageColorFor(i)};"></span>${_usageEscapeHtml(gname)}</span>`).join('')
+        : '';
+
+    const toggle = ['model', 'provider'].map(m => `<button class="btn ${usageGroupBy === m ? 'btn-primary' : 'btn-outline'}" style="padding:4px 10px;font-size:11px;font-weight:800;letter-spacing:.04em;" onclick="setUsageGroupBy('${m}')">By ${m}</button>`).join('');
+
+    return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div style="font-size:12px;font-weight:800;color:var(--text-main);">Consumption over time (${_usageMetricUnit()})</div><div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-muted);">${toggle}${USAGE_TIMEFRAME_LABELS[usageTimeframe]}</div></div>
+        <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;">${grid}${bars}${labels}</svg>
+        <div style="display:flex;flex-wrap:wrap;margin-top:6px;">${legend || '<span style="font-size:12px;color:var(--text-muted);">No breakdown in this timeframe.</span>'}</div>`;
 }
 
 function renderPricingPage() {
