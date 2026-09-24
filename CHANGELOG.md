@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to BSL Router are documented in this file.
 
@@ -7,7 +7,19 @@ Mọi thay đổi đáng chú ý của BSL Router được ghi lại trong file 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-**🇬🇧 [English](#107---2026-09-24)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+**🌐 [English](#108---2026-09-24)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+
+---
+
+## [1.0.8] - 2026-09-24
+
+### Fixed
+
+- **CRITICAL: stale-tab config wipe protection — 94 provider keys wiped via blank-key save** — a stale admin dashboard tab (loaded before an earlier session's config changes) sent `POST /api/config` with blank `api_key` fields. The existing `_apply_connections_stale_save_guard` protected only the `antigravity` provider; all other 77 providers' keys were atomically persisted to disk as blank. Recovery from the last backup restored 89/94 keys; 5 keys (added post-Sept-21) remain lost. Three independent safeguards added to `_persist_config_snapshot` and `_replace_runtime_config`:
+  - **Blank-key restoration guard** (`_replace_runtime_config`): if any incoming connection has `api_key: ''` while the live runtime holds a real key for that provider, the live key is restored before any disk write. All providers covered, not just `antigravity`.
+  - **Key-count regression gate** (`_persist_config_snapshot`): counts non-empty `api_key`/`refresh_token`/`access_token` fields on disk vs the incoming config. **Refuses** any write that would drop ≥50% of existing secrets (the 94→0 wipe signature). **Warns** on any 10–49% drop. Existing gates 2 (zero-provider) and 2b (provider-count) did not check inside connection secrets — this fills the gap.
+  - **Multi-generation backup rotation** (`_persist_config_snapshot`): replaces the single `.bak` (overwritten on every save) with up to 5 timestamped `config.yaml.bak-YYYYMMDD-HHMMSS` backups. A bad save can no longer silently overwrite the only recovery point.
+  - All 6 persistence-gate unit tests pass; full CI matrix (3.10/3.11/3.12) green: 3168 × 3 = 9504.
 
 ---
 

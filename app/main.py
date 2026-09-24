@@ -936,6 +936,64 @@ def _replace_runtime_config(new_config: dict) -> None:
                 f"[CONFIG-GUARD] stale-snapshot guard failed (proceeding): {_guard_err}",
                 flush=True,
             )
+    # ── BLANK-API_KEY RESTORATION GUARD (2026-09-24) ─────────────────────
+    # The stale-tab wipe cascade: a dashboard tab loaded with an empty api_key
+    # field POSTs back, and _apply_connections_stale_save_guard restores only
+    # antigravity connections (its special-case scope). All other providers'
+    # blank keys flow through to disk. This guard runs at the atomic swap layer
+    # and restores live keys for any provider whose incoming connection has
+    # api_key="" but the live runtime has a real key for the same connection.
+    if isinstance(new_config, dict):
+        try:
+            _live_cfg = cs_get_config()
+            _live_providers = (_live_cfg or {}).get("providers") or {}
+            _new_providers = new_config.setdefault("providers", {})
+            for _pid, _new_prov in _new_providers.items():
+                _live_prov = _live_providers.get(_pid)
+                if not isinstance(_live_prov, dict) or not isinstance(_new_prov, dict):
+                    continue
+                _live_conns = _live_prov.get("connections") or []
+                _new_conns = _new_prov.get("connections") or []
+                if not isinstance(_live_conns, list) or not isinstance(_new_conns, list):
+                    continue
+                for _idx, _new_conn in enumerate(_new_conns):
+                    if not isinstance(_new_conn, dict):
+                        continue
+                    _new_key = str(_new_conn.get("api_key") or "")
+                    if _new_key:
+                        continue  # has a key — no restoration needed
+                    _conn_name = str(_new_conn.get("name") or "")
+                    _restored = False
+                    # Match by name first (more reliable), then by position
+                    if _conn_name:
+                        for _lc in _live_conns:
+                            if isinstance(_lc, dict) and str(_lc.get("name") or "") == _conn_name:
+                                _live_key = str(_lc.get("api_key") or "")
+                                if _live_key:
+                                    _new_conn["api_key"] = _live_key
+                                    _restored = True
+                                break
+                    if not _restored and _idx < len(_live_conns):
+                        _lc = _live_conns[_idx]
+                        if isinstance(_lc, dict):
+                            _live_key = str(_lc.get("api_key") or "")
+                            if _live_key:
+                                _new_conn["api_key"] = _live_key
+                                _restored = True
+                    if _restored:
+                        print(
+                            f"[CONFIG-GUARD] provider={_pid} conn[{_idx}] "
+                            f"blank api_key restored from live runtime "
+                            f"(stale-client blank-key wipe protection)",
+                            flush=True,
+                        )
+        except Exception as _bkg_err:
+            print(
+                f"[CONFIG-GUARD] blank-key guard failed (proceeding): {_bkg_err}",
+                flush=True,
+            )
+    # ── END BLANK-API_KEY RESTORATION GUARD ───────────────────────────────
+
     _persist_config_snapshot(new_config)
     replace_config(new_config)
     reconfigure_breaker(cs_get_config())
@@ -1443,6 +1501,58 @@ def _persist_config_snapshot(updated_config: dict) -> None:
         except Exception:
             pass  # Best-effort gate; never block writes on a read failure.
 
+    # --- Protection 2c: refuse key-count regression (2026-09-24 wipe) ----
+    # Today's incident: a stale dashboard tab POSTed a config with all 94
+    # api_keys blanked. Provider count was unchanged (77) so gates 2/2b
+    # passed silently. This gate counts NON-EMPTY sensitive fields and
+    # refuses any write that would drop the total by more than half.
+    def _count_nonblank_secrets(cfg_dict) -> int:
+        total = 0
+        _provs = (cfg_dict or {}).get("providers") or {}
+        for _p in _provs.values():
+            if not isinstance(_p, dict):
+                continue
+            for _c in (_p.get("connections") or []):
+                if not isinstance(_c, dict):
+                    continue
+                for _f in ("api_key", "refresh_token", "access_token"):
+                    if str(_c.get(_f) or ""):
+                        total += 1
+        return total
+
+    if providers:
+        try:
+            if os.path.exists(target):
+                import yaml as _yaml_kc
+                with open(target, "r", encoding="utf-8") as _kf:
+                    _existing_cfg = _yaml_kc.safe_load(_kf) or {}
+                _disk_keys = _count_nonblank_secrets(_existing_cfg)
+                _new_keys = _count_nonblank_secrets(updated_config)
+                # Only gate when the existing file has real keys to lose
+                # (first run / genuine wipe-intent starts from 0/blank).
+                # Use integer comparison: refuse if half OR MORE are lost.
+                # Float `< 0.5` misses the exact-50% edge case (5 < 5.0 = False).
+                if _disk_keys >= 10 and _new_keys * 2 <= _disk_keys:
+                    print(
+                        f"[CONFIG-GUARD] refused to persist: secret count would drop "
+                        f"from {_disk_keys} to {_new_keys} ({_disk_keys - _new_keys} lost, "
+                        f">= 50%). "
+                        "This is the 2026-09-24 stale-tab blank-key wipe signature. "
+                        "If intentional, blank the keys in config.yaml manually first.",
+                        flush=True,
+                    )
+                    return
+                if _disk_keys >= 10 and _new_keys < _disk_keys * 0.9:
+                    print(
+                        f"[CONFIG-GUARD] WARNING: secret count dropping "
+                        f"{_disk_keys} -> {_new_keys} ({_disk_keys - _new_keys} lost). "
+                        "Allowed (<50% loss) but verify this was intentional.",
+                        flush=True,
+                    )
+        except Exception as _kc_err:
+            print(f"[CONFIG-GUARD] key-count gate failed (proceeding): {_kc_err}",
+                  flush=True)
+
     # --- Protection 1: atomic write ----------------------------------------
     directory = os.path.dirname(os.path.abspath(target)) or "."
     tmp_path = None
@@ -1465,11 +1575,28 @@ def _persist_config_snapshot(updated_config: dict) -> None:
             # fd is closed by the with-block even on failure.
             raise
 
-        # Keep one backup of the last known-good config before replacing it.
+        # Keep up to 5 timestamped backups of the last known-good config
+        # before replacing it. Single .bak was overwritten on every save;
+        # a bad save cascading into memory before restart destroys recovery.
         if os.path.exists(target):
             try:
                 import shutil
+                # Latest .bak for instant compat
                 shutil.copy2(target, target + ".bak")
+                # Timestamped rotating backups
+                import datetime
+                ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                backup_path = f"{target}.bak-{ts}"
+                shutil.copy2(target, backup_path)
+                # Rotate: keep only the 5 most recent .bak-* files
+                import glob as _glob
+                existing = sorted(_glob.glob(target + ".bak-*"))
+                while len(existing) > 5:
+                    oldest = existing.pop(0)
+                    try:
+                        os.remove(oldest)
+                    except OSError:
+                        pass
             except Exception:
                 pass  # Backup is best-effort; never block the real write.
 
