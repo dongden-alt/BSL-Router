@@ -1,3 +1,10 @@
 # Development/test dependencies (layered on requirements.txt)
 -r requirements.txt
 pytest-timeout==2.4.0
+
+# Dependabot audit (2026-09-25): 27 alerts (15 high, 8 moderate, 4 low).
+# ALL are transitive deps. 6 runtime deps are hard-capped by mitmproxy==11.0.2
+# (latest) and cannot be bumped without breaking it: h2, aioquic, pyopenssl,
+# ldap3, pyparsing, asgiref. The remaining alerts are pip-audit false positives
+# (wrong package match in OSV database). No actionable fixes via requirements
+# pins — the resolution space is too tight. Tracked for mitmproxy 12.x release.
