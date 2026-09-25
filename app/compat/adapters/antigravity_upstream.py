@@ -82,11 +82,27 @@ _FINISH_INVERSE = {
 # event loop -- a synchronous writer here once produced a 29.8 GB log and killed
 # the IDE. Observability is two integer counters, read directly by tests.
 _SIGNATURE_CACHE_MAX = 512
-_SIGNATURE_CACHE_TTL = 900.0
+_SIGNATURE_CACHE_TTL = 3600.0
 _SIGNATURE_CACHE: "OrderedDict[Any, Any]" = OrderedDict()
 _SIGNATURE_CACHE_LOCK = threading.Lock()
 SIGNATURE_CACHE_HITS = 0
 SIGNATURE_CACHE_MISSES = 0
+SIGNATURE_CACHE_FALLBACK_HITS = 0
+
+
+def _args_digest(args: Any) -> str:
+    """Canonical sha256 digest of tool-call args, shared by the primary key and
+    the name/id-agnostic fallbacks so store-side and lookup-side always agree."""
+    if isinstance(args, dict):
+        canonical = json.dumps(args, sort_keys=True, ensure_ascii=False)
+    elif isinstance(args, str):
+        try:
+            canonical = json.dumps(json.loads(args), sort_keys=True, ensure_ascii=False)
+        except (json.JSONDecodeError, ValueError):
+            canonical = args
+    else:
+        canonical = json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def _signature_cache_key(model: str, call_id: str, name: str, args: Any) -> tuple:
@@ -99,24 +115,14 @@ def _signature_cache_key(model: str, call_id: str, name: str, args: Any) -> tupl
     both the store and lookup sides (sort_keys) so a dict at store time and the
     JSON string echoed at lookup time hash the same.
     """
-    if isinstance(args, dict):
-        canonical = json.dumps(args, sort_keys=True, ensure_ascii=False)
-    elif isinstance(args, str):
-        try:
-            canonical = json.dumps(json.loads(args), sort_keys=True, ensure_ascii=False)
-        except (json.JSONDecodeError, ValueError):
-            canonical = args
-    else:
-        canonical = json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
-    return (model, call_id, name, digest)
+    return (model, call_id, name, _args_digest(args))
 
 
 def _signature_cache_store(key: tuple, signature: str) -> None:
     """Insert/refresh a signature, evicting the oldest beyond the 512 cap."""
     if not (isinstance(signature, str) and signature):
         return
-    now = time.monotonic()
+    now = time.time()
     with _SIGNATURE_CACHE_LOCK:
         _SIGNATURE_CACHE[key] = (signature, now)
         _SIGNATURE_CACHE.move_to_end(key)
@@ -131,7 +137,7 @@ def _signature_cache_lookup(key: tuple) -> Optional[str]:
     is dropped and counted as a miss. NEVER logs (AGENTS.md §2).
     """
     global SIGNATURE_CACHE_HITS, SIGNATURE_CACHE_MISSES
-    now = time.monotonic()
+    now = time.time()
     with _SIGNATURE_CACHE_LOCK:
         entry = _SIGNATURE_CACHE.get(key)
         if entry is None:
@@ -145,6 +151,53 @@ def _signature_cache_lookup(key: tuple) -> Optional[str]:
         _SIGNATURE_CACHE.move_to_end(key)
         SIGNATURE_CACHE_HITS += 1
         return signature
+
+
+_UNSIGNED_WARNED = False
+
+
+def _signature_cache_lookup_fallback(model: str, args: Any) -> Optional[str]:
+    """Name/id-agnostic last-resort signature lookup.
+
+    The primary key embeds the volatile per-turn ``call_{name}_{counter}`` id and
+    the tool ``name`` -- both of which break when the client substitutes a
+    placeholder name (e.g. ``default_api:invalid``) or the id churns across turns.
+    Matching purely on ``(model, args_digest)`` survives both. Only returns a
+    signature when exactly ONE distinct live signature matches the digest for the
+    model (unambiguous); an ambiguous or empty match returns None so we never
+    attach the wrong signature. Increments SIGNATURE_CACHE_FALLBACK_HITS on use.
+    """
+    global SIGNATURE_CACHE_FALLBACK_HITS
+    digest = _args_digest(args)
+    now = time.time()
+    with _SIGNATURE_CACHE_LOCK:
+        matches = set()
+        for (m, _cid, _n, d), (sig, stored_at) in _SIGNATURE_CACHE.items():
+            if m != model or d != digest:
+                continue
+            if now - stored_at > _SIGNATURE_CACHE_TTL:
+                continue
+            matches.add(sig)
+        if len(matches) == 1:
+            SIGNATURE_CACHE_FALLBACK_HITS += 1
+            return next(iter(matches))
+    return None
+
+
+def _warn_unsigned_once(model: str, name: str) -> None:
+    """Emit ONE throttled warning (no PII, no args) when a functionCall would go
+    out unsigned -- that part is what Google 400s on. Diagnostic only; never raises."""
+    global _UNSIGNED_WARNED
+    if _UNSIGNED_WARNED:
+        return
+    _UNSIGNED_WARNED = True
+    try:
+        print(
+            "[antigravity] thought_signature cache miss: emitting unsigned "
+            "functionCall (name=%r, model=%s) -- upstream may 400" % (name, model)
+        )
+    except Exception:
+        pass
 
 
 # Gemini ``Schema`` proto fields a functionDeclaration ``parameters`` blob may
@@ -344,8 +397,20 @@ def openai_to_cloudcode_envelope(
                 _tsig = _signature_cache_lookup(
                     _signature_cache_key(model, call_id, name, raw_args)
                 )
+                if not (isinstance(_tsig, str) and _tsig):
+                    # Step 4 (2026-09-25): primary key embeds the volatile per-turn
+                    # call_id and the tool name (which clients sometimes replace
+                    # with a placeholder like ``default_api:invalid``), so a miss
+                    # is common on long agent loops and previously emitted an
+                    # UNSIGNED part -> Google 400. Fall back to a name/id-agnostic
+                    # (model, args_digest) match before giving up.
+                    _tsig = _signature_cache_lookup_fallback(model, raw_args)
             if isinstance(_tsig, str) and _tsig:
                 _fc_part["thoughtSignature"] = _tsig
+            else:
+                # Still unsigned after all fallbacks: this is the exact part that
+                # triggers Google's 400. Emit one throttled diagnostic (never raise).
+                _warn_unsigned_once(model, name)
             parts.append(_fc_part)
 
         if role == "tool":

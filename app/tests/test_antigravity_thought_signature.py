@@ -809,3 +809,107 @@ def test_sig15f_cache_counters_track_hits_and_misses():
 # ingress sibling-read + the shadow comparator's attach/detach invariant — and
 # land it with its own regression tests.
 
+
+# ── SIG11-14: cache-miss hardening (2026-09-25) ─────────────────────────────
+# The 400 recurred on antigravity/gemini-3.6-flash-high ("default_api:invalid",
+# position 20) because the egress re-injection silently emitted an UNSIGNED
+# functionCall on a router-side cache MISS. The primary key embeds the volatile
+# per-turn call_id and the tool name (placeholder names break it), and the TTL
+# was 900s monotonic. These tests lock the fix: name/id-agnostic args-digest
+# fallback, 3600s wall-clock TTL, and a never-crash unsigned-emit warn.
+
+from app.compat.adapters import antigravity_upstream as _agu
+
+
+def _reset_sig_cache():
+    with _agu._SIGNATURE_CACHE_LOCK:
+        _agu._SIGNATURE_CACHE.clear()
+    _agu.SIGNATURE_CACHE_HITS = 0
+    _agu.SIGNATURE_CACHE_MISSES = 0
+    _agu.SIGNATURE_CACHE_FALLBACK_HITS = 0
+    _agu._UNSIGNED_WARNED = False
+
+
+def _unsigned_body(name, call_id, args_json):
+    """Assistant tool_call WITHOUT the inline thought_signature carrier, so the
+    envelope must rely on the router-side cache to re-sign it."""
+    return {
+        "model": "gemini-pro-agent",
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": call_id, "type": "function",
+                "function": {"name": name, "arguments": args_json},
+            }]},
+        ],
+    }
+
+
+def test_sig11_fallback_reinjects_when_call_id_differs():
+    """A stored signature must be re-injected on the echo even when the echoed
+    call_id differs (per-turn id churn) -- via the (model, args_digest) fallback."""
+    _reset_sig_cache()
+    model = "gemini-pro-agent"
+    args = {"city": "NYC"}
+    # Store side keyed by the ORIGINAL turn's id.
+    _agu._signature_cache_store(
+        _agu._signature_cache_key(model, "call_get_weather_1", "get_weather", args), SIG
+    )
+    # Echo arrives with a DIFFERENT id (client re-minted) and no inline carrier.
+    body = _unsigned_body("get_weather", "call_get_weather_7", '{"city":"NYC"}')
+    env = openai_to_cloudcode_envelope(body, model)
+    fc = next(p for c in env["request"]["contents"] for p in c["parts"] if "functionCall" in p)
+    assert fc["thoughtSignature"] == SIG
+    assert _agu.SIGNATURE_CACHE_FALLBACK_HITS == 1
+
+
+def test_sig12_placeholder_name_resolved_via_args_digest():
+    """The 'default_api:invalid' placeholder name must still re-sign: the
+    fallback ignores name entirely and matches on (model, args_digest)."""
+    _reset_sig_cache()
+    model = "gemini-3.6-flash-high"
+    args = {"path": "README.md"}
+    _agu._signature_cache_store(
+        _agu._signature_cache_key(model, "call_read_1", "read", args), SIG
+    )
+    # Client echo uses a placeholder name + a fresh id, no inline carrier.
+    body = _unsigned_body("default_api:invalid", "call_default_api:invalid_3",
+                          '{"path":"README.md"}')
+    env = openai_to_cloudcode_envelope(body, model)
+    fc = next(p for c in env["request"]["contents"] for p in c["parts"] if "functionCall" in p)
+    assert fc["thoughtSignature"] == SIG
+    assert _agu.SIGNATURE_CACHE_FALLBACK_HITS == 1
+
+
+def test_sig13_expired_entry_not_used_fresh_entry_is():
+    """An entry older than the TTL must NOT be used; a fresh one must."""
+    import time as _t
+    _reset_sig_cache()
+    model = "gemini-pro-agent"
+    args = {"q": "x"}
+    key = _agu._signature_cache_key(model, "call_s_1", "search", args)
+    # Manually backdate the entry beyond the TTL.
+    with _agu._SIGNATURE_CACHE_LOCK:
+        _agu._SIGNATURE_CACHE[key] = (SIG, _t.time() - (_agu._SIGNATURE_CACHE_TTL + 10))
+    assert _agu._signature_cache_lookup_fallback(model, args) is None
+    # A fresh entry on the same digest IS used.
+    _agu._signature_cache_store(key, SIG)
+    assert _agu._signature_cache_lookup_fallback(model, args) == SIG
+
+
+def test_sig14_unsigned_emit_never_raises_and_warns_once(capsys):
+    """When no signature is available anywhere, the part still ships (never
+    crash) and exactly one throttled diagnostic is emitted."""
+    _reset_sig_cache()
+    model = "gemini-pro-agent"
+    body = _unsigned_body("no_such_tool", "call_no_such_tool_1", '{"a":1}')
+    env = openai_to_cloudcode_envelope(body, model)
+    fc = next(p for c in env["request"]["contents"] for p in c["parts"] if "functionCall" in p)
+    assert "thoughtSignature" not in fc  # unsigned, but emitted (no exception)
+    out = capsys.readouterr().out
+    assert "thought_signature cache miss" in out
+    # Second unsigned emit must NOT warn again (throttled once per process).
+    _agu._warn_unsigned_once(model, "another")
+    out2 = capsys.readouterr().out
+    assert out2 == ""
+
