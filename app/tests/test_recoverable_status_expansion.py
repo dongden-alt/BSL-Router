@@ -56,9 +56,9 @@ def test_antigravity_slots_include_gemini_36():
         "gemini-3.6-flash-low",
     ):
         assert slot in main.ANTIGRAVITY_INTEGRATION_SLOTS
-    # Order: 3.6 entries prepend before 3.5
+    # Order: 3.6 entries prepend before 3.1
     slots = main.ANTIGRAVITY_INTEGRATION_SLOTS
-    assert slots.index("gemini-3.6-flash-high") < slots.index("gemini-3.5-flash-medium")
+    assert slots.index("gemini-3.6-flash-high") < slots.index("gemini-3.1-pro-low")
 
 
 # ── Behavioral: combo chain advances on recoverable 400 ──────────────────────

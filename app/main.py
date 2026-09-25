@@ -1237,13 +1237,13 @@ def load_config():
 # A missing entry is meaningful: it selects Google's native Cloud Code inference
 # path instead of falling through BSL's global aliases or compatibility normalizer.
 # This order mirrors the Antigravity IDE 2.1.1 model menu exactly.
+# 2026-09-25: the 3 Gemini 3.5 Flash slots were retired (the 3.6 Flash family
+# supersedes them). They live in _ANTIGRAVITY_OBSOLETE_SLOTS so saved configs
+# auto-purge them on the next validation pass.
 ANTIGRAVITY_INTEGRATION_SLOTS = (
     "gemini-3.6-flash-high",
     "gemini-3.6-flash-medium",
     "gemini-3.6-flash-low",
-    "gemini-3.5-flash-medium",
-    "gemini-3.5-flash-high",
-    "gemini-3.5-flash-low",
     "gemini-3.1-pro-low",
     "gemini-3.1-pro-high",
     "claude-sonnet-4-6",
@@ -1251,14 +1251,20 @@ ANTIGRAVITY_INTEGRATION_SLOTS = (
     "gpt-oss-120b-medium",
 )
 _ANTIGRAVITY_INTEGRATION_SLOT_SET = frozenset(ANTIGRAVITY_INTEGRATION_SLOTS)
+# The legacy ``gemini-3-flash-agent`` alias migrates to the surviving Flash-high
+# slot. 2026-09-25: retargeted from the retired ``gemini-3.5-flash-high`` to
+# ``gemini-3.6-flash-high`` so the migration destination stays a live slot.
 _ANTIGRAVITY_LEGACY_SLOT_MIGRATIONS = {
-    "gemini-3-flash-agent": "gemini-3.5-flash-high",
+    "gemini-3-flash-agent": "gemini-3.6-flash-high",
 }
 _ANTIGRAVITY_OBSOLETE_SLOTS = frozenset({
     "gemini-default",
     "gemini-3.5-flash-extra-low",
     "gemini-3.1-pro-request-antigravity",
     "gemini-3-flash",
+    "gemini-3.5-flash-medium",
+    "gemini-3.5-flash-high",
+    "gemini-3.5-flash-low",
 })
 _ANTIGRAVITY_NATIVE_BASE_URL = "https://daily-cloudcode-pa.googleapis.com"
 _ANTIGRAVITY_NATIVE_HOSTS = frozenset({

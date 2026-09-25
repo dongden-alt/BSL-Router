@@ -925,6 +925,25 @@ class StreamNormalizer:
                             _sig = fc.get("thoughtSignature")
                         if isinstance(_sig, str) and _sig:
                             _oai_tc["thought_signature"] = _sig
+                            # Store in shared cache so the envelope converter can
+                            # re-inject on next-turn echo even when the client drops
+                            # the carrier (Anthropic client path, 2026-09-25).
+                            try:
+                                from app.compat.adapters.antigravity_upstream import (
+                                    _signature_cache_key,
+                                    _signature_cache_store,
+                                )
+                                _signature_cache_store(
+                                    _signature_cache_key(
+                                        self.model_name,
+                                        _oai_tc["id"],
+                                        name,
+                                        fc.get("args") or {},
+                                    ),
+                                    _sig,
+                                )
+                            except Exception:
+                                pass  # best-effort; never break the stream
                         yield self._encode_openai_chunk({
                             "id": f"chatcmpl-bsl-{created}",
                             "object": "chat.completion.chunk",

@@ -699,6 +699,48 @@ def test_sig15b_gemini_stream_both_nesting_levels_to_openai():
     assert sigs["b"] == "NEST"
 
 
+def test_sig15g_stream_normalizer_stores_signature_in_shared_cache():
+    """The Anthropic client path (stream_normalizer convert_gemini_to_openai)
+    must store the captured thoughtSignature into the shared router-side cache,
+    so the envelope converter can re-inject it on the next-turn echo even when
+    the client drops the carrier. Regression test for the BSC gemini-pro-agent
+    400 where the cache was empty because this path never stored."""
+    import app.compat.adapters.antigravity_upstream as ag
+    ag._SIGNATURE_CACHE.clear()
+
+    frame = {"candidates": [{"content": {"role": "model", "parts": [
+        {"functionCall": {"name": "read", "args": {"path": "README.md"}},
+         "thoughtSignature": SIG},
+    ]}, "finishReason": "STOP"}]}
+    n = StreamNormalizer("gemini_sse", "openai_sse", model_name="gemini-pro-agent")
+    frames = [f"data: {json.dumps(frame, ensure_ascii=False)}\n\n".encode("utf-8")]
+    raw = asyncio.run(_collect(
+        n.convert_gemini_to_openai(_byte_stream(frames)))).decode("utf-8")
+
+    # The emitted chunk must carry the signature inline.
+    tool_deltas = [c for c in _openai_chunks(raw)
+                   if c["choices"][0]["delta"].get("tool_calls")]
+    assert tool_deltas, "expected at least one tool_call delta"
+    tc = tool_deltas[0]["choices"][0]["delta"]["tool_calls"][0]
+    assert tc["thought_signature"] == SIG
+
+    # The shared cache must have been populated by the stream_normalizer.
+    # Key: (model_name, minted_id, tool_name, args-digest).
+    minted_id = tc["id"]
+    key = ag._signature_cache_key("gemini-pro-agent", minted_id, "read",
+                                  {"path": "README.md"})
+    assert ag._signature_cache_lookup(key) == SIG, (
+        "stream_normalizer must store the signature in the shared cache "
+        "so the envelope converter can find it on turn-2 echo"
+    )
+
+    # The args-digest fallback must also find it (name/id-agnostic).
+    assert ag._signature_cache_lookup_fallback(
+        "gemini-pro-agent", {"path": "README.md"}) == SIG
+
+    ag._SIGNATURE_CACHE.clear()
+
+
 def test_sig15c_signature_cache_store_lookup_and_eviction():
     """Step 3a/3b: composite key is stable across dict/str arg forms; the LRU
     evicts the oldest entry beyond the 512 cap."""

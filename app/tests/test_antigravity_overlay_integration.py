@@ -1,4 +1,4 @@
-"""Focused direct Antigravity integration overlay tests; no real upstream calls."""
+﻿"""Focused direct Antigravity integration overlay tests; no real upstream calls."""
 import asyncio
 import builtins
 import io
@@ -22,9 +22,6 @@ EXPECTED_AG_SLOTS = (
     "gemini-3.6-flash-high",
     "gemini-3.6-flash-medium",
     "gemini-3.6-flash-low",
-    "gemini-3.5-flash-medium",
-    "gemini-3.5-flash-high",
-    "gemini-3.5-flash-low",
     "gemini-3.1-pro-low",
     "gemini-3.1-pro-high",
     "claude-sonnet-4-6",
@@ -35,9 +32,6 @@ EXPECTED_AG_LABELS = (
     "Gemini 3.6 Flash (High)",
     "Gemini 3.6 Flash (Medium)",
     "Gemini 3.6 Flash (Low)",
-    "Gemini 3.5 Flash (Medium)",
-    "Gemini 3.5 Flash (High)",
-    "Gemini 3.5 Flash (Low)",
     "Gemini 3.1 Pro (Low)",
     "Gemini 3.1 Pro (High)",
     "Claude Sonnet 4.6 (Thinking)",
@@ -50,6 +44,9 @@ REMOVED_AG_SLOTS = (
     "gemini-3.1-pro-request-antigravity",
     "gemini-default",
     "gemini-3-flash",
+    "gemini-3.5-flash-medium",
+    "gemini-3.5-flash-high",
+    "gemini-3.5-flash-low",
 )
 
 
@@ -108,7 +105,7 @@ def _request(path, body, headers=None, raw_body=None):
     )
 
 
-def _body(model="gemini-3.5-flash-low"):
+def _body(model="gemini-3.6-flash-low"):
     return {
         "project": "test-project",
         "requestId": "test-request-id",
@@ -161,7 +158,7 @@ def test_exact_antigravity_211_slot_contract_is_ordered_and_exclusive():
 
 def test_dedicated_mapping_validation_accepts_combo_and_provider_and_drops_obsolete_slots():
     config = _config(mappings={
-        "gemini-3.5-flash-low": "coder-1",
+        "gemini-3.6-flash-low": "coder-1",
         "gemini-3.1-pro-low": "fake/fake-model",
         "gemini-default": "coder-1",
     })
@@ -171,7 +168,7 @@ def test_dedicated_mapping_validation_accepts_combo_and_provider_and_drops_obsol
     assert validated["antigravity_integration"] == {
         "enabled": True,
         "mappings": {
-            "gemini-3.5-flash-low": "coder-1",
+            "gemini-3.6-flash-low": "coder-1",
             "gemini-3.1-pro-low": "fake/fake-model",
         },
     }
@@ -183,14 +180,14 @@ def test_dedicated_mapping_validation_migrates_known_high_alias_and_current_key_
     }))
     preferred = main._validate_antigravity_integration_config(_config(mappings={
         "gemini-3-flash-agent": "fake/fake-model",
-        "gemini-3.5-flash-high": "coder-1",
+        "gemini-3.6-flash-high": "coder-1",
     }))
 
     assert migrated["antigravity_integration"]["mappings"] == {
-        "gemini-3.5-flash-high": "fake/fake-model",
+        "gemini-3.6-flash-high": "fake/fake-model",
     }
     assert preferred["antigravity_integration"]["mappings"] == {
-        "gemini-3.5-flash-high": "coder-1",
+        "gemini-3.6-flash-high": "coder-1",
     }
 
 
@@ -206,7 +203,7 @@ def test_dedicated_mapping_validation_drops_unknown_slots_and_dead_targets(capsy
 
     # Dead mapping target: silently dropped with a console warning.
     validated = main._validate_antigravity_integration_config(_config(mappings={
-        "gemini-3.5-flash-low": "missing/provider",
+        "gemini-3.6-flash-low": "missing/provider",
     }))
     assert validated["antigravity_integration"]["mappings"] == {}
     captured = capsys.readouterr()
@@ -230,7 +227,7 @@ def test_start_stop_persist_direct_integration_state_without_mitm(monkeypatch):
 
 def test_config_post_persists_validated_dedicated_mappings(monkeypatch):
     saved = []
-    candidate = _config(mappings={"gemini-3.5-flash-low": "coder-1"})
+    candidate = _config(mappings={"gemini-3.6-flash-low": "coder-1"})
     cs.replace_config(_config())
     monkeypatch.setattr(main, "_persist_config_snapshot", lambda cfg: saved.append(cfg))
 
@@ -239,7 +236,7 @@ def test_config_post_persists_validated_dedicated_mappings(monkeypatch):
     assert response.status_code == 200
     assert saved[-1]["antigravity_integration"] == {
         "enabled": True,
-        "mappings": {"gemini-3.5-flash-low": "coder-1"},
+        "mappings": {"gemini-3.6-flash-low": "coder-1"},
     }
 
 
@@ -299,7 +296,7 @@ def test_unmapped_live_envelope_without_google_credentials_returns_parseable_sse
     monkeypatch.setattr(main, "_forward_antigravity_native", native)
 
     response = asyncio.run(main.antigravity_generate(
-        _request("/v1internal:streamGenerateContent", _body("gemini-3.5-flash-low")),
+        _request("/v1internal:streamGenerateContent", _body("gemini-3.6-flash-low")),
     ))
 
     assert response.status_code == 200
@@ -310,7 +307,7 @@ def test_unmapped_live_envelope_without_google_credentials_returns_parseable_sse
         if line.startswith(b"data: ") and line != b"data: [DONE]"
     ]
     # FREEZE FIX (2026-08-07): the terminal contract is now a SOLE
-    # finishReason-bearing candidate frame — NO preceding bare {"error":...}
+    # finishReason-bearing candidate frame â€” NO preceding bare {"error":...}
     # frame. The old error -> terminal -> [DONE] sequence poisoned the
     # Antigravity Gemini parser (a top-level error object makes it stop
     # consuming the later finishReason candidate), freezing the IDE on
@@ -320,7 +317,7 @@ def test_unmapped_live_envelope_without_google_credentials_returns_parseable_sse
     assert candidate["finishReason"] == "STOP", "terminal frame must carry a finishReason"
     _text = candidate["content"]["parts"][0]["text"]
     assert "401" in _text
-    assert "gemini-3.5-flash-low" in _text
+    assert "gemini-3.6-flash-low" in _text
     assert "unmapped" in _text
     assert "credentials were not forwarded" in _text
     assert response.body.endswith(main.GEMINI_SSE_DONE)
@@ -338,14 +335,14 @@ def test_unmapped_live_envelope_without_google_credentials_returns_structured_no
     monkeypatch.setattr(main, "_forward_antigravity_native", native)
 
     response = asyncio.run(main.antigravity_generate(
-        _request("/v1internal:generateContent", _body("gemini-3.5-flash-low")),
+        _request("/v1internal:generateContent", _body("gemini-3.6-flash-low")),
     ))
 
     assert response.status_code == 401
     error = json.loads(response.body)["error"]
     assert error["code"] == 401
     assert error["status"] == "UNAUTHENTICATED"
-    assert "gemini-3.5-flash-low" in error["message"]
+    assert "gemini-3.6-flash-low" in error["message"]
     assert native_calls == []
 
 
@@ -361,7 +358,7 @@ def test_unmapped_live_envelope_with_google_credentials_uses_native_upstream(mon
 
     response = asyncio.run(main.antigravity_generate(_request(
         "/v1internal:streamGenerateContent",
-        _body("gemini-3.5-flash-low"),
+        _body("gemini-3.6-flash-low"),
         {"authorization": "Bearer credential-present"},
     )))
 
@@ -384,7 +381,7 @@ def test_live_shaped_mapped_request_uses_outer_antigravity_source_slot_before_ad
     monkeypatch.setattr(main, "_process_chat_completion", process)
     response = asyncio.run(main.antigravity_generate(
         _request("/v1internal:generateContent", _body("gemini-3.1-pro-low")),
-        model="gemini-3.5-flash-low",
+        model="gemini-3.6-flash-low",
     ))
 
     assert response.body == b"mapped"
@@ -417,7 +414,7 @@ def test_mitm_alias_branch_binds_all_locals_and_preserves_source_attribution(mon
                 "x-bsl-antigravity-source-model": "gemini-3.1-pro-low",
             },
         ),
-        model="gemini-3.5-flash-low",
+        model="gemini-3.6-flash-low",
     ))
 
     assert response.body == b"mapped"
@@ -500,7 +497,7 @@ def test_mitm_alias_mapped_failure_returns_terminal_sse_without_native_fallback(
         native_called["count"] += 1
         return Response(b"native")
 
-    cs.replace_config(_config(mappings={"gemini-3.5-flash-low": "coder-1"}))
+    cs.replace_config(_config(mappings={"gemini-3.6-flash-low": "coder-1"}))
     monkeypatch.setattr(main, "_process_chat_completion", failed)
     monkeypatch.setattr(main, "_forward_antigravity_native", native)
 
@@ -510,7 +507,7 @@ def test_mitm_alias_mapped_failure_returns_terminal_sse_without_native_fallback(
             _body("coder-1"),
             {
                 "x-bsl-antigravity-alias": "coder-1",
-                "x-bsl-antigravity-source-model": "gemini-3.5-flash-low",
+                "x-bsl-antigravity-source-model": "gemini-3.6-flash-low",
             },
         ),
     ))
@@ -536,7 +533,7 @@ def test_mapped_resolver_failure_returns_bsl_error_without_native_fallback(monke
         native_called["count"] += 1
         return Response(b"native")
 
-    cs.replace_config(_config(mappings={"gemini-3.5-flash-low": "coder-1"}))
+    cs.replace_config(_config(mappings={"gemini-3.6-flash-low": "coder-1"}))
     monkeypatch.setattr(main, "_process_chat_completion", failed)
     monkeypatch.setattr(main, "_forward_antigravity_native", native)
 
@@ -637,3 +634,4 @@ def test_mapping_save_failure_rolls_back_and_surfaces_error_toast():
     assert "if(had)c.mappings[k]=previous;else delete c.mappings[k]" in handler
     assert "if(!await saveConfig())throw Error" in handler
     assert "showToast(`Failed to save Antigravity mapping" in handler
+
