@@ -123,7 +123,7 @@ class StreamNormalizer:
         rescue_active = bool(self.tools_in_request)
         rescue_hold = ""           # text not yet proven safe to emit
         rescue_in_block = False    # a complete opener arrived; awaiting closer
-        rescue_unicode = False     # block uses unicode delimiters
+        rescue_mode = ""           # opener mode: "tool_call" | "unicode" | "tool_use"
         rescue_body_start = 0      # body start index inside rescue_hold
         _RESCUE_MAX_HOLD = 60      # max chars of text deferred for a decision
         _RESCUE_MAX_BLOCK = 131072  # memory cap for one buffered block
@@ -217,7 +217,7 @@ class StreamNormalizer:
               - complete block                   -> parse, emit structured
               - unparseable / unclosed at EOF    -> fail-open as text
             """
-            nonlocal rescue_in_block, rescue_unicode, rescue_hold, rescue_body_start
+            nonlocal rescue_in_block, rescue_mode, rescue_hold, rescue_body_start
             while rescue_hold:
                 if not rescue_in_block:
                     found = find_earliest_opener(rescue_hold)
@@ -231,15 +231,15 @@ class StreamNormalizer:
                             yield _ev
                         rescue_hold = rescue_hold[keep_from:]
                         return
-                    start, end, uni = found
+                    start, end, mode = found
                     for _ev in _emit_text(rescue_hold[:start]):
                         yield _ev
                     rescue_in_block = True
-                    rescue_unicode = uni
+                    rescue_mode = mode
                     rescue_body_start = end - start
                     rescue_hold = rescue_hold[start:]
                     continue
-                closer = find_block_closer(rescue_hold, rescue_unicode, pos=rescue_body_start)
+                closer = find_block_closer(rescue_hold, rescue_mode, pos=rescue_body_start)
                 if closer is None:
                     if len(rescue_hold) > _RESCUE_MAX_BLOCK:
                         # Memory cap: fail-open, emit the whole span as text.
@@ -250,7 +250,7 @@ class StreamNormalizer:
                     return
                 cs, ce = closer
                 body = rescue_hold[rescue_body_start:cs]
-                calls = parse_streamed_tool_block(body, rescue_unicode)
+                calls = parse_streamed_tool_block(body, rescue_mode)
                 if calls:
                     _register_rescued(calls)
                     print(

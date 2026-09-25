@@ -238,13 +238,13 @@ def test_normalize_fails_open_on_garbage():
 # -- Layer 3: the streaming rescue path --------------------------------------
 @pytest.mark.parametrize("label,body", BATCH_SHAPES)
 def test_streaming_rescue_recovers_whole_batch(label, body):
-    calls = parse_streamed_tool_block(body, unicode_path=False)
+    calls = parse_streamed_tool_block(body, mode="tool_call")
     assert len(calls) == 4, "%s: expected 4, got %d" % (label, len(calls))
     assert [c["function"]["name"] for c in calls] == NAMES
 
 
 def test_streaming_rescue_fails_open_on_garbage():
-    assert parse_streamed_tool_block("{{{ not json", unicode_path=False) == []
+    assert parse_streamed_tool_block("{{{ not json", mode="tool_call") == []
 
 
 def test_streaming_rescue_unicode_batch_control():
@@ -259,7 +259,7 @@ def test_streaming_rescue_unicode_batch_control():
                 + P + "tool" + S + "call" + S + "end" + P + "\n")
 
     body = "".join(uni(n, json.dumps({"k": i})) for i, n in enumerate(NAMES))
-    calls = parse_streamed_tool_block(body, unicode_path=True)
+    calls = parse_streamed_tool_block(body, mode="unicode")
     assert len(calls) == 4
     assert [c["function"]["name"] for c in calls] == NAMES
 
@@ -430,7 +430,7 @@ def test_streaming_rescue_recovers_invoke_batch():
         + LT + "parameter name=path" + GT + "b.txt" + LT + "/parameter" + GT
         + LT + "/invoke" + GT
     )
-    calls = parse_streamed_tool_block(body, unicode_path=False)
+    calls = parse_streamed_tool_block(body, mode="tool_call")
     assert len(calls) == 2
     ids = [c["id"] for c in calls]
     assert len(set(ids)) == len(ids), "colliding ids: %s" % ids

@@ -499,6 +499,11 @@ _GLM_UNICODE_TC_OPEN_RE = re.compile(
     rf"<{_GLM_PIPE}\s*tool{_GLM_JUNCTION}calls?{_GLM_JUNCTION}begin{_GLM_PIPE}\s*>",
     re.IGNORECASE,
 )
+# 5th dialect: ChatML <tool_use> opener (GLM-5.3-flash-max inline wire shape).
+# The buffered path (normalize_glm_tool_calls) already matches this via
+# _TOOL_USE_INVOKE_RE; the streaming path had no opener for it, so a
+# GLM-5.3 <tool_use><invoke> block streamed as text leaked as prose.
+_TOOL_USE_OPEN_RE = re.compile(r"<tool_use(?:\s+[^>]*)?>", re.IGNORECASE)
 
 # Closer-only variants.
 _TOOL_CALL_CLOSE_RE = re.compile(r"</tool_call\s*>", re.IGNORECASE)
@@ -506,6 +511,7 @@ _GLM_UNICODE_TC_CLOSE_RE = re.compile(
     rf"<{_GLM_PIPE}\s*tool{_GLM_JUNCTION}calls?{_GLM_JUNCTION}end{_GLM_PIPE}\s*>",
     re.IGNORECASE,
 )
+_TOOL_USE_CLOSE_RE = re.compile(r"</tool_use\s*>", re.IGNORECASE)
 
 # A trailing segment that could still grow into an opener: a '<' followed only
 # by delimiter-ish characters. Held back from emission until the next delta
@@ -514,45 +520,55 @@ _GLM_UNICODE_TC_CLOSE_RE = re.compile(
 _PARTIAL_OPEN_TAIL_RE = re.compile(r"<[\s|｜_▁A-Za-z]*$")
 
 
-def find_earliest_opener(text: str) -> Optional[Tuple[int, int, bool]]:
+def find_earliest_opener(text: str) -> Optional[Tuple[int, int, str]]:
     """Locate the earliest tool-call opener in ``text``.
 
-    Returns ``(start, end, unicode_path)`` where ``end`` is the index just past
-    the opener, or ``None`` when no opener is present.
+    Returns ``(start, end, mode)`` where ``end`` is the index just past
+    the opener and ``mode`` is one of ``"tool_call"``, ``"unicode"``, or
+    ``"tool_use"``, or ``None`` when no opener is present.
     """
-    best: Optional[Tuple[int, int, bool]] = None
+    best: Optional[Tuple[int, int, str]] = None
     m = _TOOL_CALL_OPEN_RE.search(text)
     if m:
-        best = (m.start(), m.end(), False)
+        best = (m.start(), m.end(), "tool_call")
     m = _GLM_UNICODE_TC_OPEN_RE.search(text)
     if m and (best is None or m.start() < best[0]):
-        best = (m.start(), m.end(), True)
+        best = (m.start(), m.end(), "unicode")
+    m = _TOOL_USE_OPEN_RE.search(text)
+    if m and (best is None or m.start() < best[0]):
+        best = (m.start(), m.end(), "tool_use")
     return best
 
 
-def find_block_closer(text: str, unicode_path: bool, pos: int = 0) -> Optional[Tuple[int, int]]:
+def find_block_closer(text: str, mode: str, pos: int = 0) -> Optional[Tuple[int, int]]:
     """Locate the matching closing delimiter at or after ``pos``.
 
     Returns ``(start, end)`` of the closer, or ``None`` if not yet present.
+    ``mode`` is the opener mode returned by :func:`find_earliest_opener`.
     """
-    rx = _GLM_UNICODE_TC_CLOSE_RE if unicode_path else _TOOL_CALL_CLOSE_RE
+    rx = (
+        _GLM_UNICODE_TC_CLOSE_RE if mode == "unicode"
+        else _TOOL_USE_CLOSE_RE if mode == "tool_use"
+        else _TOOL_CALL_CLOSE_RE
+    )
     m = rx.search(text, pos)
     return (m.start(), m.end()) if m else None
 
 
-def parse_streamed_tool_block(inner_text: str, unicode_path: bool) -> List[Dict[str, Any]]:
+def parse_streamed_tool_block(inner_text: str, mode: str) -> List[Dict[str, Any]]:
     """Parse a rescued block body into OpenAI tool_call dicts (possibly empty).
 
     Mirrors the dispatch in :func:`normalize_glm_tool_calls`: unicode blocks may
-    contain multiple DeepSeek inner calls; ASCII blocks hold a single JSON or
-    pseudo-XML payload. Fail-open: any exception yields an empty list so the
-    caller can emit the raw text instead.
+    contain multiple DeepSeek inner calls; tool_call ASCII blocks hold a JSON
+    or pseudo-XML payload; tool_use blocks hold ChatML <invoke>/<parameter>.
+    Fail-open: any exception yields an empty list so the caller can emit the
+    raw text instead.
     """
     try:
-        if unicode_path:
+        if mode == "unicode":
             return _parse_unicode_tool_call_block(inner_text)
-        # BATCH-AWARE: an ASCII block may hold a JSON array / concatenated
-        # objects / repeated pseudo-XML pairs -- all parallel-batch shapes.
+        # tool_call and tool_use both land in the batch-aware multi parser;
+        # tool_use blocks are handled by the invoke scanner inside it.
         return _parse_tool_call_block_multi(inner_text)
     except Exception as e:  # Fail-open, same contract as normalize_glm_tool_calls.
         print(f"[StreamToolRescue] parse failed (fail-open): {e}", flush=True)
