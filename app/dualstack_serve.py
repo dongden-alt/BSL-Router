@@ -529,9 +529,23 @@ def _install_accept_loop_guard() -> bool:
     except Exception:
         _logger_debug = None
 
+    # SIGNATURE COMPAT (2026-09-26 crash-rc=1 fix): this wrapper replaces
+    # BaseProactorEventLoop._start_serving verbatim, so its signature MUST track
+    # whatever the running CPython declares. Python 3.11 added
+    # ``ssl_shutdown_timeout``; a wrapper pinned to the 3.10 shape raises
+    #     TypeError: _guard_start_serving() takes from 3 to 7 positional
+    #               arguments but 8 were given
+    # the instant uvicorn calls loop.create_server() -> every child died on
+    # boot (rc=1) and the supervisor restart-looped forever, so the router
+    # never came up and /health never answered. ``*args, **kwargs`` keeps this
+    # forward-compatible with any future CPython addition instead of
+    # re-breaking the router on the next interpreter bump.
     def _guard_start_serving(self, protocol_factory, sock,
                              sslcontext=None, server=None, backlog=100,
-                             ssl_handshake_timeout=None):
+                             ssl_handshake_timeout=None, *args, **kwargs):
+        ssl_shutdown_timeout = kwargs.get("ssl_shutdown_timeout")
+        if ssl_shutdown_timeout is None and args:
+            ssl_shutdown_timeout = args[0]
         # Per-socket burst counter: {fileno: [timestamps]}.
         burst = {}
         # Lifetime resurrection count per socket, used to throttle audit logging
@@ -554,10 +568,17 @@ def _install_accept_loop_guard() -> bool:
                         )
                     protocol = protocol_factory()
                     if sslcontext is not None:
+                        # Forward the timeout only when the running CPython
+                        # actually supports it (3.11+); older interpreters
+                        # raise TypeError on the unexpected kwarg, which
+                        # would trade one boot crash for another.
+                        _ssl_kw = {"ssl_handshake_timeout": ssl_handshake_timeout}
+                        if ssl_shutdown_timeout is not None:
+                            _ssl_kw["ssl_shutdown_timeout"] = ssl_shutdown_timeout
                         self._make_ssl_transport(
                             conn, protocol, sslcontext, server_side=True,
                             extra={'peername': addr}, server=server,
-                            ssl_handshake_timeout=ssl_handshake_timeout,
+                            **_ssl_kw,
                         )
                     else:
                         self._make_socket_transport(

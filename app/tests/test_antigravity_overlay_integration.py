@@ -225,6 +225,97 @@ def test_start_stop_persist_direct_integration_state_without_mitm(monkeypatch):
     assert all("mitm" not in snapshot for snapshot in saved)
 
 
+def _full_start_stubs(monkeypatch, *, mitm_ok=True):
+    """Stub the hosts-file + MITM-process legs of start-full/stop-full."""
+    hosts_calls = []
+    monkeypatch.setattr(main, "_sync_antigravity_hosts", lambda enabled: hosts_calls.append(enabled) or "hosts-ok")
+
+    async def _mitm_start():
+        payload = {"ok": True, "server": True} if mitm_ok else {"ok": False, "error": "port held"}
+        return JSONResponse(payload, status_code=200 if mitm_ok else 409)
+
+    async def _mitm_stop(force: bool = False):
+        return JSONResponse({"ok": True}, status_code=200)
+
+    monkeypatch.setattr(main, "mitm_start", _mitm_start)
+    monkeypatch.setattr(main, "mitm_stop", _mitm_stop)
+    return hosts_calls
+
+
+def test_start_full_persists_mitm_flags_that_undict_gates_interception(monkeypatch):
+    """Regression (2026-09-26): Start Integration reported RUNNING while every
+    request logged "SKIP: mitm not enabled".
+
+    start-full restored the hosts hijack and launched the MITM process but never
+    persisted config['mitm']['enabled'] / ['antigravity'], the two keys app/mitm.py
+    reads to decide whether to intercept at all. The proxy was up and owned :443
+    yet relayed straight to the real Google endpoints, so
+    antigravity_integration.mappings was never consulted and every slot silently
+    ignored its mapping.
+    """
+    saved = []
+    cs.replace_config(_config(enabled=False))
+    monkeypatch.setattr(main, "_persist_config_snapshot", lambda cfg: saved.append(cfg))
+    _full_start_stubs(monkeypatch)
+
+    response = asyncio.run(main.antigravity_integration_start_full())
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["ok"] is True
+    # The final persisted snapshot is the one that must carry the flags.
+    assert saved[-1]["mitm"] == {"enabled": True, "antigravity": True}
+    # ...and the plain integration flag is on, so the UI reports RUNNING honestly.
+    assert saved[-1]["antigravity_integration"]["enabled"] is True
+
+
+def test_start_full_mitm_failure_clears_flags_and_hijack(monkeypatch):
+    """A failed MITM start must not leave interception claimed but proxyless."""
+    saved = []
+    cs.replace_config(_config(enabled=False))
+    monkeypatch.setattr(main, "_persist_config_snapshot", lambda cfg: saved.append(cfg))
+    hosts_calls = _full_start_stubs(monkeypatch, mitm_ok=False)
+
+    response = asyncio.run(main.antigravity_integration_start_full())
+
+    assert response.status_code >= 400
+    assert json.loads(response.body)["ok"] is False
+    # Flags were raised then rolled back; the hijack is dropped last.
+    assert saved[-1]["mitm"] == {"enabled": False, "antigravity": False}
+    assert saved[-1]["antigravity_integration"]["enabled"] is False
+    assert hosts_calls == [True, False], "hijack must be restored then removed"
+
+
+def test_stop_full_clears_mitm_interception_flags(monkeypatch):
+    """Stop must release interception, not just kill the process."""
+    saved = []
+    cs.replace_config(_config(enabled=True))
+    monkeypatch.setattr(main, "_persist_config_snapshot", lambda cfg: saved.append(cfg))
+    _full_start_stubs(monkeypatch)
+
+    response = asyncio.run(main.antigravity_integration_stop_full())
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["ok"] is True
+    assert saved[-1]["mitm"] == {"enabled": False, "antigravity": False}
+    assert saved[-1]["antigravity_integration"]["enabled"] is False
+
+
+def test_apply_mitm_flags_replaces_corrupt_section_and_preserves_unrelated_keys():
+    """A non-dict `mitm:` value must not wedge Start Integration."""
+    cfg = {"mitm": "corrupt", "unrelated": {"keep": 1}}
+    out = main._apply_antigravity_mitm_flags(cfg, enabled=True)
+
+    assert out["mitm"] == {"enabled": True, "antigravity": True}
+    assert out["unrelated"] == {"keep": 1}
+
+    # Existing sibling keys (e.g. copilot/kiro toggles) survive a round-trip.
+    cfg2 = {"mitm": {"enabled": False, "copilot": True, "target_port": 8443}}
+    out2 = main._apply_antigravity_mitm_flags(cfg2, enabled=True)
+    assert out2["mitm"] == {
+        "enabled": True, "copilot": True, "target_port": 8443, "antigravity": True,
+    }
+
+
 def test_config_post_persists_validated_dedicated_mappings(monkeypatch):
     saved = []
     candidate = _config(mappings={"gemini-3.6-flash-low": "coder-1"})
