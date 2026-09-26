@@ -3522,6 +3522,62 @@ async def _set_antigravity_integration_enabled(enabled: bool):
         })
 
 
+def _apply_antigravity_mitm_flags(config_data: dict, *, enabled: bool) -> dict:
+    """Set the two MITM config flags that app/mitm.py actually gates on.
+
+    app/mitm.py:443 short-circuits EVERY flow with "SKIP: mitm not enabled"
+    when ``config["mitm"]["enabled"]`` is falsy, and mitm.py:453 only marks the
+    Antigravity hosts as managed when ``config["mitm"]["antigravity"]`` is
+    truthy. Without both flags the proxy process still runs and still owns
+    :443, but it relays straight through to the real Google endpoints, so
+    ``antigravity_integration.mappings`` is never consulted — the UI reports
+    RUNNING while every slot silently ignores its mapping.
+
+    Fail-open on a non-dict ``mitm`` value: a corrupt section is replaced
+    rather than raising, so a bad config can never wedge Start Integration.
+
+    This is deliberately NOT applied by ``_set_antigravity_integration_enabled``
+    (the plain start/stop endpoints stay MITM-free by contract, asserted in
+    test_antigravity_overlay_integration.py) — only the *-full endpoints own
+    the hosts-file + MITM-process lifecycle, so only they own these flags.
+    """
+    mitm = config_data.get("mitm")
+    if not isinstance(mitm, dict):
+        mitm = {}
+        config_data["mitm"] = mitm
+    mitm["enabled"] = enabled
+    # ``antigravity`` only gates the host->IDE toggle map; clearing it on stop
+    # keeps a later plain ``mitm`` start from silently hijacking Antigravity
+    # again behind the operator's back.
+    if enabled:
+        mitm["antigravity"] = True
+    else:
+        mitm["antigravity"] = False
+    return config_data
+
+
+async def _persist_antigravity_mitm_flags(enabled: bool):
+    """Persist the MITM interception flags; returns None on success, else a JSONResponse."""
+    async with _ANTIGRAVITY_INTEGRATION_LOCK:
+        try:
+            updated_config = _apply_antigravity_mitm_flags(
+                copy.deepcopy(cs_get_config()), enabled=enabled
+            )
+            # Same sanctioned swap path as every other config writer.
+            _replace_runtime_config(updated_config)
+        except Exception as exc:
+            print(
+                f"[AntigravityIntegration] failed to persist mitm flags "
+                f"(enabled={enabled}): {exc}",
+                flush=True,
+            )
+            return JSONResponse(
+                {"ok": False, "error": "Could not persist MITM interception state."},
+                status_code=500,
+            )
+    return None
+
+
 @app.post("/api/antigravity-integration/start")
 async def antigravity_integration_start():
     return await _set_antigravity_integration_enabled(True)
@@ -3540,6 +3596,20 @@ async def antigravity_integration_start_full():
     if hasattr(flag_result, "status_code") and flag_result.status_code >= 400:
         return flag_result
 
+    # Step 1b: Persist the MITM interception flags. app/mitm.py gates EVERY flow
+    # on config["mitm"]["enabled"] and only treats the Antigravity hosts as
+    # managed when config["mitm"]["antigravity"] is truthy. This step restores the
+    # hosts hijack and launches the MITM process, so without these flags the proxy
+    # is up but relays to the real Google endpoints and the slot mappings are
+    # never consulted (observed 2026-09-26: the UI reported RUNNING while every
+    # request logged "SKIP: mitm not enabled").
+    mitm_flags_error = await _persist_antigravity_mitm_flags(True)
+    if mitm_flags_error is not None:
+        # Roll the integration flag back so the persisted state stays coherent:
+        # never leave "enabled" persisted with interception off.
+        await _set_antigravity_integration_enabled(False)
+        return mitm_flags_error
+
     # Step 2: Restore hosts entries (single owner: _sync_antigravity_hosts)
     hosts_note = await asyncio.to_thread(_sync_antigravity_hosts, True)
 
@@ -3554,6 +3624,9 @@ async def antigravity_integration_start_full():
     if not mitm_payload.get("ok", False):
         # Rollback the integration flag if MITM failed
         await _set_antigravity_integration_enabled(False)
+        # ...and clear the interception flags too, so a failed start cannot leave
+        # persisted state that claims interception while the proxy is down.
+        await _persist_antigravity_mitm_flags(False)
         # MITM never came up -> do not leave a hijack pointing at a dead socket.
         hosts_note = await asyncio.to_thread(_sync_antigravity_hosts, False)
         return JSONResponse({
@@ -3584,7 +3657,10 @@ async def antigravity_integration_stop_full():
     except Exception:
         mitm_note = "mitm_response_parse_error"
 
-    # Step 2: Disable integration flag (best-effort even if MITM stop had issues)
+    # Step 2: Disable interception flags (mirrors start-full Step 1b)
+    await _persist_antigravity_mitm_flags(False)
+
+    # Step 3: Disable integration flag (best-effort even if MITM stop had issues)
     await _set_antigravity_integration_enabled(False)
 
     return JSONResponse({
