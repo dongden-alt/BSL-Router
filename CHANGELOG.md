@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.9] - 2026-09-26
+
+### Fixed
+
+- **Antigravity Integration: mapped models non-sticky, revert on F5 (Blacksand targets silently dropped)** — the admin UI's Antigravity Integration dropdown (`agOptions()` in `app/static/app.js`) offers three target sources: combo aliases, **BSL Models** (bare Blacksand family IDs such as `blacksand-agentic`, `blacksand-chat`, `blacksand-agentic-ultra`, `blacksand-agentic-max`), and `provider/model`. The save-time validator `_is_known_antigravity_mapping_target` recognized only combo aliases and `provider/model`, so a slot mapped to a **BSL Model** was silently discarded on `POST /api/config` and reverted to "Native Antigravity inference" on the next page load — even though the toast reported "Mapped …". Verified live with a controlled round-trip: a combo-alias target survived save+reload while a `blacksand-agentic` target was dropped. Fix: `_is_known_antigravity_mapping_target` now normalizes the target through the same `_BLACKSAND_MODEL_ALIASES` table the runtime dispatch uses and accepts Blacksand family IDs (including the `bsl-*`/`BSL-*` spellings). These IDs were already routable at inference time (`_BLACKSAND_MODEL_ALIASES` + the `_bsl_*_dispatch` branches); the gap was purely in the save-time validator. 34/34 antigravity tests pass (1 new regression test asserting all 5 Blacksand family IDs are accepted); the 4-gate pre-push check passes.
+
+---
+
 ## [1.0.8] - 2026-09-24
 
 ### Fixed
@@ -356,6 +364,14 @@ Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-
 ---
 
 # 🇻🇳 Tiếng Việt
+
+---
+
+## [1.0.9] - 2026-09-26
+
+### Đã Sửa
+
+- **Antigravity Integration: mapped model không "dính", tự quay về sau khi F5 (target Blacksand bị thả lặng lẽ)** — dropdown Antigravity Integration trong admin UI (`agOptions()` ở `app/static/app.js`) cho phép chọn 3 nguồn target: combo alias, **BSL Models** (ID thuần của nhóm Blacksand như `blacksand-agentic`, `blacksand-chat`, `blacksand-agentic-ultra`, `blacksand-agentic-max`), và `provider/model`. Validator lúc lưu `_is_known_antigravity_mapping_target` chỉ nhận combo alias và `provider/model`, nên khi map một slot sang **BSL Model**, mapping bị thả lặng lẽ trong `POST /api/config` và quay về "Native Antigravity inference" sau khi tải lại trang — dù toast vẫn báo "Mapped …". Đã kiểm chứng live bằng round-trip có đối chứng: target combo-alias sống sót sau save+reload còn target `blacksand-agentic` bị thả. Fix: `_is_known_antigravity_mapping_target` giờ chuẩn hóa target qua cùng bảng `_BLACKSAND_MODEL_ALIASES` mà runtime dispatch dùng và chấp nhận ID nhóm Blacksand (kể cả dạng `bsl-*`/`BSL-*`). Các ID này vốn đã routable lúc inference (`_BLACKSAND_MODEL_ALIASES` + các nhánh `_bsl_*_dispatch`); lỗ hổng chỉ nằm ở validator lúc lưu. 34/34 test antigravity pass (1 regression test mới khẳng định cả 5 ID nhóm Blacksand được chấp nhận); 4-gate pre-push check pass.
 
 ---
 

@@ -172,10 +172,31 @@ def test_mapping_target_predicate_accepts_combo_alias_and_provider_model():
     assert main._is_known_antigravity_mapping_target(cfg, "vsllm/GLM-5.2") is True     # provider/model
 
 
+def test_mapping_target_predicate_accepts_blacksand_family_ids():
+    """2026-09-26: Blacksand family bare IDs are BSL-routable targets.
+
+    The admin UI dropdown offers these via _bslModelsOptgroupHTML and the
+    runtime dispatch routes them (_BLACKSAND_MODEL_ALIASES + _bsl_*_dispatch).
+    The save-time validator must accept them or the mapping silently drops and
+    the slot reverts to native on F5.
+    """
+    cfg = _base_config()
+    for tid in (
+        "blacksand-chat",
+        "blacksand-lite",
+        "blacksand-agentic",
+        "blacksand-agentic-ultra",
+        "blacksand-agentic-max",
+    ):
+        assert main._is_known_antigravity_mapping_target(cfg, tid) is True, tid
+
+
 def test_mapping_target_predicate_rejects_unknown_malformed_and_bare_ids():
     cfg = _base_config()
     assert main._is_known_antigravity_mapping_target(cfg, "vsllm/missing") is False
     assert main._is_known_antigravity_mapping_target(cfg, "ghost-combo") is False
+    # A bare NON-blacksand model id registered under the antigravity provider is
+    # still NOT a BSL-routable target (the dispatcher cannot resolve it).
     assert main._is_known_antigravity_mapping_target(cfg, "gemini-2.5-pro") is False    # bare id: registered, still unroutable
     assert main._is_known_antigravity_mapping_target(cfg, "noslash") is False           # no separator
     assert main._is_known_antigravity_mapping_target(cfg, "/leading") is False          # empty provider

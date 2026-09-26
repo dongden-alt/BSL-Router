@@ -1314,6 +1314,16 @@ def _is_known_antigravity_mapping_target(config_data: dict, target: str) -> bool
     if target in combo_ids:
         return True
 
+    # Blacksand family bare IDs (e.g. "blacksand-agentic", "blacksand-chat").
+    # The admin UI dropdown offers these via _bslModelsOptgroupHTML, and the
+    # runtime resolver routes them (_BLACKSAND_MODEL_ALIASES + the
+    # _bsl_*_dispatch branches), so they are legitimate mapping targets.
+    # 2026-09-26: previously rejected here -> silently dropped at save ->
+    # the mapped model reverted to "native" on F5. Normalize through the same
+    # alias table the runtime uses so bsl-*/BSL-* spellings are accepted too.
+    if isinstance(target, str) and _normalize_blacksand_model_id(target) in _BLACKSAND_MODEL_ALIASES.values():
+        return True
+
     provider_id, separator, model_id = target.partition("/")
     if not separator or not provider_id or not model_id:
         return False
