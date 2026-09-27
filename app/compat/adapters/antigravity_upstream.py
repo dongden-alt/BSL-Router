@@ -154,6 +154,27 @@ def _signature_cache_lookup(key: tuple) -> Optional[str]:
 
 
 _UNSIGNED_WARNED = False
+_DROPPED_UNSIGNED_WARNED = False
+
+
+def _warn_dropped_unsigned_once(model: str) -> None:
+    """Emit ONE throttled warning when an unsignable history functionCall is
+    DROPPED (Layer A, 2026-09-26) rather than shipped unsigned — a shipped
+    unsigned part is exactly what Google 400s on with ``INVALID_ARGUMENT:
+    Function call is missing a thought_signature``. Mirrors
+    :func:`_warn_unsigned_once` with a separate flag and an ASCII message; no
+    args payload (PII-free), never raises."""
+    global _DROPPED_UNSIGNED_WARNED
+    if _DROPPED_UNSIGNED_WARNED:
+        return
+    _DROPPED_UNSIGNED_WARNED = True
+    try:
+        print(
+            "[antigravity] thought_signature cache miss: dropping unsigned "
+            "history functionCall (model=%s) -- Google 400 risk averted" % model
+        )
+    except Exception:
+        pass
 
 
 def _signature_cache_lookup_fallback(model: str, args: Any) -> Optional[str]:
@@ -333,6 +354,14 @@ def openai_to_cloudcode_envelope(
     contents: List[Dict[str, Any]] = []
     sys_texts: List[str] = []
     call_names: Dict[str, str] = {}
+    # Layer A (2026-09-26): call_ids of history functionCalls that are
+    # unsignable after ALL fallbacks. Such a part is dropped from the
+    # envelope (never shipped unsigned) and its paired functionResponse is
+    # skipped too (no orphan fr — Gemini pairs fc+fr and an orphan fr is
+    # itself a 400 risk). Populated during the assistant pass, consulted
+    # during the subsequent tool pass (OpenAI order guarantees this ordering
+    # in a single build pass).
+    dropped_call_ids: set = set()
     seq = 0
 
     for msg in (body.get("messages") or []):
@@ -407,14 +436,29 @@ def openai_to_cloudcode_envelope(
                     _tsig = _signature_cache_lookup_fallback(model, raw_args)
             if isinstance(_tsig, str) and _tsig:
                 _fc_part["thoughtSignature"] = _tsig
+                parts.append(_fc_part)
             else:
-                # Still unsigned after all fallbacks: this is the exact part that
-                # triggers Google's 400. Emit one throttled diagnostic (never raise).
-                _warn_unsigned_once(model, name)
-            parts.append(_fc_part)
+                # Layer A (2026-09-26): still unsigned after ALL fallbacks.
+                # Shipping this part is exactly what triggers Google's
+                # ``INVALID_ARGUMENT: Function call is missing a
+                # thought_signature`` 400, which deterministically recurs on
+                # every retry (the request body itself is invalid). DROP the
+                # functionCall part and record its call_id so the paired
+                # functionResponse below is also skipped (no orphan fr).
+                # Emit ONE throttled diagnostic (never raise).
+                _warn_dropped_unsigned_once(model)
+                dropped_call_ids.add(call_id)
 
         if role == "tool":
             call_id = msg.get("tool_call_id") or ""
+            # Layer A (2026-09-26): if the paired functionCall was dropped
+            # above (unsignable), skip this functionResponse entirely. Gemini
+            # pairs fc+fr, and an orphan fr for a dropped fc is itself a 400
+            # risk. OpenAI message order puts the assistant tool_calls message
+            # before its tool responses, so dropped_call_ids is already
+            # populated in this same single pass.
+            if call_id in dropped_call_ids:
+                continue
             tool_name = (
                 call_names.get(call_id)
                 or _name_from_call_id(call_id)
@@ -453,6 +497,15 @@ def openai_to_cloudcode_envelope(
 
     for c in contents:
         c.pop("__fr__", None)
+        # Layer A (2026-09-26): paired-drop must never leave a content with an
+        # empty parts list (Gemini rejects an empty parts array). The assistant
+        # side is already covered by the ``{"text": ""}`` fallback above; this
+        # catches a ``__fr__`` user content that would end up with zero parts
+        # after its only fr was dropped via the paired-skip. Drop such an empty
+        # content entirely rather than ship a malformed envelope. (Defensive —
+        # the skip happens before append, so this is belt-and-suspenders.)
+        if not c.get("parts"):
+            c["parts"] = [{"text": ""}]
 
     request_obj: Dict[str, Any] = {
         "sessionId": f"bsl-{uuid.uuid4().hex[:12]}",

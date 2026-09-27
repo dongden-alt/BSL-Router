@@ -52,7 +52,7 @@ from app.normalizer import UniversalNormalizer
 from app.middleware.caching import PromptCachingAdapter, pick_warmest_connection, propagate_prompt_cache_key, record_cache_warmth
 from app.scouts.vision import polyfill_vision, VisionPolyfillFailed
 from app.scouts.docs_parser import parse_documents
-from app.middleware.compaction import apply_compaction
+from app.middleware.compaction import apply_compaction, _count_tokens
 from app.middleware.efficiency import inject_turn_consolidation, inject_tool_batching
 from app.middleware.bsl_chat_router import _get_bsl_cfg, route_bsl_chat, _extract_route
 from app.middleware.bsl_lite_router import route_bsl_lite
@@ -65,7 +65,7 @@ from app.middleware.bsl_orchestrator_engine import (
     finish_phase,
     phase_headers,
 )
-from app.middleware.stream_guard import StreamEmissionState
+from app.middleware.stream_guard import StreamEmissionState, is_scaffolding_only
 from app.middleware.thinking_fallback import (
     is_thinking_param_rejection,
     payload_has_thinking,
@@ -745,6 +745,33 @@ def _is_terminal_relay_wall(status_code, err_text) -> bool:
         if not _low:
             return False
         return any(m in _low for m in _TERMINAL_RELAY_WALL_MARKERS)
+    except Exception:
+        return False
+
+
+def _is_thought_signature_400(status_code, err_text) -> bool:
+    """Payload-defect 400: an echoed history functionCall lacks its
+    thought_signature (antigravity/Gemini oauth lane, 2026-09-26 incident).
+
+    Google returns ``400 INVALID_ARGUMENT: Function call is missing a
+    thought_signature in functionCall parts`` when an UNSIGNED functionCall
+    ships upstream. This is NOT a transient error — the request body itself
+    is invalid for every Gemini oauth entry, so combo chain advance and the
+    never-stop retry wrap can NEVER succeed and livelock forever. Classify
+    this exact 400 subclass as terminal: no chain advance, no combo wrap, no
+    infinite retry — surface a clean error frame once and stop. 400 stays in
+    ``_RECOVERABLE`` for every other body; only this sniffed subclass becomes
+    terminal. Mirrors :func:`_is_terminal_relay_wall`'s fail-open contract.
+    """
+    try:
+        if status_code != 400 or not err_text:
+            return False
+        _low = err_text.lower() if isinstance(err_text, str) else str(err_text).lower()
+        if not _low:
+            return False
+        if "thought_signature" not in _low:
+            return False
+        return ("invalid_argument" in _low) or ("missing a thought_signature" in _low)
     except Exception:
         return False
 
@@ -6493,6 +6520,41 @@ def _usage_from_sse_data(data_json) -> Optional[dict]:
     return None
 
 
+def _backfill_missing_usage(stats: dict, request_messages, delivered_text: str,
+                            provider_name: str = "", target_model: str = "") -> None:
+    """Estimate in/out tokens when the provider omitted the usage frame.
+
+    Aggregator relays (MintRouter is the observed case) stream content frames
+    but drop the terminal usage object, leaving stats["in"]/stats["out"] at 0
+    even though the request succeeded -- the log then reads "In: 0 | Out: 0"
+    for a healthy stream, and the zero-output fallback mis-fires. This backfill
+    runs ONLY when the provider reported nothing (both counts 0) AND real text
+    was delivered, so a genuine usage frame always wins and a dead leaf (no
+    content) is never masked. Fail-open: any error leaves stats untouched.
+    """
+    try:
+        if stats.get("in") or stats.get("out"):
+            return  # a real usage frame already populated stats -- never override
+        if not delivered_text or not delivered_text.strip():
+            return  # nothing delivered -> out==0 is truthful; do not mask a dead leaf
+        _est_out = max(1, len(delivered_text) // 4)
+        stats["out"] = _est_out
+        try:
+            _est_in = _count_tokens(request_messages) if request_messages else 0
+        except Exception:
+            _est_in = 0
+        if _est_in and not stats.get("in"):
+            stats["in"] = _est_in
+        stats["usage_estimated"] = True
+        print(
+            f"[Usage] {provider_name}/{target_model} omitted usage frame -- "
+            f"estimated in={stats.get('in', 0)} out={_est_out} from delivered text",
+            flush=True,
+        )
+    except Exception:
+        pass  # fail-open: an estimator bug must never break a healthy stream
+
+
 def _anthropic_terminal_error_frames(err_text: str, model: str = "bsl-routed") -> list:
     """Build a COMPLETE, VALID Anthropic SSE terminal sequence for a failed stream.
 
@@ -6972,7 +7034,10 @@ def _raise_combo_wrap(model, config, request, retry_state, active_chain,
     """
     # Terminal relay walls must never be wrapped/retried - surface once and stop.
     # Fail-open: a detector fault returns False and the legacy wrap path runs.
-    if _is_terminal_relay_wall(status_code, err_text):
+    # A thought_signature payload-defect 400 is likewise terminal (Layer B,
+    # 2026-09-26): the echoed functionCall is unsignable, so wrapping just
+    # re-sends the same invalid body forever.
+    if _is_terminal_relay_wall(status_code, err_text) or _is_thought_signature_400(status_code, err_text):
         print(f"[TerminalWall] suppressing never-stop wrap ({reason}) - terminal relay wall", flush=True)
         return
     if not _combo_infinite_retry_enabled(config):
@@ -9371,7 +9436,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     # the terminal error+[DONE] frames so the client unblocks
                     # immediately and the 400 surfaces ONCE. Fail-open: any
                     # detector fault reverts to the legacy recoverable path below.
-                    _is_wall = _is_terminal_relay_wall(resp.status_code, err_text)
+                    _is_wall = _is_terminal_relay_wall(resp.status_code, err_text) or _is_thought_signature_400(resp.status_code, err_text)
                     if _is_wall:
                         print(
                             f"[TerminalWall] '{target_model}/{provider_name}' "
@@ -9500,10 +9565,17 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             # actually reaches the client (emission-state must
                             # reflect delivered bytes, not inspected bytes).
                             for _tg_out in _tool_guard.feed(chunk):
-                                _emit.mark_emitted(_tg_out)
+                                if not is_scaffolding_only(_tg_out):
+                                    _emit.mark_emitted(_tg_out)
                                 yield _tg_out
                         else:
-                            _emit.mark_emitted(chunk)
+                            # BUG M (2026-09-27): an SSE keepalive/comment-only
+                            # chunk (": PING\n\n") must NOT flip emitted=True --
+                            # that vetoed every later fallback and surfaced the
+                            # client 502 on a mid-stream transport death. Yield
+                            # it (TTFT/keepalive) but commit only real content.
+                            if not is_scaffolding_only(chunk):
+                                _emit.mark_emitted(chunk)
                             yield chunk
                 except (httpx.RemoteProtocolError, httpx.TransportError) as _mid_err:
                     # BUG J: transport death mid-body. Route into the combo chain
@@ -9586,6 +9658,17 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                     pass
                     except Exception as _ce:
                         print(f"[AntiStop] continuation failed (fail-open): {_ce}", flush=True)
+                # USAGE BACKFILL (2026-09-27): aggregator relays (MintRouter)
+                # stream content but drop the terminal usage frame, leaving
+                # In:0/Out:0 for a healthy stream AND mis-firing the zero-output
+                # fallback below. Estimate tokens from the delivered text so the
+                # log tells the truth; a real usage frame always wins (helper
+                # returns early), and a dead leaf (empty partial_text) is never
+                # masked. Must run BEFORE the out==0 guard reads stats["out"].
+                _backfill_missing_usage(
+                    stats, internal_request.messages, _detector.partial_text,
+                    provider_name=provider_name, target_model=target_model,
+                )
                 if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft"):
                     _zero_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                     if active_chain and _zero_next_idx < len(active_chain):
@@ -9903,7 +9986,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         # never advances the combo chain and never wraps — let it
                         # fall through to the terminal error+message_stop frame so
                         # the 400 surfaces ONCE. Fail-open: detector fault -> False.
-                        _is_wall_ae = _is_terminal_relay_wall(resp.status_code, err_text)
+                        _is_wall_ae = _is_terminal_relay_wall(resp.status_code, err_text) or _is_thought_signature_400(resp.status_code, err_text)
                         if _is_wall_ae:
                             print(
                                 f"[TerminalWall] '{target_model}/{provider_name}' Anthropic egress "
@@ -9999,7 +10082,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                             pass
                             except Exception:
                                 pass
-                            _emit.mark_emitted(chunk)
+                            # BUG M (2026-09-27): keepalive/comment-only chunk
+                            # (": PING\n\n") must not commit the transcript.
+                            if not is_scaffolding_only(chunk):
+                                _emit.mark_emitted(chunk)
                             yield chunk
                         if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft"):
                             _zero_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
@@ -10344,7 +10430,9 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 """
                 # Terminal relay walls: never advance the chain, never wrap.
                 # Fail-open: a detector fault returns False and the chain logic runs.
-                if _is_terminal_relay_wall(status_code, err_text):
+                # A thought_signature payload-defect 400 is likewise terminal
+                # (Layer B, 2026-09-26): the body is unsignable on every entry.
+                if _is_terminal_relay_wall(status_code, err_text) or _is_thought_signature_400(status_code, err_text):
                     print(f"[TerminalWall] gemini egress - terminal relay wall, not advancing, not retrying", flush=True)
                     return
                 _next_state = _next_gemini_combo_retry_state()
@@ -11280,7 +11368,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         # advances the combo chain and never wraps — fall through to
                         # the OpenAI SSE error+[DONE] frame so the 400 surfaces ONCE.
                         # Fail-open: detector fault -> False.
-                        _is_wall_ao = _is_terminal_relay_wall(resp.status_code, err_text)
+                        _is_wall_ao = _is_terminal_relay_wall(resp.status_code, err_text) or _is_thought_signature_400(resp.status_code, err_text)
                         if _is_wall_ao:
                             print(
                                 f"[TerminalWall] '{target_model}/{provider_name}' Anthropic→OpenAI egress "
@@ -11379,7 +11467,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                             pass
                             except Exception:
                                 pass
-                            _emit.mark_emitted(chunk)
+                            # BUG M (2026-09-27): keepalive/comment-only chunk
+                            # (": PING\n\n") must not commit the transcript.
+                            if not is_scaffolding_only(chunk):
+                                _emit.mark_emitted(chunk)
                             yield chunk
                         # Zero-token 200: stream completed with status 200 but produced
                         # zero output tokens — dead leaf. Advance combo if possible.

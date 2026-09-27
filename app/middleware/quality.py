@@ -350,6 +350,18 @@ class StreamTruncationDetector:
             content = delta.get("content")
             if isinstance(content, str):
                 self.partial_text += content
+            # REASONING continuation (2026-09-27): thinking-heavy streams (GLM,
+            # o-series, reasoning Claude) put their partial output in
+            # delta.reasoning_content, leaving `content` empty until the final
+            # answer. On a mid-thinking transport death partial_text was "" ->
+            # should_splice_continucontinuation's `not partial_text.strip()` gate
+            # refused the splice -> terminal 502 even though the model had
+            # produced continuable output. Accumulate the reasoning delta too so
+            # the SAME provider/model can resume. This prefix is only ever sent
+            # back to the SAME model, never spliced into a live client parser.
+            reasoning = delta.get("reasoning_content")
+            if isinstance(reasoning, str):
+                self.partial_text += reasoning
             if choice.get("finish_reason") == "length":
                 self.truncated = True
             return
@@ -360,6 +372,18 @@ class StreamTruncationDetector:
             text = delta.get("text")
             if isinstance(text, str):
                 self.partial_text += text
+            # Anthropic extended-thinking deltas carry their text in
+            # delta.thinking, not delta.text -- same reasoning-stream gap.
+            thinking = delta.get("thinking")
+            if isinstance(thinking, str):
+                self.partial_text += thinking
+            return
+        # Anthropic also emits a standalone thinking_delta event type.
+        if data.get("type") == "thinking_delta":
+            delta = data.get("delta") or {}
+            thinking = delta.get("thinking")
+            if isinstance(thinking, str):
+                self.partial_text += thinking
             return
         if data.get("type") == "message_delta":
             delta = data.get("delta") or {}
@@ -378,6 +402,9 @@ class StreamTruncationDetector:
                 if isinstance(part, dict):
                     text = part.get("text")
                     if isinstance(text, str):
+                        # Gemini thought parts carry the SAME text but with
+                        # thought:true -- both are continuable model output, so
+                        # accumulate regardless of the thought flag.
                         self.partial_text += text
 
 

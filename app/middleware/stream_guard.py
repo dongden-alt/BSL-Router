@@ -196,3 +196,16 @@ def _is_scaffolding_only(chunk: bytes) -> bool:
         return False
     return any(t in chunk for t in _SCAFFOLDING_TYPES)
 
+
+# Public name for the BUG M helper. main.py's RAW pump paths (the ones that
+# forward upstream bytes verbatim without a converter) call this BEFORE
+# mark_emitted() so an SSE keepalive / comment-only chunk (": PING\n\n") does
+# NOT commit the transcript and veto every later fallback -- the exact root
+# cause of the client-visible 502 midstream_transport refusals logged as
+# "[STREAM-GUARD] ... after 8B ... first-bytes: b': PING\\n\\n'". Fail-open:
+# the helper itself returns False for anything it cannot prove is scaffolding.
+def is_scaffolding_only(chunk: bytes) -> bool:
+    """Public wrapper around _is_scaffolding_only for cross-module callers."""
+    return _is_scaffolding_only(chunk)
+
+

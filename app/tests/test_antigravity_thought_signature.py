@@ -870,6 +870,7 @@ def _reset_sig_cache():
     _agu.SIGNATURE_CACHE_MISSES = 0
     _agu.SIGNATURE_CACHE_FALLBACK_HITS = 0
     _agu._UNSIGNED_WARNED = False
+    _agu._DROPPED_UNSIGNED_WARNED = False
 
 
 def _unsigned_body(name, call_id, args_json):
@@ -940,18 +941,95 @@ def test_sig13_expired_entry_not_used_fresh_entry_is():
 
 
 def test_sig14_unsigned_emit_never_raises_and_warns_once(capsys):
-    """When no signature is available anywhere, the part still ships (never
-    crash) and exactly one throttled diagnostic is emitted."""
+    """Layer A (2026-09-26): when no signature is available anywhere after all
+    fallbacks, the unsigned history functionCall is DROPPED (never shipped
+    unsigned -- a shipped unsigned part is exactly what Google 400s on with
+    ``INVALID_ARGUMENT: Function call is missing a thought_signature``), its
+    paired functionResponse is skipped too (no orphan fr), and exactly ONE
+    throttled diagnostic fires. The envelope build never raises."""
     _reset_sig_cache()
     model = "gemini-pro-agent"
-    body = _unsigned_body("no_such_tool", "call_no_such_tool_1", '{"a":1}')
+    # Unsigned assistant tool_call PLUS its paired tool message, so the
+    # paired-drop is observable on the functionResponse side as well.
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "call_no_such_tool_1", "type": "function",
+                "function": {"name": "no_such_tool", "arguments": '{"a":1}'},
+            }]},
+            {"role": "tool", "tool_call_id": "call_no_such_tool_1",
+             "content": '"ok"'},
+        ],
+    }
+    # Build never raises even with an unsignable history call.
     env = openai_to_cloudcode_envelope(body, model)
-    fc = next(p for c in env["request"]["contents"] for p in c["parts"] if "functionCall" in p)
-    assert "thoughtSignature" not in fc  # unsigned, but emitted (no exception)
+    contents = env["request"]["contents"]
+
+    # NO functionCall part remains -- the unsigned one was dropped, not shipped.
+    fc_parts = [p for c in contents for p in c["parts"] if "functionCall" in p]
+    assert fc_parts == []
+
+    # The paired functionResponse is ALSO absent (no orphan fr).
+    fr_parts = [p for c in contents for p in c["parts"] if "functionResponse" in p]
+    assert fr_parts == []
+
+    # The one-time drop warning fired.
     out = capsys.readouterr().out
-    assert "thought_signature cache miss" in out
-    # Second unsigned emit must NOT warn again (throttled once per process).
-    _agu._warn_unsigned_once(model, "another")
+    assert "dropping unsigned history functionCall" in out
+
+    # A second identical build must NOT warn again (once-only throttle holds).
+    openai_to_cloudcode_envelope(body, model)
     out2 = capsys.readouterr().out
     assert out2 == ""
+
+
+def test_sig14b_unsigned_dropped_not_shipped(capsys):
+    """Layer A scope (2026-09-26): only the UNSIGNABLE functionCall is dropped.
+    A normal signed functionCall in the same envelope still ships WITH its
+    thoughtSignature, and each call's paired functionResponse follows its
+    functionCall -- the dropped call's fr is absent (no orphan), the signed
+    call's fr ships. Proves the drop is surgical, not a blanket strip."""
+    _reset_sig_cache()
+    model = "gemini-pro-agent"
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": "go"},
+            # Signed call -- must ship with its signature intact.
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "call_read_1", "type": "function",
+                "function": {"name": "read", "arguments": '{"path":"a"}'},
+                "thought_signature": SIG,
+            }]},
+            {"role": "tool", "tool_call_id": "call_read_1", "content": '"data"'},
+            # Unsigned call -- must be dropped, and its paired fr skipped too.
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "call_ghost_1", "type": "function",
+                "function": {"name": "ghost", "arguments": '{"x":1}'},
+            }]},
+            {"role": "tool", "tool_call_id": "call_ghost_1", "content": '"ok"'},
+        ],
+    }
+    env = openai_to_cloudcode_envelope(body, model)
+    contents = env["request"]["contents"]
+
+    # The drop path was exercised for the unsignable call: warning fired once.
+    out = capsys.readouterr().out
+    assert "dropping unsigned history functionCall" in out
+
+    fc_parts = [p for c in contents for p in c["parts"] if "functionCall" in p]
+    fr_parts = [p for c in contents for p in c["parts"] if "functionResponse" in p]
+
+    # Only the signed functionCall ships -- the unsignable one is dropped.
+    assert len(fc_parts) == 1
+    assert fc_parts[0]["functionCall"]["name"] == "read"
+    assert fc_parts[0]["thoughtSignature"] == SIG
+
+    # The dropped call's paired functionResponse is absent (no orphan fr);
+    # the signed call's paired functionResponse DOES ship.
+    fr_names = [p["functionResponse"]["name"] for p in fr_parts]
+    assert "ghost" not in fr_names
+    assert "read" in fr_names
 
