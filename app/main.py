@@ -415,6 +415,23 @@ def _strip_bsl_identity_headers(headers: dict) -> dict:
 # These explicit budgets remain active when the general circuit breaker is off.
 # Tests monkeypatch them down to avoid production-length sleeps.
 GEMINI_EGRESS_KEEPALIVE_INTERVAL = 2.0
+# BUG A (2026-09-27): upper bound on a silent upstream that holds the SSE
+# connection open WITHOUT closing (MintRouter is the observed case — it streams
+# content then leaves the TCP socket half-open, emitting no [DONE]/no EOF). The
+# drain loop's keepalive (`: keepalive`) otherwise yields forever: upstream
+# never closes -> _drain_openai_source never finishes -> _q never sees the
+# _SENTINEL -> the response never completes -> the IDE's per-conversation lock
+# is held until the user kills every other IDE instance.
+#
+# This is NOT a stall watchdog and does NOT compete with the reasoning-gap
+# doctrine on GEMINI_EGRESS_BODY_STALL_TIMEOUT (0.0 = wait forever): legit
+# thinking gaps run <~180s and reset the timer on EVERY real chunk, so a healthy
+# long-thinking stream never trips it. 300s sits above the worst observed
+# reasoning gap and is a fail-safe ceiling for a wedged RELAY — only a stream
+# that produced NO upstream bytes for the entire window ends early, after which
+# the existing terminal / zero-token / combo-fallback handling runs and the
+# response closes cleanly. Tests monkeypatch it down to avoid long sleeps.
+GEMINI_EGRESS_MAX_IDLE = 300.0
 # BUG N (2026-08-13): max bytes of pre-content reasoning held by the Gemini
 # egress pre-render buffer. Past this cap the buffer flushes and commits the
 # stream (a reasoning pane that large is no longer safe to replay silently
@@ -10758,6 +10775,21 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             await _q.put(_SENTINEL)
 
                     _drain_task = asyncio.ensure_future(_drain_openai_source())
+                    # BUG A (2026-09-27): MintRouter streams content then holds the
+                    # TCP socket open without [DONE]/EOF. Without a bound, the
+                    # keepalive below yields forever (upstream never closes ->
+                    # _drain_openai_source never finishes -> _q never sees the
+                    # _SENTINEL) and the response never completes, wedging the
+                    # IDE's per-conversation lock. Track the monotonic time of the
+                    # LAST real upstream chunk and end the stream when no bytes
+                    # have arrived for GEMINI_EGRESS_MAX_IDLE. Reset ONLY on a real
+                    # ochunk — never on a keepalive tick — so a healthy
+                    # long-thinking stream (gaps <~180s, every chunk resets) never
+                    # trips it. On expiry we break (not raise) so the existing
+                    # terminal / zero-token / combo-fallback handling below runs and
+                    # the response closes cleanly. See GEMINI_EGRESS_MAX_IDLE for
+                    # the ceiling rationale vs the BODY_STALL doctrine.
+                    _last_upstream_data = time.monotonic()
                     try:
                         while True:
                             try:
@@ -10769,10 +10801,27 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                     stats["error"] = stats["error"] or "client_disconnected"
                                     stats["status"] = 499
                                     break
+                                # BUG A: cap a wedged relay. A keepalive tick is NOT
+                                # upstream data — do not reset the timer here. Only
+                                # a real ochunk (below) resets it.
+                                _idle = time.monotonic() - _last_upstream_data
+                                if _idle > GEMINI_EGRESS_MAX_IDLE:
+                                    print(
+                                        f"[GeminiEgress] upstream idle {_idle:.0f}s > "
+                                        f"{GEMINI_EGRESS_MAX_IDLE}s - ending wedged stream "
+                                        f"(provider={provider_name} model={target_model})",
+                                        flush=True,
+                                    )
+                                    stats["error"] = stats.get("error") or "upstream_idle_timeout"
+                                    break
                                 yield b": keepalive\n\n"
                                 continue
                             if ochunk is _SENTINEL:
                                 break
+                            # BUG A: real upstream data arrived — reset the idle
+                            # timer so a healthy stream with intermittent reasoning
+                            # gaps can run as long as it keeps producing bytes.
+                            _last_upstream_data = time.monotonic()
                             try:
                                 obuffer += ochunk.decode("utf-8")
                                 olines = obuffer.split("\n")
@@ -11021,6 +11070,22 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         yield _g_sse_data(_g_term(504, stats.get("error") or "stream_stall", target_model))
                         yield _G_SSE_DONE
                         return
+                    # USAGE BACKFILL (2026-09-27, BUG B): aggregator relays
+                    # (MintRouter is the observed case) stream content frames but
+                    # drop the terminal usage object, leaving In:0/Out:0 for a
+                    # HEALTHY stream on the Gemini path (the inline usage reader
+                    # in _raw_ok never sees a frame to populate stats). The
+                    # zero-output guard below then mis-fires as a dead leaf and
+                    # benches/blocks a working provider. Mirror the OpenAI _pump
+                    # site (~L9668): estimate tokens from the delivered text so the
+                    # log tells the truth. The helper returns early if a real usage
+                    # frame already populated stats (never overrides) and never masks
+                    # a genuine dead leaf (empty partial_text). Must run BEFORE the
+                    # out==0 guard reads stats["out"]. Fail-open by construction.
+                    _backfill_missing_usage(
+                        stats, internal_request.messages, _detector.partial_text,
+                        provider_name=provider_name, target_model=target_model,
+                    )
                     # Zero-token 200: stream COMPLETED with status 200 but produced
                     # zero output tokens — dead leaf. Advance combo if possible.
                     if stats.get("status") == 200 and stats.get("out", 0) == 0 and not emitted_model_data:
