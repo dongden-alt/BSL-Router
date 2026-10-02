@@ -5,8 +5,9 @@ Proves:
   2. _combo_restart_or_give_up wraps to idx 0, deadline None, pass_no+1, clears tried_conns
   3. Backoff ladder is 2,4,8,16,30,30 (capped)
   4. The wall-start stamp is cleared so the next expansion re-stamps (budget re-arm)
-  5. Contract: every exhaustion site in _process_chat_completion checks the knob
-     before returning a terminal 502
+  5. Contract: every exhaustion site in _process_chat_completion_pass checks
+     the knob before returning a terminal 502; the ROOT retry loop
+     (_process_chat_completion) sleeps the pass backoff before re-dispatch
 """
 
 from __future__ import annotations
@@ -127,7 +128,11 @@ def test_restart_survives_none_request():
 
 def test_exhaustion_sites_gated_by_knob():
     main = _reload_main()
-    src = inspect.getsource(main._process_chat_completion)
+    # Bug 2 Part A split the single function: the ROOT retry loop
+    # (_process_chat_completion) dispatches passes; every never-stop wrap
+    # site lives in the pass body (_process_chat_completion_pass).
+    root_src = inspect.getsource(main._process_chat_completion)
+    src = inspect.getsource(main._process_chat_completion_pass)
     gated = 0
     for marker in (
         "entry_override_exhausted",
@@ -136,9 +141,10 @@ def test_exhaustion_sites_gated_by_knob():
     ):
         assert marker in src, f"missing never-stop wrap site: {marker}"
         gated += 1
-    # The wrap precedes the 502 in each site, and sleeps before recursing.
+    # The wrap precedes the 502 in each site; the ROOT loop sleeps the pass
+    # backoff (client disconnect cancels it) before re-dispatching.
     assert src.count("_combo_infinite_retry_enabled(config)") >= gated
-    assert src.count("await asyncio.sleep(_backoff)") >= gated
+    assert "await asyncio.sleep(_wrap_signal.backoff)" in root_src
     # Old terminal 502 must still exist for the explicit-false path.
     assert "combo chain entries exhausted" in src
 

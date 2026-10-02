@@ -31,7 +31,7 @@ def _run_load_config(providers: dict) -> dict:
     saved_replace = main.replace_config
     saved_runtime_replace = main._replace_runtime_config
 
-    main.init_config = lambda: None
+    main.init_config = lambda *a, **k: None
     main.cs_get_config = lambda: live
     main.replace_config = lambda cfg: None
     main._replace_runtime_config = lambda cfg: None

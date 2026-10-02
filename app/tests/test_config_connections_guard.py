@@ -64,15 +64,21 @@ def isolated_config(monkeypatch):
 
 
 def _base_config() -> dict:
-    """Provider X (tabitoken) with three connections, mirroring the incident."""
+    """Provider X (tabitoken) with three connections, mirroring the incident.
+
+    Bug 3 (2026-09-29): connection identity is now KEY-INDEPENDENT (id, then
+    case-normalised name), so every fixture connection carries an explicit
+    ``name``. The old api_key-only fixtures matched nothing under the new
+    identity and would have been dropped as unidentifiable.
+    """
     return {
         "providers": {
             "tabitoken": {
                 "format": "openai",
                 "connections": [
-                    {"api_key": "sk-011", "enabled": True},
-                    {"api_key": "sk-012", "enabled": True},
-                    {"api_key": "sk-013", "enabled": True},
+                    {"name": "k011", "api_key": "sk-011", "enabled": True},
+                    {"name": "k012", "api_key": "sk-012", "enabled": True},
+                    {"name": "k013", "api_key": "sk-013", "enabled": True},
                 ],
             },
         },
@@ -90,8 +96,8 @@ def test_stale_save_restores_removed_connections(isolated_config, capsys):
     cs.replace_config(_base_config())
     body = copy.deepcopy(_base_config())
     body["providers"]["tabitoken"]["connections"] = [
-        {"api_key": "sk-011", "enabled": True},
-        {"api_key": "sk-new", "enabled": True},
+        {"name": "k011", "api_key": "sk-011", "enabled": True},
+        {"name": "knew", "api_key": "sk-new", "enabled": True},
     ]
 
     response = asyncio.run(main.update_config(_request("/api/config", body)))
@@ -111,8 +117,8 @@ def test_legit_delete_passes_with_flag(isolated_config):
     cs.replace_config(_base_config())
     body = copy.deepcopy(_base_config())
     body["providers"]["tabitoken"]["connections"] = [
-        {"api_key": "sk-011", "enabled": True},
-        {"api_key": "sk-013", "enabled": True},
+        {"name": "k011", "api_key": "sk-011", "enabled": True},
+        {"name": "k013", "api_key": "sk-013", "enabled": True},
     ]
     body["_deleted_connection"] = {"provider": "tabitoken", "api_key": "sk-012"}
 
@@ -133,9 +139,9 @@ def test_stale_save_cannot_empty_api_key(isolated_config, capsys):
     cs.replace_config(_base_config())
     body = copy.deepcopy(_base_config())
     body["providers"]["tabitoken"]["connections"] = [
-        {"api_key": "sk-011", "enabled": True},
-        {"api_key": "", "enabled": True},
-        {"api_key": "sk-013", "enabled": True},
+        {"name": "k011", "api_key": "sk-011", "enabled": True},
+        {"name": "k012", "api_key": "", "enabled": True},
+        {"name": "k013", "api_key": "sk-013", "enabled": True},
     ]
 
     response = asyncio.run(main.update_config(_request("/api/config", body)))

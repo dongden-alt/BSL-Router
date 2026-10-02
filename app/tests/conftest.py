@@ -36,14 +36,69 @@ is applied later and therefore wins.
 import os
 import shutil
 import sys
+import tempfile
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _REPO_ROOT)
+
+# ---------------------------------------------------------------------------
+# Bug 3 (2026-09-29): config.yaml WRITE isolation -- the reason this bug was
+# "fixed twice" and kept coming back.
+#
+# _persist_config_snapshot resolved its target as the BARE relative string
+# "config.yaml", i.e. against the process CWD. pytest is launched from the repo
+# root, so the suite read AND WROTE the live production config: load_config()'s
+# dedup loop marks the config dirty, _replace_runtime_config persists it, and
+# 36+ TestClient(main.app) boots across 10 test files each replayed that cycle.
+# Measured effect: the live 536 KB config rewriting itself mid-run, rotating
+# away its own .bak recovery snapshots, and re-seeding the duplicate rows the
+# fix had just removed. Every "green suite" was therefore evidence about a
+# config the suite was concurrently mutating.
+#
+# app.main now resolves the path ONCE at import time from BSL_CONFIG_PATH, so
+# the env var must be set BEFORE this import. That also covers subprocess-based
+# tests (the migration-script test), which a monkeypatched module attribute
+# cannot reach.
+# ---------------------------------------------------------------------------
+_TEST_CONFIG_DIR = tempfile.mkdtemp(prefix="bsl-test-config-")
+_TEST_CONFIG_PATH = os.path.join(_TEST_CONFIG_DIR, "config.yaml")
+
+_EXAMPLE_PATH = os.path.join(_REPO_ROOT, "config.example.yaml")
+_LIVE_CONFIG_PATH = os.path.join(_REPO_ROOT, "config.yaml")
+if os.path.exists(_LIVE_CONFIG_PATH):
+    # Prefer the live shape (many providers, encrypted keys) so tests exercise
+    # realistic dedup/rotation paths. Copied once per session, never written back.
+    shutil.copyfile(_LIVE_CONFIG_PATH, _TEST_CONFIG_PATH)
+elif os.path.exists(_EXAMPLE_PATH):
+    shutil.copyfile(_EXAMPLE_PATH, _TEST_CONFIG_PATH)
+
+os.environ["BSL_CONFIG_PATH"] = _TEST_CONFIG_PATH
+os.environ["BSL_TEST_ISOLATION"] = "1"
 
 import app.main as main  # noqa: E402
 import app.mitm as mitm  # noqa: E402
 import app.observability as obs  # noqa: E402
+
+assert main._CONFIG_YAML_PATH == _TEST_CONFIG_PATH, (
+    "config isolation FAILED: app.main resolved config.yaml to "
+    f"{main._CONFIG_YAML_PATH!r} instead of the test copy {_TEST_CONFIG_PATH!r}. "
+    "The suite would read/write the LIVE production config. Refusing to run."
+)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _cleanup_isolated_config():
+    """Delete the isolated config copy when the session ends.
+
+    The copy is seeded from the LIVE config.yaml so tests exercise realistic
+    provider/connection shapes, which means it carries the same Fernet-encrypted
+    credentials. Leaving it behind in %TEMP% would leave a credential-bearing
+    config outside the repo, where nothing gitignores it. Removed on teardown.
+    """
+    yield
+    shutil.rmtree(_TEST_CONFIG_DIR, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

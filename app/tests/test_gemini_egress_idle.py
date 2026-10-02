@@ -214,6 +214,269 @@ def test_module_constant_present_and_above_reasoning_gap_ceiling():
     assert main.GEMINI_EGRESS_KEEPALIVE_INTERVAL == 2.0
 
 
+# ─── 2026-10-02 TERMINAL-FRAME FIX: idle expiry must set status + route ─────
+#
+# BUG A's break set NO HTTP status and NO terminal error frame: after the loop
+# the post-drain error branch only matched ("ttft_stall", "stream_stall"), so
+# "upstream_idle_timeout" fell through to a bare `data: [DONE]` with status
+# 200. The IDE parser requires a terminal error frame for any non-success
+# termination — it hangs waiting for one. That is the reported freeze.
+
+
+def _make_drain_loop_with_stats(max_idle: float, keepalive_interval: float = 0.02):
+    """Mirror of the production drain loop INCLUDING the 2026-10-02 fix: the
+    idle-expiry site sets stats["status"] = 504 alongside the error before the
+    break, exactly as app/main.py now does. Returns (drain, SENTINEL) where
+    drain(upstream_chunks, client_disconnected=...) -> (emitted, stats)."""
+    SENTINEL = object()
+
+    async def drain(upstream_chunks, client_disconnected=lambda: False):
+        q: asyncio.Queue = asyncio.Queue()
+        drain_err = None
+        stats = {"status": 200, "error": None}
+
+        async def drain_openai_source():
+            nonlocal drain_err
+            try:
+                async for _c in upstream_chunks():
+                    await q.put(_c)
+            except Exception as _de:  # mirror production: capture, don't crash
+                drain_err = _de
+            finally:
+                await q.put(SENTINEL)
+
+        drain_task = asyncio.ensure_future(drain_openai_source())
+        last_upstream_data = time.monotonic()
+        emitted = []
+        try:
+            while True:
+                try:
+                    ochunk = await asyncio.wait_for(q.get(), timeout=keepalive_interval)
+                except asyncio.TimeoutError:
+                    if client_disconnected():
+                        stats["error"] = stats["error"] or "client_disconnected"
+                        stats["status"] = 499
+                        break
+                    idle = time.monotonic() - last_upstream_data
+                    if idle > max_idle:
+                        emitted.append(("IDLE_TIMEOUT", idle))
+                        stats["error"] = stats.get("error") or "upstream_idle_timeout"
+                        # 2026-10-02 fix: status is set at the break site so
+                        # the post-drain error branch actually fires.
+                        stats["status"] = 504
+                        break
+                    emitted.append(b": keepalive\n\n")
+                    continue
+                if ochunk is SENTINEL:
+                    break
+                last_upstream_data = time.monotonic()  # real data resets the timer
+                emitted.append(ochunk)
+        finally:
+            if not drain_task.done():
+                drain_task.cancel()
+            try:
+                await drain_task
+            except BaseException:
+                pass
+        return emitted, stats
+
+    return drain, SENTINEL
+
+
+def test_idle_expiry_sets_status_504_and_error_in_loop():
+    """The 2026-10-02 fix: when the idle cap breaks the loop, stats must carry
+    status=504 + error="upstream_idle_timeout" AT THE BREAK SITE — that is what
+    routes the post-drain branch off the bare-[DONE] fallthrough."""
+    drain, _SENTINEL = _make_drain_loop_with_stats(max_idle=0.05, keepalive_interval=0.01)
+
+    async def wedged_upstream():
+        yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        await asyncio.Event().wait()
+
+    async def run():
+        return await drain(wedged_upstream)
+
+    emitted, stats = asyncio.run(run())
+    assert stats["error"] == "upstream_idle_timeout"
+    assert stats["status"] == 504
+    assert any(b'"content":"hi"' in c for c in emitted if isinstance(c, (bytes, bytearray)))
+
+
+def test_post_content_idle_emits_gemini_terminal_frame_then_done():
+    """POST-CONTENT idle expiry (content streamed, then silence) must terminate
+    with the Gemini terminal error frame (504, "upstream_idle_timeout")
+    followed by `data: [DONE]` — and NOTHING else after the content. No
+    combo-fallback splice can happen post-content (_emit.may_fallback refuses),
+    and no bare {"error":...} frame may precede the terminal frame (it poisons
+    the Gemini parser — FREEZE FIX 2026-08-07 contract)."""
+    from app.compat.adapters.gemini import SSE_DONE, sse_data, terminal_error_frame
+    from app.middleware.stream_guard import StreamEmissionState
+
+    drain, _SENTINEL = _make_drain_loop_with_stats(max_idle=0.05, keepalive_interval=0.01)
+
+    async def wedged_upstream():
+        yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        await asyncio.Event().wait()
+
+    async def run():
+        return await drain(wedged_upstream)
+
+    emitted, stats = asyncio.run(run())
+
+    # Model the post-drain stall branch with the REAL production helpers: the
+    # content yield marked emission, so may_fallback must refuse and the SOLE
+    # terminal contract (terminal frame + [DONE]) is the only legal exit.
+    _emit = StreamEmissionState()
+    _emit.mark_emitted(b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')
+    assert _emit.may_fallback("upstream_idle_timeout") is False, (
+        "post-content fallback must be refused — a splice here would wedge the parser"
+    )
+    tail = [sse_data(terminal_error_frame(504, "upstream_idle_timeout", "test-model")), SSE_DONE]
+
+    # stats carry the 504 routing the branch reads.
+    assert stats["status"] == 504
+    assert stats["error"] == "upstream_idle_timeout"
+    # Terminal frame shape: response envelope with finishReason, visible error text.
+    frame_obj = tail[0]
+    assert b"finishReason" in frame_obj
+    assert b'"response"' in frame_obj
+    assert b"upstream_idle_timeout" in frame_obj
+    assert b"[DONE]" in tail[1]
+    # NO bare top-level {"error":...} frame before the terminal frame.
+    joined = b"".join(c for c in emitted if isinstance(c, (bytes, bytearray))) + b"".join(tail)
+    first_error_idx = joined.find(b'{"error"')
+    term_idx = joined.find(b"finishReason")
+    assert first_error_idx == -1 or first_error_idx > term_idx, (
+        "a bare {\"error\":...} frame must never precede the terminal frame"
+    )
+
+
+def test_pre_content_idle_never_bare_done_200():
+    """PRE-CONTENT idle expiry (no bytes ever): combo fallback advances to the
+    next chain entry (modeled here) or wraps / emits the terminal frame when
+    the chain is exhausted. The invariant: NEVER a bare [DONE] with status 200
+    — the branch fires because the tuple now carries upstream_idle_timeout."""
+    from app.compat.adapters.gemini import SSE_DONE, sse_data, terminal_error_frame
+    from app.middleware.stream_guard import StreamEmissionState
+
+    drain, _SENTINEL = _make_drain_loop_with_stats(max_idle=0.03, keepalive_interval=0.01)
+
+    async def wedged_from_start():
+        # No bytes ever — the relay accepts the connection and goes silent.
+        await asyncio.Event().wait()
+        yield b""  # pragma: no cover - unreachable; makes this an async generator
+
+    async def run():
+        return await drain(wedged_from_start)
+
+    emitted, stats = asyncio.run(run())
+    assert stats["error"] == "upstream_idle_timeout"
+    assert stats["status"] == 504
+    # Nothing was forwarded to the client pre-content.
+    data_frames = [c for c in emitted if isinstance(c, (bytes, bytearray)) and c.startswith(b"data:")]
+    assert data_frames == []
+
+    # Model the post-drain branch exactly as production reads it: the tuple
+    # match routes a pre-content idle through the combo-advance rail first.
+    _emit = StreamEmissionState()
+    assert _emit.may_fallback("upstream_idle_timeout") is True, (
+        "pre-content idle MUST be fallback-eligible (never a bare [DONE])"
+    )
+    # The invariant holds both ways:
+    #   (a) chain present -> _ComboFallbackNeeded raised (no client frames at all)
+    #   (b) chain exhausted -> terminal frame + [DONE], never bare [DONE] 200.
+    exhausted_tail = [
+        sse_data(terminal_error_frame(504, "upstream_idle_timeout", "test-model")),
+        SSE_DONE,
+    ]
+    assert b"finishReason" in exhausted_tail[0]
+    assert exhausted_tail[1] == b"data: [DONE]\n\n"
+
+
+def test_keepalive_ticks_below_cap_yield_comments():
+    """REGRESSION: keepalive ticks below the idle cap still yield `: keepalive`
+    comments, and a stream whose chunks keep arriving (gaps < cap) never trips
+    the cap — healthy long-thinking streams are unaffected."""
+    drain, _SENTINEL = _make_drain_loop_with_stats(max_idle=0.2, keepalive_interval=0.01)
+
+    async def slow_thinker():
+        # Chunks every ~0.05s — each is real data that resets the timer, so
+        # the 0.2s cap must never fire between them.
+        for _ in range(4):
+            yield b'data: {"choices":[{"delta":{"content":"tok"}}]}\n\n'
+            await asyncio.sleep(0.05)
+
+    async def run():
+        return await drain(slow_thinker)
+
+    emitted, stats = asyncio.run(run())
+    keepalives = [c for c in emitted if isinstance(c, bytes) and c == b": keepalive\n\n"]
+    idle_events = [c for c in emitted if isinstance(c, tuple) and c[0] == "IDLE_TIMEOUT"]
+    assert keepalives, "sub-cap ticks must still yield : keepalive comments"
+    assert idle_events == [], f"healthy chunk cadence must never trip the cap: {idle_events}"
+    assert sum(1 for c in emitted if isinstance(c, (bytes, bytearray)) and b'"content":"tok"' in c) == 4
+    assert stats["error"] is None
+    assert stats["status"] == 200
+
+
+# ─── 2026-10-02 production source pins (the fix is IN app/main.py) ──────────
+
+
+def _pass_source() -> str:
+    """Source of _process_chat_completion_pass — every egress lane (gemini,
+    anthropic, anthropic-to-openai, openai) is nested inside it, so one
+    getsource covers all sites. Pins by TEXT, never by line number."""
+    import inspect
+
+    return inspect.getsource(main._process_chat_completion_pass)
+
+
+def test_production_idle_site_sets_504_before_break():
+    """PIN: the Gemini idle-expiry site in app/main.py must set
+    stats["status"] = 504 AFTER the upstream_idle_timeout error assignment and
+    BEFORE the break — the exact ordering that routes the post-drain branch."""
+    src = _pass_source()
+    anchor = 'stats["error"] = stats.get("error") or "upstream_idle_timeout"'
+    idx = 0
+    found = False
+    while True:
+        idx = src.find(anchor, idx)
+        if idx == -1:
+            break
+        window = src[idx: idx + 400]
+        err_line = 'stats["error"] = stats.get("error") or "upstream_idle_timeout"'
+        status_line = 'stats["status"] = 504'
+        break_kw = "break"
+        i_err = window.find(err_line)
+        i_status = window.find(status_line)
+        i_break = window.find(break_kw, i_err)
+        if i_err != -1 and i_status != -1 and i_break != -1:
+            assert i_err < i_status < i_break, (
+                f"idle site must set error, then status 504, then break; got "
+                f"err@{i_err} status@{i_status} break@{i_break}"
+            )
+            found = True
+        idx += len(anchor)
+    assert found, "the upstream_idle_timeout site(s) must exist in the pass source"
+
+
+def test_production_stall_tuples_include_idle_error():
+    """PIN: every post-drain stall tuple (gemini egress, openai egress,
+    anthropic egress, anthropic-to-openai egress) must match
+    "upstream_idle_timeout" so an idle break never falls through to a bare
+    [DONE]. The pre-fix file had four bare two-element tuples."""
+    src = _pass_source()
+    legacy = src.count('in ("ttft_stall", "stream_stall"):')
+    assert legacy == 0, (
+        f"{legacy} stall tuple(s) still lack upstream_idle_timeout — an idle "
+        "break there would end in a bare [DONE] with status 200"
+    )
+    extended = src.count('in ("ttft_stall", "stream_stall", "upstream_idle_timeout"):')
+    assert extended >= 4, (
+        f"expected the four post-drain stall branches to be extended, found {extended}"
+    )
+
+
 # ─── BUG B: _backfill_missing_usage must fire on the Gemini path too ───────
 
 

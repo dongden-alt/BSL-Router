@@ -229,7 +229,133 @@ Before pushing anything that can change CI results:
 | Launcher | `scripts/bslrouter.ps1` (`Start-App`); `START-9router.bat`; `shutdown_bsl.ps1` |
 | Live config | `config.yaml` (gitignored; `config.example.yaml` is the tracked template) |
 | Admin key | `.bsl_key` / `.bsl_key.dpapi` (gitignored) |
-| venvs | `.venv` (dev — gitignored) and `.venv311` (CI-parity Py3.11 leg — visible-untracked, never bulk-add) |
-| Tests | `app/tests/` — suite must stay green; launcher-pattern assertions in `app/tests/test_mitm_lifecycle.py` |
+| venvs | `.venv` (dev, Py3.10 — gitignored), `.venv311` (CI-parity Py3.11 leg) and `.venv312` (CI-parity Py3.12 leg) — the latter two are visible-untracked, never bulk-add |
+| Tests | `app/tests/` — suite must stay green on BOTH CI legs (`.venv311` + `.venv312`); launcher-pattern assertions in `app/tests/test_mitm_lifecycle.py`; `config.yaml` is isolated out of the suite via `BSL_CONFIG_PATH` in `conftest.py` (see §7) |
 | Gate script | `scripts/pre-push-check.ps1` (read-only; exit 0 = pass / 1 = fail) |
 | Reference KIs | `ki-bslrouter-log-stall-ide-shutdown`, `ki-bslrouter-github-push-guideline`, `ki-ci-version-parity-push-discipline` |
+
+## 7. 🔴 HARD RULE — the config write target is repo-root anchored; never a bare `"config.yaml"` (2026-09-29)
+
+**THE BUG THIS PREVENTS IS THE WORST KIND: it made the verification suite destroy the thing it was verifying.**
+
+`_persist_config_snapshot` computed its write target as the bare, CWD-relative string
+`"config.yaml"`, with no repo-root anchoring and no env override anywhere in `app/`. Consequence:
+**every `pytest` run launched from the repo root wrote LIVE PRODUCTION `config.yaml`** — and
+rotated away the 5-slot `config.yaml.bak-*` recovery window while doing it. Proven twice with
+isolated temp-CWD experiments: `_persist_config_snapshot(cfg)` created a 180-byte `config.yaml`
+in the temp dir; and with a copy of live config placed in the temp CWD, `load_config()` printed
+`[Dedup] antigravity: collapsed 1 duplicate connection row(s)` and rewrote that isolated file
+536070 → 535034 while creating `.bak` files, leaving the repo `config.yaml` untouched.
+
+10 test files boot the lifespan across 36+ `TestClient(main.app)` instantiations
+(`test_fel_wiring.py` 13, `test_responses_thread_store.py` 9, `test_kiro_refresh_on_import.py` 3,
+five files with 2 each, `conftest.py` 1, `test_antigravity_ccpa_gateway.py` 1). The write chain is
+`load_config` → dedup sets `_dirty` → `if _dirty: _replace_runtime_config(config)` → persist → swap
+→ reconfigure breaker. **This is why a connection-duplication bug survived two separate "fixed,
+verified, done" claims: each verification run re-armed the bug.**
+
+Invariants — do not regress any of these:
+
+- **Never introduce a bare `"config.yaml"` string anywhere under `app/`.** Resolve through
+  `app.main._CONFIG_YAML_PATH`, or `app.error_prevention._config_yaml_path()`, or
+  `app.config_state.init_config(path)`.
+- `_REPO_ROOT` / `_CONFIG_YAML_PATH` (`app/main.py:21-25`) are the single source of truth:
+  env `BSL_CONFIG_PATH` wins, else repo-root `config.yaml`. Wired into `load_config()`,
+  `_persist_config_snapshot`, and the pricing detector.
+- Atomic writes must keep the temp file on the target's filesystem:
+  `mkstemp(dir=dirname(_cfg_path))` + `os.replace(tmp_path, _cfg_path)`.
+- **`app/tests/conftest.py` sets `BSL_CONFIG_PATH` BEFORE `import app.main`**, seeds a session
+  temp copy, and hard-asserts `main._CONFIG_YAML_PATH == _TEST_CONFIG_PATH` so the suite REFUSES
+  TO RUN if isolation failed. Never weaken, bypass, or monkeypatch that anchor. A test needing a
+  config path sets `BSL_CONFIG_PATH` or patches `app.main._CONFIG_YAML_PATH` to `tmp_path`.
+
+> [!WARNING]
+> **Root-anchor footgun.** `app/main.py:14` binds `_project_root` to the **`app/` directory**, while
+> `app/main.py:~4860` defines `def _project_root()` returning the **repo root** — the def REBINDS
+> the name at import time. Never derive a repo-root path from `_project_root`; the value you get
+> depends on whether the def has executed yet. Use `_REPO_ROOT`.
+
+> [!CAUTION]
+> **Ciphertext hashing is NOT a change oracle for `config.yaml`.** Fernet embeds a timestamp and a
+> random IV, so re-encrypting *identical plaintext* yields *different ciphertext*. During this work
+> the file's sha256 prefix rotated `FE80C6B285ECF358` → `B31188FC2AC8D569` → `2765BC0221544CF5`
+> while its size stayed CONSTANT at 536070 bytes and its decrypted length stayed 515592 — the live
+> router was simply re-saving unchanged in-memory config. An earlier "97 credentials LOST / 99 NEW"
+> alarm was a FALSE ALARM caused by exactly this. Judge config drift by structural shape
+> (`.brain/scratch/probe_shape.py`: providers / rows / keyed / blank / dupname_groups), or decrypt
+> via `app.crypto.decrypt_value`.
+
+Sites that were ALREADY correct and were left untouched: `app/mitm.py:44-45`,
+`app/dualstack_serve.py:712-715` (read-only watchdog), `scripts/update_bsl_router.py:194`,
+`scripts/bslrouter.ps1:101`, `app/tests/test_family_characterization.py:27-30`.
+
+## 8. 🔴 HARD RULE — `_dedup_connection_rows` is a TWO-PHASE union; Phase 2's name union stays conditional (2026-09-29)
+
+Duplicate connection names in `config.yaml` fall into two behaviourally distinct classes that MUST
+be treated differently. Collapsing them is silent credential destruction.
+
+| Class | Shape | Correct action |
+|---|---|---|
+| **A** | a blank-key row beside a **keyed row of the same name** | collapse — the blank is a non-functional duplicate artifact |
+| **B** | TWO rows sharing a name but carrying **DIFFERENT VALID keys** | **PRESERVE both** — they are distinct credentials |
+| lone blank | blank row whose keyed sibling has a **different name** | **PRESERVE** — it is not a duplicate of that sibling |
+
+- **Phase 1** unions ONLY on hard identity: `id`, oauth `email`, non-empty `api_key`.
+- **Phase 2** builds `name.lower() → [indexes]` and unions a name group **only if**
+  `group_has_blank = any(not api_key.strip())`. Name is an identity signal ONLY when at least one
+  member is credential-less.
+- The blank-row prune is **same-name scoped**: build
+  `keyed_names = {name.lower() for rows with non-empty api_key and non-empty name}`, and drop an
+  id-less blank **only if** its own `name.lower()` is in that set. Never compute
+  `has_keyed = any(...)` across the whole provider.
+
+> [!CAUTION]
+> **Do NOT "simplify" Phase 2 back into an unconditional name union.** The delegated implementation
+> emitted `("name", nm.lower())` unconditionally, union-finding the three Class B groups. Its own
+> dry-run transcript proved the loss: `dropped codex (key=enc:gAAAAA...) reason=dup-name`,
+> `dropped Free ...`, `dropped Connection 14 ...`, plus `connection_indexes remap: [0] -> dropped
+> (dangling)`. That would have silently deleted **three valid provider credentials** on the next
+> restart. Its test suite encoded the same data loss as expected behaviour
+> (`total_removed == 8`), so green tests were not evidence of correctness.
+
+- **Class B rows are deliberately NOT renamed** — renaming would invalidate `connection_indexes`.
+- **Verified invariant:** live config is `providers=78 rows=104 keyed=99 blank=5 idless_blank=5
+  dupname_groups=8`, and dedup takes it to **99 rows (exactly 5 removable)**. Any change that
+  removes more than 5 from that shape is destroying credentials.
+- **History:** an empty-credential prune was added in `69d68ad` and **deliberately REVERTED in
+  `eb76b67`**. Do not re-introduce a provider-wide version.
+- `scripts/migrate_dedup_connections.py` imports `_dedup_connection_rows` from `app.main` — single
+  implementation, no fork. `--dry-run` is the default. **`--apply` is UNSAFE while the router holds
+  `config.yaml`**: the running process overwrites the result on its next periodic save. The live
+  config self-heals on the next user-commanded restart instead.
+
+## 9. 🟠 HARD RULE — CC delegation prompts go over STDIN, never as an argv (2026-09-29)
+
+Windows PowerShell 5.1 does **not** escape embedded double quotes when it builds a native command
+line. Both bug prompts contain quoted phrases (`"empty delivery -> no backfill"`,
+`"tool call invalid"`), so passing `-p $prompt` terminated the argument at the first quote and
+spilled the remainder as extra argv tokens — `->` landed as a bare token and `claude.exe` rejected
+it: `error: unknown option '->'`, **exit 1 after 1.3 seconds**, before CC ever connected to
+anything. No debug log was created.
+
+Proven in `.brain/scratch/quote_escape_experiment.txt`: naive `-p $raw` → `ARGV_COUNT=7` with
+`ARG4=[->]`; escaping `"` as `\"` → `ARGV_COUNT=3`, string intact. And in
+`.brain/scratch/stdin_fidelity.txt`: a 396-char multi-line prompt containing double quotes, `->` and
+`[brackets]` piped over stdin round-tripped intact, `EXIT=0`.
+
+- **REQUIRED shape:** `$prompt | & 'D:\npm\npm-global\claude.ps1' -p --flags...` — `-p` takes **NO**
+  prompt argument; the prompt arrives on stdin. The npm shim branches on
+  `$MyInvocation.ExpectingInput` and forwards `$input`, so piping is the supported path.
+- Escaping would also work but is a **per-prompt landmine**: the next author who types a quote
+  re-arms the identical failure. Prefer removing argv from the equation.
+- **A dead CC must abort the chain.** The only gate in the original script was a compile check,
+  which trivially passes when CC wrote nothing — so bug1 exited 1 and the chain advanced to bug2,
+  which died identically and produced 0 bytes. Required gates, in order:
+  `claude` exit ≠ 0 → ABORT; `compileall` ≠ 0 → ABORT; exit 0 but **tree unchanged** →
+  classify FAILED/NO-OP, never success.
+- Snapshot `git diff --name-only` + `git ls-files --others --exclude-standard` BEFORE and AFTER each
+  task to detect the no-op case. CC saying "done" is not evidence.
+- **Tests/assertions that check a pattern is ABSENT from a script MUST strip comments first** — the
+  same gotcha as §3. A comment documenting the removal otherwise satisfies the assertion forbidding
+  it, and today's own verification flagged the `-p $prompt` phrase inside the explanatory comment
+  as a regression.

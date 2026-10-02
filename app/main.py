@@ -15,6 +15,15 @@ _project_root = _os_module.path.dirname(_os_module.path.abspath(__file__))
 if _project_root not in _sys.path:
     _sys.path.insert(0, _project_root)
 
+# Bug 3 (2026-09-29): anchor config.yaml to the repo root so test runs and
+# scripts launched from any CWD never read/write a foreign config.yaml.
+# Override with BSL_CONFIG_PATH for test isolation (conftest.py sets this).
+_REPO_ROOT = _os_module.path.dirname(_project_root)
+_CONFIG_YAML_PATH = _os_module.environ.get(
+    "BSL_CONFIG_PATH",
+    _os_module.path.join(_REPO_ROOT, "config.yaml"),
+)
+
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse, Response, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -982,11 +991,19 @@ def _replace_runtime_config(new_config: dict) -> None:
             )
     # ── BLANK-API_KEY RESTORATION GUARD (2026-09-24) ─────────────────────
     # The stale-tab wipe cascade: a dashboard tab loaded with an empty api_key
-    # field POSTs back, and _apply_connections_stale_save_guard restores only
-    # antigravity connections (its special-case scope). All other providers'
-    # blank keys flow through to disk. This guard runs at the atomic swap layer
-    # and restores live keys for any provider whose incoming connection has
-    # api_key="" but the live runtime has a real key for the same connection.
+    # field POSTs back. _apply_connections_stale_save_guard is now the primary
+    # authority (its dedup-merge carries the server key into a blanked body
+    # row), but callers that bypass update_config -- e.g. OAuth rotation
+    # committing through _replace_runtime_config directly -- still reach here.
+    # This guard is the last line of defense at the atomic swap layer and
+    # restores a live key for an incoming connection whose api_key is "".
+    #
+    # Bug 3 (2026-09-29): the old guard matched by name-then-POSITION. Under
+    # duplicate connection names the positional fallback assigned the WRONG key
+    # (the sibling's), forking a row into a duplicate. Positional restore is now
+    # GONE: this guard restores ONLY by an unambiguous name match (exactly one
+    # live row carries that name). Duplicate names are left to the load-time
+    # _dedup_connection_rows collapse on the next boot rather than guessed at.
     if isinstance(new_config, dict):
         try:
             _live_cfg = cs_get_config()
@@ -1006,25 +1023,19 @@ def _replace_runtime_config(new_config: dict) -> None:
                     _new_key = str(_new_conn.get("api_key") or "")
                     if _new_key:
                         continue  # has a key — no restoration needed
-                    _conn_name = str(_new_conn.get("name") or "")
-                    _restored = False
-                    # Match by name first (more reliable), then by position
-                    if _conn_name:
-                        for _lc in _live_conns:
-                            if isinstance(_lc, dict) and str(_lc.get("name") or "") == _conn_name:
-                                _live_key = str(_lc.get("api_key") or "")
-                                if _live_key:
-                                    _new_conn["api_key"] = _live_key
-                                    _restored = True
-                                break
-                    if not _restored and _idx < len(_live_conns):
-                        _lc = _live_conns[_idx]
-                        if isinstance(_lc, dict):
-                            _live_key = str(_lc.get("api_key") or "")
-                            if _live_key:
-                                _new_conn["api_key"] = _live_key
-                                _restored = True
-                    if _restored:
+                    _conn_name = str(_new_conn.get("name") or "").strip()
+                    if not _conn_name:
+                        continue  # nothing to match on; never guess by position
+                    _matches = [
+                        _lc for _lc in _live_conns
+                        if isinstance(_lc, dict)
+                        and str(_lc.get("name") or "").strip() == _conn_name
+                    ]
+                    if len(_matches) != 1:
+                        continue  # ambiguous (0 or >1) — do not guess a wrong key
+                    _live_key = str(_matches[0].get("api_key") or "")
+                    if _live_key:
+                        _new_conn["api_key"] = _live_key
                         print(
                             f"[CONFIG-GUARD] provider={_pid} conn[{_idx}] "
                             f"blank api_key restored from live runtime "
@@ -1114,55 +1125,176 @@ def _dedup_conn_freshness(conn):
 def _dedup_connection_rows(provider_cfg):
     """Collapse duplicate connection rows in-place. Returns number removed.
 
-    Duplicates = rows sharing the same `id`, OR the same `email` when
-    token_type == "oauth" (antigravity re-imports minted 32 rows for one
-    account 2026-09-17). Keep the freshest row by expires_at/imported_at and
-    remap model connection_indexes that pointed at removed rows.
+    TWO-PHASE union (Bug 3, 2026-09-29), because name equality alone is NOT
+    evidence of duplication:
+
+    Phase 1 -- unambiguous identity: same ``id``; same ``email`` when
+    ``token_type == "oauth"`` (antigravity re-imports minted 32 rows for one
+    account, 2026-09-17); same non-empty ``api_key``.
+
+    Phase 2 -- case-normalised ``name``, but ONLY when the name group contains
+    at least one blank-key row. That is the real duplicate signature: a stale
+    save appended a credential-less copy beside its keyed original.
+    **Class A** = blank + keyed sharing a name -> collapse, keyed row survives.
+    **Class B** = two rows sharing a name where BOTH carry distinct keys
+    (live examples: ``9aws``/"Free", ``ciii-gpt``/"codex",
+    ``gorouter``/"Connection 14") -> these are two different working
+    credentials that happen to share a display name. Merging them silently
+    DELETES A LIVE API KEY, which is why the unconditional name pass this
+    replaced was a data-loss defect rather than a fix. Class B rows are left
+    completely untouched -- not merged, not renamed (renaming would invalidate
+    every ``connection_indexes`` reference).
+
+    Survivor selection (priority order): (1) the row with a non-empty
+    ``api_key`` -- a blank-key row is NEVER kept when a same-name keyed sibling
+    exists; (2) among equals, the freshest by ``expires_at``/``imported_at``;
+    (3) among still-equals, the one with more populated fields; (4) the LAST
+    occurrence.
+
+    Backstop prune: an id-less blank-key row is dropped when a row with the
+    SAME NAME carries a key. Scoped by name on purpose -- a lone blank row
+    whose name matches nothing (live example: ``pix4k`` "Connection 2", blank,
+    beside a keyed row named "11k") is an unfinished setup, not a duplicate,
+    and is preserved. The provider-wide version of this prune deleted it. A
+    blank row WITH an ``id`` is a tracked OAuth connection pending refresh and
+    is always preserved.
+
+    Model ``connection_indexes`` are remapped: an index pointing at a dropped
+    row is rewritten to its survivor's new index; the list is de-duplicated and
+    re-sorted; an index pointing at a now-nonexistent row is dropped (never
+    left dangling). Pure and deterministic apart from mutating
+    ``provider_cfg`` and returning the count removed.
     """
     conns = provider_cfg.get("connections")
     if not isinstance(conns, list) or len(conns) < 2:
         return 0
 
-    keep_of_group = {}   # group_key -> kept original index
-    remap = {}           # removed original index -> kept original index
-    group_of = {}        # kept original index -> list of its group keys
+    n = len(conns)
+    parent = list(range(n))
 
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # Phase 1: unambiguous identity passes (id, oauth email, api_key value).
+    # These NEVER cause false merges between distinct credentials.
+    def _dedup_group_keys_phase1(c):
+        if not isinstance(c, dict):
+            return []
+        keys = []
+        cid = c.get("id")
+        if isinstance(cid, str) and cid.strip():
+            keys.append(("id", cid.strip()))
+        if c.get("token_type") == "oauth":
+            em = c.get("email")
+            if isinstance(em, str) and em.strip():
+                keys.append(("email", em.strip()))
+        k = str(c.get("api_key") or "").strip()
+        if k:
+            keys.append(("key", k))
+        return keys
+
+    first_by_key = {}
+    for i, c in enumerate(conns):
+        for gk in _dedup_group_keys_phase1(c):
+            if gk in first_by_key:
+                union(first_by_key[gk], i)
+            else:
+                first_by_key[gk] = i
+
+    # Phase 2: name-based union ONLY when the name group contains a blank-key
+    # row (Class A: blank duplicate beside its keyed original). Two keyed rows
+    # sharing a name (Class B, e.g. 9aws/Free, ciii-gpt/codex, gorouter/Conn14)
+    # are DISTINCT credentials and must NEVER be merged.
+    name_to_indexes = {}
     for i, c in enumerate(conns):
         if not isinstance(c, dict):
             continue
-        keys = []
-        cid = c.get("id")
-        if isinstance(cid, str) and cid:
-            keys.append(("id", cid))
-        if c.get("token_type") == "oauth":
-            em = c.get("email")
-            if isinstance(em, str) and em:
-                keys.append(("email", em))
-        if not keys:
-            continue
-        target = None
-        for k in keys:
-            if k in keep_of_group:
-                target = keep_of_group[k]
-                break
-        if target is None:
-            for k in keys:
-                keep_of_group[k] = i
-            group_of[i] = keys
-        else:
-            if _dedup_conn_freshness(c) > _dedup_conn_freshness(conns[target]):
-                remap[target] = i
-                old_keys = group_of.pop(target, [])
-                for k in list(keys) + list(old_keys):
-                    keep_of_group[k] = i
-                group_of[i] = list(set(keys) | set(old_keys))
-            else:
-                remap[i] = target
+        nm = str(c.get("name") or "").strip()
+        if nm:
+            name_to_indexes.setdefault(nm.lower(), []).append(i)
 
-    if not remap:
+    for _nm, members in name_to_indexes.items():
+        if len(members) < 2:
+            continue
+        group_has_blank = any(
+            not str(conns[idx].get("api_key") or "").strip()
+            for idx in members
+        )
+        if group_has_blank:
+            for idx in members[1:]:
+                union(members[0], idx)
+        # else: Class B -- all keyed, leave untouched.
+
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+
+    def _dedup_survivor_score(idx):
+        c = conns[idx]
+        if not isinstance(c, dict):
+            return (-1, (0, ""), -1, -idx)
+        has_key = 1 if str(c.get("api_key") or "").strip() else 0
+        fresh = _dedup_conn_freshness(c)
+        populated = sum(
+            1 for v in c.values()
+            if v is not None and v != "" and v != [] and v != {}
+        )
+        # Higher idx breaks ties as "LAST occurrence (freshest)" per spec.
+        return (has_key, fresh, populated, idx)
+
+    survivor_of = {}
+    removed = set()
+    for members in groups.values():
+        if len(members) <= 1:
+            continue
+        best = members[0]
+        best_score = _dedup_survivor_score(best)
+        for cand in members[1:]:
+            cand_score = _dedup_survivor_score(cand)
+            if cand_score > best_score:
+                best = cand
+                best_score = cand_score
+        survivor_of[find(members[0])] = best
+        for m in members:
+            if m != best:
+                removed.add(m)
+
+    # Bug 3 (2026-09-29): SAME-NAME scoped blank-row prune. An id-less blank
+    # row is dropped ONLY when a same-name keyed sibling exists (Class A
+    # backstop -- phase 2 already collapses these). A blank row whose name
+    # differs from every keyed row (e.g. pix4k "Connection 2" beside keyed
+    # "11k") is NOT a duplicate and is preserved. A blank row WITH an id is
+    # a tracked OAuth connection pending refresh and is always preserved.
+    keyed_names = {
+        str(c.get("name") or "").strip().lower()
+        for c in conns
+        if isinstance(c, dict) and str(c.get("api_key") or "").strip()
+        and str(c.get("name") or "").strip()
+    }
+    for i, c in enumerate(conns):
+        if i in removed or not isinstance(c, dict):
+            continue
+        if str(c.get("api_key") or "").strip():
+            continue  # keyed
+        cid = c.get("id")
+        if isinstance(cid, str) and cid.strip():
+            continue  # tracked OAuth connection -- keep
+        nm = str(c.get("name") or "").strip().lower()
+        if nm and nm in keyed_names:
+            removed.add(i)
+        # else: lone blank with no same-name keyed sibling -- preserve.
+
+    if not removed:
         return 0
 
-    removed = set(remap.keys())
     old_to_new = {}
     new_conns = []
     for i, c in enumerate(conns):
@@ -1171,15 +1303,15 @@ def _dedup_connection_rows(provider_cfg):
         old_to_new[i] = len(new_conns)
         new_conns.append(c)
 
+    # Each removed row maps to its group survivor's NEW index.
     final_remap = {}
-    for old_i, kept_old_i in remap.items():
-        seen = set()
-        k = kept_old_i
-        while k in remap and k not in seen:
-            seen.add(k)
-            k = remap[k]
-        if k in old_to_new:
-            final_remap[old_i] = old_to_new[k]
+    for root, surv in survivor_of.items():
+        surv_new = old_to_new.get(surv)
+        if surv_new is None:
+            continue
+        for m in groups[root]:
+            if m in removed:
+                final_remap[m] = surv_new
 
     provider_cfg["connections"] = new_conns
 
@@ -1190,26 +1322,34 @@ def _dedup_connection_rows(provider_cfg):
         if not isinstance(ci, list):
             continue
         new_ci = []
+        seen = set()
         for idx in ci:
             if not isinstance(idx, int):
                 continue
             if idx in final_remap:
-                new_ci.append(final_remap[idx])
+                mapped = final_remap[idx]
             elif idx in old_to_new:
-                new_ci.append(old_to_new[idx])
-        seen = set()
-        m["connection_indexes"] = [x for x in new_ci if not (x in seen or seen.add(x))]
+                mapped = old_to_new[idx]
+            else:
+                continue  # dangling index pointing at a now-nonexistent row
+            if mapped not in seen:
+                seen.add(mapped)
+                new_ci.append(mapped)
+        new_ci.sort()
+        m["connection_indexes"] = new_ci
 
     return len(removed)
 
 
 def load_config():
-    init_config()
+    init_config(_CONFIG_YAML_PATH)
     config = cs_get_config()
-    # Load-time dedup (2026-09-17): stale on-disk duplicate connection rows
-    # (same id, or same oauth email) survive the save-path dedup because that
-    # only fires on NEW OAuth logins. Collapse them here on every boot and mark
-    # dirty so the cleaned state is persisted below.
+    # Load-time dedup (2026-09-17, extended 2026-09-29 for Bug 3): stale
+    # on-disk duplicate connection rows -- same id, same oauth email, same
+    # non-empty api_key, OR the same case-normalised name (a blank-key
+    # "dongden" beside a keyed "dongden") -- survive the save-path dedup
+    # because that only fires on NEW OAuth logins. Collapse them here on every
+    # boot and mark dirty so the cleaned state is persisted below.
     _dirty = False
     for _pid, _pcfg in (config.get("providers") or {}).items():
         if isinstance(_pcfg, dict):
@@ -1511,7 +1651,7 @@ def _persist_config_snapshot(updated_config: dict) -> None:
     """
     import tempfile
 
-    target = "config.yaml"
+    target = _CONFIG_YAML_PATH
 
     # --- Protection 2: refuse degenerate snapshots -------------------------
     providers = (updated_config or {}).get("providers") or {}
@@ -3100,22 +3240,30 @@ async def get_config():
     return JSONResponse(config)
 
 def _connection_identity(conn):
-    """Identity token for matching a connection across two config snapshots.
+    """Stable identity for matching a connection across two config snapshots.
 
-    api_key is primary (unique per connection in practice); name is the
-    fallback for keyless OAuth-style connections. Both the server config and
-    the request body are decrypted at this point in the flow (cs_get_config
-    returns plaintext; the UI holds decrypted GET output), so plaintext
+    Deliberately KEY-INDEPENDENT: a row whose api_key was blanked by the UI
+    and its keyed server-side counterpart are the SAME logical connection and
+    must match. Using api_key as the primary identity (the previous behaviour)
+    gave one connection two mutually-exclusive identities -- the blank row
+    matched nothing while the keyed row matched only itself -- so every stale
+    save appended a duplicate blank-key row instead of merging (Bug 3,
+    2026-09-29).
+
+    Preference order: a persistent ``id`` field, then a case-normalised
+    ``name``. ``api_key`` is NEVER used as identity. Both the server config
+    and the request body are decrypted at this point in the flow (cs_get_config
+    returns plaintext; the UI holds decrypted GET output), so plaintext name
     comparison is correct regardless of storage encryption.
     """
     if not isinstance(conn, dict):
         return None
-    key = str(conn.get("api_key") or "")
-    if key:
-        return ("key", key)
-    name = str(conn.get("name") or "")
+    cid = str(conn.get("id") or "").strip()
+    if cid:
+        return ("id", cid)
+    name = str(conn.get("name") or "").strip()
     if name:
-        return ("name", name)
+        return ("name", name.lower())
     return None
 
 
@@ -3129,16 +3277,32 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
     in the other tab. The user lost keys 011/013 on tabitoken/gorouter/seekai
     this way — no error, keys just gone on next GET.
 
+    THE DUPLICATION BUG THIS ALSO FIXES (Bug 3, 2026-09-29)
+    The previous Pass 1 restored blanked keys by name-then-POSITION, and the
+    previous Pass 2 APPENDED any body row whose (key-dependent) identity did
+    not match a server row. Because a blanked row and its keyed sibling had
+    mutually-exclusive identities, the keyed server row was always classified
+    "missing from body" and re-appended -- so every save grew the list by one
+    duplicate blank-key row. The fix is a single authoritative dedup-MERGE
+    pass keyed on the KEY-INDEPENDENT ``_connection_identity``:
+
+      * server rows are authoritative and preserved (lost-update protection);
+      * a body row that matches a server row by identity UPDATES that server
+        row IN PLACE (carrying the server's api_key across when the body's is
+        blank/missing) instead of being appended as a duplicate;
+      * a server row with no body match is kept (a stale tab dropped it);
+      * a body row whose identity is genuinely new (no server match) is appended;
+      * a body row with NO identity (no id AND no name) is NEVER appended --
+        an unidentifiable row must not grow the list.
+
     Surgical scope: ONLY providers.<id>.connections arrays, plus per-connection
     api_key values that would go non-empty -> empty/missing. No other deep
-    merge. A save that would REMOVE connections from a provider that currently
-    has more is treated as stale: the missing server connections are restored
-    (server list first, then genuinely-new body-only ones appended).
+    merge.
 
     Explicit opt-out: a body carrying ``_deleted_connection`` =
     ``{"provider": "<id>", "api_key": "<key>"}`` is a deliberate single-tab
-    deleteConnection — the guard skips restoration for exactly that
-    provider+key so genuine deletes are never "restored".
+    deleteConnection — the guard drops the matching server row instead of
+    restoring it, so genuine deletes are never "restored".
     """
     if not isinstance(old_config, dict) or not isinstance(new_config, dict):
         return
@@ -3150,8 +3314,7 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
     if not isinstance(deletion, dict):
         deletion = {}
     del_provider = deletion.get("provider")
-    del_api_key = str(deletion.get("api_key") or "")
-    del_identity = ("key", del_api_key) if del_api_key else None
+    del_api_key = str(deletion.get("api_key") or "").strip()
 
     for prov_id, old_prov in old_providers.items():
         if not isinstance(old_prov, dict):
@@ -3191,54 +3354,87 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
             body_conns = []
             new_prov["connections"] = body_conns
 
-        # Pass 1 — api_keys emptied by a stale client (blank-key Edit Provider
-        # signature). Runs first so a refilled key also matches in pass 2
-        # instead of looking like a removed connection.
+        # ── Dedup-merge (Bug 3, 2026-09-29) ────────────────────────────────
+        # ONE authoritative pass replaces the old Pass 1 (name/positional key
+        # guessing) + Pass 2 (append-on-mismatch). Server rows are kept in
+        # order and merged in place with their body match; genuinely-new body
+        # rows are appended; unidentifiable body rows are dropped (never
+        # appended); the deliberate-delete target is dropped, not restored.
+        is_delete_target = (
+            lambda c: prov_id == del_provider
+            and bool(del_api_key)
+            and str((c or {}).get("api_key") or "").strip() == del_api_key
+        )
+
+        body_identities = []
+        for bc in body_conns:
+            bid = _connection_identity(bc)
+            if bid is not None:
+                body_identities.append(bid)
+        body_id_set = set(body_identities)
+
+        merged = []
+        seen = set()
         restored_keys = 0
-        old_by_name = {
-            str(c.get("name") or ""): c
-            for c in old_conns
-            if isinstance(c, dict) and c.get("name")
-        }
-        for idx, body_conn in enumerate(body_conns):
-            if not isinstance(body_conn, dict) or str(body_conn.get("api_key") or ""):
+        restored_conns = 0
+        for old_conn in old_conns:
+            if not isinstance(old_conn, dict):
+                merged.append(old_conn)
                 continue
-            source = old_by_name.get(str(body_conn.get("name") or ""))
-            if source is None and idx < len(old_conns):
-                positional = old_conns[idx]
-                source = positional if isinstance(positional, dict) else None
-            if source is not None and str(source.get("api_key") or ""):
-                body_conn["api_key"] = source["api_key"]
-                restored_keys += 1
-        if restored_keys:
+            if is_delete_target(old_conn):
+                continue  # deliberate deleteConnection — drop, do not restore
+            oid = _connection_identity(old_conn)
+            if oid is not None and oid in seen:
+                # Duplicate server row (same id/name as one already merged) —
+                # collapse it instead of re-adding a second copy.
+                continue
+            if oid is not None and oid in body_id_set and oid not in seen:
+                body_match = None
+                for bc in body_conns:
+                    if _connection_identity(bc) == oid:
+                        body_match = bc
+                        break
+                if body_match is not None:
+                    # In-place merge: take the body's fields, but carry the
+                    # server's live api_key across when the body blanked it.
+                    if not str(body_match.get("api_key") or "").strip() and str(
+                        old_conn.get("api_key") or ""
+                    ).strip():
+                        body_match["api_key"] = old_conn["api_key"]
+                        restored_keys += 1
+                    merged.append(body_match)
+                    seen.add(oid)
+                    continue
+            # Server row with no body match — a stale tab dropped it. Keep it
+            # (lost-update restoration), unless it was a delete target above.
+            merged.append(old_conn)
+            if oid is not None:
+                seen.add(oid)
+            restored_conns += 1
+
+        # Append genuinely-new body rows (identity not yet seen). Rows with no
+        # identity (no id AND no name) are NEVER appended — they cannot be
+        # matched on a later save and would otherwise grow the list forever.
+        for body_conn in body_conns:
+            bid = _connection_identity(body_conn)
+            if bid is None:
+                continue
+            if bid not in seen:
+                merged.append(body_conn)
+                seen.add(bid)
+
+        new_prov["connections"] = merged
+
+        if restored_conns > 0:
+            print(
+                f"[CONFIG-GUARD] provider={prov_id} restored "
+                f"{restored_conns} connections (stale client save)",
+                flush=True,
+            )
+        if restored_keys > 0:
             print(
                 f"[CONFIG-GUARD] provider={prov_id} restored {restored_keys} "
                 "emptied api_key(s) (stale client save)",
-                flush=True,
-            )
-
-        # Pass 2 — whole connections the server has that the body lacks.
-        restored = [
-            old_conn
-            for old_conn in old_conns
-            if _connection_identity(old_conn) is not None
-            and _connection_identity(old_conn) not in {_connection_identity(c) for c in body_conns}
-            and not (prov_id == del_provider and _connection_identity(old_conn) == del_identity)
-        ]
-        if restored:
-            # Server list first (authoritative), then genuinely-new body-only
-            # connections appended in body order.
-            merged = list(old_conns)
-            seen = {_connection_identity(c) for c in merged}
-            seen.discard(None)
-            for body_conn in body_conns:
-                identity = _connection_identity(body_conn)
-                if identity is None or identity not in seen:
-                    merged.append(body_conn)
-            new_prov["connections"] = merged
-            print(
-                f"[CONFIG-GUARD] provider={prov_id} restored "
-                f"{len(restored)} connections (stale client save)",
                 flush=True,
             )
 
@@ -4132,7 +4328,7 @@ async def pricing_detect():
     """Re-run the offline detector over config.yaml and persist the result."""
     try:
         detector = _load_pricing_detector()
-        payload = detector.run_detection("config.yaml", _PRICING_DETECTED_PATH)
+        payload = detector.run_detection(_CONFIG_YAML_PATH, _PRICING_DETECTED_PATH)
         # Costs are materialised at write time (SQLite ledger); the detected
         # pricing registry affects future log_request writes, so no cache to
         # invalidate for the usage read path (Part D removed the recompute).
@@ -7014,6 +7210,24 @@ def _combo_restart_or_give_up(model, retry_state, active_chain, original_model,
     pass_no = int((retry_state or {}).get('pass_no', 1))
     backoff = min(2 * (2 ** (pass_no - 1)), 30)
     chain = list(active_chain or (retry_state or {}).get('chain') or [])
+    # PASS-COUNT SAFETY NET (Bug 2 Part A item 5, 2026-09-29): logging only.
+    # The loop conversion keeps the stack O(1) in pass count, so there is no
+    # recursion ceiling to hit — this line is observability for a wedged
+    # chain, NEVER a terminator (never-stop directive: client disconnect is
+    # the only terminator). ONE warning per request.
+    try:
+        _next_pass = pass_no + 1
+        _st = getattr(request, "state", None) if request is not None else None
+        if _st is not None:
+            if _next_pass > 900 and not getattr(_st, "bsl_combo_pass900_warned", False):
+                _st.bsl_combo_pass900_warned = True
+                print(f"[Combo] pass_no={_next_pass} exceeded 900 - loop conversion holding", flush=True)
+        elif _next_pass == 901:
+            # No request anchor (internal probe callers): warn once at the
+            # crossing so a wedged chain is still visible.
+            print(f"[Combo] pass_no={_next_pass} exceeded 900 - loop conversion holding", flush=True)
+    except Exception:
+        pass
     print(
         f"[Combo] '{model}' chain exhausted ({reason}) — never-stop retry: "
         f"wrapping to pass {pass_no + 1} in {backoff}s "
@@ -7064,6 +7278,51 @@ def _raise_combo_wrap(model, config, request, retry_state, active_chain,
         reason=reason,
     )
     raise _ComboFallbackNeeded(status_code, err_text, _wrap, backoff=_backoff)
+
+
+def _probe_wrap_terminal(status_code, err_text, reason) -> bool:
+    """SINGLE CHOKE POINT for probe-stage never-stop wrap decisions (Bug 2 B1).
+
+    The two probe-stage wrap sites used to call _combo_restart_or_give_up
+    DIRECTLY, bypassing _raise_combo_wrap's terminal guard — so a terminal
+    thought_signature 400 (or a terminal relay-wall 400/403) was wrapped
+    forever instead of surfacing once, feeding the unbounded recursion of
+    Bug 2 Part A. This helper is the identical
+    _is_terminal_relay_wall + _is_thought_signature_400 check _raise_combo_wrap
+    applies, extracted so the probe sites can share it verbatim and the guard
+    can never diverge again.
+
+    Returns True (and prints the TerminalWall line) when the wrap must be
+    SUPPRESSED so the caller falls through to its terminal frames exactly as
+    _raise_combo_wrap's guard does today. Fail-open: a detector fault returns
+    False and the legacy never-stop wrap runs (network errors, 5xx, recoverable
+    400s).
+    """
+    if _is_terminal_relay_wall(status_code, err_text) or _is_thought_signature_400(status_code, err_text):
+        print(f"[TerminalWall] suppressing never-stop wrap ({reason}) - terminal relay wall", flush=True)
+        return True
+    return False
+
+
+class _ComboWrapRestart(Exception):
+    """NEVER-STOP pass-boundary signal (Bug 2 Part A, 2026-09-29).
+
+    The never-stop combo wrap used to re-enter via ``return await
+    _process_chat_completion(...)`` — one C stack frame per pass, killing the
+    router with RecursionError at ~pass 950 (10,332 live hits, 78-minute
+    requests). Every wrap site now raises this sentinel instead; the ROOT
+    never-stop loop in ``_process_chat_completion`` (and the root stream
+    catchers) catches it, sleeps ``backoff`` (client disconnect during the
+    sleep cancels it — the only permitted terminator), and re-dispatches the
+    next pass in the SAME frames. 10,000 passes cost what 10 cost.
+
+    Never reaches a client: every raise site is matched by a catcher on the
+    dispatch path (root loop / stream catchers / nested pass dispatch).
+    """
+    def __init__(self, backoff: float, retry_state: dict):
+        self.backoff = backoff
+        self.retry_state = retry_state
+        super().__init__(f"combo wrap: backoff={backoff}s pass={int((retry_state or {}).get('pass_no', 1))}")
 
 
 class _DeadlineRetryNeeded(Exception):
@@ -7456,7 +7715,55 @@ def _degenerate_effort_telemetry(d: dict) -> str:
     )
 
 
-async def _process_chat_completion(body: dict, client_wants_anthropic: bool = False, client_wants_gemini: bool = False, _retry_state: dict = None, request: Request = None):
+async def _process_chat_completion(body: dict, client_wants_anthropic: bool = False, client_wants_gemini: bool = False, _retry_state: dict = None, request: Request = None, _stream_guard: bool = True):
+    """Entry: never-stop ROOT loop + single-pass nested dispatch (Bug 2 Part A).
+
+    The pass body used to re-enter ITSELF via ``return await
+    _process_chat_completion(...)`` at every never-stop wrap — one stack frame
+    per pass, RecursionError at ~pass 950. Now:
+
+      * ROOT call (``_retry_state is None``, i.e. the original request from an
+        endpoint or a BSL dispatcher): bounded ``while True`` loop. Wrap sites
+        inside the pass raise :class:`_ComboWrapRestart`; this loop sleeps the
+        pass backoff (client disconnect during the sleep cancels it — the ONLY
+        permitted terminator) and re-dispatches the next pass IN THE SAME
+        FRAMES. Stack depth is O(1) in pass count: 10,000 passes are as safe
+        as 10 (proved by the sys.setrecursionlimit(300) test oracle).
+      * NESTED call (chain advance / stream-catcher re-dispatch, ``_retry_state``
+        is not None): exactly ONE pass; a _ComboWrapRestart raised inside it
+        unwinds to the caller's catcher (root loop or root stream catcher),
+        which owns the next dispatch. Chain-advance nesting remains bounded by
+        the (finite) expanded chain length, exactly as before.
+      * ``_stream_guard=False`` (used ONLY by the guarded stream catchers'
+        re-dispatch): builds the returned StreamingResponse WITHOUT the
+        afz_guard client-boundary wrapper, because the parent catcher's own
+        afz_guard already owns the client boundary for this response. This is
+        what lets a _ComboWrapRestart propagate from a nested stream up to the
+        ROOT catcher's loop instead of being converted into terminal frames by
+        afz_guard's BaseException handler.
+    """
+    if _retry_state is not None:
+        return await _process_chat_completion_pass(
+            body, client_wants_anthropic, client_wants_gemini,
+            _retry_state=_retry_state, request=request, _stream_guard=_stream_guard,
+        )
+    _wrap_state = None
+    while True:
+        try:
+            return await _process_chat_completion_pass(
+                body, client_wants_anthropic, client_wants_gemini,
+                _retry_state=_wrap_state, request=request, _stream_guard=_stream_guard,
+            )
+        except _ComboWrapRestart as _wrap_signal:
+            # NEVER-STOP: sleep the pass backoff (client disconnect cancels —
+            # the only permitted terminator), then loop with the wrapped state
+            # (idx 0, deadline None re-arm, pass_no+1, 30s-capped backoff).
+            if _wrap_signal.backoff:
+                await asyncio.sleep(_wrap_signal.backoff)
+            _wrap_state = _wrap_signal.retry_state
+
+
+async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool = False, client_wants_gemini: bool = False, _retry_state: dict = None, request: Request = None, _stream_guard: bool = True):
 
     config = cs_get_config()
     print(f"[AFZ-FORENSIC] heartbeat route=chat active_streams={active_stream_count()}", flush=True)
@@ -7712,12 +8019,11 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     _retry_state.get('cache_bp'), request,
                     reason="entry_override_exhausted",
                 )
-                await asyncio.sleep(_backoff)
-                return await _process_chat_completion(
-                    body, client_wants_anthropic, client_wants_gemini,
-                    _retry_state=_wrap,
-                    request=request,
-                )
+                # Bug 2 Part A: raise the pass-boundary sentinel instead of
+                # recursing. The ROOT never-stop loop sleeps the backoff
+                # (client disconnect cancels it) and re-dispatches in the
+                # same frames — stack stays O(1) in pass count.
+                raise _ComboWrapRestart(_backoff, _wrap)
             return JSONResponse(
                 {"error": f"All {len(_retry_state['chain'])} combo chain entries exhausted for '{model}'."},
                 status_code=502,
@@ -8527,7 +8833,11 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
     # → truncated never set → plain stream).
     _stream_anti_stop = bool(t_cfg.get("stream_anti_stop", False)) and is_stream and is_qwen
     _cont_state = {"used": False}
-    _detector = StreamTruncationDetector(f_val, enabled=_stream_anti_stop)
+    # `accumulate` is decoupled from the `enabled` splice gate: every STREAM
+    # taps text into partial_text (capped, fail-open) even when anti-stop is
+    # off, so usage backfill sees real delivered text for non-Qwen providers
+    # (mintrouter/* in/out=0/0). Non-stream requests keep accumulation off.
+    _detector = StreamTruncationDetector(f_val, enabled=_stream_anti_stop, accumulate=is_stream)
 
     # ── Stream-Then-Buffer: 524 Mitigation Gate ──────────────────
     # Non-streaming requests to Cloudflare-fronted upstreams (vsllm/744000)
@@ -8686,16 +8996,17 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             print(f"[AFZ-DEADLINE] chain budget exhausted after {_elapsed:.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
         # NEVER-STOP RETRY (2026-08-31): no next entry (or budget dead) —
         # wrap to pass 2+ instead of a terminal 400.
-        if _combo_infinite_retry_enabled(config):
+        # Bug 2 B1: share the single terminal choke point so a terminal
+        # payload-defect 400 surfaces instead of wrapping forever.
+        if _combo_infinite_retry_enabled(config) and not _probe_wrap_terminal(
+            400, str(_ue_err), "unicode_serialization_exhausted"
+        ):
             _backoff, _wrap = _combo_restart_or_give_up(
                 model, _retry_state, active_chain, original_model,
                 _cache_breakpoints, request, reason="unicode_serialization_exhausted",
             )
-            await asyncio.sleep(_backoff)
-            return await _process_chat_completion(
-                body, client_wants_anthropic, client_wants_gemini,
-                _retry_state=_wrap, request=request,
-            )
+            # Bug 2 Part A: sentinel, not recursion — stack O(1) in passes.
+            raise _ComboWrapRestart(_backoff, _wrap)
         return JSONResponse(
             {"error": f"Payload serialization error for '{model}': {_ue_err}"},
             status_code=400,
@@ -8856,6 +9167,24 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
     def _chain_budget_remaining() -> float:
         return _chain_deadline - time.monotonic()
+
+    def _wrap_client_stream(agen, sid, **afz_kwargs):
+        """Client-boundary stream wrapper, honouring the pass's _stream_guard.
+
+        Bug 2 Part A (2026-09-29): the guarded stream catchers re-dispatch a
+        never-stop pass with ``_stream_guard=False`` so a _ComboWrapRestart
+        raised inside the NESTED stream can propagate to the ROOT catcher's
+        bounded loop. afz_guard's BaseException handler would otherwise
+        convert that sentinel into terminal client frames. The parent
+        catcher's own afz_guard already owns the client boundary for the
+        whole response, so a nested pass skips the wrapper (and the
+        pre-TTFT keepalive layered on it) with zero client-visible change.
+        Root dispatches keep the full afz_guard + keepalive stack exactly as
+        before — this must never change what the FIRST-level response wraps.
+        """
+        if not _stream_guard:
+            return agen
+        return afz_guard(agen, sid, **afz_kwargs)
 
     def _midstream_transport_fallback(stats, _emit, status_code: int, err: str) -> None:
         """Normalize a mid-stream transport death into the ONE fallback signal.
@@ -9137,7 +9466,16 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 # NEVER-STOP RETRY (2026-08-31): probe-stage exhaustion (the
                 # user-visible "[BSL Router] upstream error 429" force-stop)
                 # wraps to pass 2+ instead of emitting terminal frames.
-                if _combo_infinite_retry_enabled(config):
+                # Bug 2 B1 (2026-09-29): route the wrap decision through the
+                # SINGLE terminal choke point (_probe_wrap_terminal) — this
+                # site used to call _combo_restart_or_give_up directly,
+                # bypassing _raise_combo_wrap's guard, so a terminal
+                # thought_signature 400 was wrapped forever instead of
+                # surfacing once. Bug 2 Part A: raise the pass-boundary
+                # sentinel instead of recursing (stack O(1) in passes).
+                if _combo_infinite_retry_enabled(config) and not _probe_wrap_terminal(
+                    _probe_resp.status_code, _err_text, "probe_exhausted"
+                ):
                     if _probe_resp is not None:
                         try:
                             await _probe_resp.aclose()
@@ -9148,11 +9486,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         model, _retry_state, active_chain, original_model,
                         _cache_breakpoints, request, reason="probe_exhausted",
                     )
-                    await asyncio.sleep(_backoff)
-                    return await _process_chat_completion(
-                        body, client_wants_anthropic, client_wants_gemini,
-                        _retry_state=_wrap, request=request,
-                    )
+                    raise _ComboWrapRestart(_backoff, _wrap)
                 if client_wants_gemini:
                     async def _gemini_probe_error():
                         # FORENSIC: proves whether this generator is actually
@@ -9175,7 +9509,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     # connection stays open and exhausts the IDE host pool.
                     _afz_sid = next_stream_id()
                     return StreamingResponse(
-                        afz_guard(_gemini_probe_error(), _afz_sid, protocol="gemini"),
+                        _wrap_client_stream(_gemini_probe_error(), _afz_sid, protocol="gemini"),
                         media_type="text/event-stream",
                         headers=gemini_response_headers(stream=True),
                     )
@@ -9231,7 +9565,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
                     _afz_sid = next_stream_id()
                     return StreamingResponse(
-                        afz_guard(
+                        _wrap_client_stream(
                             _sse_probe_error(),
                             _afz_sid,
                             # The terminal frame must match the CLIENT's parser.
@@ -9279,16 +9613,21 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                 print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
             # NEVER-STOP RETRY (2026-08-31): probe network-error exhaustion —
             # wrap to pass 2+ instead of falling through to terminal frames.
-            if _combo_infinite_retry_enabled(config):
+            # Bug 2 B1 (2026-09-29): single terminal choke point shared with
+            # _raise_combo_wrap (a network error carries no terminal body, so
+            # this passes through and wraps exactly as before; a wrapped
+            # HTTPStatusError-style failure still gets the guard). Bug 2 Part
+            # A: sentinel, not recursion — stack O(1) in passes.
+            if _combo_infinite_retry_enabled(config) and not _probe_wrap_terminal(
+                getattr(getattr(_probe_err, "response", None), "status_code", None),
+                str(_probe_err),
+                "probe_network_exhausted",
+            ):
                 _backoff, _wrap = _combo_restart_or_give_up(
                     model, _retry_state, active_chain, original_model,
                     _cache_breakpoints, request, reason="probe_network_exhausted",
                 )
-                await asyncio.sleep(_backoff)
-                return await _process_chat_completion(
-                    body, client_wants_anthropic, client_wants_gemini,
-                    _retry_state=_wrap, request=request,
-                )
+                raise _ComboWrapRestart(_backoff, _wrap)
             _probe_resp = None
     if is_stream:
         # Egress: client hit /v1/messages (Anthropic) but upstream is OpenAI-format.
@@ -9729,7 +10068,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     except Exception:
                         pass
                     return
-                if stats.get("error") in ("ttft_stall", "stream_stall"):
+                if stats.get("error") in ("ttft_stall", "stream_stall", "upstream_idle_timeout"):
                     _stall_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                     if not stats.get("ttft") and active_chain and _stall_next_idx < len(active_chain):
                         _stall_retry_state = {
@@ -9884,36 +10223,62 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                     stats["error"] = None
                     _retry_again = True
                 except _ComboFallbackNeeded as _cf_raw:
-                    if getattr(_cf_raw, "backoff", 0):
-                        # NEVER-STOP wrap: sleep the pass backoff (client
-                        # disconnect cancels — the only permitted terminator).
-                        await asyncio.sleep(_cf_raw.backoff)
-                    _raw_fallback = await _process_chat_completion(
-                        body, client_wants_anthropic, client_wants_gemini,
-                        _retry_state=_cf_raw.retry_state,
-                        request=request,
-                    )
-                    if hasattr(_raw_fallback, "body_iterator"):
-                        async for _fc in _raw_fallback.body_iterator:
-                            yield _fc
-                    elif hasattr(_raw_fallback, "__aiter__"):
-                        async for _fc in _raw_fallback:
-                            yield _fc
-                    else:
-                        # TYPEERROR FIX (2026-08-24): serialize a plain
-                        # Response/JSONResponse instead of 'async for' (TypeError
-                        # -> terminal 502 -> force-stop).
+                    # NEVER-STOP BOUNDED LOOP (Bug 2 Part A, 2026-09-29): this
+                    # used to re-dispatch and iterate a NESTED guarded stream,
+                    # adding one live generator frame per pass (linear stack
+                    # growth -> RecursionError at ~pass 950). The loop below
+                    # re-dispatches in THIS frame; a nested pass that wraps
+                    # again raises _ComboWrapRestart (its StreamingResponse is
+                    # built with _stream_guard=False so afz_guard cannot eat
+                    # the sentinel). ROOT catches it and loops; a NESTED pass
+                    # re-raises so the ROOT's loop owns the re-dispatch —
+                    # stack stays O(1) in pass count.
+                    _ns_backoff = float(getattr(_cf_raw, "backoff", 0) or 0)
+                    _ns_state = _cf_raw.retry_state
+                    while True:
+                        if _ns_backoff:
+                            # NEVER-STOP wrap: sleep the pass backoff (client
+                            # disconnect cancels — the only permitted terminator).
+                            await asyncio.sleep(_ns_backoff)
                         try:
-                            _rfb = getattr(_raw_fallback, "body", b"") or b""
-                            if isinstance(_rfb, str):
-                                _rfb = _rfb.encode("utf-8", "replace")
-                            _rfb_err = {"error": {"message": _rfb.decode("utf-8", "replace")[:500] or "fallback_failed", "type": "proxy_error"}}
-                            yield f"data: {json.dumps(_rfb_err)}\n\n".encode("utf-8")
-                            yield b"data: [DONE]\n\n"
-                        except Exception:
-                            yield f'data: {{"error": {{"message": "fallback_failed", "type": "proxy_error"}}}}\n\n'.encode("utf-8")
-                            yield b"data: [DONE]\n\n"
-                    return
+                            _raw_fallback = await _process_chat_completion(
+                                body, client_wants_anthropic, client_wants_gemini,
+                                _retry_state=_ns_state,
+                                request=request,
+                                _stream_guard=False,
+                            )
+                            if hasattr(_raw_fallback, "body_iterator"):
+                                _ns_iter = _raw_fallback.body_iterator
+                            elif hasattr(_raw_fallback, "__aiter__"):
+                                _ns_iter = _raw_fallback
+                            else:
+                                # TYPEERROR FIX (2026-08-24): serialize a plain
+                                # Response/JSONResponse instead of 'async for' (TypeError
+                                # -> terminal 502 -> force-stop).
+                                try:
+                                    _rfb = getattr(_raw_fallback, "body", b"") or b""
+                                    if isinstance(_rfb, str):
+                                        _rfb = _rfb.encode("utf-8", "replace")
+                                    _rfb_err = {"error": {"message": _rfb.decode("utf-8", "replace")[:500] or "fallback_failed", "type": "proxy_error"}}
+                                    yield f"data: {json.dumps(_rfb_err)}\n\n".encode("utf-8")
+                                    yield b"data: [DONE]\n\n"
+                                except Exception:
+                                    yield f'data: {{"error": {{"message": "fallback_failed", "type": "proxy_error"}}}}\n\n'.encode("utf-8")
+                                    yield b"data: [DONE]\n\n"
+                                return
+                            async for _fc in _ns_iter:
+                                yield _fc
+                            return
+                        except _ComboWrapRestart as _ns_wrap:
+                            if _retry_state is None:
+                                # ROOT pass: absorb the wrap, loop with the
+                                # wrapped state (deadline re-armed by the
+                                # wrap builder, pass_no+1, 30s-capped backoff).
+                                _ns_backoff = float(getattr(_ns_wrap, "backoff", 0) or 0)
+                                _ns_state = _ns_wrap.retry_state
+                                continue
+                            # NESTED pass: unwind to the ROOT loop.
+                            raise
                 except (GeneratorExit, asyncio.CancelledError):
                     raise
                 except Exception as _raw_guarded_err:
@@ -10061,49 +10426,163 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
                     async def _raw_ok():
                         nonlocal buffer
-                        async for chunk in _transport_guarded(_pump(resp.aiter_raw(), _emit, _attempt, "anthropic-egress"), stats, _emit):
-                            _detector.feed(chunk)
-                            if await _client_disconnected():
-                                stats["error"] = stats["error"] or "client_disconnected"
-                                stats["status"] = 499
-                                break
+                        # 2026-10-02 idle-parity mirror (BUG A class, Gemini
+                        # lane sibling — parity hardening for /v1/messages
+                        # Claude-Code-style clients): this lane iterated the
+                        # guarded pump DIRECTLY, so a wedged relay (content
+                        # streams, then the upstream holds the TCP socket open
+                        # with no [DONE]/EOF) blocked the `async for` forever:
+                        # no cap, no keepalive tick, no client-disconnect
+                        # check. Mirror the Gemini egress shape
+                        # (~_drain_openai_source): drain task + asyncio.Queue +
+                        # wait_for(_q.get(), GEMINI_EGRESS_KEEPALIVE_INTERVAL),
+                        # capping upstream silence at GEMINI_EGRESS_MAX_IDLE
+                        # (lane-generic ceiling despite the GEMINI_ prefix).
+                        # The timer resets ONLY on a real chunk — never on a
+                        # keepalive tick. On expiry: stats["error"] =
+                        # "upstream_idle_timeout" + stats["status"] = 504 +
+                        # break, so the post-drain stall branch below (tuple
+                        # extended 2026-10-02) emits the Anthropic terminal
+                        # error frames (or combo-fallbacks pre-content) instead
+                        # of a silent stream end.
+                        _ae_q: asyncio.Queue = asyncio.Queue()
+                        _SENTINEL = object()
+                        _ae_drain_err = None
+                        _guarded_source = _transport_guarded(
+                            _pump(resp.aiter_raw(), _emit, _attempt, "anthropic-egress"),
+                            stats, _emit,
+                        )
+
+                        async def _drain_ae_source():
+                            nonlocal _ae_drain_err
                             try:
-                                text_chunk = chunk.decode("utf-8")
-                                if stats["ttft"] == 0.0:
-                                    _is_openai_content = _openai_chunk_carries_output(text_chunk)
-                                    _is_gemini_content = (
-                                        '"candidates"' in text_chunk or
-                                        '"parts"' in text_chunk or
-                                        '"role":"' in text_chunk
+                                async for _c in _guarded_source:
+                                    await _ae_q.put(_c)
+                            except _ComboFallbackNeeded as _cf:
+                                _ae_drain_err = _cf
+                            except _DeadlineRetryNeeded as _dr:
+                                _ae_drain_err = _dr
+                            except Exception as _de:
+                                _ae_drain_err = _de
+                            finally:
+                                await _ae_q.put(_SENTINEL)
+
+                        _drain_task = asyncio.ensure_future(_drain_ae_source())
+                        _last_upstream_data = time.monotonic()
+                        try:
+                            while True:
+                                try:
+                                    chunk = await asyncio.wait_for(
+                                        _ae_q.get(), timeout=GEMINI_EGRESS_KEEPALIVE_INTERVAL
                                     )
-                                    _is_anthropic_content = (
-                                        '"text_delta"' in text_chunk or
-                                        '"content_block_delta"' in text_chunk or
-                                        '"message_delta"' in text_chunk or
-                                        '"thinking_delta"' in text_chunk
-                                    )
-                                    if _is_openai_content or _is_gemini_content or _is_anthropic_content:
-                                        stats["ttft"] = time.time() - start_time
-                                buffer += text_chunk
-                                lines = buffer.split("\n")
-                                buffer = lines.pop()
-                                for line in lines:
-                                    if line.startswith("data: ") and line.strip() != "data: [DONE]":
-                                        try:
-                                            dj = json.loads(line[6:])
-                                            u = _usage_from_sse_data(dj)
-                                            if u:
-                                                stats["in"], stats["out"], stats["cached"] = _extract_usage_tokens(u)
-                                                stats["cache_write"] = _extract_cache_write_tokens(u)
-                                        except json.JSONDecodeError:
-                                            pass
-                            except Exception:
+                                except asyncio.TimeoutError:
+                                    if await _client_disconnected():
+                                        stats["error"] = stats["error"] or "client_disconnected"
+                                        stats["status"] = 499
+                                        break
+                                    # 2026-10-02 idle-parity mirror: a keepalive
+                                    # tick is NOT upstream data — do not reset
+                                    # the timer here. Only a real chunk (below)
+                                    # resets it.
+                                    _idle = time.monotonic() - _last_upstream_data
+                                    if _idle > GEMINI_EGRESS_MAX_IDLE:
+                                        print(
+                                            f"[AnthropicEgress] upstream idle {_idle:.0f}s > "
+                                            f"{GEMINI_EGRESS_MAX_IDLE}s - ending wedged stream "
+                                            f"(provider={provider_name} model={target_model})",
+                                            flush=True,
+                                        )
+                                        stats["error"] = stats.get("error") or "upstream_idle_timeout"
+                                        stats["status"] = 504
+                                        break
+                                    yield b": keepalive\n\n"
+                                    continue
+                                if chunk is _SENTINEL:
+                                    break
+                                # Real upstream data arrived — reset the idle
+                                # timer so a healthy stream with intermittent
+                                # reasoning gaps can run as long as it keeps
+                                # producing bytes.
+                                _last_upstream_data = time.monotonic()
+                                _detector.feed(chunk)
+                                if await _client_disconnected():
+                                    stats["error"] = stats["error"] or "client_disconnected"
+                                    stats["status"] = 499
+                                    break
+                                try:
+                                    text_chunk = chunk.decode("utf-8")
+                                    if stats["ttft"] == 0.0:
+                                        _is_openai_content = _openai_chunk_carries_output(text_chunk)
+                                        _is_gemini_content = (
+                                            '"candidates"' in text_chunk or
+                                            '"parts"' in text_chunk or
+                                            '"role":"' in text_chunk
+                                        )
+                                        _is_anthropic_content = (
+                                            '"text_delta"' in text_chunk or
+                                            '"content_block_delta"' in text_chunk or
+                                            '"message_delta"' in text_chunk or
+                                            '"thinking_delta"' in text_chunk
+                                        )
+                                        if _is_openai_content or _is_gemini_content or _is_anthropic_content:
+                                            stats["ttft"] = time.time() - start_time
+                                    buffer += text_chunk
+                                    lines = buffer.split("\n")
+                                    buffer = lines.pop()
+                                    for line in lines:
+                                        if line.startswith("data: ") and line.strip() != "data: [DONE]":
+                                            try:
+                                                dj = json.loads(line[6:])
+                                                u = _usage_from_sse_data(dj)
+                                                if u:
+                                                    stats["in"], stats["out"], stats["cached"] = _extract_usage_tokens(u)
+                                                    stats["cache_write"] = _extract_cache_write_tokens(u)
+                                            except json.JSONDecodeError:
+                                                pass
+                                except Exception:
+                                    pass
+                                # BUG M (2026-09-27): keepalive/comment-only chunk
+                                # (": PING\n\n") must not commit the transcript.
+                                if not is_scaffolding_only(chunk):
+                                    _emit.mark_emitted(chunk)
+                                yield chunk
+                        finally:
+                            if not _drain_task.done():
+                                _drain_task.cancel()
+                            try:
+                                await _drain_task
+                            except BaseException:
                                 pass
-                            # BUG M (2026-09-27): keepalive/comment-only chunk
-                            # (": PING\n\n") must not commit the transcript.
-                            if not is_scaffolding_only(chunk):
-                                _emit.mark_emitted(chunk)
-                            yield chunk
+                            try:
+                                _close_source = getattr(_guarded_source, "aclose", None)
+                                if _close_source is not None:
+                                    await _close_source()
+                            except BaseException:
+                                pass
+                        # 2026-10-02 idle-parity mirror: a drain error must
+                        # propagate EXACTLY as it did when the pump was iterated
+                        # directly — re-raise so this egress's existing catchers
+                        # (combo advance, transport fallback, generic) run
+                        # unchanged.
+                        if _ae_drain_err is not None:
+                            raise _ae_drain_err
+                        # USAGE BACKFILL (2026-09-29, BUG B): aggregator relays
+                        # (MintRouter is the observed case) stream content frames
+                        # but drop the terminal usage object, leaving In:0/Out:0
+                        # for a HEALTHY stream on this Anthropic-egress (OpenAI
+                        # upstream -> Anthropic client) path. The inline usage
+                        # reader above only sets stats from a real usage frame, so
+                        # estimate tokens from the detector's accumulated
+                        # partial_text so the log tells the truth and the
+                        # zero-output guard below does not mis-fire as a dead
+                        # leaf. The helper returns early if a real usage frame
+                        # already populated stats (never overrides) and never masks
+                        # a genuine dead leaf (empty partial_text). Must run BEFORE
+                        # the out==0 guard reads stats["out"]. Fail-open.
+                        _backfill_missing_usage(
+                            stats, internal_request.messages, _detector.partial_text,
+                            provider_name=provider_name, target_model=target_model,
+                        )
                         if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft"):
                             _zero_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                             if active_chain and _zero_next_idx < len(active_chain):
@@ -10139,7 +10618,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                         except Exception:
                                             pass
                                     return
-                        if stats.get("error") in ("ttft_stall", "stream_stall"):
+                        if stats.get("error") in ("ttft_stall", "stream_stall", "upstream_idle_timeout"):
                             _stall_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                             if not stats.get("ttft") and active_chain and _stall_next_idx < len(active_chain):
                                 _stall_retry_state = {
@@ -10410,7 +10889,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         return
 
             _afz_sid = next_stream_id()
-            _ka_body = afz_guard(
+            _ka_body = _wrap_client_stream(
                 egress_stream_guarded(),
                 _afz_sid,
                 protocol="anthropic" if client_wants_anthropic else "openai",
@@ -10813,6 +11292,17 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                         flush=True,
                                     )
                                     stats["error"] = stats.get("error") or "upstream_idle_timeout"
+                                    # 2026-10-02 terminal-frame fix: the break
+                                    # alone left stats["status"] at 200, so the
+                                    # post-drain error branch (below) never fired
+                                    # and the stream ended in a bare `data:
+                                    # [DONE]` with status 200 — the IDE parser
+                                    # requires a terminal error frame for any
+                                    # non-success termination and hangs waiting
+                                    # for one. That is the reported freeze. Set
+                                    # the status HERE so the error+504 routing
+                                    # runs after the loop.
+                                    stats["status"] = 504
                                     break
                                 yield b": keepalive\n\n"
                                 continue
@@ -11001,7 +11491,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             pass
 
                     # leaf so the NEXT request starts on the fallback combo entry.
-                    if stats.get("error") in ("ttft_stall", "stream_stall"):
+                    if stats.get("error") in ("ttft_stall", "stream_stall", "upstream_idle_timeout"):
                         stats["status"] = 504
                         # UNIVERSAL ANTI-FREEZE (2026-08-02): Distinguish between
                         # pre-content and post-content stalls:
@@ -11385,13 +11875,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
             try:
                 from app.compat.adapters.gemini import SSE_DONE as _G_SSE_DEADLINE
                 return StreamingResponse(
-                    afz_guard(gemini_egress_stream_guarded(), _afz_sid, done_frame=_G_SSE_DEADLINE, protocol="gemini", deadline_s=0),
+                    _wrap_client_stream(gemini_egress_stream_guarded(), _afz_sid, done_frame=_G_SSE_DEADLINE, protocol="gemini", deadline_s=0),
                     media_type="text/event-stream",
                     headers=gemini_response_headers(stream=True),
                 )
             except Exception:
                 return StreamingResponse(
-                    afz_guard(gemini_egress_stream_guarded(), _afz_sid, protocol="gemini", deadline_s=0),
+                    _wrap_client_stream(gemini_egress_stream_guarded(), _afz_sid, protocol="gemini", deadline_s=0),
                     media_type="text/event-stream",
                     headers=gemini_response_headers(stream=True),
                 )
@@ -11487,56 +11977,176 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 
                     async def _raw_anthropic_ok():
                         nonlocal buffer
-                        async for chunk in _transport_guarded(_pump(resp.aiter_raw(), _emit, _attempt, "anthropic-to-openai"), stats, _emit):
-                            if await _client_disconnected():
-                                stats["error"] = stats["error"] or "client_disconnected"
-                                stats["status"] = 499
-                                break
+                        # 2026-10-02 idle-parity mirror (BUG A class, Gemini
+                        # lane sibling): this lane iterated the guarded pump
+                        # DIRECTLY, so a wedged relay (content streams, then the
+                        # upstream holds the TCP socket open with no [DONE]/EOF
+                        # — the observed MintRouter failure) blocked the
+                        # `async for` forever: no cap, no keepalive tick, no
+                        # client-disconnect check; the OpenAI-format client
+                        # waited on a stream that never completed. Mirror the
+                        # Gemini egress shape (~_drain_openai_source): wrap the
+                        # guarded pump in a drain task feeding an asyncio.Queue,
+                        # replace the direct `async for` with a
+                        # wait_for(_q.get(), GEMINI_EGRESS_KEEPALIVE_INTERVAL)
+                        # loop, and cap upstream silence at GEMINI_EGRESS_MAX_IDLE
+                        # (lane-generic ceiling despite the GEMINI_ prefix). The
+                        # timer resets ONLY on a real chunk — never on a
+                        # keepalive tick — so a healthy long-thinking stream
+                        # never trips it. On expiry: stats["error"] =
+                        # "upstream_idle_timeout" + stats["status"] = 504 +
+                        # break, so the post-drain stall branch below (tuple
+                        # extended 2026-10-02) emits the OpenAI terminal error
+                        # frames + [DONE] (or combo-fallbacks pre-content)
+                        # instead of ending in a bare [DONE].
+                        _a2o_q: asyncio.Queue = asyncio.Queue()
+                        _SENTINEL = object()
+                        _a2o_drain_err = None
+                        _guarded_source = _transport_guarded(
+                            _pump(resp.aiter_raw(), _emit, _attempt, "anthropic-to-openai"),
+                            stats, _emit,
+                        )
+
+                        async def _drain_a2o_source():
+                            nonlocal _a2o_drain_err
                             try:
-                                text_chunk = chunk.decode("utf-8")
-                                if stats["ttft"] == 0.0:
-                                    # OpenAI format: content/reasoning_content/text fields
-                                    # Gemini/Antigravity format: candidates/parts/role fields
-                                    _is_openai_content = _openai_chunk_carries_output(text_chunk)
-                                    _is_gemini_content = (
-                                        '"candidates"' in text_chunk or
-                                        '"parts"' in text_chunk or
-                                        '"role":"' in text_chunk
+                                async for _c in _guarded_source:
+                                    await _a2o_q.put(_c)
+                            except _ComboFallbackNeeded as _cf:
+                                _a2o_drain_err = _cf
+                            except _DeadlineRetryNeeded as _dr:
+                                _a2o_drain_err = _dr
+                            except Exception as _de:
+                                _a2o_drain_err = _de
+                            finally:
+                                await _a2o_q.put(_SENTINEL)
+
+                        _drain_task = asyncio.ensure_future(_drain_a2o_source())
+                        _last_upstream_data = time.monotonic()
+                        try:
+                            while True:
+                                try:
+                                    chunk = await asyncio.wait_for(
+                                        _a2o_q.get(), timeout=GEMINI_EGRESS_KEEPALIVE_INTERVAL
                                     )
-                                    _is_anthropic_content = (
-                                        '"text_delta"' in text_chunk or
-                                        '"content_block_delta"' in text_chunk or
-                                        '"message_delta"' in text_chunk or
-                                        '"thinking_delta"' in text_chunk
-                                    )
-                                    if _is_openai_content or _is_gemini_content or _is_anthropic_content:
-                                        stats["ttft"] = time.time() - start_time
-                                buffer += text_chunk
-                                lines = buffer.split("\n")
-                                buffer = lines.pop()
-                                for line in lines:
-                                    if line.startswith("data: ") and line.strip() != "data: [DONE]":
-                                        try:
-                                            dj = json.loads(line[6:])
-                                            if dj.get("type") == "message_delta":
-                                                u = dj.get("usage", {})
-                                                stats["out"] = u.get("output_tokens", stats["out"])
-                                            elif dj.get("type") == "message_start":
-                                                msg = dj.get("message", {})
-                                                u = msg.get("usage", {})
-                                                _i, _o, _c = _extract_usage_tokens(u)
-                                                stats["in"] = _i or stats["in"]
-                                                stats["cached"] = _c or stats["cached"]
-                                                stats["cache_write"] = _extract_cache_write_tokens(u) or stats["cache_write"]
-                                        except json.JSONDecodeError:
-                                            pass
-                            except Exception:
+                                except asyncio.TimeoutError:
+                                    if await _client_disconnected():
+                                        stats["error"] = stats["error"] or "client_disconnected"
+                                        stats["status"] = 499
+                                        break
+                                    # 2026-10-02 idle-parity mirror: a keepalive
+                                    # tick is NOT upstream data — do not reset
+                                    # the timer here. Only a real chunk (below)
+                                    # resets it.
+                                    _idle = time.monotonic() - _last_upstream_data
+                                    if _idle > GEMINI_EGRESS_MAX_IDLE:
+                                        print(
+                                            f"[AnthropicToOpenAI] upstream idle {_idle:.0f}s > "
+                                            f"{GEMINI_EGRESS_MAX_IDLE}s - ending wedged stream "
+                                            f"(provider={provider_name} model={target_model})",
+                                            flush=True,
+                                        )
+                                        stats["error"] = stats.get("error") or "upstream_idle_timeout"
+                                        stats["status"] = 504
+                                        break
+                                    yield b": keepalive\n\n"
+                                    continue
+                                if chunk is _SENTINEL:
+                                    break
+                                # Real upstream data arrived — reset the idle
+                                # timer so a healthy stream with intermittent
+                                # reasoning gaps can run as long as it keeps
+                                # producing bytes.
+                                _last_upstream_data = time.monotonic()
+                                # Feed the detector so partial_text accumulates real
+                                # delivered text (decoupled from the splice gate).
+                                _detector.feed(chunk)
+                                if await _client_disconnected():
+                                    stats["error"] = stats["error"] or "client_disconnected"
+                                    stats["status"] = 499
+                                    break
+                                try:
+                                    text_chunk = chunk.decode("utf-8")
+                                    if stats["ttft"] == 0.0:
+                                        # OpenAI format: content/reasoning_content/text fields
+                                        # Gemini/Antigravity format: candidates/parts/role fields
+                                        _is_openai_content = _openai_chunk_carries_output(text_chunk)
+                                        _is_gemini_content = (
+                                            '"candidates"' in text_chunk or
+                                            '"parts"' in text_chunk or
+                                            '"role":"' in text_chunk
+                                        )
+                                        _is_anthropic_content = (
+                                            '"text_delta"' in text_chunk or
+                                            '"content_block_delta"' in text_chunk or
+                                            '"message_delta"' in text_chunk or
+                                            '"thinking_delta"' in text_chunk
+                                        )
+                                        if _is_openai_content or _is_gemini_content or _is_anthropic_content:
+                                            stats["ttft"] = time.time() - start_time
+                                    buffer += text_chunk
+                                    lines = buffer.split("\n")
+                                    buffer = lines.pop()
+                                    for line in lines:
+                                        if line.startswith("data: ") and line.strip() != "data: [DONE]":
+                                            try:
+                                                dj = json.loads(line[6:])
+                                                if dj.get("type") == "message_delta":
+                                                    u = dj.get("usage", {})
+                                                    stats["out"] = u.get("output_tokens", stats["out"])
+                                                elif dj.get("type") == "message_start":
+                                                    msg = dj.get("message", {})
+                                                    u = msg.get("usage", {})
+                                                    _i, _o, _c = _extract_usage_tokens(u)
+                                                    stats["in"] = _i or stats["in"]
+                                                    stats["cached"] = _c or stats["cached"]
+                                                    stats["cache_write"] = _extract_cache_write_tokens(u) or stats["cache_write"]
+                                            except json.JSONDecodeError:
+                                                pass
+                                except Exception:
+                                    pass
+                                # BUG M (2026-09-27): keepalive/comment-only chunk
+                                # (": PING\n\n") must not commit the transcript.
+                                if not is_scaffolding_only(chunk):
+                                    _emit.mark_emitted(chunk)
+                                yield chunk
+                        finally:
+                            if not _drain_task.done():
+                                _drain_task.cancel()
+                            try:
+                                await _drain_task
+                            except BaseException:
                                 pass
-                            # BUG M (2026-09-27): keepalive/comment-only chunk
-                            # (": PING\n\n") must not commit the transcript.
-                            if not is_scaffolding_only(chunk):
-                                _emit.mark_emitted(chunk)
-                            yield chunk
+                            try:
+                                _close_source = getattr(_guarded_source, "aclose", None)
+                                if _close_source is not None:
+                                    await _close_source()
+                            except BaseException:
+                                pass
+                        # 2026-10-02 idle-parity mirror: a drain error (combo
+                        # fallback signal, deadline retry, transport death)
+                        # must propagate EXACTLY as it did when the pump was
+                        # iterated directly — re-raise so this egress's
+                        # existing catchers (combo advance, transport fallback,
+                        # generic) run unchanged.
+                        if _a2o_drain_err is not None:
+                            raise _a2o_drain_err
+                        # USAGE BACKFILL (2026-09-29, BUG B): aggregator relays
+                        # (MintRouter is the observed case) stream content frames
+                        # but drop the terminal usage object, leaving In:0/Out:0
+                        # for a HEALTHY stream on the Anthropic->OpenAI path. The
+                        # inline usage reader above only sets stats from a real
+                        # usage frame, so estimate tokens from the detector's
+                        # accumulated partial_text so the log tells the truth and
+                        # the zero-output guard below does not mis-fire as a dead
+                        # leaf. The helper returns early if a real usage frame
+                        # already populated stats (never overrides) and never masks
+                        # a genuine dead leaf (empty partial_text). Must run BEFORE
+                        # the out==0 guard reads stats["out"]. Fail-open.
+                        _backfill_missing_usage(
+                            stats, internal_request.messages, _detector.partial_text,
+                            provider_name=provider_name, target_model=target_model,
+                        )
                         # Zero-token 200: stream completed with status 200 but produced
                         # zero output tokens — dead leaf. Advance combo if possible.
                         if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft"):
@@ -11587,7 +12197,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         # combo chain has more entries, raise _ComboFallbackNeeded so the
                         # guarded wrapper can advance to the next chain entry (same pattern
                         # as _raise_gemini_combo_fallback used in gemini_egress_stream).
-                        if stats.get("error") in ("ttft_stall", "stream_stall"):
+                        if stats.get("error") in ("ttft_stall", "stream_stall", "upstream_idle_timeout"):
                             _stall_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                             # PRE-CONTENT check: only fallback if we haven't sent data to IDE yet
                             if _emit.may_fallback("stream_stall_precheck") and active_chain and _stall_next_idx < len(active_chain):
@@ -11846,7 +12456,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                         return
 
             _afz_sid = next_stream_id()
-            _ka_body = afz_guard(
+            _ka_body = _wrap_client_stream(
                 anthropic_to_openai_egress_stream_guarded(),
                 _afz_sid,
                 # This generator CONVERTS Anthropic upstream -> OpenAI egress,
@@ -11867,7 +12477,7 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         # text SSE. Auto-detect on first bytes and decode accordingly.
         if provider_name == 'kiro':
             _afz_sid = next_stream_id()
-            _ka_body = afz_guard(kiro_eventstream.eventstream_to_openai_sse_lines_with_fallback(raw_upstream_guarded()), _afz_sid, deadline_s=0)
+            _ka_body = _wrap_client_stream(kiro_eventstream.eventstream_to_openai_sse_lines_with_fallback(raw_upstream_guarded()), _afz_sid, deadline_s=0)
             if _sse_ka_on:
                 # Lane 3: pre-TTFT keepalive, OUTSIDE the eventstream adapter so
                 # the comment frames can never corrupt its binary->SSE decode.
@@ -11876,13 +12486,13 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         # Codex streaming egress: wrap raw upstream bytes through Responses SSE→OpenAI SSE converter
         if provider_name == 'codex':
             _afz_sid = next_stream_id()
-            _ka_body = afz_guard(codex_adapter.responses_sse_to_openai_sse(raw_upstream_guarded()), _afz_sid, deadline_s=0)
+            _ka_body = _wrap_client_stream(codex_adapter.responses_sse_to_openai_sse(raw_upstream_guarded()), _afz_sid, deadline_s=0)
             if _sse_ka_on:
                 # Lane 3: pre-TTFT keepalive, OUTSIDE the Responses-SSE adapter.
                 _ka_body = _sse_keepalive_pre_first_chunk(_ka_body, interval_s=_sse_ka_iv, fmt="openai")
             return StreamingResponse(_ka_body, media_type="text/event-stream")
         _afz_sid = next_stream_id()
-        _ka_body = afz_guard(raw_upstream_guarded(), _afz_sid, deadline_s=0)
+        _ka_body = _wrap_client_stream(raw_upstream_guarded(), _afz_sid, deadline_s=0)
         if _sse_ka_on:
             # Lane 3: pre-TTFT keepalive. fmt keyed off the CLIENT: the
             # Anthropic->Anthropic passthrough (client_wants_anthropic, upstream
@@ -12124,12 +12734,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                                 _cache_breakpoints, request,
                                 reason="nonstream_budget_exhausted",
                             )
-                            await asyncio.sleep(_backoff)
-                            return await _process_chat_completion(
-                                body, client_wants_anthropic, client_wants_gemini,
-                                _retry_state=_wrap,
-                                request=request,
-                            )
+                            # Bug 2 Part A: sentinel, not recursion.
+                            raise _ComboWrapRestart(_backoff, _wrap)
                     print(f"[AFZ-FORENSIC] route=chat stream=False status=504 leaf={provider_name}/{target_model} active_streams={active_stream_count()} reason=nonstream_budget_exhausted", flush=True)
                     return JSONResponse(
                         {
@@ -12182,12 +12788,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             _cache_breakpoints, request,
                             reason="nonstream_transport_exhausted",
                         )
-                        await asyncio.sleep(_backoff)
-                        return await _process_chat_completion(
-                            body, client_wants_anthropic, client_wants_gemini,
-                            _retry_state=_wrap,
-                            request=request,
-                        )
+                        # Bug 2 Part A: sentinel, not recursion.
+                        raise _ComboWrapRestart(_backoff, _wrap)
                     print(f"[AFZ-FORENSIC] route=chat stream=False status=502 leaf={provider_name}/{target_model} active_streams={active_stream_count()} reason=nonstream_transport_exhausted", flush=True)
                     return JSONResponse(
                         {
@@ -12240,12 +12842,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             _cache_breakpoints, request,
                             reason="nonstream_unexpected_exhausted",
                         )
-                        await asyncio.sleep(_backoff)
-                        return await _process_chat_completion(
-                            body, client_wants_anthropic, client_wants_gemini,
-                            _retry_state=_wrap,
-                            request=request,
-                        )
+                        # Bug 2 Part A: sentinel, not recursion.
+                        raise _ComboWrapRestart(_backoff, _wrap)
                     print(f"[AFZ-FORENSIC] route=chat stream=False status=502 leaf={provider_name}/{target_model} active_streams={active_stream_count()} reason=nonstream_unexpected_exhausted", flush=True)
                     return JSONResponse(
                         {
@@ -12776,12 +13374,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             _cache_breakpoints, request,
                             reason="nonstream_upstream_exhausted",
                         )
-                        await asyncio.sleep(_backoff)
-                        return await _process_chat_completion(
-                            body, client_wants_anthropic, client_wants_gemini,
-                            _retry_state=_wrap,
-                            request=request,
-                        )
+                        # Bug 2 Part A: sentinel, not recursion.
+                        raise _ComboWrapRestart(_backoff, _wrap)
 
             # ── HTML / 400 Bad-Response Detection ─────────────────────
 
@@ -13207,12 +13801,8 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
                             _cache_breakpoints, request,
                             reason="nonstream_network_error_exhausted",
                         )
-                        await asyncio.sleep(_backoff)
-                        return await _process_chat_completion(
-                            body, client_wants_anthropic, client_wants_gemini,
-                            _retry_state=_wrap,
-                            request=request,
-                        )
+                        # Bug 2 Part A: sentinel, not recursion.
+                        raise _ComboWrapRestart(_backoff, _wrap)
             if client_wants_gemini:
                 # Return a Gemini-shaped error so Antigravity IDE terminates cleanly
                 # instead of freezing on an unrecognized {"error": "..."} bare JSON.

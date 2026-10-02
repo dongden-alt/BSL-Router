@@ -161,7 +161,10 @@ class TestDirectClientPrimitives:
 
 class TestEgressWiring:
     def test_chat_zone_routes_through_effective_proxy(self):
-        src = inspect.getsource(main._process_chat_completion)
+        # Bug 2 Part A split the pass body into _process_chat_completion_pass;
+        # the chat-zone egress wiring lives there (the ROOT loop only
+        # dispatches passes and sleeps the wrap backoff).
+        src = inspect.getsource(main._process_chat_completion_pass)
         assert "_egress_proxy = _effective_egress_proxy(active_conn, provider_name)" in src
         assert "_get_ssl_disabled_client(_egress_proxy)" in src
         assert "_get_client_for_proxy(_egress_proxy)" in src

@@ -17,6 +17,15 @@ from typing import Optional, Dict, Any, Tuple
 from app.crypto import encrypt_config_secrets
 
 
+def _config_yaml_path() -> str:
+    """Repo-root-anchored config.yaml path (Bug 3, 2026-09-29)."""
+    _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.environ.get(
+        "BSL_CONFIG_PATH",
+        os.path.join(_repo_root, "config.yaml"),
+    )
+
+
 def _persist_config_yaml(config: Dict[str, Any]) -> None:
     """Atomic, never-wipe config.yaml write (mirrors main._persist_config_snapshot).
 
@@ -25,10 +34,11 @@ def _persist_config_yaml(config: Dict[str, Any]) -> None:
     """
     import yaml
     import copy as _copy
+    _cfg_path = _config_yaml_path()
     providers = (config or {}).get("providers")
     if not providers:
         try:
-            if os.path.exists("config.yaml") and os.path.getsize("config.yaml") > 64:
+            if os.path.exists(_cfg_path) and os.path.getsize(_cfg_path) > 64:
                 print(
                     "[ErrorPrevention] Refusing to overwrite a non-empty config.yaml "
                     "with an empty providers snapshot — write suppressed.",
@@ -45,8 +55,8 @@ def _persist_config_yaml(config: Dict[str, Any]) -> None:
     # existing, with a floor of 10 so small legitimate configs are safe.
     if providers:
         try:
-            if os.path.exists("config.yaml"):
-                with open("config.yaml", "r", encoding="utf-8") as _f:
+            if os.path.exists(_cfg_path):
+                with open(_cfg_path, "r", encoding="utf-8") as _f:
                     _existing = yaml.safe_load(_f) or {}
                 _existing_provs = _existing.get("providers") or {}
                 _existing_count = len(_existing_provs)
@@ -63,7 +73,7 @@ def _persist_config_yaml(config: Dict[str, Any]) -> None:
         except Exception:
             pass  # Best-effort gate; never block writes on a read failure.
 
-    tmp_fd, tmp_path = tempfile.mkstemp(prefix="config.yaml.", suffix=".tmp", dir=".")
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix="config.yaml.", suffix=".tmp", dir=os.path.dirname(_cfg_path) or ".")
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             # P0-2: caller passes decrypted config; encrypt a copy before disk.
@@ -71,7 +81,7 @@ def _persist_config_yaml(config: Dict[str, Any]) -> None:
             yaml.dump(enc_config, f, default_flow_style=False, sort_keys=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, "config.yaml")
+        os.replace(tmp_path, _cfg_path)
     except Exception:
         try:
             os.unlink(tmp_path)

@@ -59,15 +59,29 @@ def get_mutable_config() -> dict:
     return copy.deepcopy(get_config())
 
 
-def init_config(path: str = "config.yaml") -> None:
+def init_config(path: str | None = None) -> None:
     """Load config from YAML, set defaults, migrate plaintext secrets.
 
     Raises a FileNotFoundError with first-run setup guidance when the config is
     absent. config.yaml is intentionally gitignored (it holds live credentials),
     so a fresh clone has no config until the user copies the example template.
+
+    Path resolution (Bug 3, 2026-09-29): ``None`` resolves to the repo-root
+    ``config.yaml``, overridable with the ``BSL_CONFIG_PATH`` env var. The old
+    bare-relative default resolved against the process CWD, so a test run or
+    script launched from anywhere but the repo root read (and, via the
+    plaintext-migration write below, MUTATED) whatever ``config.yaml`` happened
+    to sit in that directory.
     """
     global _config
     import os
+
+    if path is None:
+        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.environ.get(
+            "BSL_CONFIG_PATH",
+            os.path.join(_repo_root, "config.yaml"),
+        )
 
     if not os.path.exists(path):
         example = "config.example.yaml"

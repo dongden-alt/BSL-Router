@@ -24,6 +24,27 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from app import main as main_app
 
 
+@pytest.fixture(autouse=True)
+def _anchor_persist_target(tmp_path, monkeypatch):
+    """Point ``_persist_config_snapshot`` at ``tmp_path/config.yaml``.
+
+    The tests below were written against the OLD CWD-relative target and used
+    ``monkeypatch.chdir(tmp_path)`` to redirect the write. Bug 3 (2026-09-29)
+    anchored that target to an absolute path (``BSL_CONFIG_PATH``, else the repo
+    root), which ``chdir`` can no longer redirect -- without this fixture these
+    tests would read and OVERWRITE the live production config.yaml while
+    asserting against an empty tmp directory.
+
+    The fixture chdir's as well so every existing bare-relative assertion
+    (``open("config.yaml")``, ``os.path.exists("config.yaml.bak")``) keeps
+    resolving to the same tmp_path file the writer targets.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        main_app, "_CONFIG_YAML_PATH", str(tmp_path / "config.yaml")
+    )
+
+
 def _good_config():
     return {
         "providers": {

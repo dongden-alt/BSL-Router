@@ -309,18 +309,60 @@ class StreamTruncationDetector:
 
     Fail-open: any parse error is swallowed; a broken feed simply never
     sets `truncated`, so the caller falls through to the normal stream.
+
+    Two independent flags control the tap (decoupled 2026-09-29):
+
+    - ``enabled`` gates the truncation-detection + continuation-splice
+      logic. When False, ``truncated`` is never set and no splice may
+      ever fire -- the Qwen anti-stop behavior is bit-identical to a
+      detector that saw no length frame.
+    - ``accumulate`` gates the ``partial_text`` text-accumulation path.
+      When True the tap records every content/reasoning/text/thinking
+      delta even when ``enabled`` is False. This lets the usage-backfill
+      helper see real delivered text on NON-Qwen providers (mintrouter/*),
+      where the splice gate is intentionally off. Accumulation appends to a
+      fragment LIST (no extra JSON parsing beyond ``_observe``) -- see
+      ``_append_text`` for why this must never be a growing string.
+
+    Safety cap: ``partial_text`` is bounded by ``PARTIAL_TEXT_CAP_BYTES``
+    (2 MB) so a 100k-token runaway stream cannot balloon memory. The
+    accumulator stops buffering at the cap but ``partial_len`` keeps counting
+    total delivered chars so the len//4 usage estimate stays representative.
     """
 
-    def __init__(self, f_val: str = "", enabled: bool = True):
+    # Upper bound on the buffered text. 2 MB comfortably exceeds the largest
+    # plausible single-request output while keeping a runaway stream from
+    # growing memory without limit. ASCII marker only.
+    PARTIAL_TEXT_CAP_BYTES = 2 * 1024 * 1024
+
+    def __init__(self, f_val: str = "", enabled: bool = True, accumulate: bool = None):
         self.f_val = f_val
         self.enabled = enabled
-        self.partial_text = ""
+        # `accumulate` defaults to "inherit from enabled" so every historical
+        # construction (bare, or enabled=False) keeps its exact prior behavior;
+        # only an explicit accumulate=True decouples text tapping from a closed
+        # splice gate (non-Qwen streams pass accumulate=is_stream from main.py).
+        self.accumulate = bool(enabled) if accumulate is None else bool(accumulate)
+        # Delivered text is held as a LIST OF FRAGMENTS, not a growing string.
+        # `_joined` caches the concatenation and is invalidated on every append,
+        # so reads at stream end cost one O(n) join total. `partial_text` is a
+        # property over these; nothing outside this class may assume a plain
+        # attribute (the setter below keeps direct assignment working).
+        self._parts: list = []
+        self._parts_chars = 0
+        self._joined = ""
+        # Total delivered chars (uncapped) so the usage estimate stays
+        # representative even after the buffer hit the byte cap.
+        self.partial_len = 0
         self.truncated = False
         self._buf = ""
 
     def feed(self, chunk: bytes) -> None:
         """Feed one raw upstream chunk (bytes)."""
-        if not self.enabled:
+        # Accumulation is decoupled from the splice gate: run the text
+        # tap whenever `accumulate` is True, even when `enabled` is False.
+        # The detection/splice logic below stays gated on `enabled` only.
+        if not (self.enabled or self.accumulate):
             return
         try:
             self._buf += chunk.decode("utf-8", errors="replace")
@@ -341,6 +383,55 @@ class StreamTruncationDetector:
         except Exception:
             pass  # fail-open: never break the stream for a detector bug
 
+    @property
+    def partial_text(self) -> str:
+        """Full accumulated text -- a lazy, cached join of the fragment list.
+
+        Every consumer keeps working unchanged: the Qwen continuation splice
+        (main.py build_continuation_stream_payload) needs the COMPLETE text,
+        the splice gate needs its truthiness, and the usage backfill needs its
+        length. The join is cached and only redone after a new fragment is
+        appended, so the several reads at stream end cost one O(n) join total.
+        """
+        if self._joined is None:
+            self._joined = "".join(self._parts)
+        return self._joined
+
+    @partial_text.setter
+    def partial_text(self, value: str) -> None:
+        """Back-compat: a direct assignment replaces the accumulated fragments."""
+        _v = value or ""
+        self._parts = [_v] if _v else []
+        self._parts_chars = len(_v)
+        self._joined = _v
+
+    def _append_text(self, text: str) -> None:
+        """Record one text delta in O(1) amortized time and bounded memory.
+
+        DO NOT "optimize" this back into ``self.partial_text += text``.
+        CPython's in-place unicode resize only engages when the left operand is
+        a refcount-1 LOCAL; an ATTRIBUTE target reallocates and copies the whole
+        buffer on every delta, making accumulation quadratic. Measured on this
+        very class (.brain/scratch/bench_real_detector.py, Py3.11.9): a 2M-char
+        stream cost 34.08 s at 16-char deltas and 8.28 s at 64-char deltas of
+        SYNCHRONOUS event-loop time -- the loop-stall class that took the IDE
+        down before (AGENTS.md S2). The fragment list below is O(1) per delta.
+
+        Buffering stops at PARTIAL_TEXT_CAP_BYTES (same observable cap as
+        before: ``partial_text`` never exceeds it), while ``partial_len`` keeps
+        the exact uncapped total so the len//4 usage estimate stays truthful.
+        """
+        if not text:
+            return
+        self.partial_len += len(text)
+        if self._parts_chars >= self.PARTIAL_TEXT_CAP_BYTES:
+            return  # buffer full -- keep counting partial_len only
+        _room = self.PARTIAL_TEXT_CAP_BYTES - self._parts_chars
+        _frag = text if len(text) <= _room else text[:_room]
+        self._parts.append(_frag)
+        self._parts_chars += len(_frag)
+        self._joined = None  # invalidate the cached join
+
     def _observe(self, data: Dict[str, Any]) -> None:
         # OpenAI chat.completion.chunk: delta.content + finish_reason
         choices = data.get("choices") or []
@@ -348,8 +439,8 @@ class StreamTruncationDetector:
             choice = choices[0]
             delta = choice.get("delta") or {}
             content = delta.get("content")
-            if isinstance(content, str):
-                self.partial_text += content
+            if isinstance(content, str) and self.accumulate:
+                self._append_text(content)
             # REASONING continuation (2026-09-27): thinking-heavy streams (GLM,
             # o-series, reasoning Claude) put their partial output in
             # delta.reasoning_content, leaving `content` empty until the final
@@ -360,9 +451,11 @@ class StreamTruncationDetector:
             # the SAME provider/model can resume. This prefix is only ever sent
             # back to the SAME model, never spliced into a live client parser.
             reasoning = delta.get("reasoning_content")
-            if isinstance(reasoning, str):
-                self.partial_text += reasoning
-            if choice.get("finish_reason") == "length":
+            if isinstance(reasoning, str) and self.accumulate:
+                self._append_text(reasoning)
+            # `enabled` is the truncation/splice gate: with it off, a length
+            # frame must NEVER set truncated (Qwen anti-stop stays scoped).
+            if self.enabled and choice.get("finish_reason") == "length":
                 self.truncated = True
             return
 
@@ -370,24 +463,24 @@ class StreamTruncationDetector:
         if data.get("type") == "content_block_delta":
             delta = data.get("delta") or {}
             text = delta.get("text")
-            if isinstance(text, str):
-                self.partial_text += text
+            if isinstance(text, str) and self.accumulate:
+                self._append_text(text)
             # Anthropic extended-thinking deltas carry their text in
             # delta.thinking, not delta.text -- same reasoning-stream gap.
             thinking = delta.get("thinking")
-            if isinstance(thinking, str):
-                self.partial_text += thinking
+            if isinstance(thinking, str) and self.accumulate:
+                self._append_text(thinking)
             return
         # Anthropic also emits a standalone thinking_delta event type.
         if data.get("type") == "thinking_delta":
             delta = data.get("delta") or {}
             thinking = delta.get("thinking")
-            if isinstance(thinking, str):
-                self.partial_text += thinking
+            if isinstance(thinking, str) and self.accumulate:
+                self._append_text(thinking)
             return
         if data.get("type") == "message_delta":
             delta = data.get("delta") or {}
-            if delta.get("stop_reason") == "max_tokens":
+            if self.enabled and delta.get("stop_reason") == "max_tokens":
                 self.truncated = True
             return
 
@@ -395,17 +488,17 @@ class StreamTruncationDetector:
         candidates = data.get("candidates") or []
         if candidates and isinstance(candidates[0], dict):
             candidate = candidates[0]
-            if candidate.get("finishReason") == "MAX_TOKENS":
+            if self.enabled and candidate.get("finishReason") == "MAX_TOKENS":
                 self.truncated = True
             parts = (candidate.get("content") or {}).get("parts") or []
             for part in parts:
                 if isinstance(part, dict):
                     text = part.get("text")
-                    if isinstance(text, str):
+                    if isinstance(text, str) and self.accumulate:
                         # Gemini thought parts carry the SAME text but with
                         # thought:true -- both are continuable model output, so
                         # accumulate regardless of the thought flag.
-                        self.partial_text += text
+                        self._append_text(text)
 
 
 # ── Transport-death continuation trigger ────────────────────────────────

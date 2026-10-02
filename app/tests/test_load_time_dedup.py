@@ -140,7 +140,9 @@ def _load_config_patches(seeded):
         return cfg
 
     patches = [
-        patch("app.main.init_config", lambda: None),
+        # load_config() passes the anchored config path (Bug 3, 2026-09-29);
+        # the stub suppresses the real read and ignores the argument.
+        patch("app.main.init_config", lambda *a, **k: None),
         patch("app.main.cs_get_config", lambda: seeded),
         patch("app.main._replace_runtime_config", _capture_runtime),
         patch("app.main.init_breaker", lambda cfg: None),

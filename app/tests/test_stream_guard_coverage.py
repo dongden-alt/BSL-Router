@@ -23,6 +23,18 @@ wrapper otherwise.
 
 These tests are static + unit — no server, no network, no mocking of main.py
 beyond the guard primitives.
+
+GUARD ROUTE EXPANSION (scanner false-positive fix, 2026-09-29)
+The scan also accepts `_wrap_client_stream(...)` as a guard route. That
+function is the centralized client-boundary chokepoint in app/main.py: when
+the pass's `_stream_guard` flag is on (all root dispatches), it wraps the
+body in afz_guard (kill-registry + hard deadline); nested retry passes skip
+the wrapper by design (Bug 2 Part A protection — do not "fix" that skip).
+Nine StreamingResponse sites route through this chokepoint, either passing
+the call directly as the body or via a `_ka_body = _wrap_client_stream(...)`
+assignment. The structural pin test_wrap_client_stream_routes_to_afz_guard
+guarantees the routing itself cannot be silently severed while the scan
+stays green.
 """
 import asyncio
 import re
@@ -45,7 +57,9 @@ MAIN_PY = Path(__file__).resolve().parent.parent / "main.py"
 # ─────────────────────────────────────────────────────────────────────────────
 
 # A StreamingResponse body is "guarded" if its first positional argument is:
-#   (a) a direct afz_guard(...) / _afz_passthrough_guard(...) call, OR
+#   (a) a direct afz_guard(...) / _afz_passthrough_guard(...) /
+#       _wrap_client_stream(...) call (the last is the client-boundary
+#       chokepoint that routes to afz_guard), OR
 #   (b) a Name that is assigned (directly or via tuple-unpack) from one of the
 #       guard helpers within the preceding lines of the same function body.
 #
@@ -103,7 +117,12 @@ def _streaming_response_spans(source: str):
             continue
 
 
-_GUARD_TOKENS = ("afz_guard(", "_afz_passthrough_guard(")
+# `_wrap_client_stream(` is accepted as a guard route: it is the centralized
+# client-boundary chokepoint that routes to afz_guard when the pass's
+# _stream_guard flag is on (nested retry passes skip it by design — Bug 2
+# Part A). test_wrap_client_stream_routes_to_afz_guard pins that routing so
+# the token cannot mask a severed chokepoint.
+_GUARD_TOKENS = ("afz_guard(", "_afz_passthrough_guard(", "_wrap_client_stream(")
 
 
 def _name_of(arg_text: str):
@@ -166,9 +185,11 @@ def test_every_streaming_response_body_is_guarded():
         raise AssertionError(
             "Unguarded StreamingResponse body at line(s): "
             + ", ".join(str(x) for x in offenders)
-            + ". Every StreamingResponse body must be wrapped in afz_guard(...) "
-            "or _afz_passthrough_guard(...) (directly or via assignment), or be "
-            "listed in ALLOWLIST with a written justification. An unguarded body "
+            + ". Every StreamingResponse body must be wrapped in afz_guard(...), "
+            "_afz_passthrough_guard(...), or _wrap_client_stream(...) (the "
+            "client-boundary chokepoint that routes to afz_guard) — directly "
+            "or via assignment — or be listed in ALLOWLIST with a written "
+            "justification. An unguarded body "
             "is invisible to POST /api/antifreeze/force-stop and has no deadline."
         )
 
@@ -368,4 +389,102 @@ def test_scan_flags_a_bare_aiter_raw_body():
     name = _name_of(arg_text)
     assert name is None or not _assignment_is_guarded(
         sample.splitlines(), name, lineno
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 5 — STRUCTURAL PIN: _wrap_client_stream must route to afz_guard.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_wrap_client_stream_routes_to_afz_guard():
+    """Structural pin: _wrap_client_stream IS the guard chokepoint.
+
+    The scan accepts `_wrap_client_stream(...)` as a guard route purely on
+    the strength of this function's routing: when the pass's _stream_guard
+    flag is on (every root client-boundary dispatch), it wraps the body in
+    afz_guard (kill-registry + hard deadline); nested retry passes skip the
+    wrapper by design (Bug 2 Part A).
+
+    WHY this pin exists: without it, someone could sever the chokepoint —
+    strip the afz_guard routing out of _wrap_client_stream — and every one
+    of the 9 sites routed through it would be silently unguarded while the
+    static scan stays green. The function is located by TEXT search, never
+    by line number: line numbers drift as main.py evolves, a text anchor
+    does not. The span runs from the def line to the next top-level
+    `def `/`async def ` line, capped at 100 lines.
+    """
+    source = MAIN_PY.read_text(encoding="utf-8")
+    anchor = source.find("def _wrap_client_stream(")
+    assert anchor != -1, "app/main.py must define _wrap_client_stream"
+    lines = source.splitlines()
+    start = source[:anchor].count("\n")
+    end = min(start + 100, len(lines))
+    span_lines: list[str] = []
+    for idx in range(start, end):
+        if idx > start and re.match(r"^(async )?def ", lines[idx]):
+            break
+        span_lines.append(lines[idx])
+    span = "\n".join(span_lines)
+    assert "afz_guard(" in span, (
+        "_wrap_client_stream must route to afz_guard when the pass's "
+        "_stream_guard flag is on. Severing this routing silently unguards "
+        "every StreamingResponse body routed through the chokepoint while "
+        "the static scan stays green."
+    )
+    assert "_stream_guard" in span, (
+        "_wrap_client_stream must consult the pass's _stream_guard flag "
+        "(nested retry passes skip the wrapper by design — Bug 2 Part A)."
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 6 — positive controls: the _wrap_client_stream token must rescue BOTH
+# resolution paths (direct body argument + guarded Name assignment).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_scan_accepts_direct_wrap_client_stream_body():
+    """Positive control (direct path): a body passed straight through
+    _wrap_client_stream(...) must NOT be flagged — the chokepoint routes it
+    to afz_guard. Mirrors how test_scan_flags_a_bare_aiter_raw_body drives
+    _streaming_response_spans + _is_guarded_call on a small sample string."""
+    sample = (
+        "def handler():\n"
+        "    return StreamingResponse(\n"
+        "        _wrap_client_stream(gen(), sid),\n"
+        "        media_type='text/event-stream',\n"
+        "    )\n"
+    )
+    spans = list(_streaming_response_spans(sample))
+    assert spans, "scan must locate the StreamingResponse call"
+    (lineno, arg_text) = spans[0]
+    assert "_wrap_client_stream(" in arg_text
+    assert _is_guarded_call(arg_text), (
+        "_wrap_client_stream(...) is an accepted guard route (chokepoint "
+        "that routes to afz_guard), so this body must not be flagged"
+    )
+
+
+def test_scan_accepts_ka_body_assignment_from_wrap_client_stream():
+    """Positive control (Name path): a bare Name body whose nearby assignment
+    is `_ka_body = _wrap_client_stream(...)` must NOT be flagged. Mirrors the
+    keepalive lanes in app/main.py, where the body may be further wrapped by
+    keepalive/observer layers AFTER the guard binding."""
+    sample = (
+        "def handler():\n"
+        "    _afz_sid = next_stream_id()\n"
+        "    _ka_body = _wrap_client_stream(\n"
+        "        egress_stream_guarded(),\n"
+        "        _afz_sid,\n"
+        "        protocol='openai',\n"
+        "    )\n"
+        "    return StreamingResponse(_ka_body, media_type='text/event-stream')\n"
+    )
+    spans = list(_streaming_response_spans(sample))
+    assert spans, "scan must locate the StreamingResponse call"
+    (lineno, arg_text) = spans[0]
+    name = _name_of(arg_text)
+    assert name == "_ka_body", "bare Name body must resolve to _ka_body"
+    assert _assignment_is_guarded(sample.splitlines(), name, lineno), (
+        "a Name assigned from _wrap_client_stream(...) must be rescued by "
+        "the backward assignment scan"
     )
