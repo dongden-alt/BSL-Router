@@ -262,3 +262,42 @@ def test_qwen_off_keeps_published_sampling_strips_only_unpublished():
         "'off' would silently mean 'on'"
     )
     assert out.get("enable_thinking") is False
+
+
+# ─────────────────────────────────────────────────────────────────────
+# AgentRouter Bedrock lanes — thinking and output_config are mutually
+# exclusive upstream (InvokeModelWithResponseStream ValidationException,
+# 2026-09-30). The strip is gated to the two LIVE agentrouter egress
+# wires (anthropic for `agentrouter`, openai-responses for `agentrouter-o`
+# — no live agentrouter route uses the bare openai wire). Non-agentrouter
+# providers keep the co-emitted adaptive+effort shape the rows above lock.
+# ─────────────────────────────────────────────────────────────────────
+def test_agentrouter_modern_never_co_emits_output_config():
+    for f_val in ("agentrouter/claude-opus-5", "agentrouter-o/claude-opus-4-8"):
+        for wire in ("anthropic", "openai-responses"):
+            out, _ = resolve_thinking(_payload(), f_val, "max", wire_format=wire)
+            assert out.get("thinking") == {"type": "adaptive"}
+            assert "output_config" not in out, (
+                f"{f_val}/{wire}: output_config co-emitted with thinking — "
+                f"Bedrock 400 ValidationException (2026-09-30): {out}"
+            )
+
+
+def test_non_agentrouter_modern_keeps_output_config():
+    for wire in ("openai", "anthropic"):
+        out, _ = resolve_thinking(_payload(), "pix4k/claude-opus-4.8-thinking", "max",
+                                  wire_format=wire)
+        assert out.get("thinking") == {"type": "adaptive"}
+        assert out.get("output_config") == {"effort": "max"}
+
+
+def test_gpt6_astra_tools_suppress_reasoning_controls():
+    """gpt-6-astra + function tools on /v1/chat/completions must carry no
+    reasoning_effort/reasoning (AgentRouter 400, 2026-09-30). Full lock:
+    test_gpt6_astra.py TestToolsSuppressReasoning."""
+    payload = _payload()
+    payload["tools"] = [{"type": "function", "function": {"name": "x"}}]
+    payload["reasoning_effort"] = "max"  # client-supplied, must be stripped
+    out, _ = resolve_thinking(payload, "agentrouter-o/gpt-6-astra", "max")
+    assert "reasoning_effort" not in out
+    assert "reasoning" not in out

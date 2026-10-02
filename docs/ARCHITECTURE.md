@@ -221,8 +221,8 @@ Each provider family has its own **family adapter** (14 adapters total):
 
 | Adapter | Quirks handled |
 |---|---|
-| `openai.py` | Standard OpenAI format, cache-key routing |
-| `anthropic.py` | Thinking blocks, cache_control, prompt_tokens_details |
+| `openai.py` | Standard OpenAI format, cache-key routing. GPT-6-Astra tool gate (2026-10-02): strips `reasoning_effort`/`reasoning` whenever tools are present (upstream 400s the combo; Astra thinks by default and cannot disable it) |
+| `anthropic.py` | Thinking blocks, cache_control, prompt_tokens_details. AgentRouter lanes (2026-10-02): `agentrouter`/`agentrouter-o` on the anthropic / openai-responses wires emit adaptive thinking ONLY — `output_config` suppressed (Bedrock ValidationException when both co-ride one request) |
 | `gemini.py` | Gemini envelope format, streamGenerateContent |
 | `deepseek.py` | Reasoning effort mapping |
 | `glm.py` | Tool call format translation (via `glm_tools.py`) |
@@ -254,6 +254,7 @@ You define chains in your config. The system uses a **chain deadline timer** to 
 | **Stream Guard** | SSE stream integrity validation. Catches malformed chunks, missing `message_stop` events, and stall-silence freezes. |
 | **Thinking Fallback** | Reasoning parameter fallback. If a provider rejects thinking parameters, retries without them. |
 | **Idle Terminal Frame** | Bounded upstream silence (`GEMINI_EGRESS_MAX_IDLE` = 300s) on all 4 egress lanes. On expiry: `upstream_idle_timeout` + status 504 + terminal error frame + `[DONE]` — never a bare `200 [DONE]` that wedges the IDE parser. |
+| **Relay Wall Gate (2026-10-02)** | Terminal short-circuit for provider-side content walls: `sensitive_words_detected` (AgentRouter answers it as HTTP 500) is terminal — no combo advance, no never-stop wrap, no retry against a wall that can never pass. Any other 500 body keeps the recoverable-5xx path; 400/403 keep the legacy marker gate. Tests: `app/tests/test_terminal_relay_walls.py` (27) |
 
 ### 🧰 Tools & Intelligence Layer
 **What it does**: Pre-processes content before routing.

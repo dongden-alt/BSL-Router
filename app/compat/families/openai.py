@@ -17,6 +17,14 @@ must NOT be emitted. Live AgentRouter probe for gpt-5.6-sol:
   - /v1/messages + reasoning_effort/mode -> stalls after message_start (empty)
   - /v1/chat/completions + reasoning_effort/mode -> content "OK"
 So on the anthropic wire the contract strips foreign keys and is a no-op.
+
+Tools note (2026-09-30): a payload carrying a non-empty `tools` list gets
+NO reasoning_effort/reasoning at all — AgentRouter's gpt-6-astra lane
+400s on reasoning_effort + function tools in /v1/chat/completions
+("Function tools with reasoning_effort are not supported ... use
+/v1/responses or set reasoning_effort to 'none'"). Astra has no "off"
+(the model thinks by default), so omitting the effort on tool-carrying
+requests is safe — the model's default effort stays on.
 """
 from __future__ import annotations
 
@@ -52,6 +60,20 @@ def _apply_gpt5(
             return prov.apply(
                 payload, contract, "anthropic_wire_strip_openai_reasoning", strip_vals
             )
+        return payload
+
+    # Function tools + reasoning_effort (2026-09-30, AgentRouter evidence B):
+    # gpt-6-astra on /v1/chat/completions 400s with "Function tools with
+    # reasoning_effort are not supported ... set reasoning_effort to
+    # 'none'". Astra has no "off" — it thinks by default — so on a
+    # tool-carrying request suppress the OpenAI reasoning controls
+    # entirely (strip any pre-existing keys, emit nothing new); the
+    # model's default effort applies.
+    tools = payload.get("tools")
+    if isinstance(tools, list) and tools:
+        strip_vals = {k: None for k in ("reasoning_effort", "reasoning") if k in payload}
+        if strip_vals:
+            return prov.apply(payload, contract, "tools_reasoning_strip", strip_vals)
         return payload
 
     before_effort = payload.get("reasoning_effort")

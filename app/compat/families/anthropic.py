@@ -6,6 +6,11 @@ Anthropic family contracts — three incompatible generations.
                           ones configured with an explicit token budget.
                           4.7+/4.8+ reject type="enabled" with a 400, so
                           they must stay on the adaptive+effort path.
+                          On agentrouter* egress wires (anthropic /
+                          openai-responses) the modern contract is
+                          adaptive thinking ONLY — output_config is never
+                          co-emitted (AgentRouter Bedrock
+                          ValidationException, 2026-09-30).
   next   (Fable/Mythos)-> thinking {type: adaptive|enabled} + effort.
                           Computed BEFORE modern/legacy and excluded from
                           them so the relaxed version match cannot steal
@@ -62,6 +67,29 @@ def _apply_modern(
             contract,
             "enabled_budget",
             {"thinking": think, "max_tokens": new_max, "output_config": None},
+        )
+
+    # AgentRouter Bedrock lanes (agentrouter/agentrouter-o, 2026-09-30):
+    # InvokeModelWithResponseStream 400s with a ValidationException when
+    # `thinking` AND `output_config` ride the same request — the lane
+    # accepts one or the other, exactly like the budget path above.
+    # ThinkingContext.f_val carries the provider segment of the route
+    # (see _base.py). The two LIVE agentrouter egress wires are
+    # anthropic (provider `agentrouter`, where the ValidationException
+    # was observed) and openai-responses (sibling `agentrouter-o`, same
+    # agentrouter.org Bedrock upstream); no live agentrouter route uses
+    # the bare openai wire, which the legacy-parity characterization
+    # sweep pins — so gate on provider family + those two wires only.
+    # Drop any pre-existing output_config via the None-value deletion
+    # convention.
+    if re.search(r"agentrouter", ctx.f_val or "") and (
+        ctx.wire_format in ("anthropic", "openai-responses")
+    ):
+        return prov.apply(
+            payload,
+            contract,
+            "adaptive_thinking_only",
+            {"thinking": think, "output_config": None},
         )
 
     oc = payload.get("output_config", {})

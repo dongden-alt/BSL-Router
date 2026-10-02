@@ -10,6 +10,12 @@ apply_gpt5_reasoning_controls:
     (the same dual-emit shape the gpt-5.6 conformance row locks)
   - budget-style "32k"     -> coerced to a valid level, never emitted raw
   - thinking: auto         -> NOTHING emitted (auto = emit nothing in BSL)
+  - tools present          -> NO reasoning controls at all (2026-09-30,
+    AgentRouter evidence B: "Function tools with reasoning_effort are not
+    supported for gpt-6-astra in /v1/chat/completions. To use function
+    tools, use /v1/responses or set reasoning_effort to 'none'." Astra has
+    no "off" — it thinks by default — so omitting the effort on
+    tool-carrying requests is safe; the model's default effort stays on.)
 
 The UI (app/static/app.js getThinkingSpec) adds a gpt-?6 branch with
 mandatory:true so no 'off' is offered for Astra.
@@ -120,3 +126,70 @@ class TestAnthropicWire:
         assert "reasoning_effort" not in out
         assert "reasoning" not in out
         assert not prov.records
+
+
+class TestToolsSuppressReasoning:
+    """Function tools + reasoning_effort are mutually exclusive for astra on
+    /v1/chat/completions (AgentRouter 400, 2026-09-30, evidence B). A payload
+    carrying a non-empty tools list gets NO reasoning_effort/reasoning at all;
+    pre-existing keys are stripped with attribution. Astra thinks by default,
+    so the omission is safe."""
+
+    def test_tools_present_no_reasoning_controls(self):
+        payload = _payload()
+        payload["tools"] = [{"type": "function", "function": {"name": "read_file"}}]
+        out, _ = resolve_thinking(payload, _ASTRA, "max")
+        assert "reasoning_effort" not in out, (
+            f"astra + tools leaked reasoning_effort: {out}"
+        )
+        assert "reasoning" not in out
+
+    def test_tools_present_strips_preexisting_reasoning_keys(self):
+        payload = _payload()
+        payload["tools"] = [{"type": "function", "function": {"name": "read_file"}}]
+        payload["reasoning_effort"] = "high"
+        payload["reasoning"] = {"effort": "high"}
+        out, prov = resolve_thinking(payload, _ASTRA, "max")
+        assert "reasoning_effort" not in out
+        assert "reasoning" not in out
+        assert any(r.rule == "tools_reasoning_strip" for r in prov.records), (
+            prov.summary()
+        )
+
+    def test_tools_present_clean_payload_no_provenance_noise(self):
+        """tools present but no pre-existing reasoning keys -> nothing to
+        strip -> no provenance record, no emission."""
+        payload = _payload()
+        payload["tools"] = [{"type": "function", "function": {"name": "read_file"}}]
+        out, prov = resolve_thinking(payload, _ASTRA, "max")
+        assert "reasoning_effort" not in out
+        assert "reasoning" not in out
+        assert not prov.records, prov.summary()
+
+    def test_empty_tools_list_still_emits_effort(self):
+        """An EMPTY tools list is not 'carrying tools' — effort still emits."""
+        payload = _payload()
+        payload["tools"] = []
+        out, _ = resolve_thinking(payload, _ASTRA, "max")
+        assert out["reasoning_effort"] == "max"
+        assert out["reasoning"]["effort"] == "max"
+
+    def test_tools_absent_effort_still_emitted(self):
+        """Existing behavior is preserved when tools are absent."""
+        out, _ = resolve_thinking(_payload(), _ASTRA, "max")
+        assert out["reasoning_effort"] == "max"
+        assert out["reasoning"]["effort"] == "max"
+
+    def test_anthropic_wire_strip_fires_before_tools_gate(self):
+        """Anthropic-wire strip has priority over the tools gate: on
+        /v1/messages the OpenAI keys are removed by the wire rule regardless
+        of tools presence (the stall-empty lane, 2026-08-20)."""
+        payload = _payload()
+        payload["tools"] = [{"type": "function", "function": {"name": "x"}}]
+        payload["reasoning_effort"] = "high"
+        out, prov = resolve_thinking(payload, _ASTRA, "max", wire_format="anthropic")
+        assert "reasoning_effort" not in out
+        assert "reasoning" not in out
+        assert any(
+            r.rule == "anthropic_wire_strip_openai_reasoning" for r in prov.records
+        )

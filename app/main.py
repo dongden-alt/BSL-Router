@@ -750,7 +750,23 @@ _RECOVERABLE = {400, 401, 403, 404, 405, 408, 409, 413, 422, 429, 500, 502, 503,
 # tried. Make them NON-RECOVERABLE: no 502 reclassification, no chain
 # advance, no never-stop wrap. Surface the 400 verbatim ONCE and stop.
 # Fail-open: any detector fault falls through to existing behavior.
-_TERMINAL_RELAY_WALL_MARKERS = ("upstream_safety_blocked", "data_inspection_failed")
+#
+# AGENTROUTER SENSITIVE-WORDS WALL (2026-09-30): the agentrouter relay
+# answers `{"code":"sensitive_words_detected","message":"sensitive words
+# detected (request id: ...)"}` with HTTP **500** (13 hits on 2026-09-30,
+# 12 inside one minute at 10:50). 500 is also in _RECOVERABLE, so the
+# same infinite loop fired — combo advance plus never-stop wrap — against
+# a content wall that will never pass. The 500 arm in
+# _is_terminal_relay_wall recognizes ONLY this wall; every other 500 body
+# keeps recoverable 5xx semantics.
+_TERMINAL_RELAY_WALL_MARKERS = (
+    "upstream_safety_blocked",
+    "data_inspection_failed",
+    # AgentRouter sensitive-words wall, observed in BOTH spellings: the
+    # error code value and the plain phrase inside the message.
+    "sensitive_words_detected",
+    "sensitive words detected",
+)
 
 
 def _is_terminal_relay_wall(status_code, err_text) -> bool:
@@ -761,14 +777,26 @@ def _is_terminal_relay_wall(status_code, err_text) -> bool:
     marker is NOT a terminal wall (status gate keeps retryable). An empty
     body is NOT a terminal wall (revert to recoverable 400). Any exception
     in the body scan returns False so the caller keeps legacy behavior.
+
+    AgentRouter sensitive-words exception (2026-09-30): that wall rides
+    HTTP 500, so a 500 whose body carries `sensitive_words_detected` (or
+    the plain phrase "sensitive words detected") is ALSO terminal — a 500
+    with any other marker/body stays recoverable 5xx.
     """
     try:
-        if status_code not in (400, 403):
-            return False
         if not err_text:
             return False
         _low = err_text.lower() if isinstance(err_text, str) else str(err_text).lower()
         if not _low:
+            return False
+        # 500 is terminal ONLY for the AgentRouter sensitive-words wall;
+        # the legacy markers keep 500 recoverable.
+        if status_code == 500:
+            return (
+                "sensitive_words_detected" in _low
+                or "sensitive words detected" in _low
+            )
+        if status_code not in (400, 403):
             return False
         return any(m in _low for m in _TERMINAL_RELAY_WALL_MARKERS)
     except Exception:

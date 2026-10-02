@@ -11,6 +11,13 @@ forever, and the console spammed `[400] ... upstream_safety_blocked` every
 non-stream combo paths and the 400→502 reclassify block so the 400 surfaces
 ONCE and the client unblocks immediately.
 
+AgentRouter sensitive-words wall (2026-09-30): the relay answers with HTTP
+**500** and body `{"code":"sensitive_words_detected","message":"sensitive
+words detected (request id: ...)"}` — 13 hits in one day, 12 inside one
+minute. 500 is ALSO in `_RECOVERABLE`, so the same infinite combo-advance +
+never-stop loop fired. The detector's 500 arm recognizes ONLY this wall
+(both spellings); every other 500 body keeps recoverable 5xx semantics.
+
 These tests exercise the REAL module-level detector `app.main._is_terminal_relay_wall`
 plus the marker tuple — the same symbol the generators call on the non-200
 path. No mirror drift.
@@ -26,6 +33,10 @@ def test_terminal_relay_wall_markers_present():
     assert isinstance(main._TERMINAL_RELAY_WALL_MARKERS, tuple)
     assert "upstream_safety_blocked" in main._TERMINAL_RELAY_WALL_MARKERS
     assert "data_inspection_failed" in main._TERMINAL_RELAY_WALL_MARKERS
+    # AgentRouter sensitive-words wall (2026-09-30): both spellings observed
+    # live — the underscore code value and the plain phrase in the message.
+    assert "sensitive_words_detected" in main._TERMINAL_RELAY_WALL_MARKERS
+    assert "sensitive words detected" in main._TERMINAL_RELAY_WALL_MARKERS
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -161,6 +172,69 @@ def test_wall_anthropic_flavored_body():
         '"message":"upstream_safety_blocked by content policy"}}'
     )
     assert main._is_terminal_relay_wall(400, body) is True
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# AgentRouter sensitive-words wall — the ONLY 500 that is terminal (2026-09-30).
+# ──────────────────────────────────────────────────────────────────────────────
+def test_wall_sensitive_words_500_live_body():
+    """The exact AgentRouter 500 body (plain phrase + underscore code) is a
+    terminal wall.
+
+    Live evidence 2026-09-30: agentrouter-o gpt-6-astra answered 500 with
+    {"error":{"message":"sensitive words detected (request id: ...)","code":
+    "sensitive_words_detected"}} 13 times (12 within one minute at 10:50) —
+    500 sat in _RECOVERABLE, the wall detector did not match it, and combo
+    advance + the never-stop wrap re-looped forever.
+    """
+    body = (
+        '{"error":{"message":"sensitive words detected (request id: 18d9f97c36)",'
+        '"type":"new_api_error","param":"","code":"sensitive_words_detected"}}'
+    )
+    assert main._is_terminal_relay_wall(500, body) is True
+
+
+def test_wall_sensitive_words_phrase_only_500():
+    """The relay also emits the plain phrase in the message without the
+    underscore code value — both spellings must classify."""
+    assert main._is_terminal_relay_wall(500, "sensitive words detected (request id: x)") is True
+
+
+def test_wall_sensitive_words_code_only_500():
+    assert main._is_terminal_relay_wall(500, "err=sensitive_words_detected") is True
+
+
+def test_wall_sensitive_words_400_via_marker_gate():
+    """A 400 carrying the underscore code keeps the legacy 400/403 marker gate."""
+    body = '{"error":{"code":"sensitive_words_detected","message":"blocked"}}'
+    assert main._is_terminal_relay_wall(400, body) is True
+
+
+def test_wall_sensitive_words_case_insensitive_500():
+    """Provider casing must not dodge the 500 arm either."""
+    assert main._is_terminal_relay_wall(500, "Sensitive Words Detected") is True
+    assert main._is_terminal_relay_wall(500, "SENSITIVE_WORDS_DETECTED") is True
+
+
+def test_not_wall_500_legacy_markers_stay_recoverable():
+    """A 500 carrying an OLD marker is still NOT a terminal wall — the 500 arm
+    recognizes ONLY the sensitive-words wall; every other 5xx body stays
+    recoverable so genuine upstream 5xx still advance the combo chain."""
+    assert main._is_terminal_relay_wall(500, "upstream_safety_blocked") is False
+    assert main._is_terminal_relay_wall(500, "data_inspection_failed") is False
+
+
+def test_not_wall_429_sensitive_words():
+    """429 + the sensitive-words marker is NOT terminal — the status gate keeps
+    it retryable so a transient rate limit can still be backed off."""
+    assert main._is_terminal_relay_wall(429, "sensitive words detected") is False
+    assert main._is_terminal_relay_wall(429, "sensitive_words_detected") is False
+
+
+def test_not_wall_500_generic_body():
+    """A generic 500 (upstream outage) stays recoverable."""
+    assert main._is_terminal_relay_wall(500, "internal server error") is False
+    assert main._is_terminal_relay_wall(500, "") is False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
