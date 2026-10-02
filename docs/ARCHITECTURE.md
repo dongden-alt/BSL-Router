@@ -253,6 +253,7 @@ You define chains in your config. The system uses a **chain deadline timer** to 
 | **Circuit Breaker** | Health-aware endpoint rotation. Unhealthy providers are automatically skipped. Tracks 429/401/403 and TPM co-occurrence. |
 | **Stream Guard** | SSE stream integrity validation. Catches malformed chunks, missing `message_stop` events, and stall-silence freezes. |
 | **Thinking Fallback** | Reasoning parameter fallback. If a provider rejects thinking parameters, retries without them. |
+| **Idle Terminal Frame** | Bounded upstream silence (`GEMINI_EGRESS_MAX_IDLE` = 300s) on all 4 egress lanes. On expiry: `upstream_idle_timeout` + status 504 + terminal error frame + `[DONE]` — never a bare `200 [DONE]` that wedges the IDE parser. |
 
 ### 🧰 Tools & Intelligence Layer
 **What it does**: Pre-processes content before routing.
@@ -343,6 +344,8 @@ Pre-process specific content types before routing:
 - **Degenerate-output guard (vsllm-r/gpt):** `_degenerate_effort_cap_decision` in `app/main.py` caps reasoning effort xhigh→high when provider=vsllm-r + gpt-5/6 contract + openai-responses wire + input≥40k tokens (upstream returns 200 with 9-112-token rubble at xhigh on large contexts). Post-stream telemetry `note_degenerate_output` flags degenerate END rows; kill-switch `tools.degenerate_output_guard` (default ON).
 - **SSE keepalive pre-first-chunk:** `_sse_keepalive_pre_first_chunk` emits `event: ping` (Anthropic lanes) / `: keepalive` (OpenAI lanes) every 10s while waiting for the first upstream chunk, then stops — byte-faithful mid-stream. Fixes CC/IDE clients whose 30s no-data watchdog aborted slow-TTFT (15-55s) requests. Gate `tools.sse_keepalive` (default ON).
 - **Boot-time log self-heal:** `_selfheal_errlog` truncates `.brain/logs/app.err.log` >50MB to a 10MB tail at boot (in-place; the cmd supervisor holds the `2>>` handle). WinError-64 shadow `accept_coro` exceptions are now consumed via done-callbacks (`_track_shadow_accept_tasks`) — no more "Task exception was never retrieved" spam. END console lines serialize error bodies single-line (`_single_line_error`) so 400-error rows stay greppable.
+
+- **Idle terminal-frame parity (2026-10-02):** all four egress lanes (OpenAI, pure-Anthropic, anthropic-to-openai, Gemini) cap upstream silence at `GEMINI_EGRESS_MAX_IDLE` (300s; reset only on real upstream chunks, never on keepalive ticks); expiry routes through the post-drain stall branch (`upstream_idle_timeout` + status 504 → terminal error frame + `[DONE]`, pre-content combo-fallback, dead-leaf benching). Fixes the Antigravity IDE freeze: a wedged MintRouter stream used to end as a bare `data: [DONE]` with HTTP 200, and the IDE parser hangs forever waiting for a terminal error frame on non-success termination. Tests: `app/tests/test_gemini_egress_idle.py` (14), `app/tests/test_anthropic_to_openai_idle.py` (9).
 
 ## Middleware Pipeline
 
