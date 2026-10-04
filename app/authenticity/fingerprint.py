@@ -1,0 +1,187 @@
+"""Feature extraction from probe responses."""
+import re
+from dataclasses import dataclass, field
+
+
+@dataclass
+class FingerprintFeatures:
+    """Behavioral features extracted from probe responses."""
+
+    # Identity features (from identity_direct + identity_adversarial)
+    claimed_model: str = ""
+    claimed_org: str = ""
+    claimed_cutoff: str = ""
+    impostor_hits: list = field(default_factory=list)
+    self_hits: list = field(default_factory=list)
+    unknown_count: int = 0
+
+    # Style features (from style_sample)
+    response_length: int = 0
+    sentence_count: int = 0
+    avg_sentence_length: float = 0.0
+    bullet_style: str = ""           # "-", "*", "1.", "none"
+    header_depth: int = 0            # max # count in markdown headers
+    code_block_tag: str = ""         # language tag in ``` blocks
+    has_analogy: bool = False
+    cjk_ratio: float = 0.0           # fraction of CJK characters
+    question_count: int = 0          # rhetorical questions
+
+    # Cutoff/capability features (from Tier 2)
+    reported_cutoff: str = ""
+    cutoff_year: int = 0
+    cutoff_month: int = 0
+    capability_correct: int = 0      # out of 3
+    capability_total: int = 3
+
+
+# Self-identification phrases to strip for behavior-column classification
+SELF_CLAIM_PATTERNS = [
+    r"(?i)i am (?:a |an )?[\w\s.\-]+(?:model|assistant|ai|llm)",
+    r"(?i)i(?:'m| am) (?:developed|trained|built|created|made) by [\w\s.\-]+",
+    r"(?i)my (?:name|model|version) is [\w\s.\-]+",
+    r"(?i)(?:model|developer|arch|cutoff)\s*:\s*[\w\s./\-]+",
+    r"(?i)as (?:a |an )?[\w\s.\-]+(?:model|assistant|ai)",
+    r"(?i)i(?:'m| am) \w+",
+]
+
+
+def strip_self_claims(text: str) -> str:
+    """Remove self-identification phrases from text.
+
+    The remaining text carries the model's style fingerprint without
+    the influence of what it claims to be. This is the key technique
+    from BazaarLink's Layer 1 — adversaries rewrite *what the model
+    says it is* far more often than they rewrite *how it says things*.
+    """
+    cleaned = text
+    for pattern in SELF_CLAIM_PATTERNS:
+        cleaned = re.sub(pattern, "", cleaned)
+    return cleaned.strip()
+
+
+def extract_features(results: list, family_ref: dict) -> FingerprintFeatures:
+    """Extract behavioral features from probe results.
+
+    Args:
+        results: list of ProbeResult from probe execution
+        family_ref: family reference data (self_keywords, impostor_keywords)
+
+    Returns:
+        FingerprintFeatures with all extracted features
+    """
+    features = FingerprintFeatures()
+
+    for result in results:
+        if result.status_code != 200 or not result.content:
+            continue
+
+        content = result.content
+        lower = content.lower()
+
+        if result.probe_id == "identity_direct":
+            # Extract MODEL/DEVELOPER/CUTOFF fields
+            for line in content.split("\n"):
+                line_stripped = line.strip()
+                if line_stripped.upper().startswith("MODEL:"):
+                    features.claimed_model = line_stripped[6:].strip()
+                elif line_stripped.upper().startswith("DEVELOPER:"):
+                    features.claimed_org = line_stripped[10:].strip()
+                elif line_stripped.upper().startswith("CUTOFF:"):
+                    features.claimed_cutoff = line_stripped[7:].strip()
+
+            # Check impostor/self keywords
+            for kw in family_ref.get("impostor_keywords", []):
+                if kw.lower() in lower:
+                    features.impostor_hits.append(kw)
+            for kw in family_ref.get("self_keywords", []):
+                if kw.lower() in lower:
+                    features.self_hits.append(kw)
+
+        elif result.probe_id == "identity_adversarial":
+            features.unknown_count = lower.count("unknown")
+            for kw in family_ref.get("impostor_keywords", []):
+                if kw.lower() in lower:
+                    features.impostor_hits.append(kw)
+            for kw in family_ref.get("self_keywords", []):
+                if kw.lower() in lower:
+                    features.self_hits.append(kw)
+
+        elif result.probe_id == "style_sample":
+            features.response_length = len(content)
+            sentences = re.split(r'[.!?]+', content)
+            sentences = [s.strip() for s in sentences if s.strip()]
+            features.sentence_count = len(sentences)
+            if sentences:
+                features.avg_sentence_length = (
+                    sum(len(s) for s in sentences) / len(sentences)
+                )
+
+            # Bullet style
+            if re.search(r'^\s*-\s', content, re.MULTILINE):
+                features.bullet_style = "-"
+            elif re.search(r'^\s*\*\s', content, re.MULTILINE):
+                features.bullet_style = "*"
+            elif re.search(r'^\s*\d+\.\s', content, re.MULTILINE):
+                features.bullet_style = "1."
+            else:
+                features.bullet_style = "none"
+
+            # Header depth
+            headers = re.findall(r'^(#{1,6})\s', content, re.MULTILINE)
+            features.header_depth = max(len(h) for h in headers) if headers else 0
+
+            # Code block tag
+            code_tags = re.findall(r'```(\w+)', content)
+            features.code_block_tag = code_tags[0] if code_tags else ""
+
+            # Analogy detection
+            analogy_words = [
+                "like", "imagine", "think of", "similar to", "as if",
+                "好比", "就像", "想象",
+            ]
+            features.has_analogy = any(w in lower for w in analogy_words)
+
+            # CJK ratio
+            cjk_chars = sum(
+                1 for c in content
+                if '\u4e00' <= c <= '\u9fff'
+                or '\u3040' <= c <= '\u309f'
+                or '\uac00' <= c <= '\ud7af'
+            )
+            features.cjk_ratio = cjk_chars / max(len(content), 1)
+
+            # Question count
+            features.question_count = content.count("?") + content.count("？")
+
+        elif result.probe_id == "cutoff_probe":
+            features.reported_cutoff = content.strip()
+            # Try to extract year/month
+            year_match = re.search(r'(\d{4})', content)
+            if year_match:
+                features.cutoff_year = int(year_match.group(1))
+            month_names = {
+                "january": 1, "february": 2, "march": 3, "april": 4,
+                "may": 5, "june": 6, "july": 7, "august": 8,
+                "september": 9, "october": 10, "november": 11, "december": 12,
+            }
+            for name, num in month_names.items():
+                if name in lower:
+                    features.cutoff_month = num
+                    break
+            # Also try numeric month
+            month_match = re.search(r'(\d{4})[-/](\d{1,2})', content)
+            if month_match:
+                features.cutoff_year = int(month_match.group(1))
+                features.cutoff_month = int(month_match.group(2))
+
+        elif result.probe_id == "capability_boundary":
+            correct = 0
+            if "paris" in lower:
+                correct += 1
+            if "391" in lower:
+                correct += 1
+            if "2007" in lower:
+                correct += 1
+            features.capability_correct = correct
+
+    return features

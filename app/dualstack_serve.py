@@ -531,7 +531,16 @@ def _install_accept_loop_guard() -> bool:
 
     def _guard_start_serving(self, protocol_factory, sock,
                              sslcontext=None, server=None, backlog=100,
-                             ssl_handshake_timeout=None):
+                             ssl_handshake_timeout=None, ssl_shutdown_timeout=None):
+        # PY311 PARITY (2026-10-05): CPython 3.11 added `ssl_shutdown_timeout`
+        # to BaseProactorEventLoop._start_serving, so the loop now calls this
+        # wrapper with EIGHT positional args. The old 7-param signature crashed
+        # every .venv311/.venv312 boot with
+        # "takes from 3 to 7 positional arguments but 8 were given".
+        # `ssl_shutdown_timeout` is accepted and intentionally unused: this
+        # router serves plaintext (sslcontext is always None), and the guard
+        # re-implements the body wholesale rather than delegating to `orig`, so
+        # there is no onward call that would need it forwarded.
         # Per-socket burst counter: {fileno: [timestamps]}.
         burst = {}
         # Lifetime resurrection count per socket, used to throttle audit logging

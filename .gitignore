@@ -96,3 +96,6 @@ data/
 # machine. Ship a template instead; each dev copies .mcp.json.example -> .mcp.json
 # with their own local paths. Mirrors the config.yaml / config.example.yaml pattern.
 .mcp.json
+
+# --- Authenticity frozen standards (harvested behavioral data; keep repo portable) ---
+app/authenticity/reference/standards/*.json

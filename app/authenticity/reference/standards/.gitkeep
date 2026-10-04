@@ -1,0 +1,3 @@
+# Frozen TraitMark standards live here (one <family>_<sub_model>.json each).
+# Harvested from trusted anchors via POST /api/authenticity/standards/harvest.
+# The *.json files are gitignored; this placeholder keeps the directory tracked.

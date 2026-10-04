@@ -4096,6 +4096,149 @@ async def clear_logs():
         print(f"[Observability] clear_logs disk truncate failed: {_e}", flush=True)
     return JSONResponse({"status": "Logs cleared", "cleared": {"console": _cleared_console}})
 
+# ─── Model Authenticity — standards + testing (admin) ───────────────────────
+import app.authenticity.harvest as auth_harvest
+from app.authenticity.gate import authenticity_check as _auth_check
+
+# In-memory harvest job state (keyed by model_id). Fail-open; per-process.
+_AUTH_HARVEST_STATUS: dict = {}
+_AUTH_HARVEST_TASKS: dict = {}
+
+
+def _auth_cfg_get():
+    try:
+        return cs_get_config().get("authenticity") or {}
+    except Exception:
+        return {}
+
+
+@app.get("/api/authenticity/standards")
+async def list_auth_standards():
+    return JSONResponse({"standards": auth_harvest.list_standards(auth_harvest.STANDARDS_DIR)})
+
+
+@app.get("/api/authenticity/standards/testable")
+async def list_auth_testable():
+    """Which models are verifiable at HIGH confidence (full judge-graded standard).
+
+    UI uses this to render the 'high-confidence testable models' box.
+    """
+    return JSONResponse(auth_harvest.list_testable_standards(auth_harvest.STANDARDS_DIR))
+
+
+@app.get("/api/authenticity/judges")
+async def list_auth_judges():
+    """Judge model recommendations. Default = mintrouter/claude-opus-5-5.
+    A judge must be a different family from the suspect to avoid bias."""
+    return JSONResponse({
+        "default": auth_harvest.JUDGE_DEFAULT,
+        "by_family": auth_harvest.JUDGE_SUGGESTIONS,
+    })
+
+
+@app.post("/api/authenticity/standards/harvest")
+async def start_auth_harvest(request: Request):
+    body = await request.json()
+    model_id = (body.get("model_id") or "").strip()
+    endpoint = (body.get("endpoint") or "").strip()
+    api_key = (body.get("api_key") or "").strip()
+    source_tag = (body.get("source_tag") or "").strip()
+    judge = body.get("judge") or {}
+    include_noncoding = bool(body.get("include_noncoding", True))
+    if not (model_id and endpoint and api_key):
+        return JSONResponse({"error": "model_id, endpoint, api_key are required"}, status_code=400)
+
+    cfg = _auth_cfg_get()
+    judge_endpoint = (judge.get("endpoint") or cfg.get("judge_endpoint") or "").strip()
+    judge_key = (judge.get("api_key") or "").strip()
+    judge_model = (judge.get("model") or cfg.get("judge_model") or "").strip()
+
+    _AUTH_HARVEST_STATUS[model_id] = {"status": "running", "detail": ""}
+
+    async def _job():
+        try:
+            tm = await auth_harvest.harvest_model(
+                endpoint, api_key, model_id,
+                judge_endpoint=judge_endpoint or None,
+                judge_key=judge_key or None,
+                judge_model=judge_model or None,
+                include_noncoding=include_noncoding,
+                source_tag=source_tag,
+                config=cfg,
+            )
+            path = auth_harvest.save_standard(tm, auth_harvest.STANDARDS_DIR)
+            _AUTH_HARVEST_STATUS[model_id] = {
+                "status": "done",
+                "detail": f"saved {path.name}",
+                "gaps": getattr(tm.meta, "harvest_gaps", []),
+            }
+        except Exception as exc:
+            _AUTH_HARVEST_STATUS[model_id] = {"status": "error", "detail": str(exc)[:300]}
+
+    task = asyncio.create_task(_job())
+    _AUTH_HARVEST_TASKS[model_id] = task
+    return JSONResponse({"started": True, "model_id": model_id})
+
+
+@app.get("/api/authenticity/standards/harvest/status/{model_id}")
+async def auth_harvest_status(model_id: str):
+    return JSONResponse(_AUTH_HARVEST_STATUS.get(model_id, {"status": "unknown", "detail": ""}))
+
+
+@app.delete("/api/authenticity/standards/{family}/{sub_model}")
+async def delete_auth_standard(family: str, sub_model: str):
+    ok = auth_harvest.delete_standard(auth_harvest.STANDARDS_DIR, family, sub_model)
+    if not ok:
+        return JSONResponse({"error": "standard not found"}, status_code=404)
+    return JSONResponse({"deleted": True, "family": family, "sub_model": sub_model})
+
+
+@app.post("/api/authenticity/test")
+async def run_auth_test(request: Request):
+    """Run the authenticity gate on a suspect model. mode: normal|deep|auto.
+
+    auto = run normal first; if the verdict is unverifiable/family_match at low
+    confidence, escalate to deep (max_tier=2).
+    """
+    body = await request.json()
+    model_id = (body.get("model_id") or "").strip()
+    endpoint = (body.get("endpoint") or "").strip()
+    api_key = (body.get("api_key") or "").strip()
+    reference_hint = (body.get("reference_hint") or "").strip()
+    mode = (body.get("mode") or "auto").strip().lower()
+    if not (model_id and endpoint and api_key):
+        return JSONResponse({"error": "model_id, endpoint, api_key are required"}, status_code=400)
+
+    cfg = dict(_auth_cfg_get())
+    if mode == "normal":
+        cfg["max_tier"] = 1
+    else:  # deep + auto both allow full depth; auto decides below
+        cfg["max_tier"] = 2
+
+    try:
+        verdict = await _auth_check(
+            model_id=model_id,
+            endpoint_base=endpoint,
+            api_key=api_key,
+            config=cfg,
+            reference_hint=reference_hint,
+        )
+        # Auto-escalation: ambiguous result on a normal-depth run → go deep once.
+        if mode == "auto" and cfg.get("max_tier", 2) < 2 and verdict.verdict in (
+                "unverifiable", "family_match"):
+            cfg["max_tier"] = 2
+            verdict = await _auth_check(
+                model_id=model_id,
+                endpoint_base=endpoint,
+                api_key=api_key,
+                config=cfg,
+                reference_hint=reference_hint,
+            )
+        return JSONResponse(verdict.to_dict())
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)[:300], "verdict": "error"}, status_code=200)
+
+
 # ─── Auto Error Prevention ──────────────────────────────────────────────────
 
 import app.error_prevention as ep
@@ -4685,6 +4828,54 @@ async def test_model(request: Request):
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+async def _probe_antigravity_native_once(egress_client, model: str, token: str):
+    """Probe a native antigravity OAuth model through the production Cloud Code wrapper.
+
+    Mirrors the chat lane's client wrap (_process_chat_completion_pass): the
+    egress client is wrapped with wrap_antigravity_upstream_client so the
+    OpenAI probe payload is forged into the verified Cloud Code envelope
+    (model/project/requestId/userAgent/requestType/request{...}), the URL is
+    rewritten to /v1internal:streamGenerateContent?alt=sse, the IDE
+    User-Agent is set (a generic UA gets 403), and the Gemini SSE response is
+    aggregated into one OpenAI completion. The chat lane is the contract; a
+    green test-model proves the same chain.
+    """
+    from app.compat.adapters.antigravity_upstream import (
+        wrap_antigravity_upstream_client,
+    )
+
+    probe_body = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
+        "max_tokens": 8,
+        "temperature": 0,
+        "stream": False,
+    }
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    wrapped = wrap_antigravity_upstream_client(egress_client, model)
+    # {base}/chat/completions is INTENTIONAL: the wrapper's build_request
+    # rewrites it to the v1internal:streamGenerateContent RPC verb — the only
+    # live-verified path on the Cloud Code host (/v1beta 404s for OAuth models).
+    upstream_request = wrapped.build_request(
+        "POST",
+        f"{_validated_antigravity_native_base_url()}/chat/completions",
+        headers=headers,
+        content=json.dumps(probe_body).encode("utf-8"),
+    )
+    upstream_response = await wrapped.send(upstream_request)
+    try:
+        return upstream_response.status_code, upstream_response.content
+    finally:
+        try:
+            await upstream_response.aclose()
+        except Exception:
+            pass
+
+
 async def _test_antigravity_model_native(provider: str, model: str, token: str, config: dict, request_id, t0: float):
     """Probe a native Antigravity OAuth model directly against Google Cloud Code.
 
@@ -4706,39 +4897,9 @@ async def _test_antigravity_model_native(provider: str, model: str, token: str, 
         obs.log_request(provider, model, 400, time.time() - t0, 0, 0, 0, config, error_msg=err, request_id=request_id)
         return JSONResponse({"ok": False, "error": err}, status_code=400)
 
-    # Same wire as _forward_antigravity_native: dial the OpenAI-style endpoint
-    # and let AntigravityUpstreamClient rewrite it to the verified Cloud Code
-    # RPC (v1internal:streamGenerateContent?alt=sse) with the IDE's envelope
-    # and UA. The public /v1beta path 404s for OAuth (Antigravity) models.
-    url = f"{_validated_antigravity_native_base_url()}/chat/completions"
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
-        "max_tokens": 16,
-        "temperature": 0,
-        "stream": False,
-    }
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
     try:
-        from app.compat.adapters.antigravity_upstream import (
-            wrap_antigravity_upstream_client,
-        )
-
-        client = wrap_antigravity_upstream_client(
-            _get_antigravity_egress_client(), model
-        )
-        upstream_request = client.build_request(
-            "POST", url, headers=headers, content=json.dumps(payload).encode("utf-8")
-        )
-        upstream_response = await client.send(upstream_request)
-        try:
-            status = upstream_response.status_code
-            body = upstream_response.content
-        finally:
-            await upstream_response.aclose()
+        client = _get_antigravity_egress_client()
+        status, body = await _probe_antigravity_native_once(client, model, token)
     except Exception as exc:
         err = f"Native Google probe failed: {type(exc).__name__}"
         print(f"[AntigravityTest] {err}", flush=True)
@@ -8438,6 +8599,43 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             print(f"[BSL] Token refresh failed for {provider_name}: {_refresh_exc}", flush=True)
             # Fail-open: use the stored token; 401-retry below will handle it
             _fresh_token = stored_api_key
+
+    # ── Authenticity gate (config-gated, fail-open — 2026-10-02) ────────────
+    # Probes the upstream to verify it serves the claimed model family.
+    # Default OFF (authenticity.enabled). NEVER blocks production traffic on
+    # gate failure: any exception → skip verdict, request proceeds.
+    _auth_cfg = config.get("authenticity") or {}
+    if _auth_cfg.get("enabled", False):
+        try:
+            from app.authenticity.gate import authenticity_check
+            _auth_verdict = await authenticity_check(
+                model_id=target_model,
+                endpoint_base=resolved_base_url,
+                api_key=_fresh_token,
+                config=_auth_cfg,
+            )
+            # New reality taxonomy: "substitution" = a DIFFERENT family is being
+            # served than claimed (the only verdict that warrants a hard block).
+            # "downgrade" = real family, lower sub-version → warn, don't block.
+            if _auth_verdict.verdict == "substitution" and _auth_cfg.get("fail_action", "block") == "block":
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "error": {
+                            "message": "Model authenticity verification failed",
+                            "model": target_model,
+                            "verdict": _auth_verdict.verdict,
+                            "identified_as": _auth_verdict.identified_as,
+                            "confidence_level": _auth_verdict.confidence_level,
+                        }
+                    },
+                )
+            elif _auth_verdict.verdict == "downgrade" and _auth_cfg.get("fail_action", "block") == "block":
+                print(f"[AUTH] downgrade detected for {target_model}: "
+                      f"identified_as={_auth_verdict.identified_as} "
+                      f"({_auth_verdict.confidence_level})", flush=True)
+        except Exception as _auth_exc:
+            print(f"[AUTH] gate failed (fail-open): {_auth_exc}", flush=True)
 
     headers = {
         **_auth_headers_for_key(_fresh_token),

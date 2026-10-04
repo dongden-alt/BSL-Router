@@ -100,3 +100,18 @@ pool_auth:
   # Pubkey hex allowlist. Required non-empty when mode=required.
   # Empty in optional mode = accept any valid signature.
   allowlist: []
+
+# Model authenticity verification � probes upstream to verify claimed model identity
+authenticity:
+  enabled: false                    # master switch, default OFF
+  cache_ttl_seconds: 1800           # 30 min - short because of source rotation
+  max_tier: 2                       # P0: Tier 0+1+2
+  fail_action: "block"              # block | warn
+  suspect_action: "warn"            # warn
+  probe_timeout_s: 30               # per-probe timeout
+  total_timeout_s: 90               # full battery timeout
+  # Judge LLM grades T2.5 non-coding probes (creative/EQ/humor/design). PICK A FRONTIER
+  # MODEL FROM A DIFFERENT FAMILY THAN THE SUSPECT - same-family judges bias scores.
+  # Blank = Testing Tab asks the user to choose (never hardcoded; public repo).
+  judge_model: ""
+  judge_endpoint: ""

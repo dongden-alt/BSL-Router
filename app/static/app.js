@@ -4008,6 +4008,337 @@ function getModelsDropdownWithCombosHTML(selectedValue) {
     return html;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// AUTHENTICITY TESTING TAB
+// Verify a provider serves the real claimed model (vs silent downgrade or
+// family substitution). Verdict taxonomy: real | downgrade | substitution |
+// family_match | unverifiable | error. Confidence is a verbal badge, never %.
+// ───────────────────────────────────────────────────────────────────────────
+const _authState = {
+    running: false,
+    mode: 'auto',           // normal | deep | auto
+    report: null,           // last RealityVerdict dict
+    standards: null,        // cached standards list
+    testable: null,         // cached testable (high-confidence) summary
+    testProviderKey: '',    // selected provider for the suspect
+    testModel: '',
+    judgeModel: '',
+    refHint: '',
+};
+
+const _AUTH_VERDICT_META = {
+    real:          { color: '#10b981', label: 'REAL',        desc: 'Serving the genuine claimed model.' },
+    downgrade:     { color: '#f59e0b', label: 'DOWNGRADE',   desc: 'Real family, but a lower sub-version than claimed.' },
+    substitution:  { color: '#ef4444', label: 'SUBSTITUTION', desc: 'A different model family is being served.' },
+    family_match:  { color: '#3b82f6', label: 'FAMILY MATCH', desc: 'Correct family; no sub-version standard to confirm against.' },
+    unverifiable:  { color: '#9ca3af', label: 'UNVERIFIABLE', desc: 'Not in the supported scope / no standard available. Not "fake" — just unconfirmed.' },
+    error:         { color: '#9ca3af', label: 'ERROR',        desc: 'Test could not run to completion.' },
+};
+
+function _authEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function _authFamilyOf(modelId) {
+    return String(modelId || '').toLowerCase().split(/[\-\/]/)[0];
+}
+
+function renderAuthenticityTab() {
+    const container = document.getElementById('authenticity-container');
+    if (!container) return;
+    const st = _authState;
+
+    // Provider options for the suspect (only selectable providers with models).
+    const providers = globalConfig.providers || {};
+    const providerOpts = Object.keys(providers)
+        .filter(k => isProviderSelectable(providers[k]) && (providers[k].models || []).length)
+        .map(k => `<option value="${_authEsc(k)}" ${k === st.testProviderKey ? 'selected' : ''}>${_authEsc(providers[k].name || k)}</option>`)
+        .join('');
+
+    // Models of the currently-selected provider.
+    const curModels = (st.testProviderKey && providers[st.testProviderKey])
+        ? (providers[st.testProviderKey].models || []) : [];
+    const modelOpts = curModels.map(m =>
+        `<option value="${_authEsc(m.id)}" ${m.id === st.testModel ? 'selected' : ''}>${_authEsc(m.name || m.id)}</option>`).join('');
+
+    const judgeOpts = getModelsDropdownWithCombosHTML(st.judgeModel || '');
+
+    // Same-family judge warning.
+    const judgeFam = _authFamilyOf(st.judgeModel);
+    const suspectFam = _authFamilyOf(st.testModel);
+    const sameFamily = judgeFam && suspectFam && judgeFam === suspectFam;
+    const judgeWarn = sameFamily
+        ? `<div class="auth-inline-warn">⚠ Judge shares the suspect's family — T2.5 (creative/EQ/design) scores may be biased toward it.</div>` : '';
+
+    container.innerHTML = `
+      <div class="auth-grid">
+        <div class="card auth-card">
+          <h2 class="section-title">Model Authenticity Test</h2>
+
+          <div class="auth-field">
+            <div class="setting-title">Suspect provider &amp; model</div>
+            <div class="setting-desc">Pick the provider, then the model to test. Endpoint and key are taken from that provider automatically.</div>
+            <div class="auth-row">
+              <select id="auth-provider" class="input" onchange="authOnProviderChange(this.value)">
+                <option value="">— select provider —</option>${providerOpts}
+              </select>
+              <select id="auth-model" class="input" onchange="authOnModelChange(this.value)">
+                <option value="">— select model —</option>${modelOpts}
+              </select>
+            </div>
+            <div class="auth-endpoint">${st.testProviderKey ? 'Endpoint: <code>' + _authEsc(providers[st.testProviderKey].base_url || '(none)') + '</code>' : ''}</div>
+          </div>
+
+          <div class="auth-field">
+            <div class="setting-title">Reference hint <span class="auth-opt">(optional)</span></div>
+            <div class="setting-desc">A hypothesis, not ground truth. Narrows the frozen standard to check first. Wrong hints widen — never fail-closed.</div>
+            <input id="auth-refhint" type="text" class="input" placeholder="e.g. glm-5.3-flash" value="${_authEsc(st.refHint)}"
+                   onchange="authOnField('refHint', this.value)" oninput="authOnField('refHint', this.value)">
+          </div>
+
+          <div class="auth-field">
+            <div class="setting-title">Judge LLM <span class="auth-opt">(for non-coding traits)</span></div>
+            <div class="setting-desc">Grades creative / EQ / design probes. Prefer a frontier model from a <strong>different</strong> family than the suspect.</div>
+            <select id="auth-judge" class="input" onchange="authOnField('judgeModel', this.value)">${judgeOpts}</select>
+            ${judgeWarn}
+          </div>
+
+          <div class="auth-field">
+            <div class="setting-title">Test depth</div>
+            <div class="auth-seg" id="auth-mode-seg">
+              ${['normal', 'deep', 'auto'].map(m => `
+                <button type="button" class="auth-seg-btn ${st.mode === m ? 'active' : ''}"
+                        onclick="authSetMode('${m}')" title="${m === 'normal' ? 'Fast: identity + fingerprint only' : m === 'deep' ? 'Full battery incl. non-coding judge traits' : 'Runs Normal; escalates to Deep only if ambiguous'}">${m[0].toUpperCase() + m.slice(1)}</button>`).join('')}
+            </div>
+          </div>
+
+          <button id="auth-run-btn" class="btn btn-primary" ${st.running ? 'disabled' : ''} onclick="authRunTest()">
+            ${st.running ? 'Testing…' : 'Run Test'}
+          </button>
+        </div>
+
+        <div class="card auth-card" id="auth-report-card" style="${st.report ? '' : 'display:none'}">
+          <h2 class="section-title">Report</h2>
+          <div id="auth-report-body">${st.report ? _authReportHTML(st.report) : ''}</div>
+        </div>
+      </div>
+
+      <div class="card auth-card" style="margin-top:18px">
+        <h2 class="section-title">Testable Models <span class="auth-opt">(high confidence)</span></h2>
+        <div class="setting-desc" style="margin-bottom:10px">Models with a <strong>full</strong> judge-graded frozen standard — these can be verified at high confidence. "Family-only" standards classify family but can't confirm the exact sub-version.</div>
+        <div id="auth-testable-body">${st.testable ? _authTestableHTML(st.testable) : 'Loading…'}</div>
+      </div>
+
+      <div class="card auth-card" style="margin-top:18px">
+        <h2 class="section-title">Frozen Standards <span class="auth-opt">(admin)</span></h2>
+        <div class="setting-desc" style="margin-bottom:10px">Official behavioral fingerprints harvested from trusted anchors. The Testing Tab compares suspects against these — the trusted source is never re-called at test time.</div>
+        <div id="auth-standards-body">${st.standards ? _authStandardsHTML(st.standards) : 'Loading…'}</div>
+        <hr style="border:none;border-top:1px solid var(--border-color);margin:14px 0">
+        <div class="setting-title" style="margin-bottom:6px">Harvest new standard</div>
+        <div class="auth-row" style="flex-wrap:wrap;gap:8px">
+          <input id="auth-h-endpoint" class="input" style="flex:2;min-width:200px" placeholder="endpoint base URL">
+          <input id="auth-h-key" class="input" style="flex:1;min-width:140px" placeholder="api key" type="password">
+          <input id="auth-h-model" class="input" style="flex:1;min-width:140px" placeholder="model id">
+          <select id="auth-h-judge" class="input" style="flex:1;min-width:160px">${judgeOpts}</select>
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-muted)">
+            <input type="checkbox" id="auth-h-noncoding" checked> non-coding
+          </label>
+          <button class="btn btn-outline" onclick="authHarvest()">Harvest</button>
+        </div>
+        <div id="auth-h-status" style="font-size:12px;color:var(--text-muted);margin-top:6px"></div>
+      </div>`;
+
+    // Lazily load standards + testable list once.
+    if (st.standards === null) { authLoadStandards(); }
+    if (st.testable === null) { authLoadTestable(); }
+    if (window._AUTH_JUDGE_SUGGESTIONS === null) { authLoadJudges(); }
+}
+
+function _authReportHTML(v) {
+    const meta = _AUTH_VERDICT_META[v.verdict] || _AUTH_VERDICT_META.error;
+    const mods = Array.isArray(v.modifications) ? v.modifications : [];
+    const modsHTML = mods.length
+        ? `<div class="auth-mods"><div class="setting-title" style="margin-bottom:6px">Modifications detected</div>` +
+          mods.map(m => `<div class="auth-mod"><span class="auth-mod-type">${_authEsc(m.type || '')}</span> ${_authEsc(m.detail || '')}` +
+              (m.claimed || m.measured ? ` <span class="auth-mod-cm">claimed: ${_authEsc(m.claimed)} · measured: ${_authEsc(m.measured)}</span>` : '') + `</div>`).join('') + `</div>`
+        : '';
+    const evidence = v.evidence ? JSON.stringify(v.evidence, null, 2) : '';
+    return `
+      <div class="auth-banner" style="border-color:${meta.color};background:${meta.color}14">
+        <div class="auth-verdict" style="color:${meta.color}">${meta.label}</div>
+        <div class="auth-headline">${_authEsc(v.headline || meta.desc)}</div>
+        <div class="auth-conf-badge" style="border-color:${meta.color};color:${meta.color}">${_authEsc((v.confidence_level || '').replace(/_/g, ' '))}</div>
+      </div>
+      <div class="auth-meta-row">
+        ${v.identified_as ? `<span><strong>Identified as:</strong> ${_authEsc(v.identified_as)}</span>` : ''}
+        ${v.family ? `<span><strong>Family:</strong> ${_authEsc(v.family)}</span>` : ''}
+        ${v.focus ? `<span><strong>Focus:</strong> ${_authEsc(v.focus)}</span>` : ''}
+      </div>
+      ${modsHTML}
+      ${evidence ? `<details class="auth-evidence"><summary>Evidence</summary><pre>${_authEsc(evidence)}</pre></details>` : ''}
+      <div class="auth-latency">${v.latency_ms != null ? 'latency: ' + v.latency_ms + ' ms' : ''}</div>`;
+}
+
+function _authStandardsHTML(list) {
+    if (!list.length) return '<div style="color:var(--text-muted);font-size:13px">No standards harvested yet.</div>';
+    const qualColor = { full: '#10b981', family_only: '#f59e0b', hollow: '#ef4444' };
+    return `<table class="auth-table"><thead><tr><th>Family</th><th>Sub-model</th><th>Quality</th><th>Judge</th><th>Collected</th><th>Stale</th><th></th></tr></thead><tbody>` +
+        list.map(s => `<tr>
+            <td>${_authEsc(s.family)}</td><td>${_authEsc(s.sub_model)}</td>
+            <td><span style="color:${qualColor[s.quality] || '#9ca3af'};font-weight:600">${_authEsc(s.quality || '?')}</span></td>
+            <td style="font-size:11px;color:var(--text-muted)">${_authEsc(s.judged_by || s.suggested_judge || '')}</td>
+            <td>${_authEsc((s.collected_at || '').slice(0, 10))}</td>
+            <td>${s.stale ? '<span class="auth-stale">stale</span>' : '<span style="color:#10b981">fresh</span>'}</td>
+            <td><button class="btn btn-outline" style="padding:2px 8px;font-size:11px" onclick="authDeleteStandard('${_authEsc(s.family)}','${_authEsc(s.sub_model)}')">Delete</button></td>
+        </tr>`).join('') + `</tbody></table>`;
+}
+
+function _authTestableHTML(t) {
+    if (!t) return '';
+    const full = t.testable || [];
+    const partial = t.family_only || [];
+    if (!full.length && !partial.length) return '<div style="color:var(--text-muted);font-size:13px">No standards yet — harvest from a trusted anchor below.</div>';
+    const row = (s, ok) => `<tr>
+        <td>${_authEsc(s.sub_model)}</td>
+        <td>${_authEsc(s.family)}</td>
+        <td>${ok ? '<span style="color:#10b981;font-weight:600">high</span>' : '<span style="color:#f59e0b">family-only</span>'}</td>
+        <td style="font-size:11px;color:var(--text-muted)">${_authEsc(s.suggested_judge || 'mintrouter/claude-opus-5-5')}</td>
+    </tr>`;
+    return `<table class="auth-table"><thead><tr><th>Model</th><th>Family</th><th>Confidence</th><th>Suggested judge</th></tr></thead><tbody>` +
+        full.map(s => row(s, true)).join('') + partial.map(s => row(s, false)).join('') + `</tbody></table>`;
+}
+
+window.authLoadTestable = async function () {
+    try {
+        const resp = await fetch('/api/authenticity/standards/testable');
+        _authState.testable = await resp.json();
+    } catch (e) { _authState.testable = { testable: [], family_only: [] }; }
+    const body = document.getElementById('auth-testable-body');
+    if (body) body.innerHTML = _authTestableHTML(_authState.testable);
+};
+
+// ── window handlers ─────────────────────────────────────────────────────────
+window.authOnProviderChange = function (key) {
+    _authState.testProviderKey = key;
+    _authState.testModel = '';
+    renderAuthenticityTab();
+};
+window.authOnModelChange = function (model) {
+    _authState.testModel = model;
+    // Auto-suggest the judge for this suspect's family (judge must differ from suspect family).
+    const fam = _authFamilyOf(model);
+    const sug = (window._AUTH_JUDGE_SUGGESTIONS || {})[fam] || 'mintrouter/claude-opus-5-5';
+    _authState.judgeModel = sug;
+    renderAuthenticityTab();
+};
+window.authOnField = function (field, val) {
+    _authState[field] = val;
+    if (field === 'judgeModel') renderAuthenticityTab(); // re-render same-family warning
+};
+window.authSetMode = function (mode) { _authState.mode = mode; renderAuthenticityTab(); };
+
+window.authRunTest = async function () {
+    const st = _authState;
+    const p = (globalConfig.providers || {})[st.testProviderKey];
+    if (!p || !st.testModel) { showToast('Select a provider and model first', true); return; }
+    const endpoint = p.base_url || '';
+    const api_key = p.api_key || '';
+    if (!endpoint || !api_key) { showToast('Provider has no endpoint/key configured', true); return; }
+
+    st.running = true; st.report = null; renderAuthenticityTab();
+    try {
+        const resp = await fetch('/api/authenticity/test', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model_id: st.testModel, endpoint, api_key,
+                reference_hint: st.refHint || '', mode: st.mode,
+            }),
+        });
+        const data = await resp.json();
+        st.report = data;
+    } catch (e) {
+        showToast('Test failed: ' + e.message, true);
+        st.report = { verdict: 'error', headline: 'Request failed: ' + e.message, confidence_level: 'none' };
+    } finally {
+        st.running = false; renderAuthenticityTab();
+    }
+};
+
+window.authLoadStandards = async function () {
+    try {
+        const resp = await fetch('/api/authenticity/standards');
+        const data = await resp.json();
+        _authState.standards = data.standards || [];
+    } catch (e) {
+        _authState.standards = [];
+    }
+    const body = document.getElementById('auth-standards-body');
+    if (body) body.innerHTML = _authStandardsHTML(_authState.standards);
+    authLoadTestable();   // refresh the high-confidence box alongside the standards
+};
+
+// Judge suggestions (default claude-opus-5-5; judge must differ from suspect family).
+window._AUTH_JUDGE_SUGGESTIONS = null;
+window.authLoadJudges = async function () {
+    try {
+        const resp = await fetch('/api/authenticity/judges');
+        const data = await resp.json();
+        window._AUTH_JUDGE_SUGGESTIONS = data.by_family || {};
+    } catch (e) { window._AUTH_JUDGE_SUGGESTIONS = {}; }
+};
+
+window.authHarvest = async function () {
+    const endpoint = document.getElementById('auth-h-endpoint').value.trim();
+    const api_key = document.getElementById('auth-h-key').value.trim();
+    const model_id = document.getElementById('auth-h-model').value.trim();
+    const judge = document.getElementById('auth-h-judge').value;
+    const include_noncoding = document.getElementById('auth-h-noncoding').checked;
+    const statusEl = document.getElementById('auth-h-status');
+    if (!endpoint || !api_key || !model_id) { showToast('endpoint, key and model id are required', true); return; }
+
+    statusEl.textContent = 'Harvesting… (this can take a minute)';
+    try {
+        const resp = await fetch('/api/authenticity/standards/harvest', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                endpoint, api_key, model_id, include_noncoding,
+                judge: judge ? { model: judge, endpoint: (globalConfig.providers || {})[_authFamilyProvider(judge)]?.base_url || '', api_key: (globalConfig.providers || {})[_authFamilyProvider(judge)]?.api_key || '' } : null,
+            }),
+        });
+        if (!resp.ok) { statusEl.textContent = 'Harvest failed to start'; return; }
+        // Poll status until done/error.
+        const poll = setInterval(async () => {
+            try {
+                const st = await (await fetch('/api/authenticity/standards/harvest/status/' + encodeURIComponent(model_id))).json();
+                statusEl.textContent = 'Status: ' + st.status + (st.detail ? ' — ' + st.detail : '');
+                if (st.status === 'done' || st.status === 'error') {
+                    clearInterval(poll);
+                    authLoadStandards();
+                }
+            } catch (e) { clearInterval(poll); }
+        }, 2000);
+    } catch (e) {
+        statusEl.textContent = 'Harvest error: ' + e.message;
+    }
+};
+
+window.authDeleteStandard = async function (family, sub) {
+    try {
+        await fetch(`/api/authenticity/standards/${encodeURIComponent(family)}/${encodeURIComponent(sub)}`, { method: 'DELETE' });
+        authLoadStandards();
+    } catch (e) { showToast('Delete failed: ' + e.message, true); }
+};
+
+function _authFamilyProvider(modelId) {
+    // Best-effort: find the provider key that owns this model id.
+    const providers = globalConfig.providers || {};
+    for (const k of Object.keys(providers)) {
+        if ((providers[k].models || []).some(m => m.id === modelId)) return k;
+    }
+    return '';
+}
+
 function renderActiveTab() {
     stopLogsLivePolling();  // halt live log streaming when navigating; re-armed on the Logs tab
     stopUsageLivePolling(); // halt live usage streaming when navigating; re-armed on the Usage tab
@@ -4094,6 +4425,17 @@ function renderActiveTab() {
         if (visibilityEditBtn) visibilityEditBtn.style.display = 'none';
         if (visibilitySaveBtn) visibilitySaveBtn.style.display = 'none';
         if (saveBtn) saveBtn.style.display = 'inline-flex';
+    } else if (activeTab === 'authenticity') {
+        document.getElementById('topbar-breadcrumb').innerHTML = `
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="var(--brand-color)" stroke-width="2" fill="none" style="margin-right:8px;flex-shrink:0"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+            <span>Model Authenticity</span>
+            <div class="topbar-subtitle">Verify a provider serves the real claimed model — and detect silent downgrades</div>`;
+        content.innerHTML = `<div id="authenticity-container">Loading...</div>`;
+        renderAuthenticityTab();
+
+        if (visibilityEditBtn) visibilityEditBtn.style.display = 'none';
+        if (visibilitySaveBtn) visibilitySaveBtn.style.display = 'none';
+        if (saveBtn) saveBtn.style.display = 'none';
     } else if (activeTab === 'usage') {
         document.getElementById('topbar-breadcrumb').innerHTML = `
             <svg viewBox="0 0 24 24" width="20" height="20" stroke="var(--brand-color)" stroke-width="2" fill="none" style="margin-right:8px;flex-shrink:0"><path d="M21.21 15.89A10 10 0 1 1 8 2.83M22 12A10 10 0 0 0 12 2v10z"/></svg>

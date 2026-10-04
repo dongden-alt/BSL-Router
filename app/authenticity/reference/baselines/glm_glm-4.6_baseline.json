@@ -1,0 +1,9 @@
+{
+  "model_id": "glm-4.6",
+  "family": "glm",
+  "cutoff_year": 2025,
+  "cutoff_month": 4,
+  "capability_correct": 3,
+  "collected_at": "2026-10-02T17:00:00Z",
+  "collected_from": "https://open.bigmodel.cn/api/paas/v4"
+}

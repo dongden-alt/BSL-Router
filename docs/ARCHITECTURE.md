@@ -309,6 +309,29 @@ Intercepts traffic for apps that don't let you change the API URL:
 3. Watchdog process monitors and restarts if it crashes
 4. Tree-kill + verify+retry loop ensures clean port cleanup
 
+### Model Authenticity Verification (2026-10-03)
+
+A baseline-driven gate that answers: *"is the upstream actually serving the model it claims?"*
+Lives in `app/authenticity/`. Adapted from the BazaarLink probe-engine methodology for router use.
+
+**Pipeline (tiered, fail-open, config-gated by `authenticity.enabled`, default OFF):**
+
+| Tier | Name | What it does |
+|---|---|---|
+| 0 | Cache | Fresh stable verdict short-circuits re-probing (TTL ~30min). Suspect verdicts are NOT cached. |
+| 1 | Surface fingerprint | 5 probes (identity_direct, identity_adversarial, style_sample, cutoff_probe, capability_boundary) -> feature extraction with **self-claim zeroing** -> family classification. |
+| 2 | Deterministic match | cutoff/capability probes -> `match_submodel` against frozen TraitMark standard. |
+| 2.5 | Judge (LLM) | Grades creative/EQ/humor/design probes. Judge from a DIFFERENT family than the suspect (never hardcoded; user picks). |
+
+**Key structures:**
+- **TraitMark** (`traitmark.py`) - frozen official-standard schema per sub-model, harvested ONCE from a trusted anchor; the trusted source is never re-called at test time.
+- **Scope registry** (`scope.py`) - `TRUSTED_ANCHORS` maps 7 families to their trusted source: GLM/Kimi/DeepSeek/Qwen = `aibox` (gold, direct vendor API); Claude/GPT/Gemini = `mintrouter`/`codex`/`antigravity` OAuth wrappers (reference).
+- **Layer weights** (`LAYER_WEIGHTS`) - identity 0.10, knowledge 0.28, reasoning 0.10, style 0.05, lexical 0.20, noncoding 0.12, structural 0.15. Structural (tokenizer/tool/code) is deepest; style is lowest (wrapper-shiftable).
+- **Reality verdicts** (`scoring.py` `compute_reality`) - `real / downgrade / substitution / family_match / unverifiable / error`, plus a `modifications[]` list (prompt injection, output cap, context truncation, thinking strip). Confidence is a 5-level verbal badge, never a raw %.
+
+**Standards lifecycle:** harvested once from a trusted anchor via `POST /api/authenticity/standards/harvest`, stored under `app/authenticity/reference/standards/*.json` (gitignored). New models onboard by JSON snapshot - no code change.
+
+
 ### 📊 Observability
 - Every request/response logged in JSONL format
 - Usage stats per model with cost tracking (see Usage Store below)
@@ -466,7 +489,7 @@ Stage signals ride `request.state` → `obs.note_fel_context()` → `log_request
 
 ## Admin Dashboard Architecture
 
-The admin dashboard is a single-page app (`app/static/`) with 9 tabs:
+The admin dashboard is a single-page app (`app/static/`) with 10 tabs:
 
 | Tab | HTML ID | Purpose |
 |---|---|---|
@@ -479,6 +502,7 @@ The admin dashboard is a single-page app (`app/static/`) with 9 tabs:
 | **Usage** | `usage` | Per-model usage table with filtering, cost tracking, and a live in-flight request strip |
 | **Logs** | `logs` | Live request/response log streaming |
 | **Settings** | `settings` | Admin password, shutdown, logout |
+| **Authenticity** | `authenticity` | Model Authenticity Test (suspect/judge pickers, verdict report), Frozen Standards admin panel |
 
 ### Antigravity Integration (Endpoint Tab)
 Direct-inference overlay for Antigravity IDE 2.1.1:
@@ -664,6 +688,11 @@ See [config.example.yaml](../config.example.yaml) for a complete working templat
 | `GET/POST /api/bsl-matrix/*` | Read/apply Blacksand matrix config |
 | `GET/POST /api/antigravity/*` | Antigravity integration control |
 | `POST /api/auth/login` | Admin login |
+| `GET /api/authenticity/standards` | List frozen TraitMark standards |
+| `POST /api/authenticity/standards/harvest` | Harvest a new standard from a trusted anchor (background) |
+| `GET /api/authenticity/standards/harvest/status/{model_id}` | Poll harvest job status |
+| `DELETE /api/authenticity/standards/{family}/{sub_model}` | Delete a frozen standard |
+| `POST /api/authenticity/test` | Run the authenticity gate on a suspect model (normal/deep/auto) |
 
 ---
 

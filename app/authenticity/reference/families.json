@@ -1,0 +1,100 @@
+{
+  "glm": {
+    "family": "glm",
+    "org_names": ["z.ai", "zhipu", "zhipu ai", "bigmodel", "chatglm", "tsinghua"],
+    "self_keywords": ["glm", "chatglm", "z.ai", "zhipu"],
+    "impostor_keywords": ["qwen", "deepseek", "moonshot", "kimi", "llama", "mistral", "baichuan", "minimax", "yi-"],
+    "style_baseline": {
+      "bullet_style": "-",
+      "cjk_ratio": 0.05,
+      "avg_sentence_length": 80,
+      "header_depth": 2,
+      "has_analogy": true,
+      "question_count": 2
+    }
+  },
+  "qwen": {
+    "family": "qwen",
+    "org_names": ["alibaba", "qwen", "tongyi"],
+    "self_keywords": ["qwen", "tongyi", "alibaba"],
+    "impostor_keywords": ["glm", "deepseek", "moonshot", "kimi", "llama", "mistral", "chatglm", "zhipu"],
+    "style_baseline": {
+      "bullet_style": "-",
+      "cjk_ratio": 0.03,
+      "avg_sentence_length": 90,
+      "header_depth": 2,
+      "has_analogy": true,
+      "question_count": 1
+    }
+  },
+  "deepseek": {
+    "family": "deepseek",
+    "org_names": ["deepseek"],
+    "self_keywords": ["deepseek"],
+    "impostor_keywords": ["glm", "qwen", "moonshot", "kimi", "llama", "mistral", "chatglm", "zhipu"],
+    "style_baseline": {
+      "bullet_style": "-",
+      "cjk_ratio": 0.02,
+      "avg_sentence_length": 100,
+      "header_depth": 2,
+      "has_analogy": true,
+      "question_count": 1
+    }
+  },
+  "claude": {
+    "family": "claude",
+    "org_names": ["anthropic"],
+    "self_keywords": ["claude", "anthropic"],
+    "impostor_keywords": ["gpt", "openai", "glm", "qwen", "deepseek", "moonshot", "kimi", "llama", "gemini"],
+    "style_baseline": {
+      "bullet_style": "-",
+      "cjk_ratio": 0.0,
+      "avg_sentence_length": 120,
+      "header_depth": 2,
+      "has_analogy": true,
+      "question_count": 1
+    }
+  },
+  "gpt": {
+    "family": "gpt",
+    "org_names": ["openai"],
+    "self_keywords": ["gpt", "openai", "chatgpt"],
+    "impostor_keywords": ["claude", "anthropic", "glm", "qwen", "deepseek", "moonshot", "kimi", "llama", "gemini"],
+    "style_baseline": {
+      "bullet_style": "-",
+      "cjk_ratio": 0.0,
+      "avg_sentence_length": 110,
+      "header_depth": 2,
+      "has_analogy": true,
+      "question_count": 1
+    }
+  },
+  "gemini": {
+    "family": "gemini",
+    "org_names": ["google", "deepmind"],
+    "self_keywords": ["gemini", "google", "bard"],
+    "impostor_keywords": ["claude", "anthropic", "gpt", "openai", "glm", "qwen", "deepseek", "moonshot", "kimi"],
+    "style_baseline": {
+      "bullet_style": "*",
+      "cjk_ratio": 0.0,
+      "avg_sentence_length": 100,
+      "header_depth": 2,
+      "has_analogy": true,
+      "question_count": 2
+    }
+  },
+  "kimi": {
+    "family": "kimi",
+    "org_names": ["moonshot", "moonshot ai"],
+    "self_keywords": ["kimi", "moonshot"],
+    "impostor_keywords": ["glm", "qwen", "deepseek", "claude", "gpt", "llama", "chatglm", "zhipu"],
+    "style_baseline": {
+      "bullet_style": "-",
+      "cjk_ratio": 0.04,
+      "avg_sentence_length": 95,
+      "header_depth": 2,
+      "has_analogy": true,
+      "question_count": 1
+    }
+  }
+}
