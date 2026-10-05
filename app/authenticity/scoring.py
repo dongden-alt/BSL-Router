@@ -203,6 +203,9 @@ def compute_reality(
         # Behavior clearly points at a DIFFERENT family → substitution
         v.verdict = "substitution"
         v.identified_as = behavior_family
+        _fev = getattr(family_verdict, "evidence", {}) or {}
+        if _fev:
+            v.evidence["family_classifier"] = _fev
     elif total >= REAL_THRESHOLD:
         # Matches the (hinted) standard. Check for downgrade: matched a
         # different sub-model than the claimed/focus one.
@@ -219,6 +222,9 @@ def compute_reality(
     elif total <= SUBSTITUTION_THRESHOLD:
         v.verdict = "substitution"
         v.identified_as = behavior_family or "unknown"
+        _fev = getattr(family_verdict, "evidence", {}) or {}
+        if _fev:
+            v.evidence["family_classifier"] = _fev
     else:
         v.verdict = "unverifiable"
         v.evidence["reason"] = "ambiguous — consider Deep mode"
