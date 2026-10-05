@@ -50,6 +50,12 @@ class FingerprintFeatures:
     #         "answers": [{fact, kind, answer}]}
     knowledge_needles: dict = field(default_factory=dict)
 
+    # V5 LOGPROB TAIL — weight-level, search/injection-IMMUNE version splitter.
+    # First-token logprob distribution on fixed probes (LT method). Populated by
+    # the gate's V5 lane when the endpoint returns logprobs; empty otherwise.
+    # shape: {probe_id: {"logprob": float, "top": {token: logprob}}}
+    logprob_profile: dict = field(default_factory=dict)
+
 
 # Self-identification phrases to strip for behavior-column classification
 SELF_CLAIM_PATTERNS = [

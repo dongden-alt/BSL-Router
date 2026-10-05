@@ -258,6 +258,36 @@ async def authenticity_check(
                     except Exception as _kn_exc:
                         logger.warning("V1 needle lane failed (fail-open): %s", _kn_exc)
 
+                # ── V5 LOGPROB TAIL (deep mode) — weight-level, search-immune ──
+                # First-token logprobs on fixed probes: shifts with a single
+                # fine-tune step; retrieval/injection cannot touch the logit
+                # head. Skipped silently when the endpoint hides logprobs.
+                if (time.monotonic() - t0) < total_timeout and features is not None:
+                    try:
+                        from .probes import LOGPROB_PROBES
+                        prof = {}
+                        for p in LOGPROB_PROBES:
+                            r = await run_probe(
+                                client, endpoint_base, api_key, model_id, p,
+                                probe_timeout,
+                                extra={"logprobs": True, "top_logprobs": 5,
+                                       "temperature": 0},
+                            )
+                            if r.status_code == 200 and r.logprobs:
+                                first = (r.logprobs.get("content") or [{}])[0]
+                                prof[p["id"]] = {
+                                    "logprob": first.get("logprob"),
+                                    "top": {t.get("token"): t.get("logprob")
+                                            for t in (first.get("top_logprobs") or [])},
+                                }
+                        if prof:
+                            features.logprob_profile = prof
+                            _b3 = _load_match_baselines(model_id)
+                            if _b3:
+                                match_result = match_submodel(features, _b3)
+                    except Exception as _lp_exc:
+                        logger.warning("V5 logprob lane failed (fail-open): %s", _lp_exc)
+
         # Fuse into a reality verdict
         verdict = compute_reality(
             model_id=model_id, endpoint=endpoint_base,

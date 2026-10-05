@@ -116,6 +116,7 @@ class StructuralLayer:
     tokenizer_signature: dict = field(default_factory=dict)  # special-token + char-count behavior
     tool_use_schema: dict = field(default_factory=dict)      # argument-schema style
     code_formatting: dict = field(default_factory=dict)      # indentation, comment style
+    logprob_profile: dict = field(default_factory=dict)      # V5: {probe_id: {logprob, top}} first-token tail
 
 
 @dataclass

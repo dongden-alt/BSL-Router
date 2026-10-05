@@ -103,6 +103,23 @@ def match_submodel(
         else:
             dims["knowledge"] = None  # not compared
 
+        # V5 LOGPROB TAIL: weight-level version splitter (LT method). Compare
+        # first-token logprobs per shared probe; 0.5 nats = full mismatch scale.
+        lp_sus = getattr(features, "logprob_profile", {}) or {}
+        lp_base = (((baseline.get("structural") or {}).get("tokenizer_signature") or {})
+                   .get("logprob_profile")) or baseline.get("logprob_profile") or {}
+        shared_lp = [pid for pid in lp_sus
+                     if isinstance(lp_base.get(pid), dict)
+                     and lp_base[pid].get("logprob") is not None
+                     and isinstance(lp_sus.get(pid), dict)
+                     and lp_sus[pid].get("logprob") is not None]
+        if shared_lp:
+            sim = sum(max(0.0, 1.0 - abs(lp_sus[pid]["logprob"] - lp_base[pid]["logprob"]) / 0.5)
+                      for pid in shared_lp) / len(shared_lp)
+            dims["logprob"] = round(sim, 3)
+        else:
+            dims["logprob"] = None  # endpoint hid logprobs / no baseline
+
         scores[model_id] = score
         all_dimensions[model_id] = dims
 
@@ -127,6 +144,16 @@ def match_submodel(
         # expose the non-coding dimension on the result for scoring/conclusions
         best_dims = dict(best_dims)
         best_dims["noncoding"] = nc
+
+    # Logprob tail is decisive: if compared and the first-token distribution
+    # differs materially, the weight state is NOT the claimed standard's —
+    # no surface signal can override that (search/injection can't fake logits).
+    if best_dims.get("logprob") is not None:
+        lp = best_dims["logprob"]
+        if lp < 0.6 and not abstain:
+            abstain = True
+        best_dims = dict(best_dims)
+        best_dims["logprob"] = lp
 
     return MatchResult(
         matched_model=best_model if not abstain else "",

@@ -14,6 +14,7 @@ class ProbeResult:
     thinking: str
     latency_ms: int
     error: str = ""
+    logprobs: dict = None      # choices[0].logprobs when requested (V5 tail)
 
 
 TIER1_PROBES = [
@@ -72,15 +73,29 @@ TIER2_PROBES = [
 ]
 
 
-async def run_probe(
+# V5 LOGPROB TAIL probes — fixed, minimal, temp=0 (injected via extra at run
+# time). Per Logprob Tracking (arXiv 2512.03816), the first-token logprob on
+# arbitrary short inputs is a weight-level distribution: it shifts with even a
+# single fine-tune step and is IMMUNE to prompt injection and search
+# augmentation (retrieval does not change the logit head).
+LOGPROB_PROBES = [
+    {"id": "lp_tok_a", "prompt": "Reply with the single word: ready", "max_tokens": 8},
+    {"id": "lp_tok_b", "prompt": "Count: 1 2 3", "max_tokens": 8},
+    {"id": "lp_tok_c", "prompt": "Translate 'bonjour' to English.", "max_tokens": 8},
+]
     client: httpx.AsyncClient,
     endpoint_base: str,
     api_key: str,
     model_id: str,
     probe: dict,
     timeout_s: int = 30,
+    extra: dict | None = None,
 ) -> ProbeResult:
-    """Execute a single probe against an endpoint. NEVER raises."""
+    """Execute a single probe against an endpoint. NEVER raises.
+
+    extra: optional request-payload overrides (e.g. {"logprobs": true,
+    "top_logprobs": 5, "temperature": 0} for the V5 logprob tail).
+    """
     t0 = time.monotonic()
 
     # Normalize endpoint URL
@@ -91,14 +106,17 @@ async def run_probe(
         url = f"{base}/chat/completions"
 
     try:
+        payload = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": probe["prompt"]}],
+            "max_tokens": probe["max_tokens"],
+            "stream": False,
+        }
+        if extra:
+            payload.update(extra)
         resp = await client.post(
             url,
-            json={
-                "model": model_id,
-                "messages": [{"role": "user", "content": probe["prompt"]}],
-                "max_tokens": probe["max_tokens"],
-                "stream": False,
-            },
+            json=payload,
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -122,6 +140,7 @@ async def run_probe(
         msg = data.get("choices", [{}])[0].get("message", {})
         content = msg.get("content", "") or ""
         thinking = msg.get("reasoning_content", "") or ""
+        logprobs = data.get("choices", [{}])[0].get("logprobs")
 
         return ProbeResult(
             probe_id=probe["id"],
@@ -130,6 +149,7 @@ async def run_probe(
             content=content,
             thinking=thinking,
             latency_ms=latency_ms,
+            logprobs=logprobs,
         )
     except Exception as exc:
         return ProbeResult(
