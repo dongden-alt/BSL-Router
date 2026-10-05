@@ -188,6 +188,25 @@ def _build_conclusions(v) -> None:
         rationale = "The test could not run to completion (endpoint/timeout/probe failure)."
         attached = {"errors": ev.get("errors") or ev.get("probe_errors") or []}
 
+    # PRIMARY = always the HIGHEST-confidence signal available. If the fused
+    # verdict confidence is weaker than the strongest matching evidence (e.g.
+    # behavior fingerprint), promote the primary to that score so the headline
+    # conclusion always carries the strongest zone the data supports. The
+    # weaker readings drop to the additional-conclusions list.
+    primary_conf = max(0.0, min(1.0, float(v.confidence)))
+    if v.verdict in ("substitution", "family_match", "real") and behavior_scores:
+        _best_fam = max(behavior_scores, key=lambda k: behavior_scores[k])
+        _best_score = max(0.0, min(1.0, float(behavior_scores[_best_fam])))
+        if v.verdict == "substitution" and str(_best_fam) == str(v.identified_as):
+            primary_conf = max(primary_conf, _best_score)
+        elif v.verdict in ("family_match", "real") and str(_best_fam) == str(v.family or v.identified_as):
+            primary_conf = max(primary_conf, _best_score)
+        elif v.verdict == "substitution":
+            primary_conf = max(primary_conf, _best_score)
+    # Keep the verdict-level confidence in sync so badge/headline agree.
+    v.confidence = primary_conf
+    v.confidence_level = zone(primary_conf)
+
     v.conclusions = [{
         "rank": 1, "primary": True, "verdict": v.verdict,
         "label": v.verdict.upper().replace("_", " "),
