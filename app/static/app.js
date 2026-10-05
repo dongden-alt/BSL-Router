@@ -4165,6 +4165,36 @@ function _authReportHTML(v) {
               (m.claimed || m.measured ? ` <span class="auth-mod-cm">claimed: ${_authEsc(m.claimed)} · measured: ${_authEsc(m.measured)}</span>` : '') + `</div>`).join('') + `</div>`
         : '';
     const evidence = v.evidence ? JSON.stringify(v.evidence, null, 2) : '';
+    const zoneColor = { very_high: '#10b981', high: '#10b981', medium: '#f59e0b', low: '#f97316', very_low: '#9ca3af' };
+    const zoneBadge = z => `<span class="auth-conf-badge" style="border-color:${zoneColor[z] || '#9ca3af'};color:${zoneColor[z] || '#9ca3af'};font-size:11px">${_authEsc((z || '').replace(/_/g, ' '))}</span>`;
+    const evBlock = ev => {
+        const s = ev && Object.keys(ev).length ? JSON.stringify(ev, null, 2) : '';
+        return s ? `<details class="auth-evidence" style="margin-top:4px"><summary>evidence</summary><pre style="font-size:11px">${_authEsc(s)}</pre></details>` : '';
+    };
+    const conclusions = Array.isArray(v.conclusions) ? v.conclusions : [];
+    const primary = conclusions.find(c => c.primary) || conclusions[0] || null;
+    const alts = conclusions.filter(c => c !== primary);
+    const conclusionsHTML = primary ? `
+      <div class="auth-mods" style="border:1px solid var(--border-color);border-radius:8px;padding:12px">
+        <div class="setting-title" style="margin-bottom:8px">Conclusion</div>
+        <div style="border-left:3px solid ${zoneColor[primary.zone] || '#9ca3af'};padding-left:10px;margin-bottom:${alts.length ? '10px' : '0'}">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <strong style="color:${zoneColor[primary.zone] || '#9ca3af'}">${_authEsc(primary.label)}</strong>
+            ${primary.identified_as ? `<span>as <code>${_authEsc(primary.identified_as)}</code></span>` : ''}
+            ${zoneBadge(primary.zone)}
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:3px">${_authEsc(primary.statement || '')}</div>
+          ${primary.rationale ? `<div style="font-size:12px;margin-top:4px"><strong>Why:</strong> ${_authEsc(primary.rationale)}</div>` : ''}
+          ${evBlock(primary.evidence)}
+        </div>
+        ${alts.length ? `<div class="setting-desc" style="margin-bottom:4px">Also possible</div>` : ''}
+        ${alts.map(a => `<div style="border-left:2px solid var(--border-color);padding-left:10px;margin-bottom:6px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span>${_authEsc(a.label)}</span> ${zoneBadge(a.zone)}
+          </div>
+          ${a.rationale ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${_authEsc(a.rationale)}</div>` : ''}
+        </div>`).join('')}
+      </div>` : '';
     return `
       <div class="auth-banner" style="border-color:${meta.color};background:${meta.color}14">
         <div class="auth-verdict" style="color:${meta.color}">${meta.label}</div>
@@ -4176,8 +4206,9 @@ function _authReportHTML(v) {
         ${v.family ? `<span><strong>Family:</strong> ${_authEsc(v.family)}</span>` : ''}
         ${v.focus ? `<span><strong>Focus:</strong> ${_authEsc(v.focus)}</span>` : ''}
       </div>
+      ${conclusionsHTML}
       ${modsHTML}
-      ${evidence ? `<details class="auth-evidence"><summary>Evidence</summary><pre>${_authEsc(evidence)}</pre></details>` : ''}
+      ${evidence ? `<details class="auth-evidence"><summary>Raw evidence</summary><pre>${_authEsc(evidence)}</pre></details>` : ''}
       <div class="auth-latency">${v.latency_ms != null ? 'latency: ' + v.latency_ms + ' ms' : ''}</div>`;
 }
 

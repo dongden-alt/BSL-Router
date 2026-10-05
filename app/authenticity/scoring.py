@@ -82,6 +82,7 @@ class RealityVerdict:
         self.confidence_level = confidence_level(self.confidence)
         self.timestamp = datetime.datetime.now(
             datetime.timezone.utc).isoformat()
+        _build_conclusions(self)
         return self
 
     def headline(self) -> str:
@@ -112,10 +113,120 @@ class RealityVerdict:
             "latency_ms": self.latency_ms,
             "timestamp": self.timestamp,
             "headline": self.headline(),
+            "conclusions": getattr(self, "conclusions", []),
         }
 
 
 # ── Weights ────────────────────────────────────────────────────────────────
+# ── Conclusions: primary (always) + ranked alternatives, each with rationale ──
+_VERDICT_PHRASE = {
+    "real": "serving the genuine claimed model",
+    "downgrade": "real family but a lower/cheaper sub-version than claimed",
+    "substitution": "a DIFFERENT model is being served under the claimed name",
+    "family_match": "correct family, exact sub-version unconfirmed (no standard)",
+    "unverifiable": "could not be confirmed - honest unknown, NOT a fake verdict",
+    "error": "the test could not run to completion",
+}
+
+
+def _verdict_phrase(verdict: str) -> str:
+    return _VERDICT_PHRASE.get(verdict, verdict.replace("_", " "))
+
+
+def _build_conclusions(v) -> None:
+    """Populate v.conclusions: primary (always) + ranked alternatives.
+
+    Every conclusion carries: zone (confidence badge), human rationale, and
+    attached evidence so the user always sees WHY a conclusion was reached and
+    which confidence zone the model sits in.
+    """
+    ev = v.evidence if isinstance(v.evidence, dict) else {}
+    fc = ev.get("family_classifier") or {}
+    behavior_scores = fc.get("behavior_scores") or {}
+    impostor_hits = fc.get("impostor_hits") or ev.get("impostor_hits") or []
+    self_hits = fc.get("self_hits") or []
+
+    def zone(score: float) -> str:
+        return confidence_level(max(0.0, min(1.0, score)))
+
+    rationale = ""
+    attached: dict = {}
+    if v.verdict == "substitution":
+        rationale = (
+            f"Behavioral fingerprint points to '{v.identified_as}' while the model "
+            f"claims family '{v.family or v.claimed}'. Self-claims are zeroed; only "
+            f"style/behavior signals are trusted."
+        )
+        attached = {"behavior_scores": behavior_scores,
+                    "impostor_hits": impostor_hits, "self_hits_ignored": self_hits}
+    elif v.verdict == "real":
+        matched = v.submodel_match or v.identified_as or v.claimed
+        rationale = (
+            f"Responses matched the frozen official standard for '{matched}' "
+            f"(fused score {round(v.confidence, 2)} >= real threshold)."
+        )
+        attached = {"submodel_match": v.submodel_match, "submodel_score": v.submodel_score}
+    elif v.verdict == "downgrade":
+        rationale = (
+            f"Family is correct but behavior matched '{v.submodel_match or v.identified_as}' "
+            f"- a cheaper/older sub-version than the claimed '{v.claimed}'."
+        )
+        attached = {"submodel_match": v.submodel_match, "claimed": v.claimed}
+    elif v.verdict == "family_match":
+        rationale = (
+            f"Style signals match family '{v.identified_as or v.family}', but no frozen "
+            f"standard exists for the exact sub-version, so it can't be fully confirmed."
+        )
+        attached = {"behavior_scores": behavior_scores}
+    elif v.verdict == "unverifiable":
+        rationale = (
+            f"Signals were too ambiguous to commit. {ev.get('reason', 'no frozen standard or ambiguous fingerprint')} "
+            f"Consider Deep mode for a stronger read."
+        )
+        attached = {"reason": ev.get("reason", ""), "behavior_scores": behavior_scores}
+    elif v.verdict == "error":
+        rationale = "The test could not run to completion (endpoint/timeout/probe failure)."
+        attached = {"errors": ev.get("errors") or ev.get("probe_errors") or []}
+
+    v.conclusions = [{
+        "rank": 1, "primary": True, "verdict": v.verdict,
+        "label": v.verdict.upper().replace("_", " "),
+        "identified_as": v.identified_as or v.model_id,
+        "zone": zone(v.confidence), "confidence": round(v.confidence, 3),
+        "statement": _verdict_phrase(v.verdict),
+        "rationale": rationale, "evidence": attached,
+    }]
+
+    try:
+        ranked = sorted(behavior_scores.items(), key=lambda kv: kv[1], reverse=True)
+    except Exception:
+        ranked = []
+    r = 2
+    for fam, sc in ranked:
+        if r > 3:
+            break
+        fam_s = str(fam)
+        if v.verdict in ("substitution", "family_match") and fam_s == str(v.identified_as):
+            continue
+        if fam_s == str(v.family) or fam_s == str(v.claimed).lower():
+            continue
+        if fam_s in ("unknown", "claimed", "impostor", "injection"):
+            continue
+        alt_conf = max(0.0, min(1.0, float(sc)))
+        v.conclusions.append({
+            "rank": r, "primary": False, "verdict": "could_be",
+            "label": "could be " + fam_s, "identified_as": fam_s,
+            "zone": zone(alt_conf), "confidence": round(alt_conf, 3),
+            "statement": "behavioral style also scores toward '" + fam_s + "'",
+            "rationale": (
+                f"Style fingerprint gave '{fam_s}' a score of {round(alt_conf, 2)}. "
+                f"Lower than the primary conclusion, so kept as an alternative."
+            ),
+            "evidence": {"behavior_score": round(alt_conf, 3)},
+        })
+        r += 1
+
+
 FAMILY_WEIGHT = 0.5
 SUBMODEL_WEIGHT = 0.5
 
