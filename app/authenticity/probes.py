@@ -85,6 +85,36 @@ LOGPROB_PROBES = [
 ]
 
 
+# HARVEST-TIME needle-capture probes. The anchor self-reports cutoff-edge facts
+# it knows (KNOWN) and admits post-cutoff facts it does NOT (UNKNOWN). These
+# become knowledge.known_facts / post_cutoff_unknown — the V1 sub-version
+# needles used at test time. Known-edge answers self-select at the version's
+# own cutoff, so the needles are inherently version-specific.
+HARVEST_NEEDLE_PROBES = [
+    {
+        "id": "needle_known_edge",
+        "prompt": (
+            "List 3 specific real-world events you are CONFIDENT about that occurred "
+            "within the final 2 months before your training-data cutoff. For each give: "
+            "a one-line description AND a distinctive detail (a name, number, or date) "
+            "that proves you know it. Format: one event per line, 'detail ||| event'. "
+            "No preamble."
+        ),
+        "max_tokens": 1024,
+    },
+    {
+        "id": "needle_post_cutoff",
+        "prompt": (
+            "List 2 specific events or developments AFTER your training-data cutoff "
+            "that you genuinely have NO reliable knowledge of (things you would have to "
+            "guess about). For each give a one-line description. Be honest — listing "
+            "things you actually do NOT know is the correct answer here. One per line."
+        ),
+        "max_tokens": 1024,
+    },
+]
+
+
 async def run_probe(
     client: httpx.AsyncClient,
     endpoint_base: str,

@@ -25,7 +25,8 @@ from dataclasses import asdict
 import httpx
 
 from .fingerprint import extract_features
-from .probes import TIER1_PROBES, TIER2_PROBES, run_probe
+from .probes import (TIER1_PROBES, TIER2_PROBES, HARVEST_NEEDLE_PROBES,
+                     LOGPROB_PROBES, run_probe)
 from .scope import detect_family, normalize
 from .traitmark import TraitMark
 
@@ -197,6 +198,27 @@ async def judge_scores(
 
 # ── Harvest ──────────────────────────────────────────────────────────────────
 
+def _parse_needle_entries(text: str) -> list:
+    """Parse anchor self-reported needle text into {fact, needle} entries.
+
+    Expected line format: 'detail ||| event' (known-edge) or a plain line
+    (post-cutoff). Each entry carries fact (question text) + needle (the
+    distinctive token a correct answer must contain)."""
+    out = []
+    for raw in (text or "").splitlines():
+        line = raw.strip().lstrip("0123456789.-) ").strip()
+        if not line or len(line) < 8:
+            continue
+        if "|||" in line:
+            needle, _, fact = line.partition("|||")
+            fact, needle = fact.strip(), needle.strip()
+        else:
+            fact, needle = line, ""
+        if fact and fact not in [e["fact"] for e in out]:
+            out.append({"fact": fact, "needle": (needle or fact)[:80]})
+    return out[:8]
+
+
 def _family_ref(model_id: str) -> dict:
     """Minimal family reference for extract_features (keywords)."""
     fam = detect_family(model_id) or ""
@@ -258,6 +280,9 @@ async def harvest_model(
     t0 = time.monotonic()
     family_ref = _family_ref(model_id)
     noncoding_outputs = []
+    needle_known_text = ""
+    needle_post_text = ""
+    logprob_profile = {}
 
     try:
         async with _make_client() as client:
@@ -273,13 +298,41 @@ async def harvest_model(
                     gaps.append(f"probe_error:{probe['id']}")
                 return r
 
+            async def _probe_lp(probe):
+                if (time.monotonic() - t0) > total_timeout:
+                    gaps.append(f"timeout_before:{probe['id']}")
+                    return None
+                r = await run_probe(client, endpoint, api_key, model_id, probe,
+                                    probe_timeout,
+                                    extra={"logprobs": True, "top_logprobs": 5,
+                                           "temperature": 0})
+                r.tier = 2
+                return r
+
             # Tier 1 + Tier 2 (parallel): reasoning probes take ~20s each, so
             # sequential execution blows the total battery timeout. Gather runs
             # them concurrently over the shared client.
             tier_jobs = [(_probe(p, 1)) for p in TIER1_PROBES]
             if max_tier >= 2:
                 tier_jobs += [(_probe(p, 2)) for p in TIER2_PROBES]
+            # Version-discrimination capture: needles (self-reported) + logprobs.
+            tier_jobs += [_probe(p, 2) for p in HARVEST_NEEDLE_PROBES]
+            tier_jobs += [_probe_lp(p) for p in LOGPROB_PROBES]
             tier_results = [r for r in await asyncio.gather(*tier_jobs) if r]
+
+            # Split needle + logprob results back out by probe id.
+            for r in tier_results:
+                if r.probe_id == "needle_known_edge" and not r.error:
+                    needle_known_text = r.content or ""
+                elif r.probe_id == "needle_post_cutoff" and not r.error:
+                    needle_post_text = r.content or ""
+                elif r.probe_id.startswith("lp_tok_") and r.logprobs:
+                    first = (r.logprobs.get("content") or [{}])[0]
+                    logprob_profile[r.probe_id] = {
+                        "logprob": first.get("logprob"),
+                        "top": {t.get("token"): t.get("logprob")
+                                for t in (first.get("top_logprobs") or [])},
+                    }
 
             # Tier 2.5 non-coding (parallel; outputs kept for the judge)
             if include_noncoding:
@@ -300,6 +353,13 @@ async def harvest_model(
         k.cutoff_month = int(getattr(feats, "cutoff_month", 0) or 0)
         k.capability_boundary = {
             "correct": int(getattr(feats, "capability_correct", 0) or 0)}
+        # V1 needles: self-reported cutoff-edge knowns + admitted post-cutoff unknowns.
+        k.known_facts = _parse_needle_entries(needle_known_text)
+        k.post_cutoff_unknown = _parse_needle_entries(needle_post_text)
+        # V5 logprob tail (weight-level).
+        tm.structural.logprob_profile = logprob_profile
+        if not k.known_facts and not k.post_cutoff_unknown:
+            gaps.append("needles:no_self_report")
 
         s = tm.style
         s.bullet_style = getattr(feats, "bullet_style", "") or ""
