@@ -4056,9 +4056,11 @@ function renderAuthenticityTab() {
         .map(k => `<option value="${_authEsc(k)}" ${k === st.testProviderKey ? 'selected' : ''}>${_authEsc(providers[k].name || k)}</option>`)
         .join('');
 
-    // Models of the currently-selected provider.
+    // Models of the currently-selected provider (ENABLED only — a disabled model
+    // is not routable, so it must not appear in the suspect list; previously the
+    // raw list rendered all of them, e.g. 61 disabled rows on vsllm-o).
     const curModels = (st.testProviderKey && providers[st.testProviderKey])
-        ? (providers[st.testProviderKey].models || []) : [];
+        ? (providers[st.testProviderKey].models || []).filter(m => m && m.enabled !== false) : [];
     const modelOpts = curModels.map(m =>
         `<option value="${_authEsc(m.id)}" ${m.id === st.testModel ? 'selected' : ''}>${_authEsc(m.name || m.id)}</option>`).join('');
 
@@ -4087,7 +4089,7 @@ function renderAuthenticityTab() {
                 <option value="">— select model —</option>${modelOpts}
               </select>
             </div>
-            <div class="auth-endpoint">${st.testProviderKey ? 'Endpoint: <code>' + _authEsc(providers[st.testProviderKey].base_url || '(none)') + '</code>' : ''}</div>
+            <div class="auth-endpoint">${st.testProviderKey ? 'Endpoint: <code>' + _authEsc(resolveBaseUrl(st.testProviderKey, Math.max((providers[st.testProviderKey].connections || []).findIndex(c => c && c.enabled !== false && (c.api_key || '').trim()), 0)) || '(none)') + '</code>' : ''}</div>
           </div>
 
           <div class="auth-field">
@@ -4242,9 +4244,18 @@ window.authRunTest = async function () {
     const st = _authState;
     const p = (globalConfig.providers || {})[st.testProviderKey];
     if (!p || !st.testModel) { showToast('Select a provider and model first', true); return; }
-    const endpoint = p.base_url || '';
-    const api_key = p.api_key || '';
-    if (!endpoint || !api_key) { showToast('Provider has no endpoint/key configured', true); return; }
+    // Credentials live in connections[] (the config migration deleted the legacy
+    // top-level api_key/base_url). Resolve from the first ENABLED connection with a key,
+    // exactly like fetchModels does. Resolve the URL through the inheritance chain.
+    const conns = (p.connections || []);
+    const ci = conns.findIndex(c => c && c.enabled !== false && (c.api_key || '').trim());
+    const conn = ci >= 0 ? conns[ci] : null;
+    const endpoint = (resolveBaseUrl(st.testProviderKey, Math.max(ci, 0)) || '').trim();
+    const api_key = (conn ? (conn.api_key || '') : '').trim();
+    if (!endpoint || !api_key) {
+        showToast('Provider has no enabled connection with a base URL and API key', true);
+        return;
+    }
 
     st.running = true; st.report = null; renderAuthenticityTab();
     try {
