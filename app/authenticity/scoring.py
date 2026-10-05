@@ -134,11 +134,12 @@ def _verdict_phrase(verdict: str) -> str:
 
 
 def _build_conclusions(v) -> None:
-    """Populate v.conclusions: primary (always) + ranked alternatives.
+    """Populate v.conclusions: PRIMARY = authenticity verdict (REAL/FAKE) first,
+    then additional conclusions (fake-kind, behavior alternatives) at their own
+    confidence zones. Every conclusion carries zone + rationale + evidence.
 
-    Every conclusion carries: zone (confidence badge), human rationale, and
-    attached evidence so the user always sees WHY a conclusion was reached and
-    which confidence zone the model sits in.
+    The module's core objective is "is this model REAL or FAKE?", so rank-1 must
+    always answer that before describing WHAT KIND of fake it is.
     """
     ev = v.evidence if isinstance(v.evidence, dict) else {}
     fc = ev.get("family_classifier") or {}
@@ -149,85 +150,97 @@ def _build_conclusions(v) -> None:
     def zone(score: float) -> str:
         return confidence_level(max(0.0, min(1.0, score)))
 
-    rationale = ""
-    attached: dict = {}
-    if v.verdict == "substitution":
-        rationale = (
-            f"Behavioral fingerprint points to '{v.identified_as}' while the model "
-            f"claims family '{v.family or v.claimed}'. Self-claims are zeroed; only "
-            f"style/behavior signals are trusted."
+    # ── Determine the REAL/FAKE authenticity verdict + its base confidence ──
+    if v.verdict == "real":
+        authenticity, auth_conf = "REAL", max(0.6, v.confidence)
+        auth_rationale = (
+            f"Responses matched the frozen official standard for "
+            f"'{v.submodel_match or v.identified_as or v.claimed}' "
+            f"(fused score {round(v.confidence, 2)}). The model is genuine."
         )
-        attached = {"behavior_scores": behavior_scores,
-                    "impostor_hits": impostor_hits, "self_hits_ignored": self_hits}
-    elif v.verdict == "real":
-        matched = v.submodel_match or v.identified_as or v.claimed
-        rationale = (
-            f"Responses matched the frozen official standard for '{matched}' "
-            f"(fused score {round(v.confidence, 2)} >= real threshold)."
-        )
-        attached = {"submodel_match": v.submodel_match, "submodel_score": v.submodel_score}
-    elif v.verdict == "downgrade":
-        rationale = (
-            f"Family is correct but behavior matched '{v.submodel_match or v.identified_as}' "
-            f"- a cheaper/older sub-version than the claimed '{v.claimed}'."
-        )
-        attached = {"submodel_match": v.submodel_match, "claimed": v.claimed}
-    elif v.verdict == "family_match":
-        rationale = (
-            f"Style signals match family '{v.identified_as or v.family}', but no frozen "
-            f"standard exists for the exact sub-version, so it can't be fully confirmed."
-        )
-        attached = {"behavior_scores": behavior_scores}
-    elif v.verdict == "unverifiable":
-        rationale = (
-            f"Signals were too ambiguous to commit. {ev.get('reason', 'no frozen standard or ambiguous fingerprint')} "
-            f"Consider Deep mode for a stronger read."
-        )
-        attached = {"reason": ev.get("reason", ""), "behavior_scores": behavior_scores}
+        auth_ev = {"submodel_match": v.submodel_match, "submodel_score": v.submodel_score}
+    elif v.verdict in ("substitution", "downgrade"):
+        authenticity = "FAKE"
+        if v.verdict == "substitution":
+            auth_conf = v.confidence
+            if behavior_scores and str(v.identified_as) in behavior_scores:
+                auth_conf = max(auth_conf, max(0.0, min(1.0, float(behavior_scores[str(v.identified_as)]))))
+            auth_rationale = (
+                f"The model claims to be '{v.claimed or v.family}' but its behavioral "
+                f"fingerprint matches '{v.identified_as}' instead. Self-claims are zeroed; "
+                f"only style/behavior signals are trusted. It is NOT the claimed model."
+            )
+            auth_ev = {"behavior_scores": behavior_scores, "impostor_hits": impostor_hits,
+                       "self_hits_ignored": self_hits}
+        else:  # downgrade
+            auth_conf = max(0.5, v.confidence)
+            auth_rationale = (
+                f"The family is real but the served model matched "
+                f"'{v.submodel_match or v.identified_as}' - a cheaper/older sub-version than "
+                f"the claimed '{v.claimed}'. Not the advertised model."
+            )
+            auth_ev = {"submodel_match": v.submodel_match, "claimed": v.claimed}
     elif v.verdict == "error":
-        rationale = "The test could not run to completion (endpoint/timeout/probe failure)."
-        attached = {"errors": ev.get("errors") or ev.get("probe_errors") or []}
-
-    # PRIMARY = always the HIGHEST-confidence signal available. If the fused
-    # verdict confidence is weaker than the strongest matching evidence (e.g.
-    # behavior fingerprint), promote the primary to that score so the headline
-    # conclusion always carries the strongest zone the data supports. The
-    # weaker readings drop to the additional-conclusions list.
-    primary_conf = max(0.0, min(1.0, float(v.confidence)))
-    if v.verdict in ("substitution", "family_match", "real") and behavior_scores:
-        _best_fam = max(behavior_scores, key=lambda k: behavior_scores[k])
-        _best_score = max(0.0, min(1.0, float(behavior_scores[_best_fam])))
-        if v.verdict == "substitution" and str(_best_fam) == str(v.identified_as):
-            primary_conf = max(primary_conf, _best_score)
-        elif v.verdict in ("family_match", "real") and str(_best_fam) == str(v.family or v.identified_as):
-            primary_conf = max(primary_conf, _best_score)
-        elif v.verdict == "substitution":
-            primary_conf = max(primary_conf, _best_score)
-    # Keep the verdict-level confidence in sync so badge/headline agree.
-    v.confidence = primary_conf
-    v.confidence_level = zone(primary_conf)
+        authenticity, auth_conf = "UNVERIFIABLE", 0.0
+        auth_rationale = "The test could not run to completion (endpoint/timeout/probe failure) - no real/fake determination possible."
+        auth_ev = {"errors": ev.get("errors") or ev.get("probe_errors") or []}
+    else:  # family_match / unverifiable -> honest cannot-confirm
+        authenticity = "UNVERIFIABLE"
+        if v.verdict == "family_match":
+            auth_conf = v.confidence
+            if behavior_scores and str(v.identified_as or v.family) in behavior_scores:
+                auth_conf = max(auth_conf, max(0.0, min(1.0, float(behavior_scores[str(v.identified_as or v.family)]))))
+            auth_rationale = (
+                f"Style signals match family '{v.identified_as or v.family}', but no frozen "
+                f"standard exists for the exact sub-version - cannot confirm REAL or FAKE."
+            )
+        else:
+            auth_conf = v.confidence
+            auth_rationale = (
+                f"Signals were too ambiguous to confirm REAL or FAKE. "
+                f"{ev.get('reason', 'no frozen standard or ambiguous fingerprint')} "
+                f"Consider Deep mode for a stronger read."
+            )
+        auth_ev = {"reason": ev.get("reason", ""), "behavior_scores": behavior_scores}
 
     v.conclusions = [{
-        "rank": 1, "primary": True, "verdict": v.verdict,
-        "label": v.verdict.upper().replace("_", " "),
-        "identified_as": v.identified_as or v.model_id,
-        "zone": zone(v.confidence), "confidence": round(v.confidence, 3),
-        "statement": _verdict_phrase(v.verdict),
-        "rationale": rationale, "evidence": attached,
+        "rank": 1, "primary": True, "verdict": authenticity.lower(),
+        "label": authenticity, "identified_as": v.identified_as or v.model_id,
+        "zone": zone(auth_conf), "confidence": round(auth_conf, 3),
+        "statement": f"The served model is {authenticity}" + ("" if authenticity == "REAL" else f" - not a genuine '{v.claimed or v.model_id}'"),
+        "rationale": auth_rationale, "evidence": auth_ev,
     }]
 
+    # ── Additional conclusion: the SPECIFIC finding (fake kind / family match) ──
+    r = 2
+    if v.verdict not in ("real", "error") and v.verdict != authenticity.lower():
+        specific_rationale = {
+            "substitution": f"Specifically a SUBSTITUTION - a different model family ('{v.identified_as}') is served under the claimed name.",
+            "downgrade": f"Specifically a DOWNGRADE - real family, but a cheaper/older sub-version ('{v.identified_as}') than claimed.",
+            "family_match": f"Specifically a FAMILY MATCH - correct family, sub-version unconfirmed.",
+        }.get(v.verdict, "")
+        if specific_rationale:
+            v.conclusions.append({
+                "rank": r, "primary": False, "verdict": v.verdict,
+                "label": v.verdict.upper().replace("_", " "),
+                "identified_as": v.identified_as, "zone": zone(v.confidence),
+                "confidence": round(v.confidence, 3),
+                "statement": _verdict_phrase(v.verdict),
+                "rationale": specific_rationale,
+                "evidence": auth_ev,
+            })
+            r += 1
+
+    # ── Additional conclusions: behavior alternatives from behavior_scores ──
     try:
         ranked = sorted(behavior_scores.items(), key=lambda kv: kv[1], reverse=True)
     except Exception:
         ranked = []
-    r = 2
     for fam, sc in ranked:
-        if r > 3:
+        if r > 4:
             break
         fam_s = str(fam)
-        if v.verdict in ("substitution", "family_match") and fam_s == str(v.identified_as):
-            continue
-        if fam_s == str(v.family) or fam_s == str(v.claimed).lower():
+        if fam_s == str(v.identified_as) or fam_s == str(v.family) or fam_s == str(v.claimed).lower():
             continue
         if fam_s in ("unknown", "claimed", "impostor", "injection"):
             continue
@@ -237,13 +250,15 @@ def _build_conclusions(v) -> None:
             "label": "could be " + fam_s, "identified_as": fam_s,
             "zone": zone(alt_conf), "confidence": round(alt_conf, 3),
             "statement": "behavioral style also scores toward '" + fam_s + "'",
-            "rationale": (
-                f"Style fingerprint gave '{fam_s}' a score of {round(alt_conf, 2)}. "
-                f"Lower than the primary conclusion, so kept as an alternative."
-            ),
+            "rationale": (f"Style fingerprint gave '{fam_s}' a score of {round(alt_conf, 2)}. "
+                          f"Lower than the primary conclusion, so kept as an alternative."),
             "evidence": {"behavior_score": round(alt_conf, 3)},
         })
         r += 1
+
+    # Sync verdict-level confidence/level to the primary (strongest signal).
+    v.confidence = auth_conf
+    v.confidence_level = zone(auth_conf)
 
 
 FAMILY_WEIGHT = 0.5
