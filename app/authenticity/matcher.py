@@ -84,6 +84,25 @@ def match_submodel(
         else:
             dims["noncoding"] = None  # not compared
 
+        # V1 KNOWLEDGE-CUTOFF NEEDLES: the decisive close-version splitter.
+        # Compare the suspect's needle answers against THIS baseline's needles.
+        kn_sus = getattr(features, "knowledge_needles", {}) or {}
+        knowledge = baseline.get("knowledge") or {}
+        base_known = knowledge.get("known_facts") or []
+        base_post = knowledge.get("post_cutoff_unknown") or []
+        if (base_known or base_post) and kn_sus.get("answers"):
+            known_hits = set(kn_sus.get("known_hits", []))
+            post_claimed = set(kn_sus.get("post_cutoff_claimed", []))
+            known_total = len(base_known)
+            post_total = len(base_post)
+            # recall of facts this version SHOULD know
+            recall = (len([f for f in base_known if f in known_hits]) / known_total) if known_total else 1.0
+            # wrongly claiming post-cutoff facts = wrong version / hallucinating
+            false_know = (len([f for f in base_post if f in post_claimed]) / post_total) if post_total else 0.0
+            dims["knowledge"] = round(max(0.0, recall - false_know), 3)
+        else:
+            dims["knowledge"] = None  # not compared
+
         scores[model_id] = score
         all_dimensions[model_id] = dims
 

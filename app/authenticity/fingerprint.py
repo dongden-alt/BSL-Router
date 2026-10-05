@@ -41,6 +41,15 @@ class FingerprintFeatures:
     #         "outputs": [{axis,id,content}]}
     noncoding: dict = field(default_factory=dict)
 
+    # V1 KNOWLEDGE-CUTOFF NEEDLES — the strongest sub-VERSION discriminator.
+    # A version knows its in-cutoff facts and does NOT know post-cutoff facts.
+    # Populated by the gate's V1 lane (needles drawn from candidate standards).
+    # shape: {"known_hits": [facts confirmed], "known_misses": [facts it failed],
+    #         "post_cutoff_claimed": [future facts it wrongly claimed to know],
+    #         "post_cutoff_denied": [future facts correctly denied],
+    #         "answers": [{fact, kind, answer}]}
+    knowledge_needles: dict = field(default_factory=dict)
+
 
 # Self-identification phrases to strip for behavior-column classification
 SELF_CLAIM_PATTERNS = [

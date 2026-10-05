@@ -231,6 +231,33 @@ async def authenticity_check(
                     if baselines:
                         match_result = match_submodel(features, baselines)
 
+                # ── V1 KNOWLEDGE-CUTOFF NEEDLES (deep mode) — version splitter ──
+                # Needles are drawn from the CANDIDATE STANDARDS (not a fixed
+                # battery -> not evadable by a cached benchmark response). Ask
+                # the suspect about each dated fact; a real version knows its
+                # in-cutoff facts and does NOT know post-cutoff facts.
+                if (time.monotonic() - t0) < total_timeout and features is not None:
+                    try:
+                        from .knowledge_needles import (
+                            collect_family_needles, build_needle_probe,
+                            classify_needle_answers,
+                        )
+                        _candidates = _load_match_baselines(model_id)
+                        needles = collect_family_needles(_candidates)
+                        if needles:
+                            probe = build_needle_probe(needles)
+                            r = await run_probe(client, endpoint_base, api_key,
+                                                model_id, probe, probe_timeout)
+                            if r.status_code == 200 and r.content:
+                                features.knowledge_needles = classify_needle_answers(
+                                    r.content, needles)
+                                # Re-run match WITH the knowledge dimension.
+                                _b2 = _load_match_baselines(model_id)
+                                if _b2:
+                                    match_result = match_submodel(features, _b2)
+                    except Exception as _kn_exc:
+                        logger.warning("V1 needle lane failed (fail-open): %s", _kn_exc)
+
         # Fuse into a reality verdict
         verdict = compute_reality(
             model_id=model_id, endpoint=endpoint_base,
