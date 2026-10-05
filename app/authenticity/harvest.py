@@ -223,23 +223,46 @@ def _resolve_upstream(model_id: str, config: dict) -> tuple:
     """Resolve a router model-id to (upstream_base_url, upstream_api_key,
     upstream_model_id). Returns (None, None, model_id) when unresolvable.
 
-    Lazy-imports resolve_model_conn to keep harvest.py free of the app-level
-    import cycle and the config-write trap. base_url is already canonicalized
-    (no /v1 suffix) by the config layer; run_probe appends /v1/chat/completions.
+    Lazy-imports the resolvers to keep harvest.py free of the app-level import
+    cycle and the config-write trap. base_url is already canonicalized (no /v1
+    suffix) by the config layer; run_probe appends /v1/chat/completions.
+
+    Provider-pinned ids ("codex/gpt-5.5") resolve WITHIN the named provider via
+    resolve_active_connection (honors enabled + connection_indexes) so the
+    upstream probe hits the same provider the router would serve. A bare id
+    falls back to resolve_model_conn's generic scan.
     """
     try:
-        from app.utils.model_resolver import resolve_model_conn
+        from app.utils.model_resolver import (resolve_active_connection,
+                                              resolve_model_conn)
     except Exception:
         return None, None, model_id
+
+    def _conn_parts(conn, resolved):
+        if not isinstance(conn, dict):
+            return None, None, resolved or model_id
+        base_url = (conn.get("base_url") or "").strip().rstrip("/")
+        api_key = conn.get("api_key") or ""
+        return (base_url or None), api_key, (resolved or model_id)
+
+    cfg = config or {}
+    providers = cfg.get("providers") or {}
+    if "/" in model_id:
+        prov_name, bare = model_id.split("/", 1)
+        if prov_name in providers:
+            try:
+                conn, _idx = resolve_active_connection(cfg, prov_name, bare)
+            except Exception:
+                conn = None
+            if isinstance(conn, dict):
+                return _conn_parts(conn, bare)
+        # Unknown provider prefix -> try generic resolution on the bare id.
+        model_id = bare
     try:
-        conn, resolved = resolve_model_conn(config or {}, model_id)
+        conn, resolved = resolve_model_conn(cfg, model_id)
     except Exception:
         return None, None, model_id
-    if not isinstance(conn, dict):
-        return None, None, resolved or model_id
-    base_url = (conn.get("base_url") or "").strip().rstrip("/")
-    api_key = conn.get("api_key") or ""
-    return (base_url or None), api_key, (resolved or model_id)
+    return _conn_parts(conn, resolved)
 
 
 async def _capture_upstream_logprobs(model_id: str, config: dict,
@@ -414,13 +437,17 @@ async def harvest_model(
         # V5 logprob tail (weight-level). The router strips logprobs, so ALSO
         # probe the upstream endpoint directly; upstream result wins when present.
         tm.structural.logprob_profile = logprob_profile
-        try:
-            upstream_lp = await _capture_upstream_logprobs(model_id, config or {},
-                                                           probe_timeout)
-            if upstream_lp:
-                tm.structural.logprob_profile = upstream_lp
-        except Exception:
-            pass
+        _up_base, _up_key, _up_model = _resolve_upstream(model_id, config or {})
+        if not _up_base:
+            gaps.append("logprobs:upstream_unresolved")
+        else:
+            try:
+                upstream_lp = await _capture_upstream_logprobs(model_id, config or {},
+                                                               probe_timeout)
+                if upstream_lp:
+                    tm.structural.logprob_profile = upstream_lp
+            except Exception:
+                pass
         if not tm.structural.logprob_profile:
             gaps.append("logprobs:unavailable_router_and_upstream")
         if not k.known_facts and not k.post_cutoff_unknown:

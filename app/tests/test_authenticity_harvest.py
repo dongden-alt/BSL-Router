@@ -106,7 +106,11 @@ def test_harvest_model_with_judge(mock_anchor):
     assert tm.meta.family == "glm"
     assert tm.knowledge.cutoff_year == 2026
     assert tm.knowledge.cutoff_month == 4
-    assert tm.meta.harvest_gaps == []
+    # Judge was provided, so no judge/noncoding gap. The mock anchor returns no
+    # logprobs and no needle self-report, so the V1/V5 gaps ARE expected here.
+    assert not any("noncoding" in g or "judge" in g
+                   for g in tm.meta.harvest_gaps)
+    assert any("logprobs" in g for g in tm.meta.harvest_gaps)
     assert tm.noncoding.creative["score"] == 8
 
 
@@ -172,7 +176,9 @@ def test_harvest_endpoint_starts_and_validates(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     with TestClient(main.app) as client:
         # Missing fields → 400
-        bad = client.post("/api/authenticity/standards/harvest", json={"model_id": "glm-4.6"})
+        # 400 contract: only a missing model_id is rejected; endpoint/api_key
+        # come from the router self-endpoint, so their absence is NOT a 400.
+        bad = client.post("/api/authenticity/standards/harvest", json={})
         assert bad.status_code == 400
         # Valid → started
         ok = client.post("/api/authenticity/standards/harvest", json={

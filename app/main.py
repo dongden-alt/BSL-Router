@@ -4195,6 +4195,13 @@ async def start_auth_harvest(request: Request):
     api_key = _r_key or (body.get("api_key") or "").strip()
 
     cfg = _auth_cfg_get()
+    # V5 upstream logprob capture needs the FULL config (providers) to resolve
+    # upstream base_url+key via _resolve_upstream. _auth_cfg_get() returns ONLY the
+    # authenticity sub-section (no "providers"), which silently broke V5 capture.
+    try:
+        full_cfg = cs_get_config()
+    except Exception:
+        full_cfg = {}
     judge_endpoint = _r_ep or (judge.get("endpoint") or cfg.get("judge_endpoint") or "").strip()
     judge_key = _r_key or (judge.get("api_key") or "").strip()
     judge_model = (judge.get("model") or cfg.get("judge_model") or "").strip()
@@ -4210,7 +4217,7 @@ async def start_auth_harvest(request: Request):
                 judge_model=judge_model or None,
                 include_noncoding=include_noncoding,
                 source_tag=source_tag,
-                config=cfg,
+                config=full_cfg,
             )
             path = auth_harvest.save_standard(tm, auth_harvest.STANDARDS_DIR)
             _AUTH_HARVEST_STATUS[model_id] = {
