@@ -165,13 +165,22 @@ def _build_conclusions(v) -> None:
             auth_conf = v.confidence
             if behavior_scores and str(v.identified_as) in behavior_scores:
                 auth_conf = max(auth_conf, max(0.0, min(1.0, float(behavior_scores[str(v.identified_as)]))))
+            nc_dim = (ev.get("match_dimensions") or {}).get("noncoding")
+            nc_note = ""
+            if isinstance(nc_dim, (int, float)):
+                nc_note = (f" Non-coding judge similarity to the claimed standard is {round(nc_dim,2)} "
+                           f"(<0.55 = different family) — the decisive discriminator.")
+                auth_conf = max(auth_conf, min(0.95, 0.6 + (1.0 - nc_dim) * 0.35))
             auth_rationale = (
                 f"The model claims to be '{v.claimed or v.family}' but its behavioral "
                 f"fingerprint matches '{v.identified_as}' instead. Self-claims are zeroed; "
                 f"only style/behavior signals are trusted. It is NOT the claimed model."
+                + nc_note
             )
             auth_ev = {"behavior_scores": behavior_scores, "impostor_hits": impostor_hits,
                        "self_hits_ignored": self_hits}
+            if isinstance(nc_dim, (int, float)):
+                auth_ev["noncoding_similarity_to_claimed"] = round(nc_dim, 3)
         else:  # downgrade
             auth_conf = max(0.5, v.confidence)
             auth_rationale = (
@@ -323,13 +332,14 @@ def compute_reality(
     fam_score = getattr(family_verdict, "confidence", 0.0) \
         if getattr(family_verdict, "family", "") in ("claimed", scope_info.get("family")) \
         else getattr(family_verdict, "confidence", 0.0)
-    sub_score = 0.0
-    matched = ""
-    if match_result and not getattr(match_result, "abstain", True):
+    if match_result is not None:
         sub_score = getattr(match_result, "match_score", 0.0)
         matched = getattr(match_result, "matched_model", "")
         v.submodel_match = matched
         v.submodel_score = sub_score
+        _dims = getattr(match_result, "dimensions", None)
+        if isinstance(_dims, dict) and _dims:
+            v.evidence["match_dimensions"] = _dims
 
     if scope_info.get("verdict_scope") == "full" and match_result and not getattr(match_result, "abstain", True):
         total = FAMILY_WEIGHT * fam_score + SUBMODEL_WEIGHT * sub_score

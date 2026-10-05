@@ -35,6 +35,10 @@ async def authenticity_check(
     config: dict,
     claimed: str = "",
     reference_hint: str = "",
+    mode: str = "normal",
+    judge_endpoint: str = "",
+    judge_key: str = "",
+    judge_model: str = "",
 ) -> "RealityVerdict":
     """Main entry point. NEVER raises — fail-open always.
 
@@ -42,6 +46,9 @@ async def authenticity_check(
     reference_hint: optional "I think this is X" — narrows which frozen
                     standard to check first. A hypothesis, never ground truth;
                     a wrong hint widens to a broad sweep, never fails-closed.
+    mode:           normal | deep | auto. Deep runs the T2.5 non-coding battery
+                    (the decisive family discriminator).
+    judge_*:        judge model endpoint/key/id (routed through this router).
     """
     from .cache import get_cache
     from .classifier import classify_family
@@ -52,6 +59,14 @@ async def authenticity_check(
     from .scope import in_scope
 
     t0 = time.monotonic()
+
+    # Inject deep-mode + judge config for the T2.5 non-coding lane.
+    config = dict(config or {})
+    config.setdefault("deep_mode", mode == "deep")
+    config.setdefault("mode", mode)
+    config.setdefault("judge_endpoint", judge_endpoint)
+    config.setdefault("judge_key", judge_key)
+    config.setdefault("judge_model", judge_model)
 
     def _elapsed_ms() -> int:
         return int((time.monotonic() - t0) * 1000)
@@ -164,9 +179,57 @@ async def authenticity_check(
                     features.cutoff_month = features2.cutoff_month
                     features.capability_correct = features2.capability_correct
 
-                baselines = _load_baselines(model_id)
+                baselines = _load_match_baselines(model_id)
                 if baselines:
                     match_result = match_submodel(features, baselines)
+
+            # ── Tier 2.5 NON-CODING (deep mode) — the decisive discriminator ──
+            # Coding is the weakest axis; clones match frontier models on code
+            # but collapse on writing/EQ/humor/design. Runs only in deep mode,
+            # fail-open: any gap leaves features.noncoding empty (matcher then
+            # abstains on that dimension instead of blocking).
+            _deep = bool(config.get("deep_mode")) or str(config.get("mode", "")).lower() == "deep"
+            if _deep and (time.monotonic() - t0) < total_timeout and features is not None:
+                try:
+                    from .harvest import NONCODING_PROBES, judge_scores
+                    import re as _re
+                    nc_results = []
+                    for p in NONCODING_PROBES:
+                        r = await run_probe(client, endpoint_base, api_key, model_id, p, probe_timeout)
+                        r.tier = 3
+                        nc_results.append((p, r))
+                        if r.error:
+                            probe_errors.append(p["id"])
+                    nc_outputs = [{"axis": p.get("axis", ""), "id": p["id"],
+                                   "content": (r.content or "")[:2000]}
+                                  for p, r in nc_results if r.status_code == 200 and r.content]
+                    if nc_outputs:
+                        joined = " ".join(o["content"] for o in nc_outputs)
+                        words = _re.findall(r"[A-Za-z']+", joined)
+                        ttr = (len(set(w.lower() for w in words)) / len(words)) if words else 0.0
+                        slop = sum(joined.lower().count(w) for w in
+                                   ("delve", "tapestry", "landscape", "testament", "navigate",
+                                    "crucial", "vibrant", "furthermore", "moreover", "elevate"))
+                        nc = {"judge": {}, "probe_count": len(nc_outputs),
+                              "slop_score": round(slop / max(len(words), 1), 4),
+                              "vocabulary_complexity": round(ttr, 4),
+                              "outputs": nc_outputs}
+                        _jep = config.get("judge_endpoint", "")
+                        _jkey = config.get("judge_key", "")
+                        _jmodel = config.get("judge_model", "")
+                        if _jep and _jkey and _jmodel:
+                            nc["judge"] = await judge_scores(_jep, _jkey, _jmodel, nc_outputs)
+                        else:
+                            nc["judge_gap"] = "no_judge_config"
+                        features.noncoding = nc
+                except Exception as _nc_exc:
+                    logger.warning("non-coding lane failed (fail-open): %s", _nc_exc)
+
+                # Re-run sub-model match WITH non-coding evidence if we have it.
+                if getattr(features, "noncoding", None) and features.noncoding.get("judge"):
+                    baselines = _load_match_baselines(model_id)
+                    if baselines:
+                        match_result = match_submodel(features, baselines)
 
         # Fuse into a reality verdict
         verdict = compute_reality(
@@ -236,3 +299,28 @@ def _load_baselines(model_id: str) -> dict[str, dict]:
     store = BaselineStore(_BASELINE_DIR)
     family_name = family_ref.get("family", "")
     return store.load_family(family_name)
+
+
+def _load_match_baselines(model_id: str) -> dict[str, dict]:
+    """Baselines for matching = cutoff/capability baselines MERGED with the
+    full frozen standards (which carry the noncoding judge profile).
+
+    Standards files are TraitMark dicts; match_submodel reads .get("noncoding")
+    for the deep family discriminator and cutoff/capability for version match.
+    Keyed consistently with BaselineStore.load_family (family_ prefix stripped).
+    """
+    from .baseline import BaselineStore
+
+    family_ref = _load_family_ref(model_id)
+    if family_ref is None:
+        return {}
+    family_name = family_ref.get("family", "")
+    store = BaselineStore(_BASELINE_DIR)
+    merged: dict[str, dict] = {}
+    if _BASELINE_DIR.exists():
+        merged.update(store.load_family(family_name))
+    standards_dir = _REFERENCE_DIR / "standards"
+    for key, std in store.load_family_standards(standards_dir, family_name).items():
+        base = merged.get(key, {})
+        merged[key] = {**base, **std} if isinstance(std, dict) else std
+    return merged

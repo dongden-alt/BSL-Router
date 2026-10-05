@@ -38,6 +38,25 @@ class BaselineStore:
             results[model_key] = data
         return results
 
+    def load_family_standards(self, standards_dir, family: str) -> dict[str, dict]:
+        """Load full frozen standards (incl. noncoding judge profile) for a family.
+
+        Keyed to match load_family: the filename without the family_ prefix,
+        so the matcher can read baseline["noncoding"]["judge"] for the deep
+        non-coding family discriminator.
+        """
+        out: dict[str, dict] = {}
+        sdir = Path(standards_dir)
+        if not sdir.exists():
+            return out
+        for path in sorted(sdir.glob(f"{family}_*.json")):
+            key = path.stem[len(family) + 1:]  # strip "family_"
+            try:
+                out[key] = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+        return out
+
     def is_stale(self, model_id: str, max_age_days: int = 30) -> bool:
         """Check if a baseline is stale (loaded more than max_age_days ago)."""
         if model_id not in self._loaded_at:

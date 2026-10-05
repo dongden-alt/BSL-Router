@@ -33,6 +33,14 @@ class FingerprintFeatures:
     capability_correct: int = 0      # out of 3
     capability_total: int = 3
 
+    # Tier 2.5 NON-CODING (deep mode): the strongest family discriminator.
+    # Coding is the WEAKEST axis — clones match frontier models on code but
+    # collapse on writing/EQ/humor/design. Populated by the gate's deep lane.
+    # shape: {"judge": {axis:{score,why}}, "probe_count": int,
+    #         "slop_score": float, "vocabulary_complexity": float,
+    #         "outputs": [{axis,id,content}]}
+    noncoding: dict = field(default_factory=dict)
+
 
 # Self-identification phrases to strip for behavior-column classification
 SELF_CLAIM_PATTERNS = [
