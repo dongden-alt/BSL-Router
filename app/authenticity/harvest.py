@@ -219,84 +219,6 @@ def _parse_needle_entries(text: str) -> list:
     return out[:8]
 
 
-def _resolve_upstream(model_id: str, config: dict) -> tuple:
-    """Resolve a router model-id to (upstream_base_url, upstream_api_key,
-    upstream_model_id). Returns (None, None, model_id) when unresolvable.
-
-    Lazy-imports the resolvers to keep harvest.py free of the app-level import
-    cycle and the config-write trap. base_url is already canonicalized (no /v1
-    suffix) by the config layer; run_probe appends /v1/chat/completions.
-
-    Provider-pinned ids ("codex/gpt-5.5") resolve WITHIN the named provider via
-    resolve_active_connection (honors enabled + connection_indexes) so the
-    upstream probe hits the same provider the router would serve. A bare id
-    falls back to resolve_model_conn's generic scan.
-    """
-    try:
-        from app.utils.model_resolver import (resolve_active_connection,
-                                              resolve_model_conn)
-    except Exception:
-        return None, None, model_id
-
-    def _conn_parts(conn, resolved):
-        if not isinstance(conn, dict):
-            return None, None, resolved or model_id
-        base_url = (conn.get("base_url") or "").strip().rstrip("/")
-        api_key = conn.get("api_key") or ""
-        return (base_url or None), api_key, (resolved or model_id)
-
-    cfg = config or {}
-    providers = cfg.get("providers") or {}
-    if "/" in model_id:
-        prov_name, bare = model_id.split("/", 1)
-        if prov_name in providers:
-            try:
-                conn, _idx = resolve_active_connection(cfg, prov_name, bare)
-            except Exception:
-                conn = None
-            if isinstance(conn, dict):
-                return _conn_parts(conn, bare)
-        # Unknown provider prefix -> try generic resolution on the bare id.
-        model_id = bare
-    try:
-        conn, resolved = resolve_model_conn(cfg, model_id)
-    except Exception:
-        return None, None, model_id
-    return _conn_parts(conn, resolved)
-
-
-async def _capture_upstream_logprobs(model_id: str, config: dict,
-                                     probe_timeout: float) -> dict:
-    """Probe the upstream endpoint DIRECTLY for first-token logprobs.
-
-    The router (:6969) strips logprobs, so this bypasses it to capture the
-    weight-level first-token tail (V5). Fail-open: returns {} on any failure.
-    """
-    base, key, up_model = _resolve_upstream(model_id, config)
-    if not base:
-        return {}
-    profile = {}
-    try:
-        async with _make_client() as client:
-            jobs = [run_probe(client, base, key, up_model, p, probe_timeout,
-                              extra={"logprobs": True, "top_logprobs": 5,
-                                     "temperature": 0})
-                    for p in LOGPROB_PROBES]
-            results = await asyncio.gather(*jobs, return_exceptions=True)
-        for p, r in zip(LOGPROB_PROBES, results):
-            if isinstance(r, Exception) or not getattr(r, "logprobs", None):
-                continue
-            first = (r.logprobs.get("content") or [{}])[0]
-            profile[p["id"]] = {
-                "logprob": first.get("logprob"),
-                "top": {t.get("token"): t.get("logprob")
-                        for t in (first.get("top_logprobs") or [])},
-            }
-    except Exception:
-        return {}
-    return profile
-
-
 def _family_ref(model_id: str) -> dict:
     """Minimal family reference for extract_features (keywords)."""
     fam = detect_family(model_id) or ""
@@ -434,22 +356,12 @@ async def harvest_model(
         # V1 needles: self-reported cutoff-edge knowns + admitted post-cutoff unknowns.
         k.known_facts = _parse_needle_entries(needle_known_text)
         k.post_cutoff_unknown = _parse_needle_entries(needle_post_text)
-        # V5 logprob tail (weight-level). The router strips logprobs, so ALSO
-        # probe the upstream endpoint directly; upstream result wins when present.
+        # V5 logprob tail (weight-level). Captured via the ROUTER endpoint —
+        # the router passes logprobs through its SSE buffer, so no upstream
+        # bypass or provider keys are needed (harvest HARD RULE: router only).
         tm.structural.logprob_profile = logprob_profile
-        _up_base, _up_key, _up_model = _resolve_upstream(model_id, config or {})
-        if not _up_base:
-            gaps.append("logprobs:upstream_unresolved")
-        else:
-            try:
-                upstream_lp = await _capture_upstream_logprobs(model_id, config or {},
-                                                               probe_timeout)
-                if upstream_lp:
-                    tm.structural.logprob_profile = upstream_lp
-            except Exception:
-                pass
         if not tm.structural.logprob_profile:
-            gaps.append("logprobs:unavailable_router_and_upstream")
+            gaps.append("logprobs:unavailable")
         if not k.known_facts and not k.post_cutoff_unknown:
             gaps.append("needles:no_self_report")
 

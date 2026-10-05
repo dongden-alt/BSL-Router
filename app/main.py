@@ -4195,13 +4195,6 @@ async def start_auth_harvest(request: Request):
     api_key = _r_key or (body.get("api_key") or "").strip()
 
     cfg = _auth_cfg_get()
-    # V5 upstream logprob capture needs the FULL config (providers) to resolve
-    # upstream base_url+key via _resolve_upstream. _auth_cfg_get() returns ONLY the
-    # authenticity sub-section (no "providers"), which silently broke V5 capture.
-    try:
-        full_cfg = cs_get_config()
-    except Exception:
-        full_cfg = {}
     judge_endpoint = _r_ep or (judge.get("endpoint") or cfg.get("judge_endpoint") or "").strip()
     judge_key = _r_key or (judge.get("api_key") or "").strip()
     judge_model = (judge.get("model") or cfg.get("judge_model") or "").strip()
@@ -4217,7 +4210,7 @@ async def start_auth_harvest(request: Request):
                 judge_model=judge_model or None,
                 include_noncoding=include_noncoding,
                 source_tag=source_tag,
-                config=full_cfg,
+                config=cfg,
             )
             path = auth_harvest.save_standard(tm, auth_harvest.STANDARDS_DIR)
             _AUTH_HARVEST_STATUS[model_id] = {
@@ -7099,6 +7092,7 @@ async def _accumulate_sse_stream(
     _a_rp: list[str] = []
     _a_tc: dict[int, dict] = {}
     _a_fr: str | None = None
+    _a_lp: list = []  # logprobs content entries accumulated across SSE chunks
     _a_rid = f"chatcmpl-{_label}-{int(time.time()*1000)}"
     _a_rmodel = _target_model
     _a_in = 0
@@ -7313,6 +7307,14 @@ async def _accumulate_sse_stream(
                                         _a_tc[_ix]["function"]["arguments"] += _fn2["arguments"]
                             if _ch2.get("finish_reason"):
                                 _a_fr = _ch2["finish_reason"]
+                            # LOGPROBS PASS-THROUGH: accumulate per-chunk logprob
+                            # content entries so the synthesized response carries
+                            # the full first-token tail (V5 authenticity layer).
+                            _lp2 = _ch2.get("logprobs")
+                            if isinstance(_lp2, dict):
+                                _lp_c = _lp2.get("content")
+                                if isinstance(_lp_c, list):
+                                    _a_lp.extend(_lp_c)
                         _uu = _as_obj(_ev.get("usage"))
                         if _uu:
                             if _uu.get("prompt_tokens") is not None:
@@ -7384,6 +7386,7 @@ async def _accumulate_sse_stream(
             "index": 0,
             "message": _a_msg,
             "finish_reason": _a_fr or "stop",
+            **({"logprobs": {"content": _a_lp}} if _a_lp else {}),
         }],
         "usage": {
             "prompt_tokens": _a_in,
