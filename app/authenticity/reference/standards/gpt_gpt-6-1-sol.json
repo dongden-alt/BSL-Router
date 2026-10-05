@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "model_id": "gpt-6.1-sol",
+    "family": "gpt",
+    "sub_model": "gpt-6.1-sol",
+    "aliases": [],
+    "collected_at": "2026-10-03T20:13:15.839278+00:00",
+    "collected_from": [
+      "https://api.mintrouter.ai"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "MintRouter.AI, running on GPT-6.1 Sol",
+    "self_claim_org": "OpenAI",
+    "self_keywords": [
+      "gpt",
+      "openai",
+      "chatgpt"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "1.",
+    "header_depth": 2,
+    "avg_sentence_length": 62.0,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1602,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "The story has a clear arc and a fitting candle motif, but the metaphors are clichéd weather images (fog, thunderstorm, snowfall) with little originality or depth, which pulls the combined score down."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response acknowledges the specific loss, gives permission to not act brave, and offers presence without pushing advice, though phrases like 'I know how much it mattered' are slightly formulaic."
+    },
+    "humor": {
+      "score": 5,
+      "why": "The explanation is clear and the 'building-wide treasure hunt' and 'paperwork' lines are pleasant, but the humor is mild and does not produce a real laugh."
+    },
+    "design": {
+      "score": 8,
+      "why": "The critique is specific and actionable, naming each weak element, explaining why it fails, and offering concrete replacements and a page structure, though some advice is standard landing-page guidance."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

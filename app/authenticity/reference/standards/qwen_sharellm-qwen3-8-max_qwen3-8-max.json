@@ -1,0 +1,122 @@
+{
+  "meta": {
+    "model_id": "sharellm/qwen3.8-max",
+    "family": "qwen",
+    "sub_model": "sharellm/qwen3.8-max",
+    "aliases": [],
+    "collected_at": "2026-10-05T08:06:39.800409+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "vsllm-o/claude-opus-5-5",
+    "source_tag": "qwen3-8-max"
+  },
+  "identity": {
+    "self_claim_model": "Qwen3.8",
+    "self_claim_org": "Alibaba Group (Qwen team)",
+    "self_keywords": [
+      "qwen",
+      "tongyi",
+      "alibaba"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2025,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "Donald Trump won the 2024 U.S. presidential election, securing a second non-consecutive term.",
+        "needle": "Trump defeated Kamala Harris on November 5, 2024"
+      },
+      {
+        "fact": "President Yoon Suk Yeol briefly imposed martial law in South Korea before it was overturned by legislators.",
+        "needle": "South Korea's National Assembly voted 190-0 to lift martial law within hours of "
+      },
+      {
+        "fact": "Notre-Dame de Paris reopened following the April 2019 fire and extensive reconstruction.",
+        "needle": "The cathedral reopened to the public on December 7, 2024, after a five-year rest"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The exact final results and seat allocation of any national election held after my training-data cutoff — I would have to guess at winners, margins, and coalition outcomes.",
+        "needle": "The exact final results and seat allocation of any national election held after "
+      },
+      {
+        "fact": "The specific contents, conclusions, and data of any peer-reviewed scientific paper or major product release published after my cutoff — I have no reliable recall of its details.",
+        "needle": "The specific contents, conclusions, and data of any peer-reviewed scientific pap"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 93.6842105263158,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1816,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "The lighthouse story's fear-as-duty inversion and the closing image ('until dawn remembered her name') show real voice, but the memory piece leans on stock fog, lightning, and snparisons and drifts among three metaphors instead of developing one."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The reply validates the specific loss of 'two years of grinding,' explicitly declines to fix or reframe it, and offers flexible, low-pressure presence in a natural peer voice, though the phrasing is slightly familiar."
+    },
+    "humor": {
+      "score": 7,
+      "why": "The card-catalog conceit stays technically accurate while landing light gags like the silently judging librarian and the 'sad potted plant' stale-index image, though the closing line is a bit flat."
+    },
+    "design": {
+      "score": 8,
+      "why": "The critique is specific and actionable, with concrete headline and CTA rewrites, outcome-led card copy, asymmetric layout options, and a prioritized rewrite sketch, though some points like 'test it' and the ~50 ms claim are boilerplate or unsupported."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

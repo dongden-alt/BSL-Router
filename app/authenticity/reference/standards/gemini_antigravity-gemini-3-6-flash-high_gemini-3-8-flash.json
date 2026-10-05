@@ -1,0 +1,123 @@
+{
+  "meta": {
+    "model_id": "antigravity/gemini-3.6-flash-high",
+    "family": "gemini",
+    "sub_model": "antigravity/gemini-3.6-flash-high",
+    "aliases": [],
+    "collected_at": "2026-10-05T08:02:33.407376+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "vsllm-o/claude-opus-5-5",
+    "source_tag": "gemini-3-8-flash"
+  },
+  "identity": {
+    "self_claim_model": "Claude 3.7 Sonnet",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "gemini",
+      "google",
+      "bard"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2024,
+    "cutoff_month": 10,
+    "known_facts": [
+      {
+        "fact": "The 2026 Winter Olympic Games opened in Milan and Cortina d'Ampezzo, Italy.",
+        "needle": "February 6, 2026 opening ceremony at San Siro Stadium"
+      },
+      {
+        "fact": "Super Bowl LX was played in Santa Clara, California.",
+        "needle": "February 8, 2026 at Levi's Stadium"
+      },
+      {
+        "fact": "The 68th Annual Grammy Awards ceremony took place in Los Angeles, California.",
+        "needle": "February 1, 2026 at Crypto.com Arena"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The exact winner, final score, and MVP of Super Bowl LIX held in February 2025.",
+        "needle": "The exact winner, final score, and MVP of Super Bowl LIX held in February 2025."
+      },
+      {
+        "fact": "The specific outcome, final declarations, and policy commitments of the COP30 UN Climate Change Conference in November 2025.",
+        "needle": "The specific outcome, final declarations, and policy commitments of the COP30 UN"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "1.",
+    "header_depth": 0,
+    "avg_sentence_length": 91.21428571428571,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1306,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "The lighthouse story ends on a strong inversion, with the last match lit for the keeper rather than the ships, but stock phrasing like 'knot of terror,' 'ravenous tide,' and 'suffocating shadows' and the familiar weather metaphors in the second piece keep it from feeling original."
+    },
+    "eq": {
+      "score": 7,
+      "why": "The response validates the loss warmly and deliberately avoids fixing or silver-lining, but its phrasing ('I've got your back,' 'venting, screaming, or just sitting') is somewhat templated and not tailored to the person."
+    },
+    "humor": {
+      "score": 6,
+      "why": "The librarian-sprinting analogy is clear and mildly amusing, but lines like 'queries crying themselves to sleep' and the game-show contestant aside feel tacked on rather than genuinely funny."
+    },
+    "design": {
+      "score": 8,
+      "why": "The critique is specific and actionable, with concrete copy rewrites, CTA microcopy, and a useful before/after table, though it leans on standard conversion-marketing boilerplate and invented metrics such as '18%' and '70%.'"
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

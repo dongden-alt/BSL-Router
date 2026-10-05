@@ -1,0 +1,103 @@
+{
+  "meta": {
+    "model_id": "vsllm-o/gpt-6-astra",
+    "family": "gpt",
+    "sub_model": "vsllm-o/gpt-6-astra",
+    "aliases": [],
+    "collected_at": "2026-10-05T07:36:37.007064+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "needles:no_self_report"
+    ],
+    "judged_by": "vsllm-o/claude-opus-5-5",
+    "source_tag": "gpt-6-astra"
+  },
+  "identity": {
+    "self_claim_model": "unknown",
+    "self_claim_org": "OpenAI",
+    "self_keywords": [
+      "gpt",
+      "openai",
+      "chatgpt"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 94.94117647058823,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1649,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 4,
+      "why": "The lighthouse story has a touching reversal, but dropped words ('there for the.', 'one trembling at a time') weaken it, and the metaphor output is missing entirely."
+    },
+    "eq": {
+      "score": 7,
+      "why": "The response validates the person's two years of effort and offers presence without forcing a positive spin, though the 'I so sorry' typo undercuts its polish."
+    },
+    "humor": {
+      "score": 6,
+      "why": "The 'Advanced Plumbing' aside and the 'Even databases have paperwork' closer add gentle wit, but the jokes are mild and errors like 'checking book' and 'Pride Prejudice' blunt the delivery."
+    },
+    "design": {
+      "score": 1,
+      "why": "No design critique was produced, so there is no taste, specificity, or critique to evaluate."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

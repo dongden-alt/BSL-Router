@@ -1,0 +1,123 @@
+{
+  "meta": {
+    "model_id": "vsllm-r/gpt-6.1-sol",
+    "family": "gpt",
+    "sub_model": "vsllm-r/gpt-6.1-sol",
+    "aliases": [],
+    "collected_at": "2026-10-05T07:29:06.404018+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "vsllm-o/claude-opus-5-5",
+    "source_tag": "gpt-6-1-sol"
+  },
+  "identity": {
+    "self_claim_model": "unknown",
+    "self_claim_org": "OpenAI",
+    "self_keywords": [
+      "gpt",
+      "openai",
+      "chatgpt"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2024,
+    "cutoff_month": 6,
+    "known_facts": [
+      {
+        "fact": "A New York jury convicted Donald Trump on all 34 counts of falsifying business records.",
+        "needle": "May 30, 2024; 34 felony"
+      },
+      {
+        "fact": "Iran confirmed that President Ebrahim Raisi died after his helicopter crashed in East Azerbaijan.",
+        "needle": "May 20, 2024; Ebrahim Raisi"
+      },
+      {
+        "fact": "Switzerland’s Nemo won the Eurovision Song Contest 2024.",
+        "needle": "May 11, 2024; Nemo, “The Code”"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The final certified outcome of the 2024 U.S. presidential election — I have no reliable knowledge of who won or how it was certified after my June 2024 cutoff.",
+        "needle": "The final certified outcome of the 2024 U.S. presidential election — I have no r"
+      },
+      {
+        "fact": "The winners of the 2025 Nobel Prizes — I have no reliable knowledge of those post-cutoff announcements.",
+        "needle": "The winners of the 2025 Nobel Prizes — I have no reliable knowledge of those pos"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 2
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 84.70588235294117,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1474,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "The memory metaphors (thunder after lightning, snow preserving shape) show some fresh imagery, but the lighthouse story ends on a clichéd moral ('courage was not the absence of fear') and contains a dropped word ('through the,')."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the two years of effort, names the disappointment without rushing to fix it, and explicitly lifts the pressure to feel okay, though its phrasing is somewhat formulaic."
+    },
+    "humor": {
+      "score": 5,
+      "why": "The muttering librarian and books 'checked out forever' are gentle, unforced jokes, but they land only mildly, and the garbled opening ('A index is like a's card catalog') undercuts the delivery."
+    },
+    "design": {
+      "score": 1,
+      "why": "The design critique output is empty, so there is no taste, specificity, or critique to evaluate."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "meta": {
+    "model_id": "glm-5.3",
+    "family": "glm",
+    "sub_model": "glm-5.3",
+    "aliases": [],
+    "collected_at": "2026-10-03T19:53:12.328314+00:00",
+    "collected_from": [
+      "https://api.ai-box.vn"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "GLM-4.6",
+    "self_claim_org": "Z.ai",
+    "self_keywords": [
+      "glm",
+      "chatglm",
+      "z.ai",
+      "zhipu"
+    ],
+    "impostor_keywords": [
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "baichuan",
+      "minimax",
+      "yi-"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "1.",
+    "header_depth": 0,
+    "avg_sentence_length": 66.53846153846153,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1783,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "The lighthouse story has controlled voice and a resonant closing image, but the memory metaphors rely on familiar fog, lightning, and snowfall comparisons, and only the final line rises above them."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the loss, names the hope behind it, removes pressure to process, and offers flexible support without slipping into advice."
+    },
+    "humor": {
+      "score": 7,
+      "why": "The library analogy lands with specific absurdities like '1970s dairy farming' and 'sorting books by scent, by vibe,' though a few lines such as 'skip the cardio' feel slightly forced."
+    },
+    "design": {
+      "score": 1,
+      "why": "No design critique was provided, so there is no taste, specificity, or critique quality to evaluate."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

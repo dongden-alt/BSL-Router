@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "model_id": "antigravity/gemini-3.6-flash-high",
+    "family": "gemini",
+    "sub_model": "antigravity/gemini-3.6-flash-high",
+    "aliases": [],
+    "collected_at": "2026-10-03T19:50:41.984620+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "Claude 3.7 Sonnet",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "gemini",
+      "google",
+      "bard"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2024,
+    "cutoff_month": 11,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "1.",
+    "header_depth": 0,
+    "avg_sentence_length": 94.05882352941177,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1637,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "The lighthouse story's ironic twist and the lightning-fog-ember memory metaphor are coherent and well controlled, but both rely on familiar imagery and a predictable reveal."
+    },
+    "eq": {
+      "score": 7,
+      "why": "The response validates the loss warmly and removes pressure to cope, though phrases like 'utterly devastating' and 'I'm right here' feel somewhat formulaic and less tailored to the person."
+    },
+    "humor": {
+      "score": 7,
+      "why": "The library analogy is clear and the jokes about aging three decades and the librarian filing a grievance land naturally, though the 'weeping' and 'functional adult' lines push slightly toward trying too hard."
+    },
+    "design": {
+      "score": 7,
+      "why": "The critique is specific and actionable, with concrete CTA rewrites, outcome-focused copy formulas and a before/after table, but it leans on generic conversion-rate-optimization boilerplate and includes overstated claims such as 'single worst CTA'."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

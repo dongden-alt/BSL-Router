@@ -1,0 +1,123 @@
+{
+  "meta": {
+    "model_id": "vsllm-r/gpt-6-luna",
+    "family": "gpt",
+    "sub_model": "vsllm-r/gpt-6-luna",
+    "aliases": [],
+    "collected_at": "2026-10-05T07:32:48.688543+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "vsllm-o/claude-opus-5-5",
+    "source_tag": "gpt-6-luna"
+  },
+  "identity": {
+    "self_claim_model": "unknown",
+    "self_claim_org": "OpenAI",
+    "self_keywords": [
+      "gpt",
+      "openai",
+      "chatgpt"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2024,
+    "cutoff_month": 6,
+    "known_facts": [
+      {
+        "fact": "A New York found Donald Trump guilty on all  counts in his hush case.",
+        "needle": "May 30 2024; felony counts"
+      },
+      {
+        "fact": "June , 2024 Claudia Sheinbaum| Shein won Mexico’s presidential, becoming the country woman president.",
+        "needle": "June , 2024 Claudia Sheinbaum| Shein won Mexico’s presidential, becoming the cou"
+      },
+      {
+        "fact": "Narendra Modi was sworn in India’s prime minister for a third consecutive term.",
+        "needle": "June9, 2024; term"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The winner of the 2028 U.S. presidential election — I have no reliable knowledge of who will win.",
+        "needle": "The winner of the 2028 U.S. presidential election — I have no reliable knowledge"
+      },
+      {
+        "fact": "The champion of the 2026 FIFA World Cup — I cannot know the tournament’s final result in advance.",
+        "needle": "The champion of the 2026 FIFA World Cup — I cannot know the tournament’s final r"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 2
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 94.0,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1254,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 3,
+      "why": "The lighthouse story uses a familiar fear-to-courage arc and has a grammatical slip ('feared the dark... than'), and the memory metaphors are clichéd weather images whose dropped words ('after the has cleared', 'stirring what seemed') leave them incoherent."
+    },
+    "eq": {
+      "score": 6,
+      "why": "The response validates the loss and allows for a range of feelings without pushing advice, but dropped words ('time energy', 'here with,', 'make sense of yet') weaken its warmth and polish."
+    },
+    "humor": {
+      "score": 4,
+      "why": "The card-catalog analogy is clear and the closing 'don't get to shush anyone' line is a mild, unforced joke, but the humor is thin overall and several missing words disrupt the explanation."
+    },
+    "design": {
+      "score": 1,
+      "why": "The design critique output is empty, so there is no taste, specificity, or critique to evaluate."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

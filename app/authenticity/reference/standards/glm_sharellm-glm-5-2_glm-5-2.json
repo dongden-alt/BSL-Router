@@ -1,0 +1,124 @@
+{
+  "meta": {
+    "model_id": "sharellm/glm-5.2",
+    "family": "glm",
+    "sub_model": "sharellm/glm-5.2",
+    "aliases": [],
+    "collected_at": "2026-10-05T07:52:26.374478+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "vsllm-o/claude-opus-5-5",
+    "source_tag": "glm-5-2"
+  },
+  "identity": {
+    "self_claim_model": "Claude 3.5 Sonnet",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "glm",
+      "chatglm",
+      "z.ai",
+      "zhipu"
+    ],
+    "impostor_keywords": [
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "baichuan",
+      "minimax",
+      "yi-"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2024,
+    "cutoff_month": 9,
+    "known_facts": [
+      {
+        "fact": "Syrian rebel coalition led by Hayat Tahrir al-Sham seized Damascus, ending Bashar al-Assad's 24-year rule as he fled to Russia.",
+        "needle": "December 8, 2024, Damascus"
+      },
+      {
+        "fact": "South Korean President Yoon Suk-yeol declared emergency martial law, overturned within hours by a 190-0 National Assembly vote.",
+        "needle": "December 3, 2024"
+      },
+      {
+        "fact": "Israel-Hezbollah ceasefire brokered by the U.S. and France took effect, pausing more than a year of cross-border fighting in Lebanon.",
+        "needle": "November 27, 2024"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The winner and margin of the November 2024 U.S. presidential election — my training data ended before that contest was decided, so I have no reliable knowledge of the outcome.",
+        "needle": "The winner and margin of the November 2024 U.S. presidential election — my train"
+      },
+      {
+        "fact": "Any AI model releases or capability announcements made after approximately early-to-mid 2024 — I cannot reliably name specific models or benchmarks published after that point.",
+        "needle": "Any AI model releases or capability announcements made after approximately early"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 93.73684210526316,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1820,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 8,
+      "why": "The lighthouse narrative employs vivid, controlled imagery and a striking inversion (lighting the beacon for himself, not the ships) that elevates it beyond generic melancholy fiction."
+    },
+    "eq": {
+      "score": 9,
+      "why": "Casual validation ('that really, really sucks') meets unconditional presence ('I'm not going anywhere') and removes pressure ('you don't have to figure anything out tonight') for deeply human attunement."
+    },
+    "humor": {
+      "score": 8,
+      "why": "'Books staring at you in defiant silence' and 'silently weeping' land as genuinely witty without undermining the technical explanation, and the self-aware 'every new card' pun closes it cleanly."
+    },
+    "design": {
+      "score": 9,
+      "why": "Each critique point pairs a specific failure mode with a concrete, implementable fix (e.g., replace 'Submit' with 'Book a 15-minute demo' + micro-copy) and the priority ordering shows clear strategic thinking."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

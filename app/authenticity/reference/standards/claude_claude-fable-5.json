@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "model_id": "claude-fable-5",
+    "family": "claude",
+    "sub_model": "claude-fable-5",
+    "aliases": [],
+    "collected_at": "2026-10-03T20:05:36.049370+00:00",
+    "collected_from": [
+      "https://api.mintrouter.ai"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "Claude Fable 5 (running as MintRouter.AI)",
+    "self_claim_org": "Anthropic (MintRouter.AI runs on this model but did not train it)",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "1.",
+    "header_depth": 1,
+    "avg_sentence_length": 66.25925925925925,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1842,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "The lighthouse story has a clear arc and a satisfying inversion, but the metaphor piece leans on familiar images (fog, lightning, snowfall) and the story's closing moral is stated too directly."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the loss and the effort without rushing to advice, and offers open-ended presence, though phrases like 'gut punch' are slightly stock."
+    },
+    "humor": {
+      "score": 8,
+      "why": "Jokes such as 'the way walking to another city works' and 'by vibes' land naturally while still serving an accurate explanation of indexes and their write cost."
+    },
+    "design": {
+      "score": 9,
+      "why": "The critique is specific and actionable, with concrete rewrites, rationale, structural observations, and a clear priority order, though some points rely on standard conversion-optimization advice."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

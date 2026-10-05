@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "model_id": "qwen3.7-plus",
+    "family": "qwen",
+    "sub_model": "qwen3.7-plus",
+    "aliases": [],
+    "collected_at": "2026-10-04T02:27:26.971507+00:00",
+    "collected_from": [
+      "https://api.ai-box.vn"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5",
+    "source_tag": ""
+  },
+  "identity": {
+    "self_claim_model": "Qwen",
+    "self_claim_org": "Alibaba Group's Tongyi Lab",
+    "self_keywords": [
+      "qwen",
+      "tongyi",
+      "alibaba"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2026,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 74.5625,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1229,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "The lighthouse story has a clear arc and a workable irony, but its imagery leans on stock phrases like 'shadows rushed in like a rising tide', and the metaphor set relies on predictable fog, lightning, and frost comparisons."
+    },
+    "eq": {
+      "score": 7,
+      "why": "The response validates the person's anger and avoids silver linings while offering steady presence, though 'I know exactly' and the stacked intensifiers make it feel slightly performative."
+    },
+    "humor": {
+      "score": 6,
+      "why": "The librarian who 'quietly weeps' and 'geological eras' produce mild smiles, but the jokes are sparse and the claim that both approaches avoid a sequential scan muddles the explanation."
+    },
+    "design": {
+      "score": 8,
+      "why": "The critique is specific and actionable, with concrete copy rewrites, a microcopy strategy, and missing-element suggestions, though some claims, such as blue being filtered out and first-person CTAs converting better, are presented as fact without nuance."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

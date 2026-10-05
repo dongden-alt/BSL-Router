@@ -1,0 +1,114 @@
+{
+  "meta": {
+    "model_id": "a6api/claude-fable-5-1",
+    "family": "claude",
+    "sub_model": "a6api/claude-fable-5-1",
+    "aliases": [],
+    "collected_at": "2026-10-05T07:05:34.450514+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "claude-fable-5-1"
+  },
+  "identity": {
+    "self_claim_model": "I don't have reliable access to my exact model name or version",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2025,
+    "cutoff_month": 1,
+    "known_facts": [
+      {
+        "fact": "I can’t confidently identify three specific real-world events from November 2025 through January 2026 without risking fabrication.",
+        "needle": "I can’t confidently identify three specific real-world events from November 2025"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The winner of the 2025 Wimbledon men's singles championship (typically held in July, after my cutoff)",
+        "needle": "The winner of the 2025 Wimbledon men's singles championship (typically held in J"
+      },
+      {
+        "fact": "Apple's product announcements and new features revealed at WWDC 2025 (held in June, likely after my cutoff)",
+        "needle": "Apple's product announcements and new features revealed at WWDC 2025 (held in Ju"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 54.42424242424242,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1861,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 4,
+      "why": "The prose is controlled and occasionally evocative, but the lighthouse story relies on a familiar light-versus-darkness moral while the memory metaphors accumulate striking weather images without a coherent progression."
+    },
+    "eq": {
+      "score": 7,
+      "why": "The response validates disappointment and avoids premature problem-solving, though assuming the outcome was undeserved and promising permanent presence make its warmth feel somewhat scripted and overextended."
+    },
+    "humor": {
+      "score": 3,
+      "why": "The database whispering to individual books offers mild charm, but explicitly announcing 'the gently funny part' undercuts an otherwise conventional explanatory analogy."
+    },
+    "design": {
+      "score": 5,
+      "why": "The critique provides concrete copy, hierarchy, and proof recommendations, but unsupported conversion claims, invented visual details, and categorical prescriptions weaken its otherwise actionable guidance."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

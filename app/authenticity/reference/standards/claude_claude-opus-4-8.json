@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "model_id": "claude-opus-4-8",
+    "family": "claude",
+    "sub_model": "claude-opus-4-8",
+    "aliases": [],
+    "collected_at": "2026-10-03T20:07:18.341497+00:00",
+    "collected_from": [
+      "https://api.mintrouter.ai"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "MintRouter.AI, running on Claude Opus 4.8",
+    "self_claim_org": "Anthropic (original creator of the underlying model)",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "1.",
+    "header_depth": 1,
+    "avg_sentence_length": 69.21428571428571,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1993,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "The lighthouse story has a clean arc and a resonant closing turn, but the names, imagery, and moral are familiar, and the metaphor piece mixes fog, downpour, and coastline erosion without committing to any one image."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the loss, gives explicit permission not to be gracious, and offers steady presence without advice, though phrases like 'I'm not going anywhere' are somewhat stock."
+    },
+    "humor": {
+      "score": 7,
+      "why": "The light, self-aware jokes ('quietly questioning your life choices,' 'smug and efficient') land without derailing a clear explanation, though a few beats like 'Mildly dramatic' feel slightly forced."
+    },
+    "design": {
+      "score": 9,
+      "why": "The critique is specific and actionable, with concrete rewrites, outcome-focused copy examples, hierarchy and CTA reasoning, and a prioritized fix list; it only loses a point for some standard best-practice advice."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

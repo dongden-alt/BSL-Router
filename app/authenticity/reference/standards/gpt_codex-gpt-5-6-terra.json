@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "model_id": "codex/gpt-5.6-terra",
+    "family": "gpt",
+    "sub_model": "codex/gpt-5.6-terra",
+    "aliases": [],
+    "collected_at": "2026-10-03T20:11:18.461600+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "unknown",
+    "self_claim_org": "OpenAI",
+    "self_keywords": [
+      "gpt",
+      "openai",
+      "chatgpt"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 82.21052631578948,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1601,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "The lighthouse story has a tender, concrete image in the burnt matchsticks and a quiet ending, but the metaphor piece is clichéd (storm, fog, lightning) and duplicated verbatim, which pulls the overall score down."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the hurt and the sense of unfairness and offers presence without jumping to advice, though phrasing like 'I'm here with you in the disappointment' is slightly formulaic."
+    },
+    "humor": {
+      "score": 6,
+      "why": "The 'Pride and Prejudice' period-drama aside and the 'server is sweating at 3 a.m.' line add light, natural wit, but the humor is sparse and mild rather than memorable."
+    },
+    "design": {
+      "score": 9,
+      "why": "The critique is specific and actionable, covering stock hero imagery, vague value proposition, generic feature cards, the 'Submit' CTA, missing proof, and page sequence, with concrete rewrites, though it is somewhat long and leans on assumed copy it could not see."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

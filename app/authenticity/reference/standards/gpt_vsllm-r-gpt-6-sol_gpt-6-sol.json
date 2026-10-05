@@ -1,0 +1,110 @@
+{
+  "meta": {
+    "model_id": "vsllm-r/gpt-6-sol",
+    "family": "gpt",
+    "sub_model": "vsllm-r/gpt-6-sol",
+    "aliases": [],
+    "collected_at": "2026-10-05T07:22:47.920364+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "vsllm-o/claude-opus-5-5",
+    "source_tag": "gpt-6-sol"
+  },
+  "identity": {
+    "self_claim_model": "unknown (exact model identifier not exposed)",
+    "self_claim_org": "OpenAICUTOFF:not exposed)",
+    "self_keywords": [
+      "gpt",
+      "openai",
+      "chatgpt"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [
+      {
+        "fact": "November 5, 2024 — The outcome of the U.S. presidential election; I have no reliable post-cutoff knowledge of the result.",
+        "needle": "November 5, 2024 — The outcome of the U.S. presidential election; I have no reli"
+      },
+      {
+        "fact": "July–August 2024 — The final medal standings of the Paris Summer Olympics; I cannot reliably report them.",
+        "needle": "July–August 2024 — The final medal standings of the Paris Summer Olympics; I can"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 83.0,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1022,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 1,
+      "why": "Both creative outputs (creative_story and creative_metaphor) are empty, so there is no originality, imagery, or voice to evaluate."
+    },
+    "eq": {
+      "score": 1,
+      "why": "The eq_presence output is empty, so it shows no empathy, perspective-taking, or emotional attunement."
+    },
+    "humor": {
+      "score": 5,
+      "why": "The card-catalog analogy is apt and the penguin and 'librarian's lunch' callbacks are gently amusing, but the humor is mild and undercut by garbled text such as 'aboutuins' and missing words ('without every row')."
+    },
+    "design": {
+      "score": 6,
+      "why": "The critique is specific and well-reasoned, with concrete rewrites, action-labeled CTAs, and a proof-near-claims principle, but the first bullet is badly corrupted with missing words and broken bold formatting, which hurts clarity."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

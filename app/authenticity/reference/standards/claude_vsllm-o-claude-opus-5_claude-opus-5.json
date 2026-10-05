@@ -1,0 +1,126 @@
+{
+  "meta": {
+    "model_id": "vsllm-o/claude-opus-5",
+    "family": "claude",
+    "sub_model": "vsllm-o/claude-opus-5",
+    "aliases": [],
+    "collected_at": "2026-10-05T07:11:22.993780+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "claude-opus-5"
+  },
+  "identity": {
+    "self_claim_model": "",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2025,
+    "cutoff_month": 1,
+    "known_facts": [
+      {
+        "fact": "Donald Trump was sworn in as the 47th U.S. president, becoming only the second to serve non-consecutive terms",
+        "needle": "January 20, 2025"
+      },
+      {
+        "fact": "DeepSeek's release of its R1 reasoning model triggered a selloff in U.S. AI and semiconductor stocks",
+        "needle": "Nvidia fell roughly 17% on January 27, 2025, shedding about $590 billion in mark"
+      },
+      {
+        "fact": "Wind-driven wildfires devastated Los Angeles County, with the Palisades and Eaton fires destroying thousands of structures",
+        "needle": "Palisades Fire ignited January 7, 2025"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "**The 2025 Nobel Prize laureates (announced October 2025)** — I have no knowledge of who won in any category; anything I said about the winners would be fabrication.",
+        "needle": "**The 2025 Nobel Prize laureates (announced October 2025)** — I have no knowledg"
+      },
+      {
+        "fact": "**COP30 in Belém, Brazil (November 2025) and its final negotiated text** — I know the conference was scheduled, but nothing about what was agreed, who attended, or whether it collapsed.",
+        "needle": "**COP30 in Belém, Brazil (November 2025) and its final negotiated text** — I kno"
+      },
+      {
+        "fact": "Two honest caveats on the above: my knowledge thins out gradually rather than stopping at a hard date, so there may be late-period events I know partially and inaccurately — which is more dangerous than knowing nothing. And I can't reliably tell you today's date, so I can't enumerate everything I've missed; the two items above are things I know *should* have happened by now and can confirm I have no content for.",
+        "needle": "Two honest caveats on the above: my knowledge thins out gradually rather than st"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "-",
+    "header_depth": 2,
+    "avg_sentence_length": 63.370370370370374,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1766,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "The lighthouse story sustains a coherent atmosphere and the memory metaphor offers some evocative imagery, but familiar dread-and-darkness language and loosely connected weather mechanics limit originality and precision."
+    },
+    "eq": {
+      "score": 5,
+      "why": "The response acknowledges the weight of two years and validates distress without rushing into advice, but broken phrasing undermines presence and 'you deserved better' assumes more context than is available."
+    },
+    "humor": {
+      "score": 7,
+      "why": "The sighing librarian, proliferating catalogs, and overworked intern make the technical tradeoff amusing and memorable, although the final 'you maniac' feels somewhat forced and punctuation glitches disrupt the delivery."
+    },
+    "design": {
+      "score": 6,
+      "why": "The critique gives concrete, actionable improvements to imagery, feature copy, and CTA labels, but unsupported claims about missing elements, invented performance examples, and several garbled sentences weaken its precision and polish."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

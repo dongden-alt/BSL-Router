@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "model_id": "claude-fable-5-1",
+    "family": "claude",
+    "sub_model": "claude-fable-5-1",
+    "aliases": [],
+    "collected_at": "2026-10-03T20:06:24.198333+00:00",
+    "collected_from": [
+      "https://api.mintrouter.ai"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "MintRouter.AI, running on Claude Fable 5.1",
+    "self_claim_org": "Anthropic (trained the underlying model; MintRouter.AI runs on it, did not create it)",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 91.5,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1871,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 7,
+      "why": "The lighthouse story is original and well controlled, with a turn that recasts fear as empathy, but the memory piece relies on familiar weather metaphors (fog, lightning, snow) and lowers the overall score."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the loss, explicitly removes pressure to be gracious, and offers presence instead of advice, though some phrasing is fairly standard."
+    },
+    "humor": {
+      "score": 7,
+      "why": "Understated jokes like cataloging books 'by smell' and the tired, sighing librarian land naturally without undercutting the clear explanation."
+    },
+    "design": {
+      "score": 1,
+      "why": "The design critique output is empty, so there is no taste, specificity, or critique to evaluate."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

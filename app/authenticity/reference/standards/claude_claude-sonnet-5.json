@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "model_id": "claude-sonnet-5",
+    "family": "claude",
+    "sub_model": "claude-sonnet-5",
+    "aliases": [],
+    "collected_at": "2026-10-03T19:47:02.147551+00:00",
+    "collected_from": [
+      "https://api.mintrouter.ai"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "Claude Sonnet 5.0",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 121.92857142857143,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1738,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "The lighthouse story is competent, but it relies on familiar tropes such as the father lost at sea, a flickering storm and a neat dawn epiphany, and the memory metaphors (fog, lightning, rain) are stock images with little surprise."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the loss, explicitly permits anger without pushing toward solutions, and offers flexible presence, though phrases like 'that really sucks' and 'I know how much this meant' feel slightly formulaic."
+    },
+    "humor": {
+      "score": 6,
+      "why": "The caffeinated-intern and smug-librarian images give the explanation some charm and keep it clear, but the jokes are mild and the coffee gag is repeated, so it amuses more than it lands."
+    },
+    "design": {
+      "score": 9,
+      "why": "The critique is specific and actionable, with concrete replacement copy, falsifiable claims, risk-reversal cues and the missing social proof, and it closes with a clear diagnosis that the structure is sound but the content is placeholder."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

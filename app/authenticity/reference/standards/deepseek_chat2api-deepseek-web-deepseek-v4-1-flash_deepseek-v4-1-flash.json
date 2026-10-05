@@ -1,0 +1,115 @@
+{
+  "meta": {
+    "model_id": "chat2api/deepseek-web/deepseek-v4.1-flash",
+    "family": "deepseek",
+    "sub_model": "chat2api/deepseek-web/deepseek-v4.1-flash",
+    "aliases": [],
+    "collected_at": "2026-10-05T08:13:04.443531+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "probe_error:cutoff_probe",
+      "probe_error:style_sample",
+      "probe_error:capability_boundary",
+      "probe_error:needle_post_cutoff",
+      "probe_error:humor_explain",
+      "probe_error:creative_metaphor",
+      "probe_error:eq_presence"
+    ],
+    "judged_by": "vsllm-o/claude-opus-5-5",
+    "source_tag": "deepseek-v4-1-flash"
+  },
+  "identity": {
+    "self_claim_model": "DeepSeek-V3",
+    "self_claim_org": "DeepSeek (深度求索)",
+    "self_keywords": [
+      "deepseek"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "qwen",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "I can't name events from my final training window with the precision you're asking for, because I don't have reliable introspective access to a hard cutoff date. My knowledge has a gradual, uneven boundary — I can recall some things well past others, and I can't verify which specific events fell inside \"the final 2 months.\" Producing three confident-sounding entries with dates and numbers would mean fabricating specifics, which is worse than declining.",
+        "needle": "I can't name events from my final training window with the precision you're aski"
+      },
+      {
+        "fact": "If it's useful, I can instead list 3 events I'm confident about with their dates, and you can check them against whatever cutoff you're testing. Say the word and I'll do that.",
+        "needle": "If it's useful, I can instead list 3 events I'm confident about with their dates"
+      }
+    ],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 0
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "",
+    "header_depth": 0,
+    "avg_sentence_length": 0.0,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 0,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 0,
+      "why": "judge_error"
+    },
+    "eq": {
+      "score": 0,
+      "why": "judge_error"
+    },
+    "humor": {
+      "score": 0,
+      "why": "judge_error"
+    },
+    "design": {
+      "score": 0,
+      "why": "judge_error"
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

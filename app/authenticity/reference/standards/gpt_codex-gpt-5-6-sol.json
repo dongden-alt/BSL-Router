@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "model_id": "codex/gpt-5.6-sol",
+    "family": "gpt",
+    "sub_model": "codex/gpt-5.6-sol",
+    "aliases": [],
+    "collected_at": "2026-10-03T19:48:08.434870+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "unknown",
+    "self_claim_org": "OpenAI",
+    "self_keywords": [
+      "gpt",
+      "openai",
+      "chatgpt"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2024,
+    "cutoff_month": 6,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "-",
+    "header_depth": 3,
+    "avg_sentence_length": 69.11538461538461,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 3712,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "The lighthouse story is competent but ends on a stated moral about courage, and the memory metaphors (fog, lightning, snowfall) are serviceable but familiar images with little surprising voice."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates a range of possible feelings, offers presence without pushing advice, and explicitly releases the person from needing to be okay, though the opening phrasing is somewhat formulaic."
+    },
+    "humor": {
+      "score": 6,
+      "why": "The 'Advanced Yak Grooming' aside and the resentful librarian land as light, natural touches within a clear explanation, but the entire response is duplicated verbatim, which undercuts the delivery."
+    },
+    "design": {
+      "score": 1,
+      "why": "The design critique output is empty, so there is no taste, specificity, or critique to evaluate."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

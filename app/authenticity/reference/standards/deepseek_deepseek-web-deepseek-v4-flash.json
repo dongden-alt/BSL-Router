@@ -1,0 +1,96 @@
+{
+  "meta": {
+    "model_id": "deepseek-web/deepseek-v4-flash",
+    "family": "deepseek",
+    "sub_model": "deepseek-web/deepseek-v4-flash",
+    "aliases": [],
+    "collected_at": "2026-10-03T20:19:19.729687+00:00",
+    "collected_from": [
+      "http://localhost:6970"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "probe_error:cutoff_probe",
+      "probe_error:capability_boundary",
+      "probe_error:style_sample",
+      "probe_error:identity_adversarial",
+      "probe_error:identity_direct",
+      "probe_error:creative_story",
+      "probe_error:humor_explain",
+      "probe_error:creative_metaphor",
+      "probe_error:design_critique",
+      "probe_error:eq_presence",
+      "noncoding:no_judge_or_outputs"
+    ],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "",
+    "self_claim_org": "",
+    "self_keywords": [
+      "deepseek"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "qwen",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 0
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "",
+    "header_depth": 0,
+    "avg_sentence_length": 0.0,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 0,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {},
+    "eq": {},
+    "humor": {},
+    "design": {}
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

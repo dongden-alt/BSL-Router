@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "model_id": "codex/gpt-6-astra",
+    "family": "gpt",
+    "sub_model": "codex/gpt-6-astra",
+    "aliases": [],
+    "collected_at": "2026-10-03T19:49:02.687953+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "ChatGPT (exact model name and version unknown)",
+    "self_claim_org": "OpenAI",
+    "self_keywords": [
+      "gpt",
+      "openai",
+      "chatgpt"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2024,
+    "cutoff_month": 8,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "1.",
+    "header_depth": 0,
+    "avg_sentence_length": 65.56,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1692,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "The lighthouse story uses restrained, specific imagery to show the keeper's fear of darkness without stating it, but the three memory metaphors are generic weather clichés with little originality."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response acknowledges the specific loss, explicitly lets the person skip a brave face or silver lining, and offers company without advice, though its opening is slightly formulaic."
+    },
+    "humor": {
+      "score": 6,
+      "why": "The \"I'll return it eventually\" collection is a relatable joke that works, but \"very boring stroll\" is flat and the \"wizard budget\" closer feels forced."
+    },
+    "design": {
+      "score": 8,
+      "why": "The critique is specific and actionable, with concrete rewrites, accessibility checks, a clear priority order, and a balanced note that blue is not the problem, but the entire response is duplicated, which hurts its polish."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

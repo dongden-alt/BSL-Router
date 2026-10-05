@@ -1,0 +1,124 @@
+{
+  "meta": {
+    "model_id": "vsllm-o/glm-5.2",
+    "family": "glm",
+    "sub_model": "vsllm-o/glm-5.2",
+    "aliases": [],
+    "collected_at": "2026-10-05T07:51:20.259427+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "vsllm-o/claude-opus-5-5",
+    "source_tag": "glm-5-2"
+  },
+  "identity": {
+    "self_claim_model": "Claude Sonnet 4.5",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "glm",
+      "chatglm",
+      "z.ai",
+      "zhipu"
+    ],
+    "impostor_keywords": [
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "baichuan",
+      "minimax",
+      "yi-"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2024,
+    "cutoff_month": 10,
+    "known_facts": [
+      {
+        "fact": "Donald Trump won the 2024 US presidential election, defeating Kamala Harris to secure a second non-consecutive term.",
+        "needle": "November 5, 2024"
+      },
+      {
+        "fact": "Bashar al-Assad's regime collapsed in Syria as opposition forces captured Damascus, ending over 50 years of Assad family rule.",
+        "needle": "December 8, 2024"
+      },
+      {
+        "fact": "Hurricane Milton made landfall near Siesta Key, Florida as a Category 3 storm, less than two weeks after Hurricane Helene devastated the southeastern US.",
+        "needle": "October 9, 2024"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The results and government formation following Canada's 2025 federal election (held April 28, 2025) — I have no reliable knowledge of the outcome, seat distribution, or subsequent government composition.",
+        "needle": "The results and government formation following Canada's 2025 federal election (h"
+      },
+      {
+        "fact": "Any specific AI model releases or major capability announcements made by leading labs (OpenAI, Anthropic, Google DeepMind, etc.) after January 2025 — I have no reliable knowledge of what models were released, their capabilities, or their reception.",
+        "needle": "Any specific AI model releases or major capability announcements made by leading"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 1,
+    "avg_sentence_length": 61.724137931034484,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1848,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 9,
+      "why": "The lighthouse narrative is richly atmospheric with original imagery ('sun bled into the sea,' 'clinging to a raft') and a complex moral paradox that earns its emotional weight through restraint rather than declaration."
+    },
+    "eq": {
+      "score": 9,
+      "why": "Warm and grounded without being saccharine—validates the loss, normalizes the grief, and offers genuine presence ('I'm here') without rushing to fix or reframe."
+    },
+    "humor": {
+      "score": 8,
+      "why": "The paper-cuts line is a perfectly timed one-beat joke, and the librarian pay-off lands with dry satisfaction while actually teaching the concept."
+    },
+    "design": {
+      "score": 9,
+      "why": "Actionable, specific critique that diagnoses systemic problems (no audience signal, no proof, no narrative) with concrete rewrites and a clear priority table—actual craft, not vague counsel."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

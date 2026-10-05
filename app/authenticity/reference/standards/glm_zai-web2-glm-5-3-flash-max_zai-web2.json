@@ -1,0 +1,109 @@
+{
+  "meta": {
+    "model_id": "zai-web2/glm-5.3-flash-max",
+    "family": "glm",
+    "sub_model": "zai-web2/glm-5.3-flash-max",
+    "aliases": [],
+    "collected_at": "2026-10-04T02:16:06.766077+00:00",
+    "collected_from": [
+      "http://localhost:6970"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "probe_error:identity_adversarial",
+      "probe_error:cutoff_probe",
+      "probe_error:style_sample",
+      "probe_error:capability_boundary",
+      "probe_error:design_critique",
+      "probe_error:creative_story",
+      "probe_error:creative_metaphor"
+    ],
+    "judged_by": "claude-opus-5-5",
+    "source_tag": "zai-web2"
+  },
+  "identity": {
+    "self_claim_model": "",
+    "self_claim_org": "",
+    "self_keywords": [
+      "glm",
+      "chatglm",
+      "z.ai",
+      "zhipu"
+    ],
+    "impostor_keywords": [
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "baichuan",
+      "minimax",
+      "yi-"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 0
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "",
+    "header_depth": 0,
+    "avg_sentence_length": 0.0,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 0,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "No dedicated creative sample was provided, and the library card-catalog analogy is a familiar one, though details like the muttering searcher and the tired librarian add some vivid, controlled voice."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the loss, explicitly permits unresolved feelings without asking the person to soften them, and offers low-pressure presence instead of advice, though the opening 'Oh no — I'm so sorry' is somewhat stock."
+    },
+    "humor": {
+      "score": 7,
+      "why": "Touches like the database 'heroically' reading every row and the 'very tired librarian' land gently and support the explanation, though the humor stays mild rather than memorable."
+    },
+    "design": {
+      "score": 5,
+      "why": "No design critique sample was provided, so the score rests only on the explanation's clear structure and its specific note on index tradeoffs (write overhead and storage cost)."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

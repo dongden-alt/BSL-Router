@@ -1,0 +1,96 @@
+{
+  "meta": {
+    "model_id": "ds/deepseek-v4-pro",
+    "family": "deepseek",
+    "sub_model": "ds/deepseek-v4-pro",
+    "aliases": [],
+    "collected_at": "2026-10-03T19:40:30.897862+00:00",
+    "collected_from": [
+      "https://api.ai-box.vn"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "GPT-4o",
+    "self_claim_org": "OpenAI",
+    "self_keywords": [
+      "deepseek"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "qwen",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2023,
+    "cutoff_month": 10,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 101.0909090909091,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1134,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 7,
+      "why": "The lighthouse story has strong atmosphere and a resonant final image of counting heartbeats with his back to the glass, and the weather metaphors for memory are evocative though somewhat familiar (fog, snow) and slightly uneven in cohesion."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the loss warmly, explicitly releases the person from performing bravery, and offers presence over advice, though phrases like 'punch to the gut' lean toward stock sympathy."
+    },
+    "humor": {
+      "score": 5,
+      "why": "The espresso-fueled card catalog and 'SQL for Sleepy People' are mildly charming, but announcing 'The gentle joke?' and the sneeze line feel forced and blunt the comedic effect."
+    },
+    "design": {
+      "score": 8,
+      "why": "The critique is specific and actionable with concrete rewrites, CTA label alternatives, and a prioritized list, though it is lengthy, somewhat repetitive, and relies on standard conversion-optimization advice rather than distinctive taste."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

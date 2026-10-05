@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "model_id": "codex/gpt-5.5",
+    "family": "gpt",
+    "sub_model": "codex/gpt-5.5",
+    "aliases": [],
+    "collected_at": "2026-10-03T19:49:56.835841+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "unknown",
+    "self_claim_org": "OpenAI",
+    "self_keywords": [
+      "gpt",
+      "openai",
+      "chatgpt"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2024,
+    "cutoff_month": 6,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 95.625,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1564,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "The lighthouse story has some evocative lines, such as 'water without a face' and the dark stepping back, and the metaphors are compact, but both lean on familiar imagery like fog, lightning, snow and a lonely keeper in a storm."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the hurt, names the effort invested, and pointedly avoids silver-lining advice, though phrases like 'I'm so sorry' and 'I'm here with you' are somewhat stock."
+    },
+    "humor": {
+      "score": 6,
+      "why": "The squeaky-cart librarian and 'database cardio' lines add light, natural levity to a clear explanation, but the jokes are mild and the card-catalog analogy is a common one."
+    },
+    "design": {
+      "score": 7,
+      "why": "The critique is thorough and actionable, with concrete rewrites for the headline, CTA and cards, but it is padded with generic B2B best-practice lists and hedged guesses ('likely', 'probably') rather than sharp, page-specific visual critique."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

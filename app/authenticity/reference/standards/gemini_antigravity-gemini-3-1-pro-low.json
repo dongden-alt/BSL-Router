@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "model_id": "antigravity/gemini-3.1-pro-low",
+    "family": "gemini",
+    "sub_model": "antigravity/gemini-3.1-pro-low",
+    "aliases": [],
+    "collected_at": "2026-10-03T19:51:03.050018+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "Gemini",
+    "self_claim_org": "Google",
+    "self_keywords": [
+      "gemini",
+      "google",
+      "bard"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 104.07142857142857,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1492,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 4,
+      "why": "The lighthouse story has a solid inversion where the keeper fights his own fear rather than serving the ships, but it relies on stock phrasing like 'creeping blackness' and 'suffocating pitch,' and the metaphor output is empty, which lowers the axis score."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response offers presence without pushing advice and explicitly lifts any pressure to talk, though 'I know exactly how much' slightly presumes the person's inner experience."
+    },
+    "humor": {
+      "score": 6,
+      "why": "The penguin-library aging gag lands gently, but lines like 'question its life choices' and 'nervous breakdown' are familiar tech-humor phrases that feel more inserted than earned."
+    },
+    "design": {
+      "score": 8,
+      "why": "The critique is specific and actionable, with concrete replacements such as product screenshots, benefit-led copy examples, value-driven CTA text, and anxiety-reducing micro-copy, though some points like banner blindness and features-versus-benefits are standard advice."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

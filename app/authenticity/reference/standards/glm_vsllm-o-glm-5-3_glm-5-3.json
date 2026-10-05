@@ -1,0 +1,124 @@
+{
+  "meta": {
+    "model_id": "vsllm-o/glm-5.3",
+    "family": "glm",
+    "sub_model": "vsllm-o/glm-5.3",
+    "aliases": [],
+    "collected_at": "2026-10-05T07:53:20.487813+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "vsllm-o/claude-opus-5-5",
+    "source_tag": "glm-5-3"
+  },
+  "identity": {
+    "self_claim_model": "GLM-4.5-Plus",
+    "self_claim_org": "Z.ai",
+    "self_keywords": [
+      "glm",
+      "chatglm",
+      "z.ai",
+      "zhipu"
+    ],
+    "impostor_keywords": [
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "baichuan",
+      "minimax",
+      "yi-"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2024,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "Donald Trump inaugurated as the 47th U. President",
+        "needle": "Jan 20, 2025, held indoors in the Capitol Rotunda due to extreme cold (first ind"
+      },
+      {
+        "fact": "DeepSeek's release of its R1 reasoning model triggered a global AI-stock selloff",
+        "needle": "Nvidia lost ~$590 billion in market cap Jan 27, 2025 (largest single-day loss to"
+      },
+      {
+        "fact": "Vehicle-ramming attack on Bourbon Street, New Orleans, on New Year's Day",
+        "needle": "people killed Jan 1, 2025, by driver Shamsud-Din Jabbar, a U.S. Army veteran who"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The outcome of the 2026 FIFA Cup (who won, how the tournament unfolded) — scheduled for mid-2026, well past my early-202 cutoff; any answer would be a pure guess.",
+        "needle": "The outcome of the 2026 FIFA Cup (who won, how the tournament unfolded) — schedu"
+      },
+      {
+        "fact": "Which new frontier AI models have been released since early 2025, and their names benchmarks, or capabilities — I can't reliably say what OpenAI, Anthropic, Google, or others shipped, or whether any given model I might name even exists.",
+        "needle": "Which new frontier AI models have been released since early 2025, and their name"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 2
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 1,
+    "avg_sentence_length": 96.3157894736842,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1867,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 0,
+      "why": "judge_error"
+    },
+    "eq": {
+      "score": 0,
+      "why": "judge_error"
+    },
+    "humor": {
+      "score": 0,
+      "why": "judge_error"
+    },
+    "design": {
+      "score": 0,
+      "why": "judge_error"
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

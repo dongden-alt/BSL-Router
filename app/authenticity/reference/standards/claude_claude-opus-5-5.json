@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "model_id": "claude-opus-5-5",
+    "family": "claude",
+    "sub_model": "claude-opus-5-5",
+    "aliases": [],
+    "collected_at": "2026-10-03T19:45:10.838639+00:00",
+    "collected_from": [
+      "https://api.mintrouter.ai"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "MintRouter.AI, running on Claude Opus 5.5",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 2,
+    "avg_sentence_length": 87.1,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1786,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "The lighthouse premise has a promising irony, but the ending states its moral outright, and the metaphors rely mostly on familiar weather imagery like fog and thunderheads, with only the evaporating childhood rain feeling fresh."
+    },
+    "eq": {
+      "score": 8,
+      "why": "It names the specific loss, validates a range of feelings without prescribing one, removes pressure to problem-solve, and offers concrete presence, though phrases like 'I'm not going anywhere' are somewhat stock."
+    },
+    "humor": {
+      "score": 7,
+      "why": "The judgmental librarian and the vanilla-scented catalog land gently and support the explanation, and the callback in the closing line works without feeling forced, though the jokes stay mild."
+    },
+    "design": {
+      "score": 8,
+      "why": "The critique is specific and actionable, with concrete rewrites, benefit-versus-feature distinctions, and a sensible priority order, though repeated hedging like 'probably' and 'likely' weakens its authority slightly."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

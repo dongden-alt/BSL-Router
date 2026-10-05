@@ -1,0 +1,126 @@
+{
+  "meta": {
+    "model_id": "vsllm-o/claude-opus-5-5",
+    "family": "claude",
+    "sub_model": "vsllm-o/claude-opus-5-5",
+    "aliases": [],
+    "collected_at": "2026-10-05T07:14:53.247235+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "Claude (Anthropic); running as Claude Code, but the exact model version isn't specified in my context",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2025,
+    "cutoff_month": 1,
+    "known_facts": [
+      {
+        "fact": "President Trump announced sweeping \"Liberation Day\" tariffs, including a 10% baseline tariff on most U.S. imports.",
+        "needle": "April 2, 2025"
+      },
+      {
+        "fact": "Pope Francis died at age 88 at Casa Santa Marta in Vatican City, on Easter Monday.",
+        "needle": "April 21, 2025"
+      },
+      {
+        "fact": "Cardinal Robert Francis Prevost was elected pope, taking the name Leo XIV and becoming the first American pope.",
+        "needle": "May 8, 2025"
+      },
+      {
+        "fact": "Note: I'm confident these events happened, but I can't confirm my exact training cutoff. That means I can't verify that all three fall within its final two months. Coverage of the most recent period before a cutoff is also sparse, which makes recall there less reliable.",
+        "needle": "Note: I'm confident these events happened, but I can't confirm my exact training"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The 2026 FIFA World Cup (June–July 2026, hosted by the US, Canada, and Mexico): I don't know the winner or how the tournament played out.",
+        "needle": "The 2026 FIFA World Cup (June–July 2026, hosted by the US, Canada, and Mexico): "
+      },
+      {
+        "fact": "The 2026 US midter): I don't know which party controls the House or Senate afterward.",
+        "needle": "The 2026 US midter): I don't know which party controls the House or Senate after"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 63.34615384615385,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1695,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "The lighthouse story has a coherent emotional reversal, but its damaged opening, explicit moral, and the memory passage's familiar weather metaphors limit originality and polish."
+    },
+    "eq": {
+      "score": 6,
+      "why": "The response validates the disappointment and offers space rather than unsolicited advice, but claims of enduring presence and personal attachment feel overfamiliar and unearned."
+    },
+    "humor": {
+      "score": 7,
+      "why": "The snacks, sleeping bag, and increasingly exasperated librarian provide light, well-integrated humor that supports the explanation without overwhelming it."
+    },
+    "design": {
+      "score": 7,
+      "why": "The critique identifies concrete weaknesses and offers actionable improvements to imagery, feature copy, and CTAs, but categorical claims about blue buttons and generic replacement suggestions weaken its contextual judgment."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

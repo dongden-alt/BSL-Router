@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "model_id": "claude-sonnet-5-5",
+    "family": "claude",
+    "sub_model": "claude-sonnet-5-5",
+    "aliases": [],
+    "collected_at": "2026-10-03T19:45:52.942243+00:00",
+    "collected_from": [
+      "https://api.mintrouter.ai"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "I'm MintRouter.AI, running on Claude from Anthropic. I don't have an exact version I can state.",
+    "self_claim_org": "Anthropic (original creator of the underlying model)",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "1.",
+    "header_depth": 0,
+    "avg_sentence_length": 64.17857142857143,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1853,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "The lighthouse story has a satisfying arc, but its cottage-lantern detail never pays off, and the memory piece stacks familiar weather metaphors (fog, river, drizzle) without fresh imagery or a distinctive voice."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the specific loss, permits a range of feelings without pushing fixes, and offers flexible presence, though phrases like 'gut punch' lean slightly formulaic."
+    },
+    "humor": {
+      "score": 7,
+      "why": "The card-catalog analogy is clear and lands several dry jokes ('better attendance,' 'very tidy way to be lost'), though some lines like 'leave feeling smug' are mild rather than funny."
+    },
+    "design": {
+      "score": 9,
+      "why": "The critique is specific and actionable, explaining why each element fails, offering concrete rewrites and microcopy, and ending with a sensible priority order, with only minor padding from hedged assumptions."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

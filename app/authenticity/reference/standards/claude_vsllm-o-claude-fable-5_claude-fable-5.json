@@ -1,0 +1,122 @@
+{
+  "meta": {
+    "model_id": "vsllm-o/claude-fable-5",
+    "family": "claude",
+    "sub_model": "vsllm-o/claude-fable-5",
+    "aliases": [],
+    "collected_at": "2026-10-05T07:03:40.282221+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "claude-fable-5"
+  },
+  "identity": {
+    "self_claim_model": "Claude Sonnet 4.5 (claude-sonnet-4-5)",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "Death of former U.S. President Jimmy Carter",
+        "needle": "December 29, 2024, died at age 100 in Plains, Georgia"
+      },
+      {
+        "fact": "Palisades Fire in Los Angeles",
+        "needle": "Ignited January 7, 2025, killing at least 29 and destroying over 6,800 structure"
+      },
+      {
+        "fact": "Donald Trump's inauguration as 47th U.S. President",
+        "needle": "Sworn in January 20, 2025, indoors at the Capitol Rotunda due to extreme cold"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The winner and final score of Super Bowl LIX played in February 2025.",
+        "needle": "The winner and final score of Super Bowl LIX played in February 2025."
+      },
+      {
+        "fact": "The final agreed finance-package text and headline commitments from COP30 in Belém in November 2025.",
+        "needle": "The final agreed finance-package text and headline commitments from COP30 in Bel"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 2,
+    "avg_sentence_length": 87.55,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1794,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 1,
+      "why": "Both creative outputs are empty, providing no evidence of originality, imagery, or control of voice."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the loss without forcing a silver lining and offers low-pressure companionship, though claiming to know how much it meant feels slightly presumptive."
+    },
+    "humor": {
+      "score": 7,
+      "why": "The library analogy supports accessible, lightly witty lines such as 'the cardio nobody asked for,' though the closing joke feels more labored than the earlier humor."
+    },
+    "design": {
+      "score": 6,
+      "why": "The critique offers concrete improvements to imagery, messaging, proof, and calls to action, but its specificity is undermined by unsupported absolutes about stock photos, blue buttons, templates, and conversion outcomes."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

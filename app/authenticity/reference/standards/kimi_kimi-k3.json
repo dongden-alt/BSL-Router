@@ -1,0 +1,97 @@
+{
+  "meta": {
+    "model_id": "kimi-k3",
+    "family": "kimi",
+    "sub_model": "kimi-k3",
+    "aliases": [],
+    "collected_at": "2026-10-03T19:55:06.627591+00:00",
+    "collected_from": [
+      "https://api.ai-box.vn"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "claude-opus-5-5"
+  },
+  "identity": {
+    "self_claim_model": "Kimi (version unknown)",
+    "self_claim_org": "Moonshot AI (月之暗面)",
+    "self_keywords": [
+      "kimi",
+      "moonshot"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "qwen",
+      "deepseek",
+      "claude",
+      "gpt",
+      "llama",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 90.77777777777777,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1672,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.0,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "The memory metaphor is coherent and has one fresh image (reaching for a name and finding only clear sky), but fog and storm are familiar choices, and the creative_story sample was empty, which lowers the axis score."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the loss without pushing a silver lining, gives explicit permission to grieve, and offers concrete, low-pressure presence, though 'genuinely' and the stacked offers lean slightly scripted."
+    },
+    "humor": {
+      "score": 7,
+      "why": "The library analogy is apt, and lines like 'slowly questioning your life choices' and 'a library that is mostly card catalogs' land naturally, though the closing quip is a bit predictable."
+    },
+    "design": {
+      "score": 1,
+      "why": "The design_critique output was empty, so there is no critique to evaluate for taste or specificity."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {},
+    "tool_use_schema": {},
+    "code_formatting": {}
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}
