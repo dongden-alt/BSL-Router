@@ -83,6 +83,9 @@ LOGPROB_PROBES = [
     {"id": "lp_tok_b", "prompt": "Count: 1 2 3", "max_tokens": 8},
     {"id": "lp_tok_c", "prompt": "Translate 'bonjour' to English.", "max_tokens": 8},
 ]
+
+
+async def run_probe(
     client: httpx.AsyncClient,
     endpoint_base: str,
     api_key: str,
