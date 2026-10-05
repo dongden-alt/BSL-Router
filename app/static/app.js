@@ -4080,7 +4080,7 @@ function renderAuthenticityTab() {
 
           <div class="auth-field">
             <div class="setting-title">Suspect provider &amp; model</div>
-            <div class="setting-desc">Pick the provider, then the model to test. Endpoint and key are taken from that provider automatically.</div>
+            <div class="setting-desc">Pick the provider, then the model to test. The probe is sent <strong>through this BSL Router</strong> (provider/model) — never the provider's direct endpoint.</div>
             <div class="auth-row">
               <select id="auth-provider" class="input" onchange="authOnProviderChange(this.value)">
                 <option value="">— select provider —</option>${providerOpts}
@@ -4089,7 +4089,7 @@ function renderAuthenticityTab() {
                 <option value="">— select model —</option>${modelOpts}
               </select>
             </div>
-            <div class="auth-endpoint">${st.testProviderKey ? 'Endpoint: <code>' + _authEsc(resolveBaseUrl(st.testProviderKey, Math.max((providers[st.testProviderKey].connections || []).findIndex(c => c && c.enabled !== false && (c.api_key || '').trim()), 0)) || '(none)') + '</code>' : ''}</div>
+            <div class="auth-endpoint">${st.testModel ? 'Router probe: <code>' + _authEsc((st.testModel.includes('/') ? st.testModel : st.testProviderKey + '/' + st.testModel)) + '</code> via this router /v1' : ''}</div>
           </div>
 
           <div class="auth-field">
@@ -4138,10 +4138,9 @@ function renderAuthenticityTab() {
         <div id="auth-standards-body">${st.standards ? _authStandardsHTML(st.standards) : 'Loading…'}</div>
         <hr style="border:none;border-top:1px solid var(--border-color);margin:14px 0">
         <div class="setting-title" style="margin-bottom:6px">Harvest new standard</div>
+        <div class="setting-desc" style="margin-bottom:8px">Harvests the anchor <strong>through this router</strong> — enter its router id (provider/model). The judge also runs through BSL.</div>
         <div class="auth-row" style="flex-wrap:wrap;gap:8px">
-          <input id="auth-h-endpoint" class="input" style="flex:2;min-width:200px" placeholder="endpoint base URL">
-          <input id="auth-h-key" class="input" style="flex:1;min-width:140px" placeholder="api key" type="password">
-          <input id="auth-h-model" class="input" style="flex:1;min-width:140px" placeholder="model id">
+          <input id="auth-h-model" class="input" style="flex:2;min-width:220px" placeholder="router model id (provider/model)">
           <select id="auth-h-judge" class="input" style="flex:1;min-width:160px">${judgeOpts}</select>
           <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-muted)">
             <input type="checkbox" id="auth-h-noncoding" checked> non-coding
@@ -4244,25 +4243,18 @@ window.authRunTest = async function () {
     const st = _authState;
     const p = (globalConfig.providers || {})[st.testProviderKey];
     if (!p || !st.testModel) { showToast('Select a provider and model first', true); return; }
-    // Credentials live in connections[] (the config migration deleted the legacy
-    // top-level api_key/base_url). Resolve from the first ENABLED connection with a key,
-    // exactly like fetchModels does. Resolve the URL through the inheritance chain.
-    const conns = (p.connections || []);
-    const ci = conns.findIndex(c => c && c.enabled !== false && (c.api_key || '').trim());
-    const conn = ci >= 0 ? conns[ci] : null;
-    const endpoint = (resolveBaseUrl(st.testProviderKey, Math.max(ci, 0)) || '').trim();
-    const api_key = (conn ? (conn.api_key || '') : '').trim();
-    if (!endpoint || !api_key) {
-        showToast('Provider has no enabled connection with a base URL and API key', true);
-        return;
-    }
+    // Both the suspect and the judge are called THROUGH the BSL Router (never the
+    // provider's upstream endpoint), so no provider creds are gathered here. The
+    // router id is provider/model so the router can route the probe correctly.
+    const routerId = st.testModel.includes('/') ? st.testModel : (st.testProviderKey + '/' + st.testModel);
 
     st.running = true; st.report = null; renderAuthenticityTab();
     try {
         const resp = await fetch('/api/authenticity/test', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model_id: st.testModel, endpoint, api_key,
+                model_id: routerId,
+                judge_model: st.judgeModel || '',
                 reference_hint: st.refHint || '', mode: st.mode,
             }),
         });
@@ -4300,21 +4292,19 @@ window.authLoadJudges = async function () {
 };
 
 window.authHarvest = async function () {
-    const endpoint = document.getElementById('auth-h-endpoint').value.trim();
-    const api_key = document.getElementById('auth-h-key').value.trim();
     const model_id = document.getElementById('auth-h-model').value.trim();
     const judge = document.getElementById('auth-h-judge').value;
     const include_noncoding = document.getElementById('auth-h-noncoding').checked;
     const statusEl = document.getElementById('auth-h-status');
-    if (!endpoint || !api_key || !model_id) { showToast('endpoint, key and model id are required', true); return; }
+    if (!model_id) { showToast('model id is required (router id, e.g. provider/model)', true); return; }
 
-    statusEl.textContent = 'Harvesting… (this can take a minute)';
+    statusEl.textContent = 'Harvesting via BSL Router… (this can take a minute)';
     try {
         const resp = await fetch('/api/authenticity/standards/harvest', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                endpoint, api_key, model_id, include_noncoding,
-                judge: judge ? { model: judge, endpoint: (globalConfig.providers || {})[_authFamilyProvider(judge)]?.base_url || '', api_key: (globalConfig.providers || {})[_authFamilyProvider(judge)]?.api_key || '' } : null,
+                model_id, include_noncoding,
+                judge: judge ? { model: judge } : null,
             }),
         });
         if (!resp.ok) { statusEl.textContent = 'Harvest failed to start'; return; }

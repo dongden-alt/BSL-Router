@@ -4112,6 +4112,48 @@ def _auth_cfg_get():
         return {}
 
 
+# ─── Model Authenticity — router self-endpoint helper ──────────────────────────
+# Both the suspect model AND the judge must be called THROUGH this router, not
+# the provider's upstream endpoint. Testing the provider directly would bypass the
+# routing layer (chain, aliases, model mapping) — so the gate always self-calls the
+# router's own /v1 endpoint, authenticated by the router's own admin key.
+
+_ROUTER_KEY_FILE = os.path.join(_REPO_ROOT, ".bsl_key") if "_REPO_ROOT" in dir() else os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".bsl_key")
+
+
+def _router_self_endpoint_and_key() -> tuple:
+    """Return (endpoint_base, api_key) for THIS router's OpenAI-compatible API.
+
+    endpoint_base has no trailing slash and no /v1 suffix (gate/probes append it).
+    The key is the router's admin key: live config admin.password wins, else the
+    repo .bsl_key file. Empty key = router not configured (endpoint treated as open).
+    """
+    try:
+        _cfg = cs_get_config()
+    except Exception:
+        _cfg = {}
+    port = 6969
+    try:
+        port = int((_cfg.get("server") or {}).get("port") or 6969)
+    except Exception:
+        pass
+    endpoint = f"http://127.0.0.1:{port}"
+    key = ""
+    try:
+        _adm = (_cfg.get("admin") or {}).get("password")
+        if isinstance(_adm, str) and _adm:
+            key = _adm
+    except Exception:
+        pass
+    if not key:
+        try:
+            with open(_ROUTER_KEY_FILE, "r", encoding="utf-8") as _f:
+                key = _f.read().strip()
+        except Exception:
+            key = ""
+    return endpoint, key
+
+
 @app.get("/api/authenticity/standards")
 async def list_auth_standards():
     return JSONResponse({"standards": auth_harvest.list_standards(auth_harvest.STANDARDS_DIR)})
@@ -4140,17 +4182,21 @@ async def list_auth_judges():
 async def start_auth_harvest(request: Request):
     body = await request.json()
     model_id = (body.get("model_id") or "").strip()
-    endpoint = (body.get("endpoint") or "").strip()
-    api_key = (body.get("api_key") or "").strip()
     source_tag = (body.get("source_tag") or "").strip()
     judge = body.get("judge") or {}
     include_noncoding = bool(body.get("include_noncoding", True))
-    if not (model_id and endpoint and api_key):
-        return JSONResponse({"error": "model_id, endpoint, api_key are required"}, status_code=400)
+    if not model_id:
+        return JSONResponse({"error": "model_id is required"}, status_code=400)
+
+    # HARD RULE: harvest (and its judge) THROUGH this router, never a provider's
+    # upstream endpoint — so the frozen standard reflects what the router serves.
+    _r_ep, _r_key = _router_self_endpoint_and_key()
+    endpoint = _r_ep or (body.get("endpoint") or "").strip()
+    api_key = _r_key or (body.get("api_key") or "").strip()
 
     cfg = _auth_cfg_get()
-    judge_endpoint = (judge.get("endpoint") or cfg.get("judge_endpoint") or "").strip()
-    judge_key = (judge.get("api_key") or "").strip()
+    judge_endpoint = _r_ep or (judge.get("endpoint") or cfg.get("judge_endpoint") or "").strip()
+    judge_key = _r_key or (judge.get("api_key") or "").strip()
     judge_model = (judge.get("model") or cfg.get("judge_model") or "").strip()
 
     _AUTH_HARVEST_STATUS[model_id] = {"status": "running", "detail": ""}
@@ -4202,14 +4248,23 @@ async def run_auth_test(request: Request):
     """
     body = await request.json()
     model_id = (body.get("model_id") or "").strip()
-    endpoint = (body.get("endpoint") or "").strip()
-    api_key = (body.get("api_key") or "").strip()
     reference_hint = (body.get("reference_hint") or "").strip()
+    judge_model = (body.get("judge_model") or "").strip()
     mode = (body.get("mode") or "auto").strip().lower()
-    if not (model_id and endpoint and api_key):
-        return JSONResponse({"error": "model_id, endpoint, api_key are required"}, status_code=400)
+    if not model_id:
+        return JSONResponse({"error": "model_id is required"}, status_code=400)
+
+    # HARD RULE: test the model THROUGH this router, never the provider endpoint.
+    # Whatever endpoint/key the client sent is discarded — we self-call our own /v1.
+    endpoint, api_key = _router_self_endpoint_and_key()
 
     cfg = dict(_auth_cfg_get())
+    # Judge also routes through BSL (router endpoint + admin key).
+    cfg["judge_endpoint"] = endpoint
+    cfg["judge_api_key"] = api_key
+    if judge_model:
+        cfg["judge_model"] = judge_model
+
     if mode == "normal":
         cfg["max_tier"] = 1
     else:  # deep + auto both allow full depth; auto decides below
