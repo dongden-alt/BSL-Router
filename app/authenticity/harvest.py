@@ -457,6 +457,20 @@ def _standard_filename(tm: TraitMark) -> str:
     return f"{fam}_{sub}_{src}.json" if src else f"{fam}_{sub}.json"
 
 
+def standard_filename(family: str, sub_model: str, source_tag: str = "") -> str:
+    """Filename for a standard, computed from raw strings.
+
+    Single source of truth for the on-disk layout: `_standard_filename` (TraitMark
+    in), `delete_standard`, and main.py's persist-delete all resolve through the
+    same sanitisation + suffix rule, so an unlink and a `git rm` can never
+    disagree about the path.
+    """
+    fam = re.sub(r"[^a-z0-9_-]+", "-", (family or "").lower())
+    sub = re.sub(r"[^a-z0-9_-]+", "-", (sub_model or "").lower())
+    src = re.sub(r"[^a-z0-9_-]+", "-", (source_tag or "").lower())
+    return f"{fam}_{sub}_{src}.json" if src else f"{fam}_{sub}.json"
+
+
 def save_standard(tm: TraitMark, standards_dir) -> Path:
     """Atomic write: temp file on same filesystem + os.replace."""
     d = Path(standards_dir)
@@ -653,10 +667,7 @@ def list_testable_standards(standards_dir) -> dict:
 
 def delete_standard(standards_dir, family: str, sub_model: str, source_tag: str = "") -> bool:
     d = Path(standards_dir)
-    fam = re.sub(r"[^a-z0-9_-]+", "-", (family or "").lower())
-    sub = re.sub(r"[^a-z0-9_-]+", "-", (sub_model or "").lower())
-    src = re.sub(r"[^a-z0-9_-]+", "-", (source_tag or "").lower())
-    target = d / (f"{fam}_{sub}_{src}.json" if src else f"{fam}_{sub}.json")
+    target = d / standard_filename(family, sub_model, source_tag)
     if target.exists():
         target.unlink()
         return True

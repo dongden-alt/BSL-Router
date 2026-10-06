@@ -7,6 +7,7 @@ import os
 import sys
 
 import httpx
+import pytest
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
 from starlette.requests import Request
@@ -15,6 +16,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import app.config_state as cs
 import app.main as main
+
+
+# Lifespan startup ~10.5s (port-443 inspection) exceeds the 10s global budget.
+pytestmark = pytest.mark.timeout(60)
 
 
 class _BytesStream(httpx.AsyncByteStream):

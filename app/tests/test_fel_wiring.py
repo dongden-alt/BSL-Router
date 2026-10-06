@@ -41,6 +41,9 @@ import app.config_state as cs  # noqa: E402
 import app.main as main  # noqa: E402
 import app.middleware.fel_wiring as felw  # noqa: E402
 
+# Lifespan startup ~10.5s (port-443 inspection) exceeds the 10s global budget.
+pytestmark = pytest.mark.timeout(60)
+
 MARKER = "# Execution contract (router-injected)"
 
 _REFUSAL = "I can't help with that. This is against policy."

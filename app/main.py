@@ -4297,17 +4297,27 @@ async def delete_auth_standard(family: str, sub_model: str, persist: bool = Fals
     if not ok:
         return JSONResponse({"error": "standard not found"}, status_code=404)
     persisted = False
+    persist_error = ""
     if persist:
         try:
             import subprocess
-            fname = auth_harvest._standard_filename(family, sub_model, "") if hasattr(auth_harvest, "_standard_filename") else f"{family}_{sub_model}.json"
+            # Single filename source of truth: the same helper delete_standard used
+            # to unlink the file, so the git-index removal can never target a
+            # different path than the on-disk delete.
+            fname = auth_harvest.standard_filename(family, sub_model)
             rel = f"app/authenticity/reference/standards/{fname}"
-            subprocess.run(["git", "rm", "-q", "--cached", "--ignore-unmatch", rel],
-                           cwd=str(_REPO_ROOT), capture_output=True, timeout=15)
-            persisted = True
-        except Exception:
+            proc = subprocess.run(["git", "rm", "-q", "--cached", "--ignore-unmatch", rel],
+                                  cwd=str(_REPO_ROOT), capture_output=True, timeout=15)
+            persisted = proc.returncode == 0
+            if not persisted:
+                persist_error = (proc.stderr or proc.stdout or b"").decode("utf-8", "replace").strip()[:300]
+        except Exception as exc:  # surface it: a silent no-op here reports success
             persisted = False
-    return JSONResponse({"deleted": True, "family": family, "sub_model": sub_model, "persisted": persisted})
+            persist_error = f"{type(exc).__name__}: {exc}"[:300]
+    payload = {"deleted": True, "family": family, "sub_model": sub_model, "persisted": persisted}
+    if persist_error:
+        payload["persist_error"] = persist_error
+    return JSONResponse(payload)
 
 
 @app.get("/api/authenticity/test/recent")

@@ -119,3 +119,7 @@ app/authenticity/reference/standards/*_mimo-web-*.json
 app/authenticity/reference/standards/*_codex-*.json
 app/authenticity/reference/standards/*_ds-*.json
 app/authenticity/reference/standards/*_zhipu-*.json
+
+# Authenticity verdict feed: per-test results keyed by slugified model_id, which
+# carries provider tokens (vsllm-o/glm-5.3 etc.). Local-only, never publish.
+app/authenticity/verdicts/

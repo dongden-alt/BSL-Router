@@ -20,6 +20,9 @@ from starlette.requests import Request
 import app.main as main
 
 
+# Lifespan startup ~10.5s (port-443 inspection) exceeds the 10s global budget.
+pytestmark = pytest.mark.timeout(60)
+
 INFERENCE_ROUTES = [
     "/v1/chat/completions",
     "/v1/messages",

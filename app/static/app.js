@@ -4025,6 +4025,12 @@ const _authState = {
     judgeModel: '',
     refHint: '',
     forceRerun: false,     // bug 4: ignore cached verdict, re-probe fresh
+    recentResults: null,   // cached /test/recent feed; null = not yet loaded.
+                           // MUST be declared null (not undefined): the lazy-load
+                           // guard is `=== null`, so an undeclared field would
+                           // never trigger authLoadRecentResults().
+    runningId: '',         // router model_id of the in-flight test (step polling)
+    abortCtl: null,        // AbortController of the in-flight fetch (cancel)
 };
 
 const _AUTH_VERDICT_META = {
@@ -4034,6 +4040,9 @@ const _AUTH_VERDICT_META = {
     family_match:  { color: '#3b82f6', label: 'FAMILY MATCH', desc: 'Correct family; no sub-version standard to confirm against.' },
     unverifiable:  { color: '#9ca3af', label: 'UNVERIFIABLE', desc: 'Not in the supported scope / no standard available. Not "fake" — just unconfirmed.' },
     error:         { color: '#9ca3af', label: 'ERROR',        desc: 'Test could not run to completion.' },
+    // Stopped by the admin via the Cancel button. Neutral grey on purpose: a
+    // cancel is a deliberate action, NOT a failure — it must not read as error.
+    cancelled:     { color: '#6b7280', label: 'CANCELLED',    desc: 'Stopped by you before a verdict could be reached. No conclusion was drawn.' },
 };
 
 function _authEsc(s) {

@@ -17,6 +17,9 @@ from app.authenticity.harvest import (
     save_standard, list_standards, delete_standard, _strip_json_fences,
 )
 
+# Lifespan startup ~10.5s (port-443 inspection) exceeds the 10s global budget.
+pytestmark = pytest.mark.timeout(60)
+
 
 def _run(coro):
     """Run an async coroutine in a sync test (no pytest-asyncio needed)."""

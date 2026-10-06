@@ -35,6 +35,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import app.main as main  # noqa: E402
 import app.middleware.responses_thread_store as rts  # noqa: E402
 
+# Lifespan startup ~10.5s (port-443 inspection) exceeds the 10s global budget.
+pytestmark = pytest.mark.timeout(60)
+
 
 # ── Isolation: fresh store per test (no cross-test LRU/TTL leakage) ──────────
 
