@@ -114,7 +114,32 @@
     }
   },
   "structural": {
-    "tokenizer_signature": {},
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "3e7faac23168a919dd46e4ca3cfad3e77863d26aa4d2e2ba0b982dcb4fd00173",
+          "b07b37178f03b6e9e1b327445827c7496478b0274d9a68428b08d63382cc9720",
+          "e5d1c6c022c10483e47cc26329b1e6e0f9143179fa98bfdd3b1d5e65e2457559"
+        ],
+        "mode_hash": "3e7faac23168a919dd46e4ca3cfad3e77863d26aa4d2e2ba0b982dcb4fd00173"
+      },
+      "timing_profile": {
+        "ttft_ms": 5046,
+        "chunk_count": 21,
+        "mean_chunk_chars": 13.9,
+        "total_ms": 5078
+      }
+    },
     "tool_use_schema": {},
     "code_formatting": {},
     "logprob_profile": {}

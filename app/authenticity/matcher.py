@@ -120,6 +120,69 @@ def match_submodel(
         else:
             dims["logprob"] = None  # endpoint hid logprobs / no baseline
 
+        # V6a BOUNDARY SIGNATURE (L1): stop-sequence/EOS + strict JSON-schema
+        # compliance. Compared only when BOTH sides carry a signature; never
+        # inflates the base score — it only enters the rescue/penalty path via
+        # the soft veto below (boundary < 0.5 → abstain).
+        b_sus = getattr(features, "boundary_signature", {}) or {}
+        b_base = ((baseline.get("structural") or {})
+                  .get("tokenizer_signature", {}) or {}).get("boundary_signature") \
+            or (baseline.get("structural") or {}).get("boundary_signature") \
+            or baseline.get("boundary_signature") or {}
+        _b_fields = [f for f in ("stop_strict", "stop_echo", "json_strict")]
+        if b_sus and b_base:
+            skip_json = (b_sus.get("json_mode") != "supported"
+                         or b_base.get("json_mode") != "supported")
+            fields = [f for f in _b_fields
+                      if not (skip_json and f == "json_strict")]
+            if fields:
+                sim = sum(1.0 for f in fields if bool(b_sus.get(f)) == bool(b_base.get(f))) / len(fields)
+                dims["boundary"] = round(sim, 3)
+            else:
+                dims["boundary"] = None
+        else:
+            dims["boundary"] = None  # no suspect data / no baseline
+
+        # V6b STABILITY HASH (L2): temp=0 determinism behavior. Compares the
+        # mode hash and distinct-hash count; carries VETO power like logprob.
+        st_sus = getattr(features, "stability_profile", {}) or {}
+        st_base = ((baseline.get("structural") or {})
+                   .get("tokenizer_signature", {}) or {}).get("stability_profile") \
+            or (baseline.get("structural") or {}).get("stability_profile") \
+            or baseline.get("stability_profile") or {}
+        if st_sus and st_base and st_sus.get("mode_hash") and st_base.get("mode_hash"):
+            if st_sus.get("mode_hash") == st_base.get("mode_hash"):
+                dims["stability"] = 1.0
+            elif st_sus.get("distinct_hashes") == st_base.get("distinct_hashes"):
+                # same determinism behavior, different content
+                dims["stability"] = 0.4
+            else:
+                dims["stability"] = 0.0
+        else:
+            dims["stability"] = None  # either side missing/empty
+
+        # V7 TIMING PROFILE (L3): streamed TTFT/chunk-count/chunk-size.
+        # Relative tolerance 0.5 per field; score = fraction of matching
+        # fields. ADVISORY-ONLY: never forces abstain, never rescues.
+        t_sus = getattr(features, "timing_profile", {}) or {}
+        t_base = ((baseline.get("structural") or {})
+                  .get("tokenizer_signature", {}) or {}).get("timing_profile") \
+            or (baseline.get("structural") or {}).get("timing_profile") \
+            or baseline.get("timing_profile") or {}
+        if t_sus and t_base:
+            eps = 1e-6
+            matched = 0
+            total = 0
+            for fld in ("ttft_ms", "chunk_count", "mean_chunk_chars", "total_ms"):
+                a, b = t_sus.get(fld), t_base.get(fld)
+                if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                    total += 1
+                    if abs(a - b) / max(abs(b), eps) <= 0.5:
+                        matched += 1
+            dims["timing"] = round(matched / total, 3) if total else None
+        else:
+            dims["timing"] = None  # either side missing/empty
+
         scores[model_id] = score
         all_dimensions[model_id] = dims
 
@@ -154,6 +217,30 @@ def match_submodel(
             abstain = True
         best_dims = dict(best_dims)
         best_dims["logprob"] = lp
+
+    # V6a BOUNDARY soft veto: compared and < 0.5 → the boundary behavior
+    # (stop handling, strict JSON compliance) contradicts the baseline's
+    # weight-level habits. Same shape as the logprob veto, but softer.
+    if best_dims.get("boundary") is not None:
+        bd = best_dims["boundary"]
+        if bd < 0.5 and not abstain:
+            abstain = True
+        best_dims = dict(best_dims)
+        best_dims["boundary"] = bd
+
+    # V6b STABILITY veto (L2): the temp=0 determinism behavior of the
+    # suspect differs from the baseline's (mode hash AND distinct count both
+    # differ). Mirrors the logprob veto — replaces V5's decisive role on
+    # logprob-hiding upstreams.
+    if best_dims.get("stability") is not None:
+        st = best_dims["stability"]
+        if st < 0.6 and not abstain:
+            abstain = True
+        best_dims = dict(best_dims)
+        best_dims["stability"] = st
+
+    # V7 TIMING is ADVISORY-ONLY: stored in dimensions for the report, but it
+    # never forces abstain and never rescues (deliberately no veto branch).
 
     return MatchResult(
         matched_model=best_model if not abstain else "",

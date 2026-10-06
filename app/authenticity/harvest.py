@@ -26,7 +26,8 @@ import httpx
 
 from .fingerprint import extract_features
 from .probes import (TIER1_PROBES, TIER2_PROBES, HARVEST_NEEDLE_PROBES,
-                     LOGPROB_PROBES, run_probe)
+                     LOGPROB_PROBES, run_boundary_probes, run_stability_probe,
+                     run_timing_probe, run_probe)
 from .scope import detect_family, normalize
 from .traitmark import TraitMark
 
@@ -342,6 +343,31 @@ async def harvest_model(
                         noncoding_outputs.append(
                             {"axis": probe["axis"], "id": probe["id"],
                              "content": r.content})
+
+            # V6a/V6b/V7 cascade captures (harvest is offline: L1/L2/L3 ALL
+            # run — baselines must be complete, no abstain trigger needed).
+            # Router-only: every helper goes through the endpoint key above.
+            boundary_signature = {}
+            stability_profile = {}
+            timing_profile = {}
+            try:
+                if (time.monotonic() - t0) < total_timeout:
+                    boundary_signature = await run_boundary_probes(
+                        client, endpoint, api_key, model_id, probe_timeout)
+            except Exception as exc:
+                gaps.append(f"boundary_capture_error:{str(exc)[:120]}")
+            try:
+                if (time.monotonic() - t0) < total_timeout:
+                    stability_profile = await run_stability_probe(
+                        client, endpoint, api_key, model_id, probe_timeout)
+            except Exception as exc:
+                gaps.append(f"stability_capture_error:{str(exc)[:120]}")
+            try:
+                if (time.monotonic() - t0) < total_timeout:
+                    timing_profile = await run_timing_probe(
+                        client, endpoint, api_key, model_id, probe_timeout)
+            except Exception as exc:
+                gaps.append(f"timing_capture_error:{str(exc)[:120]}")
     except Exception as exc:
         gaps.append(f"probe_batch_error:{str(exc)[:120]}")
 
@@ -364,6 +390,24 @@ async def harvest_model(
             gaps.append("logprobs:unavailable")
         if not k.known_facts and not k.post_cutoff_unknown:
             gaps.append("needles:no_self_report")
+
+        # V6a/V6b/V7 cascade profiles into the structural layer. The
+        # StructuralLayer dataclass (read-only traitmark.py) has no fields for
+        # these, so they nest inside tokenizer_signature, whose dict shape the
+        # matcher already reads through (V5 logprob_profile precedent).
+        _struct = tm.structural.tokenizer_signature
+        if isinstance(boundary_signature, dict) and boundary_signature:
+            _struct["boundary_signature"] = boundary_signature
+        if isinstance(stability_profile, dict) and stability_profile.get("mode_hash"):
+            _struct["stability_profile"] = stability_profile
+        if isinstance(timing_profile, dict) and timing_profile.get("chunk_count"):
+            _struct["timing_profile"] = timing_profile
+        if not _struct.get("boundary_signature"):
+            gaps.append("boundary:unavailable")
+        if not _struct.get("stability_profile"):
+            gaps.append("stability:unavailable")
+        if not _struct.get("timing_profile"):
+            gaps.append("timing:unavailable")
 
         s = tm.style
         s.bullet_style = getattr(feats, "bullet_style", "") or ""

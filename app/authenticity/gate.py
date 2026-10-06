@@ -288,6 +288,67 @@ async def authenticity_check(
                     except Exception as _lp_exc:
                         logger.warning("V5 logprob lane failed (fail-open): %s", _lp_exc)
 
+                # ── V6a BOUNDARY lane (L1, deep mode, ALWAYS) ──
+                # Stop-sequence/EOS + strict JSON-schema compliance. Closes
+                # the V5 gap on logprob-hiding upstreams (0/25 lanes return
+                # logprobs on this infrastructure). Fail-open + budget-guard,
+                # identical to the lanes above; router-only traffic.
+                _l1_landed = False
+                if (time.monotonic() - t0) < total_timeout and features is not None:
+                    try:
+                        from .probes import run_boundary_probes
+                        sig = await run_boundary_probes(
+                            client, endpoint_base, api_key, model_id, probe_timeout)
+                        if sig and any(v for k, v in sig.items()
+                                       if k not in ("finish_reason", "json_mode")):
+                            features.boundary_signature = sig
+                            _l1_landed = True
+                            _b4 = _load_match_baselines(model_id)
+                            if _b4:
+                                match_result = match_submodel(features, _b4)
+                    except Exception as _bnd_exc:
+                        logger.warning("V6a boundary lane failed (fail-open): %s", _bnd_exc)
+
+                # ── V6b STABILITY lane (L2, deep mode, only if ABSTAINING) ──
+                # temp=0 identical-probe repetition; carries veto power
+                # (replaces V5's decisive role on logprob-hiding upstreams).
+                _l2_landed = False
+                if match_result is not None \
+                        and match_result.abstain \
+                        and (time.monotonic() - t0) < total_timeout \
+                        and features is not None:
+                    try:
+                        from .probes import run_stability_probe
+                        prof = await run_stability_probe(
+                            client, endpoint_base, api_key, model_id, probe_timeout)
+                        if prof and prof.get("mode_hash"):
+                            features.stability_profile = prof
+                            _l2_landed = True
+                            _b5 = _load_match_baselines(model_id)
+                            if _b5:
+                                match_result = match_submodel(features, _b5)
+                    except Exception as _stab_exc:
+                        logger.warning("V6b stability lane failed (fail-open): %s", _stab_exc)
+
+                # ── V7 TIMING lane (L3, deep mode, only if STILL abstaining) ──
+                # Streamed TTFT/chunk-count/chunk-size. Advisory-only evidence:
+                # never vetoes, never rescues. Fail-open always.
+                if match_result is not None and match_result.abstain \
+                        and (time.monotonic() - t0) < total_timeout \
+                        and features is not None:
+                    try:
+                        from .probes import run_timing_probe
+                        prof = await run_timing_probe(
+                            client, endpoint_base, api_key, model_id, probe_timeout)
+                        if prof and prof.get("chunk_count"):
+                            features.timing_profile = prof
+                            # Advisory-only: store the profile but do NOT
+                            # re-run match_submodel on timing alone — it can
+                            # neither veto nor rescue, so re-matching would
+                            # spend budget for an identical verdict.
+                    except Exception as _tim_exc:
+                        logger.warning("V7 timing lane failed (fail-open): %s", _tim_exc)
+
         # Fuse into a reality verdict
         verdict = compute_reality(
             model_id=model_id, endpoint=endpoint_base,

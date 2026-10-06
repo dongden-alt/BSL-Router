@@ -963,7 +963,9 @@ from app.routing.combo_resolver import (  # noqa: E402
     expand_chain_for_retries,
     resolve_alias,
     find_provider_for_model,
+    find_providers_for_model,
     build_not_found_error,
+    build_ambiguous_model_error,
     resolve_combo_chain_segment as _resolve_combo_chain_segment,
 )
 
@@ -8319,7 +8321,17 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
 
     # Step 2: If no alias matched, scan all providers' model lists
     if not provider_name:
-        provider_name = find_provider_for_model(model, config)
+        # BROADCAST GUARD (2026-10-06): a bare (unqualified) model id that is
+        # registered under MULTIPLE providers must NOT fan out across all of
+        # them — that floods unrelated lanes and burns quota (the kiro/xpiki
+        # 400/402/502 flood). Reject ambiguous bare ids; force an explicit
+        # 'provider/model' lane. Exact provider/model ids, namespaced ids,
+        # aliases, and fuzzy hits are untouched (provider_name already set or
+        # model already rewritten above).
+        _bare_matches = find_providers_for_model(model, config)
+        if len(_bare_matches) > 1:
+            return build_ambiguous_model_error(model, _bare_matches)
+        provider_name = _bare_matches[0] if _bare_matches else None
 
     # Step 3: Still no match -> return a clear, actionable error
     if not provider_name:

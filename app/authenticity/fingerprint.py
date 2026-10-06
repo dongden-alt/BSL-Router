@@ -56,6 +56,25 @@ class FingerprintFeatures:
     # shape: {probe_id: {"logprob": float, "top": {token: logprob}}}
     logprob_profile: dict = field(default_factory=dict)
 
+    # V6a BOUNDARY SIGNATURE — stop-sequence/EOS + strict JSON-schema
+    # compliance. Populated by the gate's L1 cascade lane (deep mode, always).
+    # shape: {"stop_strict": bool, "stop_echo": bool, "finish_reason": str,
+    #         "json_strict": bool, "json_mode": "supported"|"unsupported"|"error"}
+    boundary_signature: dict = field(default_factory=dict)
+
+    # V6b STABILITY PROFILE — temp=0 identical-probe repetition (3 samples).
+    # Populated by the gate's L2 lane (only when abstaining after L1).
+    # shape: {"probe_id": str, "samples": 3, "distinct_hashes": int,
+    #         "hashes": [str]*3, "mode_hash": str}
+    stability_profile: dict = field(default_factory=dict)
+
+    # V7 TIMING PROFILE — streamed probe TTFT/chunk-count/chunk-size.
+    # Populated by the gate's L3 lane (only when still abstaining after L2).
+    # Advisory-only evidence; never vetoes, never rescues.
+    # shape: {"ttft_ms": int, "chunk_count": int,
+    #         "mean_chunk_chars": float, "total_ms": int}
+    timing_profile: dict = field(default_factory=dict)
+
 
 # Self-identification phrases to strip for behavior-column classification
 SELF_CLAIM_PATTERNS = [
