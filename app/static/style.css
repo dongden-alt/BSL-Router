@@ -1373,6 +1373,10 @@ input:checked + .slider:before { transform: translateX(16px); }
 /* Report: best-guess chip + evidence gap (user decision 2026-10-06) */
 .auth-bestguess { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #f59e0b; border: 1px solid #f59e0b; border-radius: 4px; padding: 1px 5px; }
 .auth-evidence-gap { font-size: 11.5px; color: #f59e0b; margin-top: 5px; font-style: italic; }
+
+/* Cancel button beside Run Test */
+.auth-cancel { color: #ef4444; border-color: #ef4444; }
+.auth-cancel:hover { background: rgba(239,68,68,.1); }
 .auth-banner { border: 1.5px solid; border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 6px; }
 .auth-verdict { font-size: 22px; font-weight: 700; letter-spacing: .04em; }
 .auth-headline { font-size: 14px; color: var(--text-color); line-height: 1.4; }

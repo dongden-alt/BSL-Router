@@ -4073,6 +4073,11 @@ function renderAuthenticityTab() {
     if (!container) return;
     const st = _authState;
 
+    // Tab-switch continuity: while a test is running, a full re-render would
+    // wipe the live step indicator and is wasted work — the step poller owns
+    // the label. Only the data boxes refresh on tab re-entry (see the end).
+    if (st.running) { _authRefreshBoxes(); return; }
+
     // Provider options for the suspect (only selectable providers with models).
     const providers = globalConfig.providers || {};
     const providerOpts = Object.keys(providers)
@@ -4135,6 +4140,7 @@ function renderAuthenticityTab() {
             <button id="auth-run-btn" class="btn btn-primary" ${st.running ? 'disabled' : ''} onclick="authRunTest()">
               ${st.running ? 'Testing…' : 'Run Test'}
             </button>
+            ${st.running ? '<button id="auth-cancel-btn" class="btn btn-outline auth-cancel" onclick="authCancelTest()">Cancel</button>' : ''}
             <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-muted)">
               <input type="checkbox" id="auth-force-rerun" ${st.forceRerun ? 'checked' : ''} onchange="authOnField('forceRerun', this.checked)"> re-run fresh (ignore cached verdict)
             </label>
@@ -4152,13 +4158,19 @@ function renderAuthenticityTab() {
 
       <details class="card auth-card auth-collapsible" style="margin-top:18px" id="auth-testable-box">
         <summary class="section-title" style="cursor:pointer;list-style:none">Testable Models <span class="auth-opt">(high confidence) — click to expand</span></summary>
-        <div class="setting-desc" style="margin:10px 0">Models with a <strong>full</strong> judge-graded frozen standard — these can be verified at high confidence. "Family-only" standards classify family but can't confirm the exact sub-version.</div>
+        <div class="setting-desc" style="margin:10px 0">Models with a <strong>full</strong> judge-graded frozen standard — these can be verified at high confidence.</div>
         <div id="auth-testable-body">${st.testable ? _authTestableHTML(st.testable) : 'Loading…'}</div>
       </details>
 
+      <details class="card auth-card auth-collapsible" style="margin-top:18px" id="auth-recent-box">
+        <summary class="section-title" style="cursor:pointer;list-style:none">Recent Test Results <span class="auth-opt">(live activity) — click to expand</span></summary>
+        <div class="setting-desc" style="margin:10px 0">Latest authenticity verdicts across the network. When a verdict is trustworthy it can be promoted into the canonical bible below.</div>
+        <div id="auth-recent-body">${st.recentResults ? _authRecentHTML(st.recentResults) : 'Loading…'}</div>
+      </details>
+
       <details class="card auth-card auth-collapsible" style="margin-top:18px" id="auth-standards-box">
-        <summary class="section-title" style="cursor:pointer;list-style:none">Frozen Standards <span class="auth-opt">(admin) — click to expand</span></summary>
-        <div class="setting-desc" style="margin:10px 0">Official behavioral fingerprints harvested from trusted anchors. The Testing Tab compares suspects against these — the trusted source is never re-called at test time.</div>
+        <summary class="section-title" style="cursor:pointer;list-style:none">Canonical Standards <span class="auth-opt">(the gold bible — 23) — click to expand</span></summary>
+        <div class="setting-desc" style="margin:10px 0">The trusted reference set. Only these ship in the public repo; provider-tagged local references are private. Deleting here persists to git.</div>
         <div id="auth-standards-body">${st.standards ? _authStandardsHTML(st.standards) : 'Loading…'}</div>
         <hr style="border:none;border-top:1px solid var(--border-color);margin:14px 0">
         <div class="setting-title" style="margin-bottom:6px">Harvest new standard</div>
@@ -4174,11 +4186,33 @@ function renderAuthenticityTab() {
         <div id="auth-h-status" style="font-size:12px;color:var(--text-muted);margin-top:6px"></div>
       </details>`;
 
-    // Lazily load standards + testable list once.
+    // Lazily load data boxes once.
     if (st.standards === null) { authLoadStandards(); }
     if (st.testable === null) { authLoadTestable(); }
+    if (st.recentResults === null) { authLoadRecentResults(); }
     if (window._AUTH_JUDGE_SUGGESTIONS === null) { authLoadJudges(); }
 }
+
+// Refresh ONLY the data boxes (testable / recent / standards) without a full
+// re-render. Safe to call while a test is running — the step indicator and the
+// report card live outside these boxes and are never touched here.
+function _authRefreshBoxes() {
+    const t = document.getElementById('auth-testable-body');
+    if (t && _authState.testable) t.innerHTML = _authTestableHTML(_authState.testable);
+    const r = document.getElementById('auth-recent-body');
+    if (r && _authState.recentResults) r.innerHTML = _authRecentHTML(_authState.recentResults);
+    const s = document.getElementById('auth-standards-body');
+    if (s && _authState.standards) s.innerHTML = _authStandardsHTML(_authState.standards);
+}
+
+// Tab-switch continuity: switching away must NOT cancel or re-render the test.
+// Returning to a visible tab just refreshes the data boxes in place.
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && _authState.running) {
+        _authRefreshBoxes();
+        if (_authState.runningId) _authStartStepPolling(_authState.runningId);
+    }
+});
 
 function _authReportHTML(v) {
     const meta = _AUTH_VERDICT_META[v.verdict] || _AUTH_VERDICT_META.error;
@@ -4307,40 +4341,59 @@ window.authRunTest = async function () {
     const st = _authState;
     const p = (globalConfig.providers || {})[st.testProviderKey];
     if (!p || !st.testModel) { showToast('Select a provider and model first', true); return; }
-    // Both the suspect and the judge are called THROUGH the BSL Router (never the
-    // provider's upstream endpoint), so no provider creds are gathered here. The
-    // router id is provider/model so the router can route the probe correctly.
+    if (st.running) return; // double-click guard
     const routerId = st.testModel.includes('/') ? st.testModel : (st.testProviderKey + '/' + st.testModel);
 
-    st.running = true; st.report = null; renderAuthenticityTab();
+    st.running = true; st.report = null; st.runningId = routerId;
+    renderAuthenticityTab();
+    const ctl = new AbortController(); st.abortCtl = ctl;
     _authStartStepPolling(routerId);
     try {
         const resp = await fetch('/api/authenticity/test', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
+            signal: ctl.signal,
             body: JSON.stringify({
                 model_id: routerId,
                 judge_model: st.judgeModel || '',
-                reference_hint: st.refHint || '', mode: st.mode,
+                reference_hint: st.refHint || '', mode: 'auto',
                 force_rerun: !!st.forceRerun,
             }),
         });
-        const data = await resp.json();
-        st.report = data;
+        st.report = await resp.json();
     } catch (e) {
-        showToast('Test failed: ' + e.message, true);
-        st.report = { verdict: 'error', headline: 'Request failed: ' + e.message, confidence_level: 'none' };
+        if (e && e.name === 'AbortError') {
+            st.report = { verdict: 'cancelled', headline: 'Test cancelled by user', confidence_level: 'none', conclusions: [] };
+        } else {
+            showToast('Test failed: ' + e.message, true);
+            st.report = { verdict: 'error', headline: 'Request failed: ' + e.message, confidence_level: 'none', conclusions: [] };
+        }
     } finally {
-        st.running = false; _authStopStepPolling(); renderAuthenticityTab();
+        st.running = false; st.runningId = ''; st.abortCtl = null;
+        _authStopStepPolling(); renderAuthenticityTab();
     }
 };
 
-// Bug 7: live step indicator — poll the backend per-model step feed while a test runs.
+window.authCancelTest = function () {
+    const st = _authState;
+    if (!st.running) return;
+    try { st.abortCtl && st.abortCtl.abort(); } catch (e) {}
+    if (st.runningId) {
+        fetch('/api/authenticity/test/cancel/' + encodeURIComponent(st.runningId), { method: 'POST' }).catch(() => {});
+    }
+    st.running = false; st.runningId = '';
+    _authStopStepPolling(); renderAuthenticityTab();
+};
+
+// Live step indicator — poll the backend per-model step feed while a test runs.
+// The poller OWNS the step label and writes it directly (no re-render needed),
+// so the text updates even mid-run. 404 = pre-fix router still up; skip quietly.
 let _authStepTimer = null;
 function _authStartStepPolling(routerId) {
     _authStopStepPolling();
     _authStepTimer = setInterval(async () => {
         try {
             const r = await fetch('/api/authenticity/test/status/' + encodeURIComponent(routerId));
+            if (!r.ok) return; // 404 = stale router pre-restart; never spam UI
             const s = await r.json();
             const el = document.getElementById('auth-step-label');
             if (el && s && s.label) el.textContent = s.label;
@@ -4349,6 +4402,28 @@ function _authStartStepPolling(routerId) {
 }
 function _authStopStepPolling() {
     if (_authStepTimer) { clearInterval(_authStepTimer); _authStepTimer = null; }
+}
+
+window.authLoadRecentResults = async function () {
+    try {
+        const resp = await fetch('/api/authenticity/test/recent?limit=15');
+        const data = await resp.json();
+        _authState.recentResults = data.results || data || [];
+    } catch (e) { _authState.recentResults = []; }
+    const body = document.getElementById('auth-recent-body');
+    if (body) body.innerHTML = _authRecentHTML(_authState.recentResults);
+};
+
+function _authRecentHTML(list) {
+    if (!list || !list.length) return '<div style="color:var(--text-muted);font-size:13px">No test results yet — run a test above.</div>';
+    const vColor = { real: '#10b981', substitution: '#ef4444', downgrade: '#f59e0b', unverifiable: '#9ca3af', family_match: '#60a5fa', error: '#ef4444' };
+    return `<table class="auth-table"><thead><tr><th>When</th><th>Model</th><th>Verdict</th><th>Conf</th></tr></thead><tbody>` +
+        list.map(r => `<tr>
+            <td style="font-size:11px;color:var(--text-muted)">${_authEsc((r.ts || r.collected_at || '').slice(0, 16))}</td>
+            <td>${_authEsc(r.model_id || r.model || '')}</td>
+            <td><span style="color:${vColor[r.verdict] || '#9ca3af'};font-weight:600">${_authEsc(r.verdict || '?')}</span></td>
+            <td style="font-size:11px">${typeof r.confidence === 'number' ? r.confidence.toFixed(2) : _authEsc(String(r.confidence || ''))}</td>
+        </tr>`).join('') + `</tbody></table>`;
 }
 
 window.authLoadStandards = async function () {
@@ -4408,8 +4483,9 @@ window.authHarvest = async function () {
 };
 
 window.authDeleteStandard = async function (family, sub) {
+    if (!confirm(`Delete standard ${family}/${sub}? This persists to git (canonical standards only).`)) return;
     try {
-        await fetch(`/api/authenticity/standards/${encodeURIComponent(family)}/${encodeURIComponent(sub)}`, { method: 'DELETE' });
+        await fetch(`/api/authenticity/standards/${encodeURIComponent(family)}/${encodeURIComponent(sub)}?persist=true`, { method: 'DELETE' });
         authLoadStandards();
     } catch (e) { showToast('Delete failed: ' + e.message, true); }
 };

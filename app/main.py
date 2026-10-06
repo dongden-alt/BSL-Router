@@ -4115,11 +4115,16 @@ _AUTH_HARVEST_TASKS: dict = {}
 # {step, label, ts} the gate emits via on_progress. The UI polls it while a
 # test runs so "Testing..." is replaced by real step names ("Normal · step 3/7").
 _AUTH_TEST_STATUS: dict = {}
+_AUTH_TEST_CANCEL: set = set()
 
 
 def _auth_test_progress(model_id: str):
-    """Return an on_progress(step, label) callback feeding _AUTH_TEST_STATUS."""
+    """Return an on_progress(step, label) callback feeding _AUTH_TEST_STATUS.
+    Also honours cooperative cancellation: if the model_id is in
+    _AUTH_TEST_CANCEL the callback raises so the gate unwinds cleanly."""
     def _cb(step: str, label: str):
+        if model_id in _AUTH_TEST_CANCEL:
+            raise RuntimeError("authenticity test cancelled by user")
         try:
             _AUTH_TEST_STATUS[model_id] = {
                 "step": str(step), "label": str(label),
@@ -4128,6 +4133,33 @@ def _auth_test_progress(model_id: str):
         except Exception:
             pass
     return _cb
+
+
+# Verdicts are persisted to disk (not just the in-memory TTL cache) so the
+# Recent Test Results box survives a router restart and shows real history.
+def _auth_verdicts_dir():
+    import os
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "authenticity", "verdicts")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _auth_persist_verdict(model_id: str, verdict) -> None:
+    """Best-effort disk write of a finished verdict for the recent-results feed.
+    Never raises — a failed write must not break the test path."""
+    try:
+        import json, re, time as _t
+        slug = re.sub(r"[^a-zA-Z0-9._-]+", "_", model_id)[:120]
+        payload = {"model_id": model_id, "verdict": getattr(verdict, "verdict", ""),
+                   "confidence": getattr(verdict, "confidence", 0),
+                   "identified_as": getattr(verdict, "identified_as", ""),
+                   "ts": _t.time()}
+        with open(__import__("os").path.join(_auth_verdicts_dir(), slug + ".json"),
+                  "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+    except Exception:
+        pass
 
 
 def _auth_cfg_get():
@@ -4257,11 +4289,59 @@ async def auth_harvest_status(model_id: str):
 
 
 @app.delete("/api/authenticity/standards/{family}/{sub_model}")
-async def delete_auth_standard(family: str, sub_model: str):
+async def delete_auth_standard(family: str, sub_model: str, persist: bool = False):
+    """Delete a frozen standard. With persist=true the canonical file is also
+    `git rm`'d so the public repo drops it (canonical standards are tracked;
+    provider-tagged local ones are untracked and only ever removed from disk)."""
     ok = auth_harvest.delete_standard(auth_harvest.STANDARDS_DIR, family, sub_model)
     if not ok:
         return JSONResponse({"error": "standard not found"}, status_code=404)
-    return JSONResponse({"deleted": True, "family": family, "sub_model": sub_model})
+    persisted = False
+    if persist:
+        try:
+            import subprocess
+            fname = auth_harvest._standard_filename(family, sub_model, "") if hasattr(auth_harvest, "_standard_filename") else f"{family}_{sub_model}.json"
+            rel = f"app/authenticity/reference/standards/{fname}"
+            subprocess.run(["git", "rm", "-q", "--cached", "--ignore-unmatch", rel],
+                           cwd=str(_REPO_ROOT), capture_output=True, timeout=15)
+            persisted = True
+        except Exception:
+            persisted = False
+    return JSONResponse({"deleted": True, "family": family, "sub_model": sub_model, "persisted": persisted})
+
+
+@app.get("/api/authenticity/test/recent")
+async def auth_test_recent(limit: int = 15):
+    """Recent authenticity verdicts (newest first), read from the on-disk
+    verdicts dir so the feed survives router restarts."""
+    import os, glob as _glob, json as _json
+    out = []
+    try:
+        d = _auth_verdicts_dir()
+        files = sorted(_glob.glob(os.path.join(d, "*.json")),
+                       key=os.path.getmtime, reverse=True)[:limit]
+        for f in files:
+            try:
+                rec = _json.loads(open(f, encoding="utf-8").read())
+                rec["ts"] = __import__("time").strftime(
+                    "%Y-%m-%d %H:%M", __import__("time").localtime(rec.get("ts", 0)))
+                out.append(rec)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return JSONResponse({"results": out})
+
+
+@app.post("/api/authenticity/test/cancel/{model_id:path}")
+async def auth_test_cancel(model_id: str):
+    """User-requested cancel: flags the model so the next on_progress callback
+    raises and the gate unwinds. The fetch AbortController already dropped the
+    HTTP response; this stops the backend wasting probe calls."""
+    _AUTH_TEST_CANCEL.add(model_id)
+    _AUTH_TEST_STATUS[model_id] = {"step": "cancelled", "label": "Cancelled by user",
+                                   "ts": __import__("time").time()}
+    return JSONResponse({"cancelled": True, "model_id": model_id})
 
 
 @app.post("/api/authenticity/test")
@@ -4310,6 +4390,7 @@ async def run_auth_test(request: Request):
             judge_model=judge_model,
             on_progress=_auth_test_progress(model_id),
         )
+        _auth_persist_verdict(model_id, verdict)
         # Auto-escalation: ambiguous shallow result → re-run ONCE in deep mode.
         if mode == "auto" and verdict.verdict in ("unverifiable", "family_match"):
             _AUTH_TEST_STATUS[model_id] = {"step": "escalate",
@@ -4327,9 +4408,14 @@ async def run_auth_test(request: Request):
                 judge_model=judge_model,
                 on_progress=_auth_test_progress(model_id),
             )
+            _auth_persist_verdict(model_id, verdict)
         return JSONResponse(verdict.to_dict())
     except Exception as exc:
+        if "cancelled" in str(exc).lower():
+            return JSONResponse({"verdict": "cancelled", "headline": "Test cancelled by user", "confidence": 0}, status_code=200)
         return JSONResponse({"error": str(exc)[:300], "verdict": "error"}, status_code=200)
+    finally:
+        _AUTH_TEST_CANCEL.discard(model_id)
 
 
 @app.get("/api/authenticity/test/status/{model_id}")
