@@ -4418,7 +4418,7 @@ async def run_auth_test(request: Request):
         _AUTH_TEST_CANCEL.discard(model_id)
 
 
-@app.get("/api/authenticity/test/status/{model_id}")
+@app.get("/api/authenticity/test/status/{model_id:path}")
 async def auth_test_status(model_id: str):
     """Bug 7: current pipeline step for the UI step indicator."""
     return JSONResponse(_AUTH_TEST_STATUS.get(model_id, {"step": "idle", "label": ""}))
