@@ -205,10 +205,14 @@ def _build_conclusions(v) -> None:
             )
         else:
             auth_conf = v.confidence
+            _already_deep = bool(ev.get("ran_full_battery"))
+            _next = ("Even the full battery (identity + cutoff + capability + judge traits) could not "
+                     "settle this - harvest a fresher standard from a trusted anchor, or pass a more "
+                     "specific reference hint.") if _already_deep else "Consider Deep mode for a stronger read."
             auth_rationale = (
                 f"Signals were too ambiguous to confirm REAL or FAKE. "
                 f"{ev.get('reason', 'no frozen standard or ambiguous fingerprint')} "
-                f"Consider Deep mode for a stronger read."
+                f"{_next}"
             )
         auth_ev = {"reason": ev.get("reason", ""), "behavior_scores": behavior_scores}
 

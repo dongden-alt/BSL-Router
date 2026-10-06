@@ -3993,9 +3993,9 @@ function getModelsDropdownWithCombosHTML(selectedValue) {
         if (_isBlacksandProvider(pKey)) continue; // surfaced above under BSL Models
         if (!isProviderSelectable(p)) continue;
         if (!p.models || p.models.length === 0) continue;
-        // Collect surviving models first so we don't emit an empty optgroup when
-        // every model collided with a combo alias.
-        const surviving = p.models.filter(m => !comboAliases.has(m.id));
+        // Bug 1: skip DISABLED models — a disabled model is not routable, so it
+        // must not appear in any model dropdown (suspect or judge).
+        const surviving = p.models.filter(m => m && m.enabled !== false && !comboAliases.has(m.id));
         if (surviving.length === 0) continue;
         html += `<optgroup label="${label}">`;
         surviving.forEach(m => {
@@ -4024,6 +4024,7 @@ const _authState = {
     testModel: '',
     judgeModel: '',
     refHint: '',
+    forceRerun: false,     // bug 4: ignore cached verdict, re-probe fresh
 };
 
 const _AUTH_VERDICT_META = {
@@ -4115,9 +4116,17 @@ function renderAuthenticityTab() {
             </div>
           </div>
 
-          <button id="auth-run-btn" class="btn btn-primary" ${st.running ? 'disabled' : ''} onclick="authRunTest()">
-            ${st.running ? 'Testing…' : 'Run Test'}
-          </button>
+          <div class="auth-field" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+            <button id="auth-run-btn" class="btn btn-primary" ${st.running ? 'disabled' : ''} onclick="authRunTest()">
+              ${st.running ? 'Testing…' : 'Run Test'}
+            </button>
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-muted)">
+              <input type="checkbox" id="auth-force-rerun" ${st.forceRerun ? 'checked' : ''} onchange="authOnField('forceRerun', this.checked)"> re-run fresh (ignore cached verdict)
+            </label>
+          </div>
+          <div id="auth-step-indicator" class="auth-step-indicator" style="${st.running ? '' : 'display:none'}">
+            <span class="auth-step-dot"></span><span id="auth-step-label">Starting…</span>
+          </div>
         </div>
 
         <div class="card auth-card" id="auth-report-card" style="${st.report ? '' : 'display:none'}">
@@ -4126,15 +4135,15 @@ function renderAuthenticityTab() {
         </div>
       </div>
 
-      <div class="card auth-card" style="margin-top:18px">
-        <h2 class="section-title">Testable Models <span class="auth-opt">(high confidence)</span></h2>
-        <div class="setting-desc" style="margin-bottom:10px">Models with a <strong>full</strong> judge-graded frozen standard — these can be verified at high confidence. "Family-only" standards classify family but can't confirm the exact sub-version.</div>
+      <details class="card auth-card auth-collapsible" style="margin-top:18px" id="auth-testable-box">
+        <summary class="section-title" style="cursor:pointer;list-style:none">Testable Models <span class="auth-opt">(high confidence) — click to expand</span></summary>
+        <div class="setting-desc" style="margin:10px 0">Models with a <strong>full</strong> judge-graded frozen standard — these can be verified at high confidence. "Family-only" standards classify family but can't confirm the exact sub-version.</div>
         <div id="auth-testable-body">${st.testable ? _authTestableHTML(st.testable) : 'Loading…'}</div>
-      </div>
+      </details>
 
-      <div class="card auth-card" style="margin-top:18px">
-        <h2 class="section-title">Frozen Standards <span class="auth-opt">(admin)</span></h2>
-        <div class="setting-desc" style="margin-bottom:10px">Official behavioral fingerprints harvested from trusted anchors. The Testing Tab compares suspects against these — the trusted source is never re-called at test time.</div>
+      <details class="card auth-card auth-collapsible" style="margin-top:18px" id="auth-standards-box">
+        <summary class="section-title" style="cursor:pointer;list-style:none">Frozen Standards <span class="auth-opt">(admin) — click to expand</span></summary>
+        <div class="setting-desc" style="margin:10px 0">Official behavioral fingerprints harvested from trusted anchors. The Testing Tab compares suspects against these — the trusted source is never re-called at test time.</div>
         <div id="auth-standards-body">${st.standards ? _authStandardsHTML(st.standards) : 'Loading…'}</div>
         <hr style="border:none;border-top:1px solid var(--border-color);margin:14px 0">
         <div class="setting-title" style="margin-bottom:6px">Harvest new standard</div>
@@ -4148,7 +4157,7 @@ function renderAuthenticityTab() {
           <button class="btn btn-outline" onclick="authHarvest()">Harvest</button>
         </div>
         <div id="auth-h-status" style="font-size:12px;color:var(--text-muted);margin-top:6px"></div>
-      </div>`;
+      </details>`;
 
     // Lazily load standards + testable list once.
     if (st.standards === null) { authLoadStandards(); }
@@ -4258,10 +4267,15 @@ window.authOnProviderChange = function (key) {
 };
 window.authOnModelChange = function (model) {
     _authState.testModel = model;
-    // Auto-suggest the judge for this suspect's family (judge must differ from suspect family).
+    // Bug 2 (sticky judge): only AUTO-SUGGEST a judge when none is chosen yet, or
+    // when the current judge would share the suspect's family (biased). A manual
+    // judge pick is NEVER overwritten just because the suspect changed.
     const fam = _authFamilyOf(model);
-    const sug = (window._AUTH_JUDGE_SUGGESTIONS || {})[fam] || 'mintrouter/claude-opus-5-5';
-    _authState.judgeModel = sug;
+    const curFam = _authFamilyOf(_authState.judgeModel);
+    if (!_authState.judgeModel || (curFam && fam && curFam === fam)) {
+        const sug = (window._AUTH_JUDGE_SUGGESTIONS || {})[fam] || 'mintrouter/claude-opus-5-5';
+        _authState.judgeModel = sug;
+    }
     renderAuthenticityTab();
 };
 window.authOnField = function (field, val) {
@@ -4280,6 +4294,7 @@ window.authRunTest = async function () {
     const routerId = st.testModel.includes('/') ? st.testModel : (st.testProviderKey + '/' + st.testModel);
 
     st.running = true; st.report = null; renderAuthenticityTab();
+    _authStartStepPolling(routerId);
     try {
         const resp = await fetch('/api/authenticity/test', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4287,6 +4302,7 @@ window.authRunTest = async function () {
                 model_id: routerId,
                 judge_model: st.judgeModel || '',
                 reference_hint: st.refHint || '', mode: st.mode,
+                force_rerun: !!st.forceRerun,
             }),
         });
         const data = await resp.json();
@@ -4295,9 +4311,26 @@ window.authRunTest = async function () {
         showToast('Test failed: ' + e.message, true);
         st.report = { verdict: 'error', headline: 'Request failed: ' + e.message, confidence_level: 'none' };
     } finally {
-        st.running = false; renderAuthenticityTab();
+        st.running = false; _authStopStepPolling(); renderAuthenticityTab();
     }
 };
+
+// Bug 7: live step indicator — poll the backend per-model step feed while a test runs.
+let _authStepTimer = null;
+function _authStartStepPolling(routerId) {
+    _authStopStepPolling();
+    _authStepTimer = setInterval(async () => {
+        try {
+            const r = await fetch('/api/authenticity/test/status/' + encodeURIComponent(routerId));
+            const s = await r.json();
+            const el = document.getElementById('auth-step-label');
+            if (el && s && s.label) el.textContent = s.label;
+        } catch (e) { /* fail-open */ }
+    }, 700);
+}
+function _authStopStepPolling() {
+    if (_authStepTimer) { clearInterval(_authStepTimer); _authStepTimer = null; }
+}
 
 window.authLoadStandards = async function () {
     try {

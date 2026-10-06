@@ -39,6 +39,7 @@ async def authenticity_check(
     judge_endpoint: str = "",
     judge_key: str = "",
     judge_model: str = "",
+    on_progress=None,
 ) -> "RealityVerdict":
     """Main entry point. NEVER raises — fail-open always.
 
@@ -71,12 +72,29 @@ async def authenticity_check(
     def _elapsed_ms() -> int:
         return int((time.monotonic() - t0) * 1000)
 
+    def _progress(step: str, label: str):
+        try:
+            if callable(on_progress):
+                on_progress(step, label)
+        except Exception:
+            pass
+
+    # Bug 3 fix: derive the tier budget from the requested MODE when the
+    # caller didn't pin max_tier. Previously main.py set cfg["max_tier"] but
+    # the gate never read it against mode, so auto/deep behaved identically.
+    if "max_tier" not in config:
+        config["max_tier"] = 2 if str(config.get("mode", "")).lower() == "deep" else 1
+    _no_cache = bool(config.get("no_cache"))
+
+    _progress("init", "Loading reference data")
+
     try:
         # Tier 0: Cache — fresh stable verdict short-circuits re-probing.
         cache_ttl = config.get("cache_ttl_seconds", 1800)
         cache = get_cache(ttl_seconds=cache_ttl)
-        cached = cache.get(endpoint_base, model_id)
+        cached = None if _no_cache else cache.get(endpoint_base, model_id)
         if cached is not None:
+            _progress("done", "cached verdict")
             return cached
 
         # Scope: how much can we say about this model?
@@ -119,6 +137,7 @@ async def authenticity_check(
 
         async with httpx.AsyncClient() as client:
             # Tier 1
+            _progress("tier1", "Normal · identity/style probes")
             tier1_results = []
             for probe in TIER1_PROBES:
                 result = await run_probe(
@@ -144,6 +163,7 @@ async def authenticity_check(
             features = extract_features(tier1_results, family_ref)
             families = _load_families()
             family_verdict = classify_family(features, families)
+            _progress("classify", f"Normal · family classified as {family_verdict.family}")
 
             # Fail fast on impostor → substitution (skip Tier 2)
             if family_verdict.surface_family == "impostor":
@@ -163,6 +183,7 @@ async def authenticity_check(
             # Tier 2 (if enabled and within time budget)
             max_tier = config.get("max_tier", 2)
             if max_tier >= 2 and (time.monotonic() - t0) < total_timeout:
+                _progress("tier2", "Deep · cutoff/capability probes")
                 tier2_results = []
                 for probe in TIER2_PROBES:
                     result = await run_probe(
@@ -190,6 +211,7 @@ async def authenticity_check(
             # abstains on that dimension instead of blocking).
             _deep = bool(config.get("deep_mode")) or str(config.get("mode", "")).lower() == "deep"
             if _deep and (time.monotonic() - t0) < total_timeout and features is not None:
+                _progress("tier25", "Deep · judge grading non-coding traits")
                 try:
                     from .harvest import NONCODING_PROBES, judge_scores
                     import re as _re
@@ -245,6 +267,7 @@ async def authenticity_check(
                         _candidates = _load_match_baselines(model_id)
                         needles = collect_family_needles(_candidates)
                         if needles:
+                            _progress("needles", "Deep · knowledge-needle probes")
                             probe = build_needle_probe(needles)
                             r = await run_probe(client, endpoint_base, api_key,
                                                 model_id, probe, probe_timeout)
@@ -265,6 +288,7 @@ async def authenticity_check(
                 if (time.monotonic() - t0) < total_timeout and features is not None:
                     try:
                         from .probes import LOGPROB_PROBES
+                        _progress("v5", "Deep · V5 logprob tail")
                         prof = {}
                         for p in LOGPROB_PROBES:
                             r = await run_probe(
@@ -297,6 +321,7 @@ async def authenticity_check(
                 if (time.monotonic() - t0) < total_timeout and features is not None:
                     try:
                         from .probes import run_boundary_probes
+                        _progress("boundary", "Deep · L1 boundary signature")
                         sig = await run_boundary_probes(
                             client, endpoint_base, api_key, model_id, probe_timeout)
                         if sig and any(v for k, v in sig.items()
@@ -319,6 +344,7 @@ async def authenticity_check(
                         and features is not None:
                     try:
                         from .probes import run_stability_probe
+                        _progress("stability", "Deep · L2 stability profile")
                         prof = await run_stability_probe(
                             client, endpoint_base, api_key, model_id, probe_timeout)
                         if prof and prof.get("mode_hash"):
@@ -338,6 +364,7 @@ async def authenticity_check(
                         and features is not None:
                     try:
                         from .probes import run_timing_probe
+                        _progress("timing", "Deep · L3 timing profile")
                         prof = await run_timing_probe(
                             client, endpoint_base, api_key, model_id, probe_timeout)
                         if prof and prof.get("chunk_count"):
@@ -350,6 +377,7 @@ async def authenticity_check(
                         logger.warning("V7 timing lane failed (fail-open): %s", _tim_exc)
 
         # Fuse into a reality verdict
+        _progress("verdict", "Composing verdict")
         verdict = compute_reality(
             model_id=model_id, endpoint=endpoint_base,
             claimed=claimed or model_id, scope_info=scope_info,
@@ -357,7 +385,10 @@ async def authenticity_check(
             modifications=[], probe_errors=probe_errors,
             latency_ms=_elapsed_ms(),
         )
-        cache.put(endpoint_base, model_id, verdict)
+        verdict.evidence["ran_full_battery"] = bool(config.get("max_tier", 1) >= 2)
+        if not _no_cache:
+            cache.put(endpoint_base, model_id, verdict)
+        _progress("done", verdict.verdict)
 
         if verdict.verdict in ("substitution", "downgrade"):
             logger.warning("AUTH %s", verdict.headline())

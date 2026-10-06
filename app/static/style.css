@@ -1351,6 +1351,16 @@ input:checked + .slider:before { transform: translateX(16px); }
 .auth-seg-btn { padding: 6px 16px; background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 13px; transition: background .15s, color .15s; }
 .auth-seg-btn.active { background: var(--brand-color); color: #fff; }
 .auth-seg-btn:not(.active):hover { background: var(--surface-color); color: var(--text-color); }
+
+/* Bug 7: live step indicator */
+.auth-step-indicator { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12.5px; color: var(--text-muted); }
+.auth-step-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--brand-color); animation: authStepPulse 1s ease-in-out infinite; }
+@keyframes authStepPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.8); } }
+
+/* Bug 6: collapsible cards */
+.auth-collapsible > summary { user-select: none; }
+.auth-collapsible > summary::-webkit-details-marker { display: none; }
+.auth-collapsible:not([open]) > summary { margin-bottom: 0; }
 .auth-banner { border: 1.5px solid; border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 6px; }
 .auth-verdict { font-size: 22px; font-weight: 700; letter-spacing: .04em; }
 .auth-headline { font-size: 14px; color: var(--text-color); line-height: 1.4; }

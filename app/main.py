@@ -4106,6 +4106,24 @@ from app.authenticity.gate import authenticity_check as _auth_check
 _AUTH_HARVEST_STATUS: dict = {}
 _AUTH_HARVEST_TASKS: dict = {}
 
+# In-memory authenticity-test step feed (bug 7): per-model rolling list of
+# {step, label, ts} the gate emits via on_progress. The UI polls it while a
+# test runs so "Testing..." is replaced by real step names ("Normal · step 3/7").
+_AUTH_TEST_STATUS: dict = {}
+
+
+def _auth_test_progress(model_id: str):
+    """Return an on_progress(step, label) callback feeding _AUTH_TEST_STATUS."""
+    def _cb(step: str, label: str):
+        try:
+            _AUTH_TEST_STATUS[model_id] = {
+                "step": str(step), "label": str(label),
+                "ts": __import__("time").time(),
+            }
+        except Exception:
+            pass
+    return _cb
+
 
 def _auth_cfg_get():
     try:
@@ -4253,6 +4271,7 @@ async def run_auth_test(request: Request):
     reference_hint = (body.get("reference_hint") or "").strip()
     judge_model = (body.get("judge_model") or "").strip()
     mode = (body.get("mode") or "auto").strip().lower()
+    force_rerun = bool(body.get("force_rerun"))
     if not model_id:
         return JSONResponse({"error": "model_id is required"}, status_code=400)
 
@@ -4261,17 +4280,16 @@ async def run_auth_test(request: Request):
     endpoint, api_key = _router_self_endpoint_and_key()
 
     cfg = dict(_auth_cfg_get())
-    # Judge also routes through BSL (router endpoint + admin key).
-    cfg["judge_endpoint"] = endpoint
-    cfg["judge_api_key"] = api_key
-    if judge_model:
-        cfg["judge_model"] = judge_model
 
-    if mode == "normal":
-        cfg["max_tier"] = 1
-    else:  # deep + auto both allow full depth; auto decides below
-        cfg["max_tier"] = 2
+    # Bug 3 fix: pass the MODE to the gate (it derives max_tier itself) instead
+    # of setting cfg["max_tier"] which the gate never read. auto/normal run the
+    # shallow tier budget; deep runs the full battery; auto escalates below.
+    gate_mode = "deep" if mode == "deep" else "normal"
+    if force_rerun:
+        cfg["no_cache"] = True   # bug 4: bypass the verdict cache
 
+    _AUTH_TEST_STATUS[model_id] = {"step": "start", "label": "Queued",
+                                   "ts": __import__("time").time()}
     try:
         verdict = await _auth_check(
             model_id=model_id,
@@ -4279,21 +4297,38 @@ async def run_auth_test(request: Request):
             api_key=api_key,
             config=cfg,
             reference_hint=reference_hint,
+            mode=gate_mode,
+            judge_endpoint=endpoint,
+            judge_key=api_key,
+            judge_model=judge_model,
+            on_progress=_auth_test_progress(model_id),
         )
-        # Auto-escalation: ambiguous result on a normal-depth run → go deep once.
-        if mode == "auto" and cfg.get("max_tier", 2) < 2 and verdict.verdict in (
-                "unverifiable", "family_match"):
-            cfg["max_tier"] = 2
+        # Auto-escalation: ambiguous shallow result → re-run ONCE in deep mode.
+        if mode == "auto" and verdict.verdict in ("unverifiable", "family_match"):
+            _AUTH_TEST_STATUS[model_id] = {"step": "escalate",
+                                           "label": "Ambiguous — escalating to Deep",
+                                           "ts": __import__("time").time()}
             verdict = await _auth_check(
                 model_id=model_id,
                 endpoint_base=endpoint,
                 api_key=api_key,
                 config=cfg,
                 reference_hint=reference_hint,
+                mode="deep",
+                judge_endpoint=endpoint,
+                judge_key=api_key,
+                judge_model=judge_model,
+                on_progress=_auth_test_progress(model_id),
             )
         return JSONResponse(verdict.to_dict())
     except Exception as exc:
         return JSONResponse({"error": str(exc)[:300], "verdict": "error"}, status_code=200)
+
+
+@app.get("/api/authenticity/test/status/{model_id}")
+async def auth_test_status(model_id: str):
+    """Bug 7: current pipeline step for the UI step indicator."""
+    return JSONResponse(_AUTH_TEST_STATUS.get(model_id, {"step": "idle", "label": ""}))
 
 
 # ─── Auto Error Prevention ──────────────────────────────────────────────────

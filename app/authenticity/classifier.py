@@ -47,14 +47,25 @@ def classify_family(features, families: dict) -> FamilyVerdict:
         if not style:
             continue
 
-        # Bullet style match
-        if style.get("bullet_style") and features.bullet_style == style["bullet_style"]:
-            score += 0.2
+        # Bullet style match — only DISTINCTIVE styles count. '*' is the most
+        # common markdown bullet across every frontier model, so crediting it
+        # made nearly every English response score +2 for gemini (the bug-5
+        # "everything is gemini" leak). '1.' and 'none' stay informative.
+        base_bullet = style.get("bullet_style")
+        if base_bullet and base_bullet in ("1.", "none") and features.bullet_style == base_bullet:
+            score += 0.4
 
-        # CJK ratio similarity
+        # CJK ratio — a LANGUAGE signal, not a punctuation signal. A family
+        # whose baseline is CJK-heavy (glm/kimi/qwen) matching a ~zero-CJK
+        # English response is real evidence (full weight). Two near-zero
+        # baselines agreeing ("both are English") is punctuation — near-zero
+        # weight, otherwise every English model ties every English baseline.
         baseline_cjk = style.get("cjk_ratio", 0.0)
-        if abs(baseline_cjk - features.cjk_ratio) < 0.03:
-            score += 0.3
+        if baseline_cjk > 0.05:
+            if abs(baseline_cjk - features.cjk_ratio) < 0.03:
+                score += 1.0   # a CJK-heavy baseline matching CJK output is decisive
+        elif features.cjk_ratio < 0.02:
+            score += 0.05
 
         # Sentence length similarity
         baseline_asl = style.get("avg_sentence_length", 0)
@@ -62,30 +73,42 @@ def classify_family(features, families: dict) -> FamilyVerdict:
             asl_ratio = min(features.avg_sentence_length, baseline_asl) / max(
                 features.avg_sentence_length, baseline_asl
             )
-            score += asl_ratio * 0.2
+            score += asl_ratio * 0.4
 
         # Header depth
         if style.get("header_depth", 0) == features.header_depth:
-            score += 0.1
+            score += 0.2
 
         # Analogy usage
         if style.get("has_analogy", False) == features.has_analogy:
-            score += 0.1
+            score += 0.2
 
-        # Question count similarity
+        # Question count similarity (fingerprint.py now counts '?' only in
+        # prose — code spans/blocks/URLs are stripped there — so this ratio is
+        # no longer floored at 1.0 by '?' inside tokens like 'action?auto=1')
         baseline_qc = style.get("question_count", 0)
         if baseline_qc > 0 and features.question_count > 0:
             qc_ratio = min(features.question_count, baseline_qc) / max(
                 features.question_count, baseline_qc
             )
-            score += qc_ratio * 0.1
+            score += qc_ratio * 0.2
 
         behavior_scores[family_name] = score
 
+    behavior_tie = False
     if behavior_scores:
         best_family = max(behavior_scores, key=behavior_scores.get)
         best_score = behavior_scores[best_family]
-        if best_score > 0.4:
+        # Tie-break poisoning fix: style features are weak evidence, so two
+        # families within 0.05 are indistinguishable — verdict must be
+        # 'unknown', not "whoever sits later in families.json" (previously
+        # gemini, which is why every ambiguous suspect surfaced as gemini).
+        runner_up = sorted(behavior_scores.values(), reverse=True)[1] if len(behavior_scores) > 1 else 0.0
+        if best_score > 0.4 and (best_score - runner_up) < 0.15:
+            behavior_family = "unknown"
+            behavior_confidence = 0.0
+            behavior_tie = True
+        elif best_score > 0.4:
             behavior_family = best_family
             behavior_confidence = min(best_score, 1.0)
 
@@ -136,5 +159,6 @@ def classify_family(features, families: dict) -> FamilyVerdict:
             "claimed_model": features.claimed_model,
             "claimed_org": features.claimed_org,
             "behavior_scores": behavior_scores,
+            "behavior_tie": behavior_tie,
         },
     )

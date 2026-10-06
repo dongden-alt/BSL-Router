@@ -192,8 +192,14 @@ def extract_features(results: list, family_ref: dict) -> FingerprintFeatures:
             )
             features.cjk_ratio = cjk_chars / max(len(content), 1)
 
-            # Question count
-            features.question_count = content.count("?") + content.count("？")
+            # Question count — PROSE ONLY. '?' inside fenced code, inline
+            # code spans or URLs (query strings, ternaries, regexes) is not a
+            # rhetorical question; counting it floored every response at 1+
+            # and made the question-count ratio a free +1 for every family.
+            _prose = re.sub(r"```.*?```", " ", content, flags=re.DOTALL)
+            _prose = re.sub(r"`[^`]*`", " ", _prose)
+            _prose = re.sub(r"https?://\S+", " ", _prose)
+            features.question_count = _prose.count("?") + _prose.count("？")
 
         elif result.probe_id == "cutoff_probe":
             features.reported_cutoff = content.strip()
