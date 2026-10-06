@@ -216,10 +216,24 @@ def _build_conclusions(v) -> None:
             )
         auth_ev = {"reason": ev.get("reason", ""), "behavior_scores": behavior_scores}
 
+    # Presentation (user decision 2026-10-06): the top conclusion is ALWAYS
+    # shown prominently. When confidence is below 'medium', label it 'Best
+    # guess' and name the evidence gap so a weak read is never mistaken for a
+    # firm verdict — but the best-supported answer still leads the report.
+    _low_conf = auth_conf < 0.55
+    _gap = ""
+    if _low_conf:
+        if v.verdict in ("unverifiable", "family_match"):
+            _gap = "evidence gap: no frozen standard or ambiguous fingerprint"
+        elif v.verdict == "error":
+            _gap = "evidence gap: probes did not complete"
+        else:
+            _gap = "evidence gap: signals weak or conflicting"
     v.conclusions = [{
         "rank": 1, "primary": True, "verdict": authenticity.lower(),
         "label": authenticity, "identified_as": v.identified_as or v.model_id,
         "zone": zone(auth_conf), "confidence": round(auth_conf, 3),
+        "best_guess": _low_conf, "evidence_gap": _gap,
         "statement": f"The served model is {authenticity}" + ("" if authenticity == "REAL" else f" - not a genuine '{v.claimed or v.model_id}'"),
         "rationale": auth_rationale, "evidence": auth_ev,
     }]

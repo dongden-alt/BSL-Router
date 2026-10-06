@@ -1470,6 +1470,11 @@ _ANTIGRAVITY_INTEGRATION_SLOT_SET = frozenset(ANTIGRAVITY_INTEGRATION_SLOTS)
 # ``gemini-3.6-flash-high`` so the migration destination stays a live slot.
 _ANTIGRAVITY_LEGACY_SLOT_MIGRATIONS = {
     "gemini-3-flash-agent": "gemini-3.6-flash-high",
+    # 2026-10-06 (user directive): bare ``gemini-3-flash`` is retired upstream
+    # ("unavailable"); retarget to the surviving Flash-high slot. deepseek-v4.1-
+    # flash / glm-5.3-flash were offered as fallbacks but are not needed while
+    # gemini-3.6-flash-high stays live.
+    "gemini-3-flash": "gemini-3.6-flash-high",
 }
 _ANTIGRAVITY_OBSOLETE_SLOTS = frozenset({
     "gemini-default",
@@ -4190,7 +4195,7 @@ async def list_auth_testable():
 
 @app.get("/api/authenticity/judges")
 async def list_auth_judges():
-    """Judge model recommendations. Default = mintrouter/claude-opus-5-5.
+    """Judge model recommendations (generic family names — never provider ids).
     A judge must be a different family from the suspect to avoid bias."""
     return JSONResponse({
         "default": auth_harvest.JUDGE_DEFAULT,
@@ -4270,7 +4275,9 @@ async def run_auth_test(request: Request):
     model_id = (body.get("model_id") or "").strip()
     reference_hint = (body.get("reference_hint") or "").strip()
     judge_model = (body.get("judge_model") or "").strip()
-    mode = (body.get("mode") or "auto").strip().lower()
+    # AUTO-ONLY (user decision 2026-10-06): the only sane path is normal →
+    # escalate to deep once on ambiguous. Any client-supplied mode is ignored.
+    mode = "auto"
     force_rerun = bool(body.get("force_rerun"))
     if not model_id:
         return JSONResponse({"error": "model_id is required"}, status_code=400)

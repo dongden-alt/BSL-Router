@@ -538,16 +538,25 @@ def standard_quality(tm: TraitMark) -> dict:
 
 # Judge suggestion: a judge must be a DIFFERENT family from the suspect, else
 # creative/EQ/design scores are inflated by family resemblance. Default = claude-opus-5-5.
-JUDGE_DEFAULT = "mintrouter/claude-opus-5-5"
+# Generic judge defaults — name the FAMILY only, never a provider id. The judge
+# is chosen from the user's own enabled models at runtime; these are fallbacks.
+# (The old mintrouter/codex ids leaked private infrastructure into a public repo.)
+JUDGE_DEFAULT = "claude"
 JUDGE_SUGGESTIONS = {
-    "claude":   "codex/gpt-5.6-sol",        # not claude
-    "gpt":      "mintrouter/claude-opus-5-5",
-    "gemini":   "mintrouter/claude-opus-5-5",
-    "glm":      "mintrouter/claude-opus-5-5",
-    "kimi":     "mintrouter/claude-opus-5-5",
-    "deepseek": "mintrouter/claude-opus-5-5",
-    "qwen":     "mintrouter/claude-opus-5-5",
-    "mimo":     "mintrouter/claude-opus-5-5",
+    "claude":   "gpt",
+    "gpt":      "claude",
+    "gemini":   "claude",
+    "glm":      "claude",
+    "kimi":     "claude",
+    "deepseek": "claude",
+    "qwen":     "claude",
+    "mimo":     "claude",
+}
+
+# Vendor display names for the public testable-models database (family -> vendor).
+_FAMILY_VENDOR = {
+    "claude": "Anthropic", "gpt": "OpenAI", "gemini": "Google", "glm": "Zhipu",
+    "qwen": "Alibaba", "deepseek": "DeepSeek", "kimi": "Moonshot", "mimo": "Xiaomi",
 }
 
 
@@ -588,22 +597,55 @@ def list_standards(standards_dir) -> list:
 
 
 def list_testable_standards(standards_dir) -> dict:
-    """Which models can be verified at high confidence (full standard present)."""
+    """Public testable-models database, grouped by vendor.
+
+    Only CANONICAL standards are listed (source_tag empty) — provider-tagged
+    local references are private infrastructure and never surface in the
+    public list. Each entry's sub_model is display-normalised (family prefix
+    stripped) so the UI renders "claude-fable-5-1" under "Anthropic".
+    """
     standards = list_standards(standards_dir)
-    full = [s for s in standards if s.get("high_confidence")]
-    partial = [s for s in standards if not s.get("high_confidence")]
+    # Public/private split: a standard is PUBLIC only if its sub_model carries no
+    # provider token ANYWHERE — slash-prefixed ('codex/gpt-5.5'), dash-prefixed
+    # ('mintrouter-claude-...'), or bare ('workbuddy'). Provider-tagged local
+    # references are private infrastructure and never surface in the public
+    # testable list — matching the gitignore whitelist.
+    import re as _re
+    _PRIV = _re.compile(r'(^|[/\-_])(mintrouter|vsllm-o|vsllm-r|pix4k|a6api|sharellm|'
+                        r'workbuddy|zai-web\d|chat2api|antigravity|arena-web|'
+                        r'deepseek-web|qwen-web|mimo-web|codex|ds|zhipu)([/\-_]|$)', _re.I)
+    canonical = [s for s in standards
+                 if not (s.get("source_tag") or "").strip()
+                 and not _PRIV.search(s.get("sub_model", ""))]
+    full = [s for s in canonical if s.get("high_confidence")]
+    partial = [s for s in canonical if not s.get("high_confidence")]
+
+    def _display(s):
+        sub = s.get("sub_model", "")
+        fam = s.get("family", "")
+        # strip family prefix: 'claude-claude-fable-5-1' -> 'fable-5-1' only if doubled
+        if sub.lower().startswith(fam.lower() + "-"):
+            sub = sub[len(fam) + 1:]
+        return sub
+
+    def _group(entries, ok):
+        groups = {}
+        for s in entries:
+            fam = s.get("family", "")
+            vendor = _FAMILY_VENDOR.get(fam.lower(), fam.title())
+            groups.setdefault(vendor, []).append({
+                "model": _display(s),
+                "quality": s.get("quality", ""),
+                "confidence": "high" if ok else "family-only",
+                "suggested_judge": s.get("suggested_judge", JUDGE_DEFAULT),
+            })
+        for vendor in groups:
+            groups[vendor].sort(key=lambda x: x["model"])
+        return dict(sorted(groups.items()))
+
     return {
-        "testable": [
-            {"family": s["family"], "sub_model": s["sub_model"], "quality": s["quality"],
-             "tier": s["tier"], "collected_at": s["collected_at"], "source_tag": s.get("source_tag", ""),
-             "judged_by": s.get("judged_by", ""), "suggested_judge": s.get("suggested_judge", JUDGE_DEFAULT)}
-            for s in full
-        ],
-        "family_only": [
-            {"family": s["family"], "sub_model": s["sub_model"], "quality": s["quality"],
-             "gaps": s["gaps"]}
-            for s in partial
-        ],
+        "vendors": _group(full, True),
+        "family_only_vendors": _group(partial, False),
         "count_full": len(full),
         "count_family_only": len(partial),
     }

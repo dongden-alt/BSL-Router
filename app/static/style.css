@@ -1361,6 +1361,18 @@ input:checked + .slider:before { transform: translateX(16px); }
 .auth-collapsible > summary { user-select: none; }
 .auth-collapsible > summary::-webkit-details-marker { display: none; }
 .auth-collapsible:not([open]) > summary { margin-bottom: 0; }
+
+/* Testable-models database, grouped by vendor */
+.auth-vendor { margin-bottom: 12px; }
+.auth-vendor-name { font-weight: 700; font-size: 13px; color: var(--text-color); margin-bottom: 4px; letter-spacing: .02em; }
+.auth-vendor-model { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 3px 10px; font-size: 12.5px; color: var(--text-muted); border-left: 2px solid var(--border-color); }
+.auth-vendor-conf { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+.auth-vendor-conf.ok { color: #10b981; }
+.auth-vendor-conf.fam { color: #f59e0b; }
+
+/* Report: best-guess chip + evidence gap (user decision 2026-10-06) */
+.auth-bestguess { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #f59e0b; border: 1px solid #f59e0b; border-radius: 4px; padding: 1px 5px; }
+.auth-evidence-gap { font-size: 11.5px; color: #f59e0b; margin-top: 5px; font-style: italic; }
 .auth-banner { border: 1.5px solid; border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 6px; }
 .auth-verdict { font-size: 22px; font-weight: 700; letter-spacing: .04em; }
 .auth-headline { font-size: 14px; color: var(--text-color); line-height: 1.4; }

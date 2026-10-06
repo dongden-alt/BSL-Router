@@ -1,33 +1,33 @@
-# ── Python ──
+# ?????? Python ??????
 .venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
 
-# ── Node (scratch tooling only) ──
+# ?????? Node (scratch tooling only) ??????
 node_modules/
 scratch/node_modules/
 scratch/package-lock.json
 
-# ── Logs & runtime artifacts ──
+# ?????? Logs & runtime artifacts ??????
 *.log
 .brain/*.log
 srv-out.log
 srv-err.log
 router.log
-# Runtime-written telemetry — server regenerates these; do not track.
+# Runtime-written telemetry ??? server regenerates these; do not track.
 data/console_logs.jsonl
 data/usage_stats.jsonl
-# Forensic outbound/inbound dumps — multi-hundred-MB runtime JSONL written on
+# Forensic outbound/inbound dumps ??? multi-hundred-MB runtime JSONL written on
 # the async request path (now gated behind debug). Never track.
 .brain/logs/*.jsonl
 # Error reports written by observability.py. These capture request context and
 # stack traces, which can embed prompts, headers, and provider responses.
 artifacts/error_reports/
 
-# ── Secrets / local state ──
-# config.yaml holds live API keys — NEVER track in a public repo.
+# ?????? Secrets / local state ??????
+# config.yaml holds live API keys ??? NEVER track in a public repo.
 config.yaml
 # Catch-all for every backup variant. Specific patterns were missed as new
 # backup names appeared (e.g. config.yaml.pre-consult-cleanup.*.bak).
@@ -37,7 +37,7 @@ config.*.yaml
 # config.*.yaml above silently swallows it and new clones lose their starting
 # point. Negation must come after the pattern it overrides.
 !config.example.yaml
-# Encryption key files — machine-bound, must never be committed.
+# Encryption key files ??? machine-bound, must never be committed.
 .bsl_key
 .bsl_key.dpapi
 .brain/session.json
@@ -48,12 +48,12 @@ config.*.yaml
 .brain/stash*_config.yaml
 .brain/state/
 
-# ── OS ──
+# ?????? OS ??????
 Thumbs.db
 desktop.ini
 .DS_Store
 
-# ── Scratch HTML/PNG dumps ──
+# ?????? Scratch HTML/PNG dumps ??????
 scratch/*.html
 scratch/*.png
 9router-dom.html
@@ -98,4 +98,24 @@ data/
 .mcp.json
 
 # --- Authenticity frozen standards (harvested behavioral data; keep repo portable) ---
-app/authenticity/reference/standards/*.json
+
+# Authenticity standards: provider-tagged = private, canonical = public
+
+# Authenticity standards: provider-tagged = private (3-part name OR provider-prefixed sub_model); canonical = public
+app/authenticity/reference/standards/*_*_*.json
+app/authenticity/reference/standards/*_mintrouter-*.json
+app/authenticity/reference/standards/*_vsllm-*.json
+app/authenticity/reference/standards/*_pix4k-*.json
+app/authenticity/reference/standards/*_a6api-*.json
+app/authenticity/reference/standards/*_sharellm-*.json
+app/authenticity/reference/standards/*_workbuddy-*.json
+app/authenticity/reference/standards/*_zai-web*.json
+app/authenticity/reference/standards/*_chat2api-*.json
+app/authenticity/reference/standards/*_antigravity-*.json
+app/authenticity/reference/standards/*_arena-web-*.json
+app/authenticity/reference/standards/*_deepseek-web-*.json
+app/authenticity/reference/standards/*_qwen-web-*.json
+app/authenticity/reference/standards/*_mimo-web-*.json
+app/authenticity/reference/standards/*_codex-*.json
+app/authenticity/reference/standards/*_ds-*.json
+app/authenticity/reference/standards/*_zhipu-*.json

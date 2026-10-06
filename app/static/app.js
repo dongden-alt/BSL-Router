@@ -123,7 +123,7 @@ const OAUTH_PROVIDER_MODELS = {
         { id: 'claude-sonnet-4-6' },
         { id: 'claude-opus-4-6-thinking' },
         { id: 'gpt-oss-120b-medium' },
-        { id: 'gemini-3-flash' },
+
         { id: 'gemini-3.1-flash-image', kind: 'image' },
     ],
     github: [
@@ -4045,6 +4045,29 @@ function _authFamilyOf(modelId) {
     return String(modelId || '').toLowerCase().split(/[\-\/]/)[0];
 }
 
+// Resolve a family-level judge suggestion (e.g. 'gpt') to a ROUTABLE id from
+// the user's own ENABLED models. Suggestions stay family-generic (no provider
+// leak); this picks the first enabled model of that family so the test can run.
+function _authResolveJudge(famName) {
+    const fam = _authFamilyOf(famName);
+    if (!fam) return '';
+    const providers = globalConfig.providers || {};
+    for (const key of Object.keys(providers).sort()) {
+        const p = providers[key] || {};
+        if (!isProviderSelectable(p)) continue;
+        const hit = (p.models || []).find(m => m && m.enabled !== false && _authFamilyOf(m.id) === fam);
+        if (hit) return hit.id;
+    }
+    return '';
+}
+
+// Judge dropdown = the user's ENABLED models, grouped by provider (already
+// filters disabled via getModelsDropdownWithCombosHTML). Suggestions resolve to
+// routable ids via _authResolveJudge, so the selected judge always runs.
+function _authJudgesEnabledHTML(selectedValue) {
+    return getModelsDropdownWithCombosHTML(selectedValue);
+}
+
 function renderAuthenticityTab() {
     const container = document.getElementById('authenticity-container');
     if (!container) return;
@@ -4065,7 +4088,7 @@ function renderAuthenticityTab() {
     const modelOpts = curModels.map(m =>
         `<option value="${_authEsc(m.id)}" ${m.id === st.testModel ? 'selected' : ''}>${_authEsc(m.name || m.id)}</option>`).join('');
 
-    const judgeOpts = getModelsDropdownWithCombosHTML(st.judgeModel || '');
+    const judgeOpts = _authJudgesEnabledHTML(st.judgeModel || '');
 
     // Same-family judge warning.
     const judgeFam = _authFamilyOf(st.judgeModel);
@@ -4107,14 +4130,6 @@ function renderAuthenticityTab() {
             ${judgeWarn}
           </div>
 
-          <div class="auth-field">
-            <div class="setting-title">Test depth</div>
-            <div class="auth-seg" id="auth-mode-seg">
-              ${['normal', 'deep', 'auto'].map(m => `
-                <button type="button" class="auth-seg-btn ${st.mode === m ? 'active' : ''}"
-                        onclick="authSetMode('${m}')" title="${m === 'normal' ? 'Fast: identity + fingerprint only' : m === 'deep' ? 'Full battery incl. non-coding judge traits' : 'Runs Normal; escalates to Deep only if ambiguous'}">${m[0].toUpperCase() + m.slice(1)}</button>`).join('')}
-            </div>
-          </div>
 
           <div class="auth-field" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
             <button id="auth-run-btn" class="btn btn-primary" ${st.running ? 'disabled' : ''} onclick="authRunTest()">
@@ -4188,11 +4203,13 @@ function _authReportHTML(v) {
         <div class="setting-title" style="margin-bottom:8px">Conclusion</div>
         <div style="border-left:3px solid ${zoneColor[primary.zone] || '#9ca3af'};padding-left:10px;margin-bottom:${alts.length ? '10px' : '0'}">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <strong style="color:${zoneColor[primary.zone] || '#9ca3af'}">${_authEsc(primary.label)}</strong>
+            <strong style="color:${zoneColor[primary.zone] || '#9ca3af'}">${primary.best_guess ? 'Best guess: ' : ''}${_authEsc(primary.label)}</strong>
             ${primary.identified_as ? `<span>as <code>${_authEsc(primary.identified_as)}</code></span>` : ''}
             ${zoneBadge(primary.zone)}
+            ${primary.best_guess ? '<span class="auth-bestguess">low confidence</span>' : ''}
           </div>
           <div style="font-size:12px;color:var(--text-muted);margin-top:3px">${_authEsc(primary.statement || '')}</div>
+          ${primary.evidence_gap ? `<div class="auth-evidence-gap">${_authEsc(primary.evidence_gap)}</div>` : ''}
           ${primary.rationale ? `<div style="font-size:12px;margin-top:4px"><strong>Why:</strong> ${_authEsc(primary.rationale)}</div>` : ''}
           ${evBlock(primary.evidence)}
         </div>
@@ -4237,17 +4254,19 @@ function _authStandardsHTML(list) {
 
 function _authTestableHTML(t) {
     if (!t) return '';
-    const full = t.testable || [];
-    const partial = t.family_only || [];
-    if (!full.length && !partial.length) return '<div style="color:var(--text-muted);font-size:13px">No standards yet — harvest from a trusted anchor below.</div>';
-    const row = (s, ok) => `<tr>
-        <td>${_authEsc(s.sub_model)}</td>
-        <td>${_authEsc(s.family)}</td>
-        <td>${ok ? '<span style="color:#10b981;font-weight:600">high</span>' : '<span style="color:#f59e0b">family-only</span>'}</td>
-        <td style="font-size:11px;color:var(--text-muted)">${_authEsc(s.suggested_judge || 'mintrouter/claude-opus-5-5')}</td>
-    </tr>`;
-    return `<table class="auth-table"><thead><tr><th>Model</th><th>Family</th><th>Confidence</th><th>Suggested judge</th></tr></thead><tbody>` +
-        full.map(s => row(s, true)).join('') + partial.map(s => row(s, false)).join('') + `</tbody></table>`;
+    const vendors = t.vendors || {};
+    const famOnly = t.family_only_vendors || {};
+    if (!Object.keys(vendors).length && !Object.keys(famOnly).length)
+        return '<div style="color:var(--text-muted);font-size:13px">No standards yet — harvest from a trusted anchor below.</div>';
+    const block = (groups, ok) => Object.entries(groups).map(([vendor, models]) => `
+      <div class="auth-vendor">
+        <div class="auth-vendor-name">${_authEsc(vendor)}</div>
+        ${models.map(m => `<div class="auth-vendor-model">
+          <span>${_authEsc(m.model)}</span>
+          <span class="auth-vendor-conf ${ok ? 'ok' : 'fam'}">${ok ? 'high' : 'family-only'}</span>
+        </div>`).join('')}
+      </div>`).join('');
+    return block(vendors, true) + block(famOnly, false);
 }
 
 window.authLoadTestable = async function () {
@@ -4273,8 +4292,8 @@ window.authOnModelChange = function (model) {
     const fam = _authFamilyOf(model);
     const curFam = _authFamilyOf(_authState.judgeModel);
     if (!_authState.judgeModel || (curFam && fam && curFam === fam)) {
-        const sug = (window._AUTH_JUDGE_SUGGESTIONS || {})[fam] || 'mintrouter/claude-opus-5-5';
-        _authState.judgeModel = sug;
+        const sugFam = (window._AUTH_JUDGE_SUGGESTIONS || {})[fam] || 'claude';
+        _authState.judgeModel = _authResolveJudge(sugFam);
     }
     renderAuthenticityTab();
 };
