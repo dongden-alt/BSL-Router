@@ -4275,15 +4275,25 @@ function _authReportHTML(v) {
 function _authStandardsHTML(list) {
     if (!list.length) return '<div style="color:var(--text-muted);font-size:13px">No standards harvested yet.</div>';
     const qualColor = { full: '#10b981', family_only: '#f59e0b', hollow: '#ef4444' };
-    return `<table class="auth-table"><thead><tr><th>Family</th><th>Sub-model</th><th>Quality</th><th>Judge</th><th>Collected</th><th>Stale</th><th></th></tr></thead><tbody>` +
-        list.map(s => `<tr>
+    // Same public/private rule as the backend: private = source_tag set OR a
+    // provider token anywhere in sub_model (slash/dash/bare).
+    const PRIV = /(^|[/\-_])(mintrouter|vsllm-o|vsllm-r|pix4k|a6api|sharellm|workbuddy|zai-web\d|chat2api|antigravity|arena-web|deepseek-web|qwen-web|mimo-web|codex|ds|zhipu)([/\-_]|$)/i;
+    const isPriv = s => ((s.source_tag || '').trim()) || PRIV.test(s.sub_model || '');
+    const canon = list.filter(s => !isPriv(s));
+    const priv = list.filter(s => isPriv(s));
+    const rows = arr => arr.map(s => `<tr>
             <td>${_authEsc(s.family)}</td><td>${_authEsc(s.sub_model)}</td>
             <td><span style="color:${qualColor[s.quality] || '#9ca3af'};font-weight:600">${_authEsc(s.quality || '?')}</span></td>
             <td style="font-size:11px;color:var(--text-muted)">${_authEsc(s.judged_by || s.suggested_judge || '')}</td>
             <td>${_authEsc((s.collected_at || '').slice(0, 10))}</td>
             <td>${s.stale ? '<span class="auth-stale">stale</span>' : '<span style="color:#10b981">fresh</span>'}</td>
             <td><button class="btn btn-outline" style="padding:2px 8px;font-size:11px" onclick="authDeleteStandard('${_authEsc(s.family)}','${_authEsc(s.sub_model)}')">Delete</button></td>
-        </tr>`).join('') + `</tbody></table>`;
+        </tr>`).join('');
+    const table = arr => `<table class="auth-table"><thead><tr><th>Family</th><th>Sub-model</th><th>Quality</th><th>Judge</th><th>Collected</th><th>Stale</th><th></th></tr></thead><tbody>${rows(arr)}</tbody></table>`;
+    const privBlock = priv.length
+        ? `<details class="auth-collapsible" style="margin-top:10px"><summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">${priv.length} private local references (untracked — click to manage)</summary>${table(priv)}</details>`
+        : '';
+    return table(canon) + privBlock;
 }
 
 function _authTestableHTML(t) {
