@@ -14,7 +14,7 @@ from app.middleware.compaction import COMPACTION_SKIP_MODEL_RE
 _SKIPS = [
     "claude-opus-5",
     "claude-opus-4.8",
-    "claude-sonnet-4-6",
+    "claude-sonnet-5-5-high",
     "gpt-5.6-sol",
     "gpt-5-6-terra",
     "gpt-4o",

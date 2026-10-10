@@ -1,5 +1,15 @@
 """Deterministic sub-model matching against baselines (BazaarLink Layer 2)."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from .judge_rank import coverage_adjust, FEATURE_WEIGHTS
+from .knowledge_needles import fact_text, is_disclaimer_fact
+from .standard_v2 import compute_v2_dims, pairwise_separability
+
+# Soft vetoes for the v2 dimensions (same shape as the logprob/boundary vetoes:
+# a COMPARED dimension far below these on the would-be winner forces abstain).
+# Conservative until calibrated against live self-match distributions.
+V2_VETO = {"knowledge_bank": 0.45, "capability_curve": 0.40, "tokenizer": 0.50,
+           "discriminator": 0.45}
 
 
 @dataclass
@@ -10,6 +20,9 @@ class MatchResult:
     runner_up_score: float
     abstain: bool             # True if insufficient discrimination
     dimensions: dict          # per-dimension match details
+    best_model: str = ""      # ranked top model, kept even when abstaining
+    effective_weights: dict = field(default_factory=dict)  # coverage-adjusted
+    alias_group: list = field(default_factory=list)  # tied siblings v2 cannot separate
 
 
 def match_submodel(
@@ -31,18 +44,30 @@ def match_submodel(
             matched_model="", match_score=0.0,
             runner_up="", runner_up_score=0.0,
             abstain=True, dimensions={"error": "no baselines"},
+            best_model="",
         )
 
     scores: dict[str, float] = {}
     all_dimensions: dict[str, dict] = {}
+
+    # Standard v2: judge-free dims need ALL candidates at once (the knowledge
+    # bank is scored on the items that actually split these candidates).
+    v2_sus = getattr(features, "v2_profile", {}) or {}
+    try:
+        v2_dims = compute_v2_dims(v2_sus, baselines) if v2_sus else {}
+    except Exception:
+        v2_dims = {}  # v2 is additive evidence; never let it break matching
 
     for model_id, baseline in baselines.items():
         score = 0.0
         dims: dict[str, float] = {}
 
         # Cutoff match (weight: 0.5)
-        baseline_year = baseline.get("cutoff_year", 0)
-        baseline_month = baseline.get("cutoff_month", 0)
+        # Standards store cutoff at knowledge.cutoff_year/month (TraitMark
+        # structure); legacy flat baselines may have top-level keys. Check both.
+        _know = baseline.get("knowledge") or {}
+        baseline_year = baseline.get("cutoff_year", 0) or _know.get("cutoff_year", 0)
+        baseline_month = baseline.get("cutoff_month", 0) or _know.get("cutoff_month", 0)
         if features.cutoff_year > 0 and baseline_year > 0:
             if features.cutoff_year == baseline_year:
                 if features.cutoff_month == baseline_month:
@@ -61,7 +86,10 @@ def match_submodel(
         score += dims["cutoff"] * 0.5
 
         # Capability match (weight: 0.5)
-        baseline_correct = baseline.get("capability_correct", 3)
+        # TraitMark stores at knowledge.capability_boundary.correct
+        _cap_boundary = _know.get("capability_boundary") or {}
+        baseline_correct = (baseline.get("capability_correct", 0)
+                           or _cap_boundary.get("correct", 0))
         if baseline_correct > 0:
             dims["capability"] = features.capability_correct / max(baseline_correct, 1)
         else:
@@ -70,10 +98,14 @@ def match_submodel(
         score += dims["capability"] * 0.5
 
         # NON-CODING (deep layer): family discriminator via judge profile.
-        # Compared only when BOTH the suspect and the baseline carry judge
-        # scores — otherwise abstain on this dimension (fail-open).
+        # TraitMark stores scores at noncoding.{axis}.score directly (NOT
+        # nested under .judge). Legacy baselines may use .judge sub-key.
         nc_sus = (getattr(features, "noncoding", {}) or {}).get("judge") or {}
-        nc_base = (baseline.get("noncoding") or {}).get("judge") or {}
+        _nc_base_raw = baseline.get("noncoding") or {}
+        nc_base = _nc_base_raw.get("judge") or {}
+        # If .judge is empty, read axes directly from TraitMark structure
+        if not nc_base and _nc_base_raw:
+            nc_base = _nc_base_raw  # axes are top-level keys in TraitMark
         axes = ("creative", "eq", "humor", "design")
         shared = [a for a in axes if _nc_score(nc_sus.get(a)) is not None
                   and _nc_score(nc_base.get(a)) is not None]
@@ -86,22 +118,39 @@ def match_submodel(
 
         # V1 KNOWLEDGE-CUTOFF NEEDLES: the decisive close-version splitter.
         # Compare the suspect's needle answers against THIS baseline's needles.
+        #
+        # 2026-10-08 FIXES: (a) standards store needles as {fact, needle}
+        # dicts while the suspect side emits fact STRINGS -- the old raw
+        # `dict in set` membership raised TypeError (swallowed fail-open in the
+        # gate, silently killing the whole post-needle cascade). Everything is
+        # now compared through fact_text(). (b) Only facts the suspect was
+        # ACTUALLY ASKED count: the probe samples <=12 of the family's pooled
+        # needles, so scoring unasked facts as 'missed' capped every candidate
+        # (including the genuine one) near 0. (c) Disclaimer 'facts' are dropped.
         kn_sus = getattr(features, "knowledge_needles", {}) or {}
         knowledge = baseline.get("knowledge") or {}
-        base_known = knowledge.get("known_facts") or []
-        base_post = knowledge.get("post_cutoff_unknown") or []
-        if (base_known or base_post) and kn_sus.get("answers"):
-            known_hits = set(kn_sus.get("known_hits", []))
-            post_claimed = set(kn_sus.get("post_cutoff_claimed", []))
-            known_total = len(base_known)
-            post_total = len(base_post)
-            # recall of facts this version SHOULD know
-            recall = (len([f for f in base_known if f in known_hits]) / known_total) if known_total else 1.0
-            # wrongly claiming post-cutoff facts = wrong version / hallucinating
-            false_know = (len([f for f in base_post if f in post_claimed]) / post_total) if post_total else 0.0
-            dims["knowledge"] = round(max(0.0, recall - false_know), 3)
-        else:
-            dims["knowledge"] = None  # not compared
+        base_known = [fact_text(e) for e in (knowledge.get("known_facts") or [])]
+        base_post = [fact_text(e) for e in (knowledge.get("post_cutoff_unknown") or [])]
+        base_known = [f for f in base_known if f and not is_disclaimer_fact(f)]
+        base_post = [f for f in base_post if f and not is_disclaimer_fact(f)]
+        kn_answers = kn_sus.get("answers") or []
+        dims["knowledge"] = None  # not compared unless proven below
+        if (base_known or base_post) and kn_answers:
+            asked = {fact_text(a.get("fact")) for a in kn_answers
+                     if isinstance(a, dict) and a.get("fact")}
+            if asked:
+                k_scope = [f for f in base_known if f in asked]
+                p_scope = [f for f in base_post if f in asked]
+            else:  # legacy shape: no per-item answers -> whole-list scope
+                k_scope, p_scope = base_known, base_post
+            n_scope = len(k_scope) + len(p_scope)
+            if n_scope >= 2:  # 1 item is a coin flip, not evidence
+                known_hits = {fact_text(h) for h in kn_sus.get("known_hits", [])}
+                post_claimed = {fact_text(h) for h in kn_sus.get("post_cutoff_claimed", [])}
+                right = (sum(1 for f in k_scope if f in known_hits)
+                         + sum(1 for f in p_scope if f not in post_claimed))
+                dims["knowledge"] = round(right / n_scope, 3)
+
 
         # V5 LOGPROB TAIL: weight-level version splitter (LT method). Compare
         # first-token logprobs per shared probe; 0.5 nats = full mismatch scale.
@@ -151,7 +200,14 @@ def match_submodel(
             or (baseline.get("structural") or {}).get("stability_profile") \
             or baseline.get("stability_profile") or {}
         if st_sus and st_base and st_sus.get("mode_hash") and st_base.get("mode_hash"):
-            if st_sus.get("mode_hash") == st_base.get("mode_hash"):
+            _sd, _bd = st_sus.get("distinct_hashes"), st_base.get("distinct_hashes")
+            if (isinstance(_sd, int) and isinstance(_bd, int) and _sd > 1 and _bd > 1):
+                # BOTH sides are non-deterministic at temp=0 (every sample
+                # differs): a mode hash is then one arbitrary sample and can
+                # NEVER match, so comparing it only manufactures a veto
+                # against the GENUINE model. Not informative -> not compared.
+                dims["stability"] = None
+            elif st_sus.get("mode_hash") == st_base.get("mode_hash"):
                 dims["stability"] = 1.0
             elif st_sus.get("distinct_hashes") == st_base.get("distinct_hashes"):
                 # same determinism behavior, different content
@@ -160,6 +216,27 @@ def match_submodel(
                 dims["stability"] = 0.0
         else:
             dims["stability"] = None  # either side missing/empty
+
+        # REFUSAL/ALIGNMENT (family-level corroborator): the zh-vs-en refusal
+        # delta per axis fingerprints the alignment regime. Compared ONLY when
+        # BOTH sides carry non-empty delta data; missing axis = None (coverage-
+        # aware: neutral, not a penalty). NO VETO POWER — corroborator only.
+        r_sus = getattr(features, "refusal_signature", {}) or {}
+        r_base = (baseline.get("refusal") or {})
+        r_base_delta = r_base.get("delta_signature") or {}
+        r_sus_delta = r_sus.get("delta") or {}
+        if r_sus_delta and r_base_delta:
+            shared_axes = [a for a in r_sus_delta if a in r_base_delta]
+            if shared_axes:
+                matched = sum(
+                    1 for a in shared_axes
+                    if abs(r_sus_delta[a] - r_base_delta[a]) <= 0.5
+                )
+                dims["refusal"] = round(matched / len(shared_axes), 3)
+            else:
+                dims["refusal"] = None
+        else:
+            dims["refusal"] = None  # either side missing/empty
 
         # V7 TIMING PROFILE (L3): streamed TTFT/chunk-count/chunk-size.
         # Relative tolerance 0.5 per field; score = fraction of matching
@@ -183,11 +260,32 @@ def match_submodel(
         else:
             dims["timing"] = None  # either side missing/empty
 
-        scores[model_id] = score
+        for _d2 in ("tokenizer", "capability_curve", "knowledge_bank", "discriminator"):
+            dims[_d2] = (v2_dims.get(model_id) or {}).get(_d2)
+
+        scores[model_id] = score  # legacy 2-dim base (cutoff+capability), audit only
         all_dimensions[model_id] = dims
 
-    # Rank
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    # RANKING (2026-10-08 fix). The old code ranked candidates by the 2-dim
+    # `score` (cutoff + capability) ALONE; noncoding / knowledge / logprob /
+    # boundary / stability / refusal only acted as post-hoc vetoes on whoever
+    # had already won. When cutoff is honest-unknown and every sibling passes
+    # the same capability probe (the normal case) all siblings tied and the
+    # winner was simply the FIRST ALPHABETICAL key (claude-fable-5-1) -- the
+    # "opus-5-5 detected as fable-5/fable-5-1" bug. Rank on the full weighted
+    # evidence instead. Dimensions nobody can compare are dropped for ALL
+    # candidates; a dimension only SOME candidates carry is neutral (0.5) for
+    # the others, so thin coverage is neither a bonus nor a penalty.
+    compared_any = [d for d in FEATURE_WEIGHTS
+                    if any(all_dimensions[m].get(d) is not None for m in all_dimensions)]
+    _w_tot = sum(FEATURE_WEIGHTS[d] for d in compared_any) or 1.0
+
+    def _rank_score(dims_: dict) -> float:
+        return sum(FEATURE_WEIGHTS[d] * (dims_.get(d) if dims_.get(d) is not None else 0.5)
+                   for d in compared_any) / _w_tot
+
+    rank_scores = {m: _rank_score(all_dimensions[m]) for m in all_dimensions}
+    ranked = sorted(rank_scores.items(), key=lambda x: x[1], reverse=True)
     best_model, best_score = ranked[0]
     runner_up, runner_up_score = ranked[1] if len(ranked) > 1 else ("", 0.0)
 
@@ -202,7 +300,12 @@ def match_submodel(
         # low non-coding similarity to the claimed baseline is strong FAKE evidence
         if nc < 0.55 and not abstain:
             abstain = True  # code matched but non-coding says different family
-        elif nc >= 0.8 and abstain and best_score >= 0.55:
+        elif (nc >= 0.8 and abstain and best_score >= 0.55
+              and (best_score - runner_up_score) >= 0.05):
+            # Rescue ONLY a low-score abstention with a clear gap. A TIE
+            # (gap < 0.05) is not rescuable: sibling versions share a family
+            # writing style, so non-coding agrees with ALL of them and would
+            # un-abstain onto an arbitrary sibling.
             abstain = False  # non-coding confirms the borderline match
         # expose the non-coding dimension on the result for scoring/conclusions
         best_dims = dict(best_dims)
@@ -242,6 +345,56 @@ def match_submodel(
     # V7 TIMING is ADVISORY-ONLY: stored in dimensions for the report, but it
     # never forces abstain and never rescues (deliberately no veto branch).
 
+    # Standard v2 soft vetoes: a compared v2 dimension far below its floor on
+    # the would-be winner means the weights are not the claimed standard's.
+    for _d2, _floor in V2_VETO.items():
+        _v = best_dims.get(_d2)
+        if _v is not None:
+            if _v < _floor and not abstain:
+                abstain = True
+            best_dims = dict(best_dims)
+            best_dims[_d2] = _v
+
+    # ALIAS GROUP: top candidates inside the tie band whose standards the v2
+    # evidence cannot tell apart (or has no data to tell apart). Honest output
+    # is 'family confirmed, sub-version ambiguous between {A,B}', not a pick.
+    alias_group: list = []
+    _tied = [m for m, s in ranked[1:] if (best_score - s) < 0.05]
+    if _tied:
+        _detail = {}
+        for m in _tied:
+            try:
+                _sep = pairwise_separability(baselines.get(best_model) or {},
+                                             baselines.get(m) or {})
+            except Exception:
+                _sep = {"separable": None, "distance": None}
+            _detail[m] = {"distance": _sep.get("distance"),
+                          "separable": _sep.get("separable")}
+            if _sep.get("separable") is not True:
+                alias_group.append(m)
+        if alias_group:
+            alias_group = [best_model] + alias_group
+            best_dims = dict(best_dims)
+            best_dims["_alias_group"] = alias_group
+            best_dims["_alias_detail"] = _detail
+
+    # Coverage-aware rescale: re-normalize the winner's dimension weights over
+    # the dims actually compared, so a missing axis is neutral rather than an
+    # implicit penalty. The raw base score stays in dimensions for audit.
+    eff = coverage_adjust(best_dims)
+    if eff:
+        best_score = sum((best_dims.get(d) or 0.0) * w for d, w in eff.items())
+        best_dims["_effective_weights"] = {k: round(v, 3) for k, v in eff.items()}
+        # Score the runner-up on the SAME dimensions and weights as the winner
+        # (missing -> neutral 0.5). Previously match_score was a full-dimension
+        # figure while runner_up_score stayed the 2-dim base, so the gap the
+        # gate/judge tie-break reads compared two different quantities.
+        if runner_up in all_dimensions:
+            _ru = all_dimensions[runner_up]
+            runner_up_score = sum(
+                (_ru.get(d) if _ru.get(d) is not None else 0.5) * w
+                for d, w in eff.items())
+
     return MatchResult(
         matched_model=best_model if not abstain else "",
         match_score=best_score,
@@ -249,6 +402,9 @@ def match_submodel(
         runner_up_score=runner_up_score,
         abstain=abstain,
         dimensions=best_dims,
+        best_model=best_model,
+        effective_weights=eff,
+        alias_group=alias_group,
     )
 
 

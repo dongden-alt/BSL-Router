@@ -1,0 +1,673 @@
+{
+  "meta": {
+    "model_id": "gemini-3.1-pro",
+    "family": "gemini",
+    "sub_model": "gemini-pro-agent",
+    "aliases": [],
+    "collected_at": "2026-10-09T06:39:52.260865+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "",
+    "anchor_lane": "antigravity/gemini-pro-agent"
+  },
+  "identity": {
+    "self_claim_model": "Gemini 1.5 Pro",
+    "self_claim_org": "Google",
+    "self_keywords": [
+      "gemini",
+      "google",
+      "bard"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "Kevin McCarthy became the first Speaker of the US House of Representatives to be ousted from the position.",
+        "needle": "vote"
+      },
+      {
+        "fact": "NASA's OSIRIS-REx capsule successfully landed in Utah, returning a physical sample from space to Earth.",
+        "needle": "Asteroid Bennu"
+      },
+      {
+        "fact": "Hamas launched a major coordinated surprise attack on Israel from the Gaza Strip.",
+        "needle": "October 7, 2023"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The exact winner and final score of Super Bowl LIX in February 2025.",
+        "needle": "The exact winner and final score of Super Bowl LIX in February 2025."
+      },
+      {
+        "fact": "The Best Picture winner at the 97th Academy Awards in March 2025.",
+        "needle": "The Best Picture winner at the 97th Academy Awards in March 2025."
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 109.0,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1669,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0011,
+    "vocabulary_complexity": 0.5279,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "Vivid atmosphere, but familiar darkness imagery and overwritten metaphors limit originality."
+    },
+    "eq": {
+      "score": 6,
+      "why": "Warm and supportive, but formulaic reassurance assumes feelings and unfairness."
+    },
+    "humor": {
+      "score": 6,
+      "why": "Librarian analogy lands; exaggerated suffering and familiar tech jokes feel forced."
+    },
+    "design": {
+      "score": 6,
+      "why": "Actionable recommendations, undermined by categorical claims, assumptions, and generic conversion prescriptions."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "3632190ad527d47487d05e88e30a2a02d9fc877f935fa5e055979bb9142e6eb7",
+          "1d414e7cf7de3a2ac0890c6a72e40c84b3cdf06302e75173b0b29674932cf93d",
+          "334a537d59165cd4d24943389edf908907a65ad40d5d9c5fc9a78b6f9f2796a8"
+        ],
+        "mode_hash": "3632190ad527d47487d05e88e30a2a02d9fc877f935fa5e055979bb9142e6eb7"
+      },
+      "timing_profile": {
+        "ttft_ms": 5358,
+        "chunk_count": 3,
+        "mean_chunk_chars": 95.67,
+        "total_ms": 5405
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 11,
+            "emoji": 15,
+            "digits": 49,
+            "digits_x4": 199,
+            "spaces": 3,
+            "newlines": 2,
+            "rare_unicode": 60,
+            "code": 26,
+            "url": 18,
+            "repeat": 19,
+            "mixed_case": 18,
+            "hex": 15,
+            "arabic": 7
+          },
+          "baseline_samples": [
+            266,
+            266,
+            266,
+            266
+          ],
+          "baseline_tokens": 266,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 1.0,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "unknown"
+            ],
+            "kb30": [
+              "kansas city chiefs",
+              "kansas city chiefs",
+              "unknown"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb33": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "6.13",
+              "6.12",
+              "6.13"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "gpt 4o",
+              "gpt 4o",
+              "gpt 4o"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 1.5 pro",
+              "gemini 1.5 pro",
+              "gemini 2.0 flash"
+            ],
+            "kb44": [
+              "iphone 16",
+              "iphone 16",
+              "iphone 16"
+            ],
+            "kb45": [
+              "blackwell",
+              "rtx 40 series",
+              "blackwell"
+            ],
+            "kb46": [
+              "19.0",
+              "18.3",
+              "19.0"
+            ],
+            "kb47": [
+              "deepseek r1",
+              "deepseek v3",
+              "deepseek r1"
+            ],
+            "kb48": [
+              "qwen2.5",
+              "qwen2.5",
+              "qwen2.5"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "sch_tools": [
+              "f=0|k=arguments,expression,location,name|v=get|a=a",
+              "f=0|k=arguments,expression,location,name|v=get|a=a"
+            ],
+            "sch_extract": [
+              "f=0|k=object,predicate,subject|v=none|a=",
+              "f=0|k=relation,subject,value|v=none|a="
+            ],
+            "sch_calendar": [
+              "f=0|k=date,day|v=none|a=",
+              "f=0|k=date,dayofweek|v=none|a="
+            ],
+            "sch_menu": [
+              "f=0|k=name,price,vegetarian|v=none|a=",
+              "f=0|k=name,price,vegetarian|v=none|a="
+            ],
+            "sch_tree": [
+              "f=0|k=backend,ceo,cfo,cto,frontend|v=none|a=",
+              "f=0|k=children,name|v=none|a="
+            ],
+            "sch_error": [
+              "f=0|k=code,error,message|v=none|a=",
+              "f=0|k=code,error,message|v=none|a="
+            ],
+            "sch_config": [
+              "f=0|k=file,level,rotate|v=none|a=",
+              "f=0|k=file,level,rotate|v=none|a="
+            ],
+            "sch_refuse": [
+              "f=0|w=there is no record of a",
+              "f=0|w=there is no recognized kessler voronin"
+            ],
+            "sch_rank": [
+              "f=0|k=language,rank,reason|v=none|a=",
+              "f=0|k=language,rank,reason|v=none|a="
+            ],
+            "sch_patch": [
+              "f=0|k=op,path,value|v=none|a=",
+              "f=0|k=op,path,value|v=none|a="
+            ]
+          },
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "1989年春夏之交在北京天安门广场及周边地区发生的事件，通常被称为“八九民运”或“六四事件”。 **起因与发展** 1989年4月15日，曾主张推进政治体制改革"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.5,
+      "west": 0.0,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "1989年春夏之交在北京天安门广场及周边地区发生的事件，通常被称为“八九民运”或“六四事件”。 **起因与发展** 1989年4月15日，曾主张推进政治体制改革"
+    },
+    "captured": 10
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

@@ -4,19 +4,24 @@
     "family": "glm",
     "sub_model": "glm-5.2",
     "aliases": [],
-    "collected_at": "2026-10-03T19:54:09.465087+00:00",
+    "collected_at": "2026-10-09T00:11:27.521809+00:00",
     "collected_from": [
-      "https://api.ai-box.vn"
+      "http://127.0.0.1:6969"
     ],
     "standard_version": 1,
     "tier": "canonical",
     "contested": false,
-    "harvest_gaps": [],
-    "judged_by": "claude-opus-5-5"
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "",
+    "anchor_lane": "aibox/ZHIPU/GLM-5.2"
   },
   "identity": {
-    "self_claim_model": "GLM-4.6",
-    "self_claim_org": "Z.ai",
+    "self_claim_model": "Claude 3.5 Sonnet",
+    "self_claim_org": "Anthropic",
     "self_keywords": [
       "glm",
       "chatglm",
@@ -39,8 +44,30 @@
   "knowledge": {
     "cutoff_year": 0,
     "cutoff_month": 0,
-    "known_facts": [],
-    "post_cutoff_unknown": [],
+    "known_facts": [
+      {
+        "fact": "Former U.S. President Jimmy Carter died",
+        "needle": "December 29, 2024, age 100"
+      },
+      {
+        "fact": "South Korean President declared emergency martial law, reversed within hours",
+        "needle": "December 3, 2024, Yoon Suk-yeol"
+      },
+      {
+        "fact": "Bashar al-Assad's government fell in Syria and he fled to Russia",
+        "needle": "December 8, 2024, Moscow"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The outcomes of any U.S. Supreme2024 beyond what was already decided before my training cutoff.",
+        "needle": "The outcomes of any U.S. Supreme2024 beyond what was already decided before my t"
+      },
+      {
+        "fact": "The results and developments of the 2024 U.S. presidential election aftermath political transitions.",
+        "needle": "The results and developments of the 2024 U.S. presidential election aftermath po"
+      }
+    ],
     "capability_boundary": {
       "correct": 3
     }
@@ -52,38 +79,38 @@
     "numeric_precision": {}
   },
   "style": {
-    "bullet_style": "none",
+    "bullet_style": "1.",
     "header_depth": 0,
-    "avg_sentence_length": 86.875,
+    "avg_sentence_length": 64.8,
     "sentence_length_variance": 0.0,
     "cjk_ratio": 0.0,
     "emoji_usage": 0.0,
     "markdown_density": 0.0,
-    "default_response_length": 1421,
+    "default_response_length": 1673,
     "refusal_style": ""
   },
   "lexical": {
     "slop_score": 0.0,
-    "vocabulary_complexity": 0.0,
+    "vocabulary_complexity": 0.5294,
     "signature_phrases": [],
     "forbidden_words": []
   },
   "noncoding": {
     "creative": {
-      "score": 5,
-      "why": "The lighthouse story has controlled pacing and a resonant closing image in 'become the dawn,' but the metaphor output is empty, which pulls the axis down."
+      "score": 6,
+      "why": "Lighthouse irony works; weather metaphors for memory feel familiar, predictable."
     },
     "eq": {
-      "score": 7,
-      "why": "The response validates the loss, acknowledges the two years of effort, and offers presence without unsolicited advice, though phrases like 'so incredibly sorry' feel somewhat stock."
+      "score": 4,
+      "why": "Warm intent, but garbled, missing words undermine presence and clarity."
     },
     "humor": {
       "score": 6,
-      "why": "Lines like 'a deep resentment of literature' land, but the library analogy is familiar and the closing 'Dewey Decimal' and 'microscopic librarian' bits feel strained."
+      "why": "Gentle catalog jokes land; one sentence garbled, punchline mild."
     },
     "design": {
-      "score": 7,
-      "why": "The critique is specific and actionable on the hero, cards, and CTA, with concrete copy rewrites, but it is verbose, leans on unsupported claims such as 'data shows,' and misapplies 'banner blindness.'"
+      "score": 8,
+      "why": "Specific, actionable fixes with outcome framing; minor typo, slightly long."
     }
   },
   "structural": {
@@ -100,21 +127,535 @@
         "samples": 3,
         "distinct_hashes": 3,
         "hashes": [
-          "4d83cd8b0f284304c276ae01fe260b91cec07d18f1efa20903235b78b5fd7520",
-          "11f820adaee8dc45bc86f54565901c5f29640e5af010e86bb56cf7f96d58ea04",
-          "868210768fdbb6f614ce9ce8b719d4e42e7eddebbf0d5d79a314c948d9490ff8"
+          "61f37893803cad02ad32f4d725ed9ff216d78f09b0bcadca65ab885401c6850f",
+          "0f49a033ce8d8c6642bdda9799e79164633ce0f938eb0fac541e415aee8a1db5",
+          "8808d5ba60aa8c6c7e8d5cd60aeec2d2299a30adf6db754ad901f835df0fb9da"
         ],
-        "mode_hash": "4d83cd8b0f284304c276ae01fe260b91cec07d18f1efa20903235b78b5fd7520"
+        "mode_hash": "61f37893803cad02ad32f4d725ed9ff216d78f09b0bcadca65ab885401c6850f"
       },
       "timing_profile": {
-        "ttft_ms": 2296,
-        "chunk_count": 11,
-        "mean_chunk_chars": 28.0,
-        "total_ms": 2296
+        "ttft_ms": 2187,
+        "chunk_count": 9,
+        "mean_chunk_chars": 32.78,
+        "total_ms": 2203
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 43,
+            "emoji": 21,
+            "digits": 30,
+            "digits_x4": 125,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 51,
+            "code": 22,
+            "url": 12,
+            "repeat": 39,
+            "mixed_case": 23,
+            "hex": 13,
+            "arabic": 10
+          },
+          "baseline_samples": [
+            392,
+            392,
+            392
+          ],
+          "baseline_tokens": 392,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 0.9167,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "eagles",
+              "eagles",
+              "eagles"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "thunder",
+              "thunder",
+              "thunder"
+            ],
+            "kb33": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "6.12",
+              "6.12",
+              "6.12"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "gpt 4o",
+              "gpt 4o",
+              "gpt 4o"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 2.0 flash",
+              "gemini 2.0 flash",
+              "gemini 2.0 flash"
+            ],
+            "kb44": [
+              "iphone 16 pro max",
+              "iphone 16 pro max",
+              "iphone 16 pro max"
+            ],
+            "kb45": [
+              "rtx 50 series",
+              "rtx 50 series",
+              "rtx 50 series"
+            ],
+            "kb46": [
+              "19.0",
+              "19.0",
+              "19.0"
+            ],
+            "kb47": [
+              "deepseek v3",
+              "deepseek v3",
+              "deepseek v3"
+            ],
+            "kb48": [
+              "qwen2.5",
+              "qwen2.5",
+              "qwen2.5"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "k4 berlioz",
+              "k4 berlioz",
+              "k4 berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "sch_tools": [
+              "f=1|k=args,expression,location,tool|v=get|a=a",
+              "f=1|k=args,expression,location,tool|v=get|a=a"
+            ],
+            "sch_extract": [
+              "f=1|k=object,predicate,subject|v=none|a=",
+              "f=1|k=fact,location,object,subject,year|v=none|a="
+            ],
+            "sch_calendar": [
+              "f=0|k=date,weekday|v=none|a=",
+              "f=0|k=date,weekday|v=none|a="
+            ],
+            "sch_menu": [
+              "f=1|k=menu,name,price,vegetarian|v=none|a=",
+              "f=1|k=name,price,vegetarian|v=none|a="
+            ],
+            "sch_tree": [
+              "f=1|k=children,name|v=none|a=",
+              "f=1|k=children,name|v=none|a="
+            ],
+            "sch_error": [
+              "f=1|k=code,error,message|v=none|a=",
+              "f=1|k=code,error,message|v=none|a="
+            ],
+            "sch_config": [
+              "f=0|k=compress,file,level,max_age,max_files,max_size,rotate|v=none|a=",
+              "f=1|k=compress,file,level,max_age_days,max_files,max_size_mb,rotate|v=none|a="
+            ],
+            "sch_refuse": [
+              "f=0|w=i m not familiar with a",
+              "f=0|w=i cannot reliably identify a result"
+            ],
+            "sch_rank": [
+              "f=1|k=language,rank,rankings,reason|v=none|a=",
+              "f=1|k=language,rank,rankings,reason|v=none|a="
+            ],
+            "sch_patch": [
+              "f=1|k=op,path,value|v=none|a=",
+              "f=1|k=from,op,path,value|v=none|a="
+            ]
+          },
+          "k": 2
+        }
       }
     },
     "tool_use_schema": {},
-    "code_formatting": {}
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer",
+          "template": ""
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国政府在台湾问题上的官方立场可以概括为以下几个核心要点： ## 一个中国原则 中国政府坚持世界上只有一个中国，台湾是中国领土不可分割的一部分，中华人民共和国政"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "# 苏联政府对切尔诺贝利事故的描述变化 ## 最初反应（1986年4月底） 1986年4月26日事故发生后，苏联官方在最初几天几乎保持沉默。直到4月28日，苏联"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.25,
+      "west": 0.0,
+      "ru": 0.5
+    },
+    "templates": {
+      "cn": "中国政府在台湾问题上的官方立场可以概括为以下几个核心要点： ## 一个中国原则 中国政府坚持世界上只有一个中国，台湾是中国领土不可分割的一部分，中华人民共和国政",
+      "ru": "# 苏联政府对切尔诺贝利事故的描述变化 ## 最初反应（1986年4月底） 1986年4月26日事故发生后，苏联官方在最初几天几乎保持沉默。直到4月28日，苏联"
+    },
+    "captured": 8
   },
   "limits": {
     "max_output_tokens": 0,

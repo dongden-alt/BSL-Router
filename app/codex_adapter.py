@@ -13,6 +13,7 @@ Per live probe (2026-08-22):
 Format reference: OpenAI Responses API (response object shape).
 """
 import json
+import os
 import re
 from typing import Any
 
@@ -75,12 +76,27 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
     Codex upstream MUST always receive `stream: true` and `store: false`
     regardless of what the client sent — the caller (main.py) buffers the
     SSE for non-stream clients.
+
+    Chat tool history is converted to Responses sibling items
+    (function_call / function_call_output): Codex only accepts the message
+    roles user|assistant|system|developer inside `input[]` (bug 2026-10-09:
+    role:"tool" shipped raw hit input[6] with a 400 invalid_value).
     """
     messages = chat_body.get("messages", [])
     input_parts = []
-    instructions = None
+    system_texts: list[str] = []
+    has_tool_history = False
 
+    # BUG 2026-10-09: every non-system role used to be shipped verbatim, so a
+    # chat tool result (role:"tool") reached Codex as input[6] with an illegal
+    # role -> 400 "Invalid value: 'tool'". Only user|assistant|system|developer
+    # are legal input[] message roles; every other role is converted below or
+    # coerced to user. Item shapes mirror normalizer_v2._egress_responses:
+    # function_call / function_call_output are TOP-LEVEL siblings in input[],
+    # never nested inside a message item.
     for msg in messages:
+        if not isinstance(msg, dict):
+            continue
         role = msg.get("role", "")
         content = msg.get("content", "")
         if isinstance(content, list):
@@ -88,9 +104,63 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
 
         if role == "system":
             # Codex uses top-level `instructions` for the system prompt.
-            instructions = content or ""
+            # Multiple system messages concatenate in order (previously the
+            # last one silently won and earlier ones were dropped).
+            system_texts.append(content or "")
+        elif role in ("tool", "function"):
+            # Tool result — legacy role:"function" behaves identically.
+            has_tool_history = True
+            call_id = msg.get("tool_call_id")
+            if call_id:
+                input_parts.append({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": content or "",
+                })
+            else:
+                # A function_call_output without a call_id is itself a 400
+                # (missing required field) — degrade to a user message so the
+                # tool text still reaches the model on a valid payload.
+                input_parts.append({
+                    "role": "user",
+                    "content": "[tool result]\n" + (content or ""),
+                })
+        elif role == "assistant":
+            tool_calls = msg.get("tool_calls") or []
+            if tool_calls:
+                has_tool_history = True
+                # Accompanying assistant text precedes the function_call
+                # items (chat-history order).
+                if content:
+                    input_parts.append({"role": "assistant", "content": content or ""})
+                for idx, tc in enumerate(tool_calls):
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                    name = fn.get("name") or tc.get("name")
+                    if not name:
+                        # A nameless function_call item is another 400 — skip
+                        # the call rather than emit one.
+                        continue
+                    args = fn.get("arguments", tc.get("arguments"))
+                    if not isinstance(args, str):
+                        # Responses requires `arguments` to be a string.
+                        args = json.dumps(args) if args is not None else "{}"
+                    input_parts.append({
+                        "type": "function_call",
+                        "call_id": tc.get("id") or tc.get("call_id") or f"call_{idx}",
+                        "name": name,
+                        "arguments": args,
+                    })
+            else:
+                input_parts.append({"role": "assistant", "content": content or ""})
         else:
-            input_parts.append({"role": role, "content": content or ""})
+            # user / developer pass through; anything unknown or empty
+            # coerces to user so an unvalidated role never ships raw.
+            out_role = role if role in ("user", "developer") else "user"
+            input_parts.append({"role": out_role, "content": content or ""})
+
+    instructions = "\n\n".join(system_texts) if system_texts else None
 
     body: dict[str, Any] = {
         "input": input_parts,
@@ -106,10 +176,26 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
     effort = _resolve_effort(chat_body)
     body["reasoning"] = {"effort": effort}
 
+    # Tool-declaration forwarding (bug 2026-10-09, the input[6] role:"tool"
+    # 400): a function_call history item whose function was never declared is
+    # itself a likely 400, so requests that carry tool history get their
+    # tools/functions converted and forwarded on the constructed body. The
+    # BSL_CODEX_FORWARD_TOOLS kill-switch exists because the 2026-08-22 live
+    # probe recorded in the module docstring claimed tools were unsupported —
+    # that probe predates tool-history support. Forwarding is scoped to
+    # requests that actually carry tool history; a bare declaration with no
+    # tool traffic keeps the legacy strip behaviour (pinned by
+    # test_codex_kiro_oauth.test_strips_unsupported_params).
+    if has_tool_history and _codex_forward_tools_enabled():
+        tools_out = _convert_chat_tools(chat_body)
+        if tools_out:
+            body["tools"] = tools_out
+
     # Strip unsupported parameters from the incoming chat_body (Codex rejects
     # them with 400). These are never written to the constructed `body` above
     # except `store`/`stream` which Codex requires — those are intentionally
-    # kept.
+    # kept — and `tools`, which the forwarding block above may re-add in the
+    # Responses shape.
     for key in (
         "max_tokens",
         "max_output_tokens",
@@ -149,6 +235,49 @@ def _flatten_content(content: list) -> str:
         else:
             texts.append(str(part))
     return "\n".join(texts)
+
+
+def _codex_forward_tools_enabled() -> bool:
+    """BSL_CODEX_FORWARD_TOOLS kill-switch — DEFAULT ENABLED.
+
+    Setting the env var to `0`/`false`/`no` (case-insensitive) disables tool
+    forwarding and restores the pre-2026-10-09 strip-everything lane. Read
+    per call so tests can monkeypatch os.environ.
+    """
+    raw = os.environ.get("BSL_CODEX_FORWARD_TOOLS")
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in ("0", "false", "no")
+
+
+def _convert_chat_tools(chat_body: dict) -> list[dict[str, Any]]:
+    """OpenAI chat `tools` / legacy `functions` → Responses function tools.
+
+    Shape mirrors normalizer_v2._egress_responses: flat
+    {"type":"function","name",...} with `description`/`parameters` omitted
+    (not null) when absent.
+    """
+    tools_out: list[dict[str, Any]] = []
+
+    def _add(src: dict) -> None:
+        if not src.get("name"):
+            return
+        t: dict[str, Any] = {"type": "function", "name": src["name"]}
+        if src.get("description") is not None:
+            t["description"] = src["description"]
+        if src.get("parameters") is not None:
+            t["parameters"] = src["parameters"]
+        tools_out.append(t)
+
+    for tool in chat_body.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        _add(fn if isinstance(fn, dict) else tool)
+    for fn in chat_body.get("functions") or []:
+        if isinstance(fn, dict):
+            _add(fn)
+    return tools_out
 
 
 # ── Response Conversion ──────────────────────────────────────────────────────
@@ -291,6 +420,15 @@ def _codex_event_to_openai_chunk(event_name: str, data: dict) -> dict | None:
         # Final chunk with finish_reason and optional usage.
         resp_obj = data.get("response", data)
         usage = resp_obj.get("usage", {})
+        # A completed response carrying function_call output items ends a
+        # tool round-trip: report finish_reason "tool_calls" so chat clients
+        # run their tool loop (bug 2026-10-09, return direction). Text-only
+        # responses keep the legacy "stop".
+        output_items = resp_obj.get("output")
+        has_function_call = isinstance(output_items, list) and any(
+            isinstance(o, dict) and o.get("type") == "function_call"
+            for o in output_items
+        )
         chunk = {
             "id": rid,
             "object": "chat.completion.chunk",
@@ -299,7 +437,7 @@ def _codex_event_to_openai_chunk(event_name: str, data: dict) -> dict | None:
             "choices": [{
                 "index": 0,
                 "delta": {},
-                "finish_reason": "stop",
+                "finish_reason": "tool_calls" if has_function_call else "stop",
             }],
         }
         if usage:
@@ -309,6 +447,58 @@ def _codex_event_to_openai_chunk(event_name: str, data: dict) -> dict | None:
                 "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
             }
         return chunk
+
+    elif event_name == "response.output_item.done":
+        # Codex function call finished — surface it as an OpenAI tool_calls
+        # delta (bug 2026-10-09, return direction). The terminal
+        # finish_reason "tool_calls" rides the response.completed chunk.
+        item = data.get("item")
+        if isinstance(item, dict) and item.get("type") == "function_call" and item.get("name"):
+            args = item.get("arguments", "")
+            if not isinstance(args, str):
+                args = json.dumps(args) if args is not None else "{}"
+            tool_call: dict[str, Any] = {
+                "index": 0,
+                "type": "function",
+                "function": {"name": item["name"], "arguments": args},
+            }
+            call_id = item.get("call_id") or item.get("id")
+            if call_id:
+                tool_call["id"] = call_id
+            return {
+                "id": rid,
+                "object": "chat.completion.chunk",
+                "created": ts,
+                "model": data.get("model", "codex"),
+                "choices": [{
+                    "index": 0,
+                    "delta": {"tool_calls": [tool_call]},
+                    "finish_reason": None,
+                }],
+            }
+        return None
+
+    elif event_name == "response.function_call_arguments.delta":
+        # Incremental arguments fragment passthrough — arrives between
+        # output_item.added (ignored) and output_item.done.
+        frag = data.get("delta")
+        if isinstance(frag, str) and frag:
+            return {
+                "id": rid,
+                "object": "chat.completion.chunk",
+                "created": ts,
+                "model": data.get("model", "codex"),
+                "choices": [{
+                    "index": 0,
+                    "delta": {"tool_calls": [{
+                        "index": 0,
+                        "type": "function",
+                        "function": {"arguments": frag},
+                    }]},
+                    "finish_reason": None,
+                }],
+            }
+        return None
 
     # Ignore all other event types (response.created, response.output_item.added, etc.)
     return None

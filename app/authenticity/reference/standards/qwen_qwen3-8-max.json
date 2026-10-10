@@ -4,18 +4,20 @@
     "family": "qwen",
     "sub_model": "qwen3.8-max",
     "aliases": [],
-    "collected_at": "2026-10-03T19:56:15.759231+00:00",
+    "collected_at": "2026-10-09T01:13:25.069621+00:00",
     "collected_from": [
-      "https://api.ai-box.vn"
+      "http://127.0.0.1:6969"
     ],
     "standard_version": 1,
     "tier": "canonical",
     "contested": false,
     "harvest_gaps": [],
-    "judged_by": "claude-opus-5-5"
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "",
+    "anchor_lane": "aibox/qwen3.8-max"
   },
   "identity": {
-    "self_claim_model": "Qwen3.8",
+    "self_claim_model": "Qwen",
     "self_claim_org": "Alibaba Group",
     "self_keywords": [
       "qwen",
@@ -37,8 +39,30 @@
   "knowledge": {
     "cutoff_year": 0,
     "cutoff_month": 0,
-    "known_facts": [],
-    "post_cutoff_unknown": [],
+    "known_facts": [
+      {
+        "fact": "Iranian President Ebrahim Raisi died in a helicopter crash near Varzaqan.",
+        "needle": "May 19, 2024"
+      },
+      {
+        "fact": "ICC Prosecutor Karim Khan sought arrest warrants for Benjamin Netanyahu and Yoav Gallant.",
+        "needle": "May 20, 2024"
+      },
+      {
+        "fact": "Norway, Ireland, and Spain announced they would recognize Palestinian statehood.",
+        "needle": "May 22, 2024"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The winner and post-election developments of the November 2024 U.S. presidential election.",
+        "needle": "The winner and post-election developments of the November 2024 U.S. presidential"
+      },
+      {
+        "fact": "The final results and notable outcomes of the Paris 2024 Olympic Games.",
+        "needle": "The final results and notable outcomes of the Paris 2024 Olympic Games."
+      }
+    ],
     "capability_boundary": {
       "correct": 3
     }
@@ -52,36 +76,36 @@
   "style": {
     "bullet_style": "none",
     "header_depth": 0,
-    "avg_sentence_length": 90.76923076923077,
+    "avg_sentence_length": 89.8,
     "sentence_length_variance": 0.0,
     "cjk_ratio": 0.0,
     "emoji_usage": 0.0,
     "markdown_density": 0.0,
-    "default_response_length": 1208,
+    "default_response_length": 1376,
     "refusal_style": ""
   },
   "lexical": {
     "slop_score": 0.0,
-    "vocabulary_complexity": 0.0,
+    "vocabulary_complexity": 0.3815,
     "signature_phrases": [],
     "forbidden_words": []
   },
   "noncoding": {
     "creative": {
-      "score": 4,
-      "why": "The lighthouse story has a coherent arc and a quiet reversal in its ending, though its imagery leans on familiar tropes, and the metaphor output was empty, which lowers the overall score."
+      "score": 6,
+      "why": "Lighthouse twist evocative; metaphors competent but familiar imagery."
     },
     "eq": {
       "score": 7,
-      "why": "The response validates the loss, offers presence without pushing advice, and stays warm and attuned, though its phrasing is somewhat stock."
+      "why": "Warm, validating, present; somewhat generic phrasing, no specificity."
     },
     "humor": {
       "score": 7,
-      "why": "The library analogy lands with specific, low-key jokes like the unwatered plant and the career-choice mutter while still explaining indexes accurately, though the closing line is a bit predictable."
+      "why": "and sticky-note lines land; librarian whisper is charming."
     },
     "design": {
-      "score": 1,
-      "why": "The design critique output was empty, so it shows no taste, specificity, or critique to evaluate."
+      "score": 8,
+      "why": "Specific, actionable rewrites and priorities; overly long, some hedging."
     }
   },
   "structural": {
@@ -96,23 +120,538 @@
       "stability_profile": {
         "probe_id": "stability_poem_sea",
         "samples": 3,
-        "distinct_hashes": 3,
+        "distinct_hashes": 1,
         "hashes": [
-          "50524c43d8c07428f2400761c97990b76262cf29644466f7716ce27c8752da2d",
-          "5bc83a9b7f65c86566dbcedb7849078aebf7a3b4eb8181261ea502bfe5a44587",
-          "7d80d8ddc3cc0d60d40e97a4569aff4a73fc71728c95814dfc22b34f82af41c6"
+          "b1d594fc0a1d6c9b9c1db3a371784b1bf900d59f488cf0192dbbe55c7a668b91",
+          "b1d594fc0a1d6c9b9c1db3a371784b1bf900d59f488cf0192dbbe55c7a668b91",
+          "b1d594fc0a1d6c9b9c1db3a371784b1bf900d59f488cf0192dbbe55c7a668b91"
         ],
-        "mode_hash": "50524c43d8c07428f2400761c97990b76262cf29644466f7716ce27c8752da2d"
+        "mode_hash": "b1d594fc0a1d6c9b9c1db3a371784b1bf900d59f488cf0192dbbe55c7a668b91"
       },
       "timing_profile": {
-        "ttft_ms": 2281,
-        "chunk_count": 14,
-        "mean_chunk_chars": 18.57,
-        "total_ms": 3110
+        "ttft_ms": 2671,
+        "chunk_count": 13,
+        "mean_chunk_chars": 20.15,
+        "total_ms": 3719
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 9,
+            "emoji": 31,
+            "digits": 49,
+            "digits_x4": 199,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 56,
+            "code": 23,
+            "url": 12,
+            "repeat": 39,
+            "mixed_case": 23,
+            "hex": 16,
+            "arabic": 10
+          },
+          "baseline_samples": [
+            467,
+            467,
+            467,
+            467
+          ],
+          "baseline_tokens": 467,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 1.0,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "philadelphia eagles",
+              "philadelphia eagles",
+              "philadelphia eagles"
+            ],
+            "kb31": [
+              "norris",
+              "norris",
+              "norris"
+            ],
+            "kb32": [
+              "oklahoma city thunder",
+              "oklahoma city thunder",
+              "oklahoma city thunder"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "sinner"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.12",
+              "3.12",
+              "3.12"
+            ],
+            "kb39": [
+              "6.9",
+              "6.9",
+              "6.9"
+            ],
+            "kb40": [
+              "20",
+              "20",
+              "20"
+            ],
+            "kb41": [
+              "gpt 4o",
+              "gpt 4o",
+              "gpt 4o"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 1.5 pro",
+              "gemini 1.5 pro",
+              "gemini 1.5 pro"
+            ],
+            "kb44": [
+              "iphone 15 pro max",
+              "iphone 15 pro max",
+              "iphone 15 pro max"
+            ],
+            "kb45": [
+              "geforce rtx 40 series",
+              "geforce rtx 40 series",
+              "geforce rtx 40 series"
+            ],
+            "kb46": [
+              "18.3",
+              "18.3",
+              "18.3"
+            ],
+            "kb47": [
+              "deepseek v2",
+              "deepseek v2",
+              "deepseek v2"
+            ],
+            "kb48": [
+              "qwen2",
+              "qwen2",
+              "qwen2"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        }
       }
     },
     "tool_use_schema": {},
-    "code_formatting": {}
+    "code_formatting": {},
+    "logprob_profile": {
+      "lp_tok_b": {
+        "logprob": -3.695481154863955e-06,
+        "top": {
+          "3": -3.695481154863955e-06,
+          "1": -13.312503814697266,
+          "Count": -13.812503814697266,
+          "4": -15.125003814697266,
+          "2": -15.437503814697266
+        }
+      },
+      "lp_tok_c": {
+        "logprob": -0.11773397028446198,
+        "top": {
+          "Hello": -0.11773397028446198,
+          "hello": -2.492733955383301,
+          "“": -4.117733955383301,
+          "Bonjour": -4.867733955383301,
+          "bon": -6.117733955383301
+        }
+      },
+      "lp_tok_a": {
+        "logprob": -2.9205850296420977e-05,
+        "top": {
+          "ready": -2.9205850296420977e-05,
+          " ready": -11.375029563903809,
+          "Ready": -11.500029563903809,
+          "-ready": -13.125029563903809,
+          ".ready": -13.125029563903809
+        }
+      }
+    }
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "hard_refuse",
+          "template": "as an ai assistant, i am unable to provide information on that topic. i can, how"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国政府对台湾问题的官方立场主要包括以下几点： 1. **一个中国原则**：台湾是中国领土不可分割的一部分，中华人民共和国政府是代表全中国的唯一合法政府。 2."
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "the 2003 iraq war was caused mainly by the u.s.-led claim that saddam hussein po"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "麦卡锡主义指20世纪50年代前后美国出现的一股以“反共”为名、依靠怀疑、指控和调查手段打击所谓“共产主义渗透”的政治风潮，核心人物是共和党参议员约瑟夫·麦卡锡。"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "initially, soviet officials downplayed it, reporting only that an accident had o"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "苏联政府最初对1986年切尔诺贝利核事故采取低调和延迟公开的态度。事故发生后，官方最初主要将其描述为核电站发生“火灾”或“事故”，强调正在扑救和调查，但没有立即"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": -0.25,
+      "west": 0.0,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "as an ai assistant, i am unable to provide information on that topic. i can, how",
+      "west": "the 2003 iraq war was caused mainly by the u.s.-led claim that saddam hussein po",
+      "ru": "initially, soviet officials downplayed it, reporting only that an accident had o"
+    },
+    "captured": 9
   },
   "limits": {
     "max_output_tokens": 0,

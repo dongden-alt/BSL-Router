@@ -183,13 +183,40 @@ def test_harvest_endpoint_starts_and_validates(tmp_path, monkeypatch):
         # come from the router self-endpoint, so their absence is NOT a 400.
         bad = client.post("/api/authenticity/standards/harvest", json={})
         assert bad.status_code == 400
-        # Valid → started
+        # Valid → started. Uses the STANDARD glm lane (aibox/ZHIPU/) so both the
+        # trusted-source guard and the 2026-10-08 lane-policy guard admit it.
         ok = client.post("/api/authenticity/standards/harvest", json={
-            "model_id": "glm-4.6", "endpoint": "https://api.example.com",
+            "model_id": "aibox/ZHIPU/GLM-5.3", "endpoint": "https://api.example.com",
             "api_key": "sk-test", "include_noncoding": False})
         assert ok.status_code == 200
         assert ok.json()["started"] is True
         # Status endpoint responds
-        st = client.get("/api/authenticity/standards/harvest/status/glm-4.6")
+        st = client.get("/api/authenticity/standards/harvest/status/aibox/ZHIPU/GLM-5.3")
         assert st.status_code == 200
         assert st.json()["status"] in ("running", "done", "error")
+
+
+def test_harvest_trusted_source_guard(tmp_path, monkeypatch):
+    """Canonical harvests (source_tag empty) may only come from trusted sources
+    (codex/antigravity/mintrouter/aibox). Untrusted lanes are refused with 400;
+    a provider-tagged snapshot (source_tag set) is exempt and may proceed."""
+    import app.main as main
+    monkeypatch.setattr(main.auth_harvest, "STANDARDS_DIR", tmp_path)
+    monkeypatch.setattr(harvest, "_make_client",
+                        lambda: httpx.AsyncClient(transport=_anchor_transport()))
+    from fastapi.testclient import TestClient
+    with TestClient(main.app) as client:
+        # Untrusted canonical harvest → 400 refused
+        for lane in ("vsllm-o/glm-5.3", "a6api/deepseek-v4-pro", "glm-4.6"):
+            r = client.post("/api/authenticity/standards/harvest", json={
+                "model_id": lane, "endpoint": "https://api.example.com",
+                "api_key": "sk-test", "include_noncoding": False})
+            assert r.status_code == 400, f"{lane} must be refused"
+            assert r.json().get("refused") is True
+        # Untrusted lane WITH a source_tag → exempt (snapshot, not canonical) → started
+        snap = client.post("/api/authenticity/standards/harvest", json={
+            "model_id": "vsllm-o/glm-5.3", "source_tag": "glm-5.3",
+            "endpoint": "https://api.example.com", "api_key": "sk-test",
+            "include_noncoding": False})
+        assert snap.status_code == 200
+        assert snap.json()["started"] is True

@@ -485,6 +485,21 @@ class TestComputeReality:
                             _scope("family", "glm"),
                             self._fv(conf=0.7), None, [], [], 3000)
         assert v.verdict == "family_match"
+        assert v.identified_as == "glm"
+
+    def test_abstained_matcher_is_family_match_not_real(self):
+        # High family confidence but matcher ABSTAINED (matched_model="").
+        # Real/fake at model level is UNANSWERED → family_match, and the
+        # closest ranked candidates are surfaced as best-guess hints.
+        mr = self._mr(matched="", score=0.55, abstain=True)
+        v = compute_reality("vsllm-o/kimi-k3-api", "https://api.example.com",
+                            "vsllm-o/kimi-k3-api", _scope("full", "kimi"),
+                            self._fv(behavior="kimi", conf=0.9), mr, [], [], 3000)
+        assert v.verdict == "family_match"
+        assert v.identified_as == "kimi"
+        # closest candidates come from the matcher ranking (best_model kept
+        # even on abstain via MatchResult.best_model)
+        assert v.closest_candidates and v.closest_candidates[0]["id"]
 
     def test_unverifiable_out_of_scope(self):
         v = compute_reality("llama-3-8b", "https://api.example.com", "llama-3-8b",
@@ -654,10 +669,10 @@ class TestTraitMark:
 
     def test_layer_weights(self):
         # 7 weighted layers, normalized to 1.0, knowledge is strongest
-        assert len(LAYER_WEIGHTS) == 7
+        assert len(LAYER_WEIGHTS) == 8  # + refusal/alignment layer
         assert abs(sum(LAYER_WEIGHTS.values()) - 1.0) < 1e-6
         assert max(LAYER_WEIGHTS, key=LAYER_WEIGHTS.get) == "knowledge"
 
     def test_has_nine_layers(self):
         d = TraitMark().to_dict()
-        assert len(d) == 9
+        assert len(d) == 10  # meta + 9 trait layers (incl. refusal)

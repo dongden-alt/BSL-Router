@@ -6,9 +6,10 @@ through the BSL Router for the approved source hierarchy:
   GPT     gold = codex/* ONLY (sol / terra / luna / gpt-5.5 / gpt-6-astra)
           edge-fallback = mintrouter/gpt-6.1-sol (ONLY if a codex call errors)
   Gemini  reference = antigravity/* (3.6-flash-high / 3.1-pro-low / 3.7 / 3.8)
-  Kimi    gold = aibox/kimi-k3, double = mintrouter/kimi-k3,
+  Kimi    gold = aibox/kimi/kimi-k3 (Moonshot), double = aibox/kimi-k3 (Alibaba),
           depth = chat2api/workbuddy-web/kimi-k3
-  GLM     gold = aibox/glm-5.3, double = mintrouter/glm-5.3,
+  GLM     gold = aibox/ZHIPU/GLM-5.3, double = mintrouter/glm-5.3 (NOTE: that lane is
+          really glm-5.3-FLASH -- double lane under review),
           depth = chat2api/zai-web1/glm-5.3-flash-max
 
 Per (pinned_model, family, tier):
@@ -125,11 +126,11 @@ PLAN = [
     {"family": "gemini", "tier": "reference", "pinned_model": "antigravity/gemini-3.7-flash"},
     {"family": "gemini", "tier": "reference", "pinned_model": "antigravity/gemini-3.8-flash"},
     # Kimi — gold + double + depth
-    {"family": "kimi", "tier": "gold", "pinned_model": "aibox/kimi-k3"},
-    {"family": "kimi", "tier": "double", "pinned_model": "mintrouter/kimi-k3"},
+    {"family": "kimi", "tier": "gold", "pinned_model": "aibox/kimi/kimi-k3"},
+    {"family": "kimi", "tier": "double", "pinned_model": "aibox/kimi-k3"},
     {"family": "kimi", "tier": "depth", "pinned_model": "chat2api/workbuddy-web/kimi-k3"},
     # GLM — gold + double + depth (gold also serves -prime; use plain 5.3)
-    {"family": "glm", "tier": "gold", "pinned_model": "aibox/glm-5.3"},
+    {"family": "glm", "tier": "gold", "pinned_model": "aibox/ZHIPU/GLM-5.3"},
     {"family": "glm", "tier": "double", "pinned_model": "mintrouter/glm-5.3"},
     {"family": "glm", "tier": "depth", "pinned_model": "chat2api/zai-web1/glm-5.3-flash-max"},
 ]
@@ -333,7 +334,7 @@ def build_consensus(family_results):
         by_tier[ev.get("tier")] = ev
     gold = by_tier.get("gold")
     anchor = gold or next(iter(family_results))
-    out = {"canonical_model": anchor["pinned_model"].split("/", 1)[1],
+    out = {"canonical_model": anchor["pinned_model"].rsplit("/", 1)[-1].lower(),
            "sources": {}, "degraded": []}
     for tier in ("gold", "double", "depth", "reference", "edge-fallback"):
         ev = by_tier.get(tier)
@@ -488,7 +489,7 @@ def build_parser():
                     help="model family lane to run (default: all)")
     ap.add_argument("--only", default=None,
                     help="comma-separated pinned_model ids to run (e.g. "
-                         "aibox/kimi-k3,mintrouter/glm-5.3); narrows the family "
+                         "aibox/kimi/kimi-k3,aibox/ZHIPU/GLM-5.3); narrows the family "
                          "selection to just those lanes (rerun failed lanes)")
     ap.add_argument("--merge", action="store_true",
                     help="merge into the existing output JSON instead of "

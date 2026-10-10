@@ -238,6 +238,40 @@ Each provider family has its own **family adapter** (14 adapters total):
 
 Infrastructure adapters: `_base.py` (shared base), `_effort.py` (reasoning effort ladder), `_legacy_reference.py`.
 
+#### Codex lane: Chat Completions → Responses translation (2026-10-09)
+
+`app/codex_adapter.py::openai_to_responses` is a **separate wire dialect** from the family adapters above: the
+codex OAuth lane speaks the OpenAI **Responses** API, whose `input[]` array accepts only
+`user|assistant|system|developer` roles. Chat Completions history does not map 1:1, and passing roles through
+verbatim is what produced a live 400 (`Invalid value: 'tool' … param: input[6]`) on `codex/gpt-5.6-sol`.
+
+Translation contract (shapes mirror `app/normalizer_v2.py::_egress_responses`):
+
+| Chat Completions input | Responses output |
+|---|---|
+| `role:"tool"` / `role:"function"` | **top-level** `{"type":"function_call_output","call_id","output"}` — never an input message |
+| tool message missing `tool_call_id` | degrades to a `user` message (never a null `call_id`) |
+| `assistant.tool_calls[]` | **top-level** `{"type":"function_call","call_id","name","arguments"}`; `arguments` always a string (`json.dumps` when upstream sent a dict); accompanying text emitted first |
+| multiple system messages | concatenated into a single `instructions` |
+| unknown / empty role | `user` |
+
+Streaming parity (phase 2): `response.output_item.done` → `delta.tool_calls`;
+`response.function_call_arguments.delta` → arguments passthrough; `response.completed` carrying a
+`function_call` → `finish_reason:"tool_calls"` (previously `"stop"`, which told agentic clients the turn was
+finished while a tool call was still pending).
+
+> [!WARNING]
+> `tools` forwarding is gated on `has_tool_history and _codex_forward_tools_enabled()` — so turn 1 of a fresh
+> tool conversation (tools declared, no tool history yet) gets **no** `body["tools"]` and cannot emit its first
+> call. The narrow gate is pinned by the legacy `test_codex_kiro_oauth.py::test_strips_unsupported_params`
+> (encodes pre-tool-support behaviour from the 2026-08-22 probe) plus
+> `test_bare_tools_declaration_without_tool_history_keeps_strip`. Kill-switch `BSL_CODEX_FORWARD_TOOLS`
+> (default ENABLED; `0`/`false`/`no` disables; read per-call). Widening this needs that legacy test updated —
+> open decision.
+
+Tests: `app/tests/test_codex_adapter_tool_roles.py` (35), plus `test_codex_responses_payload_integrity.py` and
+`test_codex_kiro_oauth.py` (67 targeted, green on `.venv311` + `.venv312`).
+
 ### 🔗 Combo/Chain Fallback
 **What it does**: Tries multiple providers in order until one works.
 
@@ -331,6 +365,31 @@ Lives in `app/authenticity/`. Adapted from the BazaarLink probe-engine methodolo
 
 **Standards lifecycle:** harvested once from a trusted anchor via `POST /api/authenticity/standards/harvest`, stored under `app/authenticity/reference/standards/*.json` (gitignored). New models onboard by JSON snapshot - no code change.
 
+**Probe observability (2026-10-07):** every authenticity probe is recorded via `observability.log_request` (the same in-process pipeline the `/v1` handler uses), tagged `provider="authenticity"` + `client="authenticity:<probe_id>"`. A Run Test therefore surfaces one END row per probe in the admin **Logs** tab (`GET /api/observability/logs`) and **Usage** tab, instead of running as invisible outbound traffic. Fail-open: telemetry never aborts a probe.
+
+**Fixed (2026-10-07):** `compute_reality` (`scoring.py`) bound `matched`/`sub_score` only inside the `match_result is not None` block, so a full-scope run with `match_result=None` and family confidence >= `REAL_THRESHOLD` (0.80) raised `UnboundLocalError: local variable 'matched'`, which the fail-open catch wrapped into an ERROR/UNVERIFIABLE verdict with empty `errors`. `matched`/`sub_score` are now bound before the verdict decision. Regression: `app/tests/test_authenticity_scoring_matched_unbound.py`.
+
+**Structural fixes + full-depth standards rebuild (2026-10-08, user trust-repair):** the matcher previously read FLAT keys (`cutoff_year` / `capability_correct` / `noncoding.judge`) that TraitMark standards do not carry (they nest under `knowledge.*` and top-level `noncoding.{axis}.score`), so every standard scored 0.5-neutral and never compared noncoding — the single defect behind the "always-deep / low family confidence / wrong-model match" cluster. `matcher.py` now reads the nested TraitMark shape with legacy-flat fallback. Six additional logic holes fixed in the same pass: refusal error-clobber (a failed probe no longer overrides a real verdict), judge tie-break false-REAL (override now requires `match_score>=0.70`), cutoff garbage freeze (year range-gated 2019..now+1, context-preferred), single-shot judge parse (now `_parse_judge_json` balanced-brace scan + `_judge_once` retry), self/same-family judge guard (harvest endpoint drops a conflicting judge), and harvest lexical capture (slop/vocab were 0.0 on all 40 standards — now computed from the non-coding outputs). 12 provably-garbage standards swept; 26 canonical standards re-harvested to full depth via `scripts/rebuild_thin_standards.py` (in-process against the live router, each with a different-family judge). Auth suites 118/118 on Py3.10/3.11/3.12. See `.brain/CHANGELOG.md` → `AUTH-STRUCTURAL-FIX-2026`. **Status: CODE DONE — code fixes await user-commanded router restart to go live on :6969.**
+
+**Trusted-sources-only benchmarks (2026-10-08, user directive):** canonical authenticity standards may be harvested ONLY from trusted sources — **codex, antigravity, mintrouter, aibox**. Every other lane (vsllm, a6api, agentrouter, sharellm, chat2api, iamhc, zhipu, pix4k, ...) is an untrusted relay/proxy whose data must never be frozen into a benchmark; vsllm is explicitly banned. Enforcement is structural, not convention: `POST /api/authenticity/standards/harvest` now refuses a canonical harvest (empty `source_tag`) from a non-whitelisted lane with HTTP 400 (provider-tagged snapshots stay exempt — they never enter the match pool via the `baseline.py` source_tag filter), and `scripts/rebuild_thin_standards.py` carries a `TRUSTED_SOURCES` whitelist + `_trusted()` guard. The standards pool was purged to exactly the trusted set — 15 canonical models (claude x6 via mintrouter, gpt x4 via codex, glm x2 via aibox/mintrouter, kimi-k3 via mintrouter, qwen3.8-max via aibox, deepseek-v4-pro via aibox) — and every canonical standard that was harvested off an untrusted lane (or had no trusted lane) was deleted, along with all 17 vsllm-sourced tagged snapshots. A UTF-8 BOM regression (from a PowerShell prefix-strip) that silently dropped 9 canonicals from the match pool was also fixed.
+
+**Canonical-standard audit status (2026-10-08):** *Matcher correctness* -- **DONE** (full-evidence ranking, needle dict crash, rescue-over-tie, asked-scope recall, non-deterministic stability, same-basis runner-up, judge summary nested keys; 138/138 authenticity tests on Py3.10/3.11/3.12). *Standard depth* -- **PARTIAL**: median 6/9 matcher dimensions populated; cutoff 3/15, knowledge needles 7/15, logprob 1/15, deterministic stability 0/15; `capability_boundary` is 3 trivial questions (0 bits). With a realistic suspect **19 of 22 same-family sibling pairs are ambiguous** (3 separable); the matcher abstains instead of guessing (0 confident-wrong, 0 wrong-family) but cannot yet *detect* sub-versions for the claude and gpt families. *Standard v2* (capability curve with fresh random instances, cross-labelled knowledge bank, tokenizer fingerprint via usage counts, variance-aware standards, honest alias groups) -- **PLANNED**, not built.
+
+**Probe timeouts + retry (2026-10-07):** content probes are now **stream-first** — they open an SSE stream, accumulate chunks, and enforce a first-chunk deadline (`probe_ttft_s`) plus a per-chunk stall guard (`probe_idle_s`), with a **non-SSE JSON fallback** when the upstream returns a scalar body. The logprob probe is deliberately pinned `stream:false` (logprobs require the whole-response JSON body). Retries fire on status `0` / `>=500` / error (2s gap), never on 4xx; each attempt emits its own telemetry row tagged `#r<n>`. Two value tiers:
+
+| Path | `probe_ttft_s` | `probe_idle_s` | `probe_retries` | `total_timeout_s` |
+|---|---|---|---|---|
+| **Test** (`run_auth_test`, via `cfg.setdefault`) | 75 | 30 | 1 | 240 |
+| **Production** (config unset → legacy) | `None` (30s scalar whole-response) | — | 0 | 90 |
+
+Leaving `probe_ttft_s=None` keeps the exact legacy scalar path, so production callers are byte-for-byte unchanged. The test tier is relaxed (not the router's inference ceiling) because probes are short content samples: 75s first-byte is generous for a slow-but-real proxy seller (observed 45s generations), while the 30s idle guard catches a stalled seller without waiting forever on a test. This is intentionally **not** the router's inference doctrine (`HEADER_WAIT_TIMEOUT=300` + `read=None` unbounded body); probes bound both ends so a hung seller can't wedge a Run Test.
+
+**OAuth provider model catalog (2026-10-07):** `app/oauth.py` `OAUTH_PROVIDER_MODELS` is the single source of truth for the seven OAuth provider pickers (codex, antigravity, grok-cli, claude, cursor, kiro, github), served at `GET /api/oauth/providers/models`; `app/static/app.js` carries a **manual mirror** of the same dict (the browser never imports oauth.py) and the two MUST be kept in sync. The catalog is static by design: these OAuth wrappers expose no unauthenticated `/v1/models` to self-discover from, so the list is refreshed by research, not fetch. The 2026-10-07 refresh removed retired IDs (`claude-opus-4-6-thinking`, `grok-build`, `gpt-5.2-codex`, `gemini-2.5-pro`, `kimi-k2.5`, the old kiro/cursor lineups) and added the current lineups (opus/sonnet 5.5 low/medium/high on antigravity; GPT-6.x + GPT-5.6 on codex/github; grok-4.20/4.7/4.3 on grok-cli; Composer 2.5 + Muse Spark 1.3 on cursor). Seeding/backfill in `app.js` now mints new catalog rows with `enabled:false` (was `true`) — the user enables models manually. Backfill is append-only: stripping a model from the catalog does NOT remove or disable rows already in `config.yaml`; antigravity self-purges retired slots via `_ANTIGRAVITY_OBSOLETE_SLOTS`, the other six providers have no purge. Kiro/cursor 2026 IDs are extrapolated from each vendor's naming pattern (no machine-readable catalog exists) — MEDIUM confidence, flagged in the changelog.
+
+**Identified-as circularity fix (2026-10-07):** the report previously echoed the suspect's own claim as its "identification" (`Identified as: <input>`) and claimed it "matched the frozen official standard for `<input>`" — circular, evidence-free. Root cause: the REAL path set `identified_as = matched or claimed or model_id`, so a matcher abstain (`matched == ""`) fell through to the claim. Now: when the sub-model matcher matches, `identified_as` = the matched frozen standard id; when it abstains, `identified_as` = the confirmed **family** and the rationale/UI state "family only — sub-version unconfirmed" instead of fabricating a standard match. `submodel_match` and `identified_kind` (`submodel`|`family`) are now serialized so the UI can distinguish a true sub-model identification from a family-only one. Regression: `app/tests/test_authenticity_scoring_matched_unbound.py` (asserts family, not claim echo).
+
+**Test cascade redesign (2026-10-07, user-driven):** the objective is "IS the model REAL or FAKE" — family is only the secondary tier. Changes: (1) **REAL now requires a confirmed sub-model standard match** (`total >= REAL_THRESHOLD AND matched`); family-only high confidence reports **FAMILY MATCH** with ranked closest candidates (never a shrug dressed as REAL). (2) **Matcher-first cascade**: normal pass classifies family + matches standards; a single high-confidence match stops and reports (REAL/downgrade after family corroboration via the fused family+submodel score and substitution-on-conflict). (3) **Escalation to deep** fires when the matcher abstains (no single high-conf match) — unchanged auto path. (4) **Judge tie-break** (new `judge_rank.py`): deep mode, only on a TRUE tie (abstain with best/runner-up gap < 0.05), hands the tied top candidates' frozen profiles to the judge (a different family) which ranks them; a decisive pick (confidence >= 0.6) resolves the match. Fail-open always. (5) **Coverage-aware weights**: `match_submodel` renormalizes dimension weights over compared dims (`coverage_adjust`), so a missing axis is neutral, not an implicit penalty — the precision lever for thin candidates. (6) **Cancel granularity**: `_check_cancel` between probes + RuntimeError propagation in `_progress`/lane catches + pre-escalation re-check in main.py, so a cancel lands at the next probe boundary instead of running the full battery. UI renders ranked closest-candidate chips on FAMILY MATCH/UNVERIFIABLE with per-candidate confidence zones. Regression: `app/tests/test_authenticity_cancel_tiebreak.py`, updated `test_authenticity.py` + `test_authenticity_scoring_matched_unbound.py`.
+
 
 ### 📊 Observability
 - Every request/response logged in JSONL format
@@ -370,6 +429,55 @@ Pre-process specific content types before routing:
 - **Boot-time log self-heal:** `_selfheal_errlog` truncates `.brain/logs/app.err.log` >50MB to a 10MB tail at boot (in-place; the cmd supervisor holds the `2>>` handle). WinError-64 shadow `accept_coro` exceptions are now consumed via done-callbacks (`_track_shadow_accept_tasks`) — no more "Task exception was never retrieved" spam. END console lines serialize error bodies single-line (`_single_line_error`) so 400-error rows stay greppable.
 
 - **Idle terminal-frame parity (2026-10-02):** all four egress lanes (OpenAI, pure-Anthropic, anthropic-to-openai, Gemini) cap upstream silence at `GEMINI_EGRESS_MAX_IDLE` (300s; reset only on real upstream chunks, never on keepalive ticks); expiry routes through the post-drain stall branch (`upstream_idle_timeout` + status 504 → terminal error frame + `[DONE]`, pre-content combo-fallback, dead-leaf benching). Fixes the Antigravity IDE freeze: a wedged MintRouter stream used to end as a bare `data: [DONE]` with HTTP 200, and the IDE parser hangs forever waiting for a terminal error frame on non-success termination. Tests: `app/tests/test_gemini_egress_idle.py` (14), `app/tests/test_anthropic_to_openai_idle.py` (9).
+
+#### Mid-stream transport death → continuation splice (2026-10-09)
+
+`upstream error 502: midstream_transport: peer closed connection without sending complete message body` is a
+**socket death after content already reached the client**. Recovering from it requires two things to be true at once,
+and both were broken — which is why the failure surfaced as a user-visible *force stop 502* on an answer that had
+already streamed.
+
+| Defect | Mechanism | Fix |
+|---|---|---|
+| **B1** — flag gated on the wrong signal | `_midstream_transport_fallback` set `TRANSPORT_DIED_PARTIAL_FLAG` only when `stats["out"] > 0`, but `out` is fed **exclusively** by the terminal usage frame (`_usage_from_sse_data`) — precisely the frame that never arrives when the transport dies. Flag unset → `should_splice_continuation` (`quality.py` L523-557) False → splice never armed. | Gate on **delivery**, not usage: entry `if stats.get("out", 0) == 0:`, flag written under `if _delivered:`. Census before the fix: **1528** terminal `reason=OTHER` rows vs **zero** `splicing continuation` rows. |
+| **B2** — no status restore | After a successful continuation `stats["status"]` stayed 502 and `stats["error"]` stayed set → the `finally:` `obs.log_request` logged `[502] … ERROR:`, and the Gemini guard at L12188-12197 (`error and 400 <= status and status != 499`) emitted `terminal_error_frame(502)` + `SSE_DONE` **on top of a complete answer**. | One shared `def _continuation_status_guard():` restores `status = 200`, `error = None`, pops the flag, flushes. Called at all three splice sites: OpenAI (guard L10581 / commit L10626), Anthropic (L11287 / L11326), Gemini (L11829 / L11872). |
+
+> [!CAUTION]
+> **Three design facts — do not "simplify" them away.**
+> 1. `partial_text` does **not** grow during a continuation; no continuation loop fed the detector before this fix.
+>    Each site therefore keeps **local** `_cont_chunks` / `_cont_bytes` counters and passes them to `_commit`.
+> 2. `_emit.byte_count` **lags** at commit time — Gemini drains through an `asyncio.Queue`
+>    (`_q` / `_SENTINEL` / `_drain_openai_source` → outer pump L12593), Anthropic through `StreamNormalizer`
+>    (L11236-11238). Never read `byte_count` as the continuation total.
+> 3. `_commit`'s third condition is load-bearing: the Anthropic/Gemini continuation loops run **inside**
+>    `_transport_guarded`, so a *second* death writes a fresh 502 that `_commit` must **not** overwrite with 200.
+
+> [!WARNING]
+> **Rejected variant — the `_delivered` entry gate.** Gating the whole fallback path on `if not _delivered:` breaks
+> combo failover. `partial_text` accumulates upstream reasoning/thought deltas (`quality.py::_observe` L442-455,
+> L463-480, L487-501 incl. `thought:true`) while on the Gemini lane buffered thought frames are deliberately **not**
+> `mark_emitted` pre-commit (L11949-11952, L12003-12005). A thought-only stream that dies therefore looks
+> "delivered" (`partial_text` non-empty) yet emitted **zero** bytes → failover skipped → the router resumes the
+> **dead** provider. `may_fallback()` (`app/stream_guard.py` L102-114) is the real emission veto.
+
+Ordering invariant inside every splice loop: `_detector.feed(_cc)` → `_emit.mark_emitted(_cc)` → `yield _cc`.
+
+**Doc debt (open):** `app/middleware/quality.py` L516-518 still comments that the flag is written "on its out>0
+fall-through (out==0 still takes the existing combo failover)" — now **false**. `quality.py` was read-only for this
+change; correct the comment in a follow-up.
+
+Tests: `app/tests/test_midstream_transport_partial_flag.py` (18) — source-contract assertions across all three
+splice sites plus flag-gate behaviour (`out==0` + delivered → flag set; nothing delivered → flag unset; `out>0`
+back-compat). Status: 🔨 **CODE DONE**, awaiting a user-commanded `:6969` restart.
+**Restart-safety gate GREEN (2026-10-10):** full suite on the Py3.11 leg against the dirty tree -- the 3 modified
++ 2 new files here, PLUS 43 unrelated uncommitted `app/authenticity/*` edits (11 of them deleted standards JSONs)
+that a restart would also load -- returned **3589 passed, 1 warning, 566.50 s, `PYTEST_EXIT=0`** with zero
+`FAILED`/`ERROR` headers (`.brain/scratch/boot_gate_full311_0410.txt`). No `--deselect` was required: `fb96e07`
+added the cascade timeout markers, so `test_authenticity_cascade.py` ran inside the suite and passed.
+**Why the same 502 was re-reported on 2026-10-10:** the live process is PID **17744**, started
+**2026-10-09 17:50:57** -- roughly 3.5 h BEFORE `app/main.py`'s mtime of **21:25:45** -- so it is still executing
+pre-fix bytecode. Python binds code at import; a green suite plus an untouched process is NOT a live fix.
+This is a process-lifecycle gap, not a second defect.
 
 ## Middleware Pipeline
 
@@ -913,3 +1021,29 @@ Xem [config.example.yaml](../config.example.yaml) để có template hoàn chỉ
 | **cryptography** | Mã hóa Fernet |
 | **PyYAML** | Đọc file config |
 | **pydantic** | Kiểm tra dữ liệu |
+
+## Authenticity Standard v3 — `discriminator` lane (2026-10-09, CODE DONE)
+
+Fourth v2-dimension added to `app/authenticity/standard_v2.py`, stored under
+`structural.tokenizer_signature.v2.discriminator` with shape
+`{"answers": {probe_id: [feature_string * k]}, "k": k}`.
+
+**Why (status: DONE, offline-verified; live re-scoring of existing standards PENDING):**
+tokenizer / capability_curve / knowledge_bank all saturate at the frontier, so
+`pairwise_separability` under-reported distance and violated transitivity
+(terra->astra 0.046 < terra->sol 0.075). The discriminator measures
+behavioural-schema habits — code-fence use, JSON key sets, tool verb, arg-key
+naming, refusal phrasing — which live probes proved differ per opus version
+(4.6/4.7/4.8/5/5.5 each emitted a distinct schema) and per gpt version
+(terra `{"tool":}` vs astra `{"name":}`). No capability ceiling, so it cannot saturate.
+
+**Scoring:** `similarity_discriminator` = agreement fraction over shared probes
+(`None` when <5 shared). `pairwise_separability` folds it into the mean alongside
+the other three; absent lanes are excluded, so standards harvested before v3
+remain fully scoreable — no migration required.
+
+**Status labels:**
+- Lane implementation + wiring + tests — **DONE** (14/14 new, 54/54 existing).
+- Existing 16 references + 17 canonicals re-scored with the new axis — **PENDING**
+  (needs a discriminator backfill pass; ~20 calls/model).
+- Matcher/gate integration — **PLANNED** (compute_v2_dims already exposes it).

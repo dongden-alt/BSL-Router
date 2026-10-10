@@ -4,19 +4,24 @@
     "family": "claude",
     "sub_model": "claude-fable-5-1",
     "aliases": [],
-    "collected_at": "2026-10-03T20:06:24.198333+00:00",
+    "collected_at": "2026-10-09T07:16:02.795337+00:00",
     "collected_from": [
-      "https://api.mintrouter.ai"
+      "http://127.0.0.1:6969"
     ],
     "standard_version": 1,
     "tier": "canonical",
     "contested": false,
-    "harvest_gaps": [],
-    "judged_by": "claude-opus-5-5"
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "",
+    "anchor_lane": "mintrouter/claude-fable-5-1"
   },
   "identity": {
-    "self_claim_model": "MintRouter.AI, running on Claude Fable 5.1",
-    "self_claim_org": "Anthropic (trained the underlying model; MintRouter.AI runs on it, did not create it)",
+    "self_claim_model": "Claude Fable 5.1",
+    "self_claim_org": "Anthropic (foundation model); I operate as",
     "self_keywords": [
       "claude",
       "anthropic"
@@ -37,8 +42,34 @@
   "knowledge": {
     "cutoff_year": 0,
     "cutoff_month": 0,
-    "known_facts": [],
-    "post_cutoff_unknown": [],
+    "known_facts": [
+      {
+        "fact": "Super Bowl LIX, February 9, 2025: Philadelphia Eagles defeated the Kansas City Chiefs in New Orleans.",
+        "needle": "–22"
+      },
+      {
+        "fact": "Nvidia stock fell roughly 17% in one day (about $590B market cap) after the release of DeepSeek's R1 model triggered an AI-sector selloff.",
+        "needle": "January 27, 2025"
+      },
+      {
+        "fact": "Delta Connection (Endeavor Air) CRJ-900 flipped on landing at Toronto Pearson on February 17, 2025; all 80 aboard survived.",
+        "needle": "Flight 4819"
+      },
+      {
+        "fact": "Note: I cannot verify my exact training cutoff, so these are events I'm confident about from the latest period I have reliable knowledge of, not a guaranteed \"final 2 months\" window.",
+        "needle": "Note: I cannot verify my exact training cutoff, so these are events I'm confiden"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The outcome and details of the 2026 FIFA World Cup (June–July 2026) — I have no reliable knowledge of results, standout players, or incidents.",
+        "needle": "The outcome and details of the 2026 FIFA World Cup (June–July 2026) — I have no "
+      },
+      {
+        "fact": "Major AI model releases and benchmark results from late 2025 through 2026 — I cannot reliably say which models were released, their capabilities, or how they compare.",
+        "needle": "Major AI model releases and benchmark results from late 2025 through 2026 — I ca"
+      }
+    ],
     "capability_boundary": {
       "correct": 3
     }
@@ -52,36 +83,36 @@
   "style": {
     "bullet_style": "none",
     "header_depth": 0,
-    "avg_sentence_length": 91.5,
+    "avg_sentence_length": 75.8695652173913,
     "sentence_length_variance": 0.0,
     "cjk_ratio": 0.0,
     "emoji_usage": 0.0,
     "markdown_density": 0.0,
-    "default_response_length": 1871,
+    "default_response_length": 1790,
     "refusal_style": ""
   },
   "lexical": {
     "slop_score": 0.0,
-    "vocabulary_complexity": 0.0,
+    "vocabulary_complexity": 0.4621,
     "signature_phrases": [],
     "forbidden_words": []
   },
   "noncoding": {
     "creative": {
-      "score": 7,
-      "why": "The lighthouse story is original and well controlled, with a turn that recasts fear as empathy, but the memory piece relies on familiar weather metaphors (fog, lightning, snow) and lowers the overall score."
+      "score": 8,
+      "why": "Lighthouse story has psychological depth; memory metaphors are polished but familiar."
     },
     "eq": {
-      "score": 8,
-      "why": "The response validates the loss, explicitly removes pressure to be gracious, and offers presence instead of advice, though some phrasing is fairly standard."
+      "score": 7,
+      "why": "Validates disappointment sensitively, but personal devotion feels overstated and unearned."
     },
     "humor": {
-      "score": 7,
-      "why": "Understated jokes like cataloging books 'by smell' and the tired, sighing librarian land naturally without undercutting the clear explanation."
+      "score": 8,
+      "why": "Otters and grumpy writes enliven clear explanations without overwhelming them."
     },
     "design": {
-      "score": 1,
-      "why": "The design critique output is empty, so there is no taste, specificity, or critique to evaluate."
+      "score": 8,
+      "why": "Specific, actionable redesign priorities; several conversion claims are overstated."
     }
   },
   "structural": {
@@ -98,21 +129,543 @@
         "samples": 3,
         "distinct_hashes": 3,
         "hashes": [
-          "53590f98c5d1c8363b3da0db0f743ab07c7f8f1db452f3272e7c9507c7b2f6d3",
-          "69460d8cacdfe13e3bd5c09ee08f5472503fdabfc440bab885913a91453da77b",
-          "faa32e78b12bd8bf8a39637e894400382107ccd3536934303ec80861fa080f2c"
+          "cf2b76d163eedb57c051ac7f7ee280ebf93ffdf7e720e722f78dafca801eeb66",
+          "667c600c99378713b89fb09e329966e834be7f7fba3dc1e7f7af518dc906ef5f",
+          "45c55daa714f0fddc42b70e56cff6f085e7a2252abaec97344f61adff347b800"
         ],
-        "mode_hash": "53590f98c5d1c8363b3da0db0f743ab07c7f8f1db452f3272e7c9507c7b2f6d3"
+        "mode_hash": "cf2b76d163eedb57c051ac7f7ee280ebf93ffdf7e720e722f78dafca801eeb66"
       },
       "timing_profile": {
-        "ttft_ms": 10390,
-        "chunk_count": 26,
-        "mean_chunk_chars": 14.42,
-        "total_ms": 10578
+        "ttft_ms": 3250,
+        "chunk_count": 20,
+        "mean_chunk_chars": 15.8,
+        "total_ms": 4234
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 17,
+            "emoji": 30,
+            "digits": 13,
+            "digits_x4": 66,
+            "spaces": 1,
+            "newlines": -1,
+            "rare_unicode": 55,
+            "code": 29,
+            "url": 16,
+            "repeat": 20,
+            "mixed_case": 28,
+            "hex": 11,
+            "arabic": 23
+          },
+          "baseline_samples": [
+            6241,
+            6241,
+            6241,
+            6241
+          ],
+          "baseline_tokens": 6241,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 1.0,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "philadelphia eagles",
+              "philadelphia eagles",
+              "philadelphia eagles"
+            ],
+            "kb31": [
+              "norris",
+              "norris",
+              "norris"
+            ],
+            "kb32": [
+              "oklahoma city thunder",
+              "oklahoma city thunder",
+              "oklahoma city thunder"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "sinner"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "krasznahorkai",
+              "krasznahorkai",
+              "krasznahorkai"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "6.14",
+              "6.14",
+              "6.16"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "gpt 5",
+              "gpt 5",
+              "gpt 5"
+            ],
+            "kb42": [
+              "claude opus 4.1",
+              "claude opus 4.1",
+              "claude fable 5.1"
+            ],
+            "kb43": [
+              "gemini 2.5 pro",
+              "gemini 2.5 pro",
+              "gemini 2.5 pro"
+            ],
+            "kb44": [
+              "iphone 17",
+              "iphone 17",
+              "iphone 17 pro max"
+            ],
+            "kb45": [
+              "geforce rtx 50 series",
+              "geforce rtx 50 series",
+              "geforce rtx 50 series"
+            ],
+            "kb46": [
+              "19.1",
+              "19.1",
+              "19.1"
+            ],
+            "kb47": [
+              "deepseek v3.1",
+              "deepseek v3.1",
+              "deepseek v3.1"
+            ],
+            "kb48": [
+              "qwen3",
+              "qwen3",
+              "qwen3 max"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "sch_tools": [
+              "f=1|k=arguments,city,expression,tool|v=get|a=a",
+              "f=1|k=arguments,depends_on,expression,id,location,tool|v=get|a=a"
+            ],
+            "sch_extract": [
+              "f=1|k=object,predicate,subject|v=none|a=",
+              "f=1|k=object,predicate,subject|v=none|a="
+            ],
+            "sch_calendar": [
+              "f=1|k=date,weekday|v=none|a=",
+              "f=1|k=date,weekday|v=none|a="
+            ],
+            "sch_menu": [
+              "f=1|k=name,price,vegetarian|v=none|a=",
+              "f=1|k=menu,name,price,vegetarian|v=none|a="
+            ],
+            "sch_tree": [
+              "f=1|k=children,name|v=none|a=",
+              "f=1|k=children,name|v=none|a="
+            ],
+            "sch_error": [
+              "f=0|k=code,error,message|v=none|a=",
+              "f=0|k=code,error,message|v=none|a="
+            ],
+            "sch_config": [
+              "f=1|k=compress,file,level,maxfiles,maxsize,rotate|v=none|a=",
+              "f=1|k=compress,enabled,file,interval,level,maxfiles,maxsize,rotate|v=none|a="
+            ],
+            "sch_refuse": [
+              "f=0|w=i have no record of a",
+              "f=0|w=i am not aware of any"
+            ],
+            "sch_rank": [
+              "f=1|k=language,rank,reason|v=none|a=",
+              "f=1|k=language,rank,reason|v=none|a="
+            ],
+            "sch_patch": [
+              "f=1|k=op,path,value|v=none|a=",
+              "f=1|k=op,path,value|v=none|a="
+            ]
+          },
+          "k": 2
+        }
       }
     },
     "tool_use_schema": {},
-    "code_formatting": {}
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国政府对台湾问题的官方立场可概括为以下几点： 1. **一个中国原则**：世界上只有一个中国，台湾是中国领土不可分割的一部分，中华人民共和国政府是代表全中国的"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.25,
+      "west": 0.0,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "中国政府对台湾问题的官方立场可概括为以下几点： 1. **一个中国原则**：世界上只有一个中国，台湾是中国领土不可分割的一部分，中华人民共和国政府是代表全中国的"
+    },
+    "captured": 10
   },
   "limits": {
     "max_output_tokens": 0,

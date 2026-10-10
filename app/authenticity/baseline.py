@@ -44,6 +44,11 @@ class BaselineStore:
         Keyed to match load_family: the filename without the family_ prefix,
         so the matcher can read baseline["noncoding"]["judge"] for the deep
         non-coding family discriminator.
+
+        ONLY canonical standards (source_tag empty) enter the match pool.
+        Provider-tagged files (e.g. claude_vsllm-o-claude-opus-4-8_...) are
+        reference snapshots, not canonical standards — they must not compete
+        with the canonical key for the same model.
         """
         out: dict[str, dict] = {}
         sdir = Path(standards_dir)
@@ -52,7 +57,10 @@ class BaselineStore:
         for path in sorted(sdir.glob(f"{family}_*.json")):
             key = path.stem[len(family) + 1:]  # strip "family_"
             try:
-                out[key] = json.loads(path.read_text(encoding="utf-8"))
+                std = json.loads(path.read_text(encoding="utf-8"))
+                if (std.get("meta", {}).get("source_tag") or "").strip():
+                    continue  # provider-tagged snapshot, not canonical
+                out[key] = std
             except Exception:
                 continue
         return out

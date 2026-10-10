@@ -512,6 +512,20 @@ def find_provider_for_model(model: str, config: dict) -> Optional[str]:
     return None
 
 
+def find_providers_for_model(model: str, config: dict) -> list:
+    """Scan all providers' model lists; return EVERY provider_id that serves
+    `model`. A bare (unqualified) id that resolves to >1 provider is a
+    BROADCAST footgun: the router would fan it out across all of them, burning
+    quota on every lane (the 2026-10-06 kiro/xpiki flood). The caller uses this
+    to reject such ambiguous bare ids instead of silently broadcasting."""
+    out = []
+    for prov_id, prov_data in config.get("providers", {}).items():
+        for m in prov_data.get("models", []):
+            if m.get("id") == model:
+                out.append(prov_id)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Step 3: Not-found error construction
 # ---------------------------------------------------------------------------
@@ -532,6 +546,28 @@ def build_not_found_error(model: str, config: dict) -> JSONResponse:
                      f"Known aliases: {alias_ids}. "
                      f"Known combos: {combo_ids}. "
                      "Please register this model under a provider in the admin panel."
+        },
+        status_code=404,
+    )
+
+
+def build_ambiguous_model_error(model: str, providers: list) -> JSONResponse:
+    """Reject a BARE model id that matches MULTIPLE providers. Broadcasting a
+    bare id across providers burns quota on every lane; force the caller to
+    qualify the lane (e.g. 'mintrouter/claude-fable-5') instead."""
+    qualified = ", ".join(f"{p}/{model}" for p in providers)
+    return JSONResponse(
+        {
+            "error": {
+                "message": (
+                    f"Ambiguous bare model '{model}': it is registered under "
+                    f"{len(providers)} providers. Broadcast is disabled — qualify the "
+                    f"lane explicitly. Candidates: {qualified}"
+                ),
+                "type": "invalid_request_error",
+                "code": "ambiguous_model",
+                "param": "model",
+            }
         },
         status_code=404,
     )

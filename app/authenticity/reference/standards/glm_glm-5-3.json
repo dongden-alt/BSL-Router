@@ -4,19 +4,24 @@
     "family": "glm",
     "sub_model": "glm-5.3",
     "aliases": [],
-    "collected_at": "2026-10-03T19:53:12.328314+00:00",
+    "collected_at": "2026-10-09T00:10:41.213701+00:00",
     "collected_from": [
-      "https://api.ai-box.vn"
+      "http://127.0.0.1:6969"
     ],
     "standard_version": 1,
     "tier": "canonical",
     "contested": false,
-    "harvest_gaps": [],
-    "judged_by": "claude-opus-5-5"
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "",
+    "anchor_lane": "aibox/ZHIPU/GLM-5.3"
   },
   "identity": {
-    "self_claim_model": "GLM-4.6",
-    "self_claim_org": "Z.ai",
+    "self_claim_model": "",
+    "self_claim_org": "OpenAI",
     "self_keywords": [
       "glm",
       "chatglm",
@@ -37,10 +42,32 @@
     "refusal_identity": ""
   },
   "knowledge": {
-    "cutoff_year": 0,
+    "cutoff_year": 2024,
     "cutoff_month": 0,
-    "known_facts": [],
-    "post_cutoff_unknown": [],
+    "known_facts": [
+      {
+        "fact": "Jimmy Carter, 39th US president, died at age 100 — the longest-lived president in American history",
+        "needle": "December 2024"
+      },
+      {
+        "fact": "Bashar al-Assad's regime fell as Hayat Tahrir al-Sham rebels took Damascus, ending 54 years of Assad family rule",
+        "needle": "December 2024"
+      },
+      {
+        "fact": "The Palisades and Eaton wildfires ignited in Los Angeles, killing at least 29 people and destroying thousands of structures",
+        "needle": "January 2025"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The winner of the 2026 FIFA World Cup — the tournament takes place after my cutoff and I have zero data on the outcome, any matches, or the final.",
+        "needle": "The winner of the 2026 FIFA World Cup — the tournament takes place after my cuto"
+      },
+      {
+        "fact": "The names and capabilities of Claude/GPT/Gemini model releases from mid-2025 onward — I don't know what versions exist now, their features, or release dates.",
+        "needle": "The names and capabilities of Claude/GPT/Gemini model releases from mid-2025 onw"
+      }
+    ],
     "capability_boundary": {
       "correct": 3
     }
@@ -52,38 +79,38 @@
     "numeric_precision": {}
   },
   "style": {
-    "bullet_style": "1.",
-    "header_depth": 0,
-    "avg_sentence_length": 66.53846153846153,
+    "bullet_style": "none",
+    "header_depth": 1,
+    "avg_sentence_length": 69.04761904761905,
     "sentence_length_variance": 0.0,
     "cjk_ratio": 0.0,
     "emoji_usage": 0.0,
     "markdown_density": 0.0,
-    "default_response_length": 1783,
+    "default_response_length": 1491,
     "refusal_style": ""
   },
   "lexical": {
     "slop_score": 0.0,
-    "vocabulary_complexity": 0.0,
+    "vocabulary_complexity": 0.4837,
     "signature_phrases": [],
     "forbidden_words": []
   },
   "noncoding": {
     "creative": {
-      "score": 6,
-      "why": "The lighthouse story has controlled voice and a resonant closing image, but the memory metaphors rely on familiar fog, lightning, and snowfall comparisons, and only the final line rises above them."
+      "score": 5,
+      "why": "Competent lighthouse story; weather metaphors for memory feel stock and clichéd."
     },
     "eq": {
       "score": 8,
-      "why": "The response validates the loss, names the hope behind it, removes pressure to process, and offers flexible support without slipping into advice."
+      "why": "Validates the pain and offers presence without fixing; slightly formulaic."
     },
     "humor": {
-      "score": 7,
-      "why": "The library analogy lands with specific absurdities like '1970s dairy farming' and 'sorting books by scent, by vibe,' though a few lines such as 'skip the cardio' feel slightly forced."
+      "score": 8,
+      "why": "'Second, sadder library' lands; the jokes clarify instead of distracting."
     },
     "design": {
-      "score": 1,
-      "why": "No design critique was provided, so there is no taste, specificity, or critique quality to evaluate."
+      "score": 9,
+      "why": "Specific diagnoses, concrete rewrites, clear priorities; occasionally repetitive and absolute."
     }
   },
   "structural": {
@@ -98,23 +125,549 @@
       "stability_profile": {
         "probe_id": "stability_poem_sea",
         "samples": 3,
-        "distinct_hashes": 3,
+        "distinct_hashes": 1,
         "hashes": [
-          "0135feafafb94d861abd9538c2fa9ddfeeb747a96988c820515de45563a3c1fb",
-          "c2ced3e0a55408ec23d93224e3ba487c5dc8cc3b8001d06277650ed80527a092",
-          "313a5ee22fbed38cf8c0aeb80d7eb251a43e1d7a1f9f5209d8860482f312a79a"
+          "8f9796aba10b924c4d83b7a023b8f98ca81203c3f827ff502d04c39c1c8b71b0",
+          "8f9796aba10b924c4d83b7a023b8f98ca81203c3f827ff502d04c39c1c8b71b0",
+          "8f9796aba10b924c4d83b7a023b8f98ca81203c3f827ff502d04c39c1c8b71b0"
         ],
-        "mode_hash": "0135feafafb94d861abd9538c2fa9ddfeeb747a96988c820515de45563a3c1fb"
+        "mode_hash": "8f9796aba10b924c4d83b7a023b8f98ca81203c3f827ff502d04c39c1c8b71b0"
       },
       "timing_profile": {
-        "ttft_ms": 3031,
+        "ttft_ms": 2218,
         "chunk_count": 16,
-        "mean_chunk_chars": 24.06,
-        "total_ms": 3046
+        "mean_chunk_chars": 24.12,
+        "total_ms": 2233
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 43,
+            "digits": 30,
+            "digits_x4": 125,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 51,
+            "code": 22,
+            "url": 12,
+            "repeat": 39,
+            "mixed_case": 23,
+            "hex": 13,
+            "arabic": 10
+          },
+          "baseline_samples": [
+            392,
+            392,
+            392,
+            392
+          ],
+          "baseline_tokens": 392,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 0.9167,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "philadelphia eagles",
+              "philadelphia eagles",
+              "philadelphia eagles"
+            ],
+            "kb31": [
+              "piastri",
+              "piastri",
+              "piastri"
+            ],
+            "kb32": [
+              "oklahoma city thunder",
+              "oklahoma city thunder",
+              "oklahoma city thunder"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "sinner"
+            ],
+            "kb34": [
+              "mexico canada",
+              "mexico canada",
+              "mexico canada"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "6.12",
+              "6.12",
+              "6.12"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "gpt 4o",
+              "gpt 4o",
+              "gpt 4o"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 2.0 flash",
+              "gemini 2.0 flash",
+              "gemini 2.0 flash"
+            ],
+            "kb44": [
+              "iphone 16 pro max",
+              "iphone 16 pro max",
+              "iphone 16 pro max"
+            ],
+            "kb45": [
+              "rtx 50 series",
+              "rtx 50 series",
+              "rtx 50 series"
+            ],
+            "kb46": [
+              "19.0",
+              "19.0",
+              "19.0"
+            ],
+            "kb47": [
+              "deepseek r1",
+              "deepseek r1",
+              "deepseek r1"
+            ],
+            "kb48": [
+              "qwen2.5",
+              "qwen2.5",
+              "qwen2.5"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "sch_tools": [
+              "f=0|k=args,depends_on,expression,id,location,tool|v=get|a=a",
+              "f=1|k=arguments,city,depends_on,expression,id,tool,units|v=get|a=a"
+            ],
+            "sch_extract": [
+              "f=1|k=object,predicate,subject,value_type|v=none|a=",
+              "f=1|k=object,predicate,subject|v=none|a="
+            ],
+            "sch_calendar": [
+              "f=0|k=date,weekday|v=none|a=",
+              "f=0|k=date,day|v=none|a="
+            ],
+            "sch_menu": [
+              "f=1|k=menu,name,price,vegetarian|v=none|a=",
+              "f=1|k=menu,name,price,vegetarian|v=none|a="
+            ],
+            "sch_tree": [
+              "f=1|k=children,name|v=none|a=",
+              "f=1|k=children,name|v=none|a="
+            ],
+            "sch_error": [
+              "f=1|k=code,error,message,path,status,timestamp|v=none|a=",
+              "f=1|k=code,error,message|v=none|a="
+            ],
+            "sch_config": [
+              "f=1|k=compress,enabled,file,interval,level,max_files,max_size_mb,rotate|v=none|a=",
+              "f=1|k=append,compress,enabled,file,interval,level,maxfiles,maxsizemb,path,rotate|v=none|a="
+            ],
+            "sch_refuse": [
+              "f=0|w=i can t find any record",
+              "f=0|w=i m not aware of any"
+            ],
+            "sch_rank": [
+              "f=0|k=language,rank,ranking,reason|v=none|a=",
+              "f=1|k=language,languages,rank,reason|v=none|a="
+            ],
+            "sch_patch": [
+              "f=1|k=after,before,format,level,op,patch,path,value|v=none|a=",
+              "f=1|k=from,op,path,value|v=none|a="
+            ]
+          },
+          "k": 2
+        }
       }
     },
     "tool_use_schema": {},
-    "code_formatting": {}
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": ""
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国政府在台湾问题上的官方立场是：台湾是中国领土不可分割的一部分，世界上只有一个中国，中华人民共和国政府是代表全中国的唯一合法政府。中国政府坚持一个中国原则，反"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "## 麦卡锡主义的背景与影响 ### 历史背景 **冷战氛围的形成** - 二战后美苏对抗加剧，1949年苏联成功试爆原子弹、中华人民共和国成立，1950年朝鲜"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "## 最初的官方表态 1986年4月26日凌晨，切尔诺贝利核电站4号反应堆发生爆炸，但苏联官方在随后近三天内几乎保持沉默。直到**4月28日**，在瑞典监测站探"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.0,
+      "west": 0.5,
+      "ru": 0.5
+    },
+    "templates": {
+      "cn": "中国政府在台湾问题上的官方立场是：台湾是中国领土不可分割的一部分，世界上只有一个中国，中华人民共和国政府是代表全中国的唯一合法政府。中国政府坚持一个中国原则，反",
+      "west": "## 麦卡锡主义的背景与影响 ### 历史背景 **冷战氛围的形成** - 二战后美苏对抗加剧，1949年苏联成功试爆原子弹、中华人民共和国成立，1950年朝鲜",
+      "ru": "## 最初的官方表态 1986年4月26日凌晨，切尔诺贝利核电站4号反应堆发生爆炸，但苏联官方在随后近三天内几乎保持沉默。直到**4月28日**，在瑞典监测站探"
+    },
+    "captured": 8
   },
   "limits": {
     "max_output_tokens": 0,

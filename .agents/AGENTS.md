@@ -359,3 +359,23 @@ Proven in `.brain/scratch/quote_escape_experiment.txt`: naive `-p $raw` → `ARG
   same gotcha as §3. A comment documenting the removal otherwise satisfies the assertion forbidding
   it, and today's own verification flagged the `-p $prompt` phrase inside the explanatory comment
   as a regression.
+
+## 10. 🔴 HARD RULE — never full-re-harvest to fix ONE missing probe/axis/lane (2026-10-09)
+
+A full harvest costs ~50-70 paid API calls (probes + judge + 3 v2 lanes). Re-running it
+to fix a SINGLE missing piece wastes account credit AND destroys already-good axes
+(2026-10-09: re-running full harvest for a missing capability_curve overwrote kimi's
+creative=6 with 0). This is the SAME class of mistake as the wasteful terra full-lane
+re-run earlier that session. Burned credit twice for nothing.
+
+**Invariants — zero exceptions:**
+- Diagnose the EXACT missing piece FIRST. Name it: judge axis? one v2 lane? knowledge_bank?
+- Judge axis zero/missing (e.g. creative=0 while eq/humor/design have real `why`) -> judge-only
+  backfill (`.brain/scratch/rejudge_creative.py`): ~3 calls, patches in place, NEVER re-runs probes.
+- One v2 lane missing (tokenizer / capability_curve / knowledge_bank) -> targeted lane-only
+  backfill `scripts/backfill_v2_lane.py --lane-name <lane>`: merges into the existing file,
+  leaves judge axes + other v2 lanes untouched. Skips if already present.
+- A full re-harvest is the LAST resort and requires the user to explicitly say "full re-harvest"
+  in the current message. Default is always the smallest targeted fix.
+- Before ANY harvest/backfill run: state the per-model call estimate and get the smallest-scope
+  confirmation. "Fix X" means fix X, not re-run everything that includes X.

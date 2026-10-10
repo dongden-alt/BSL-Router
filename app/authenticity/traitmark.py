@@ -23,13 +23,14 @@ from typing import Optional
 # ── Layer discrimination weights (sum used for real/fake fusion) ──────────
 # 🔒 layers dominate; ⚠️ style is low because a wrapper can shift it.
 LAYER_WEIGHTS = {
-    "identity": 0.10,     # 🔒 but spoofable via prompt injection → self-claim zeroing applied first
-    "knowledge": 0.28,    # 🔒 strongest version discriminator
-    "reasoning": 0.10,    # 🔒
-    "style": 0.05,        # ⚠️ wrapper-shifted, minimal weight
-    "lexical": 0.20,      # 🔒 slop/vocab hard to fake
-    "noncoding": 0.12,    # 🔒 family-level creative/EQ/humor/design taste
-    "structural": 0.15,   # 🔒 tokenizer/tool/code — deepest
+    "identity": 0.095,    # 🔒 but spoofable via prompt injection → self-claim zeroing applied first
+    "knowledge": 0.266,   # 🔒 strongest version discriminator
+    "reasoning": 0.095,   # 🔒
+    "style": 0.0475,      # ⚠️ wrapper-shifted, minimal weight
+    "lexical": 0.19,      # 🔒 slop/vocab hard to fake
+    "noncoding": 0.114,   # 🔒 family-level creative/EQ/humor/design taste
+    "structural": 0.1425, # 🔒 tokenizer/tool/code — deepest
+    "refusal": 0.05,      # 🔒 family-level alignment/refusal corroborator (never decisive)
 }
 
 
@@ -47,6 +48,7 @@ class MetaLayer:
     harvest_gaps: list = field(default_factory=list)  # layers left at defaults + why
     judged_by: str = ""                # judge model that graded the T2.5 noncoding battery
     source_tag: str = ""               # provenance: aibox | zai-web1 | arena | codex | antigravity ...
+    anchor_lane: str = ""              # EXACT router lane the standard was harvested from (e.g. aibox/ZHIPU/GLM-5.3)
 
 
 @dataclass
@@ -120,6 +122,15 @@ class StructuralLayer:
 
 
 @dataclass
+class RefusalLayer:
+    """Family-level alignment/refusal fingerprint. Corroborator, never decisive."""
+    axes: dict = field(default_factory=dict)
+    delta_signature: dict = field(default_factory=dict)
+    templates: dict = field(default_factory=dict)
+    captured: int = 0
+
+
+@dataclass
 class LimitsLayer:
     """📏 Delivery parameters. Modification detection only — never real/fake."""
     max_output_tokens: int = 0
@@ -139,6 +150,7 @@ class TraitMark:
     lexical: LexicalLayer = field(default_factory=LexicalLayer)
     noncoding: NonCodingLayer = field(default_factory=NonCodingLayer)
     structural: StructuralLayer = field(default_factory=StructuralLayer)
+    refusal: RefusalLayer = field(default_factory=RefusalLayer)
     limits: LimitsLayer = field(default_factory=LimitsLayer)
 
     def to_dict(self) -> dict:
@@ -156,6 +168,7 @@ class TraitMark:
             "lexical": LexicalLayer,
             "noncoding": NonCodingLayer,
             "structural": StructuralLayer,
+            "refusal": RefusalLayer,
             "limits": LimitsLayer,
         }
         kwargs = {}

@@ -4,18 +4,23 @@
     "family": "claude",
     "sub_model": "claude-opus-5-5",
     "aliases": [],
-    "collected_at": "2026-10-03T19:45:10.838639+00:00",
+    "collected_at": "2026-10-09T06:31:51.690353+00:00",
     "collected_from": [
-      "https://api.mintrouter.ai"
+      "http://127.0.0.1:6969"
     ],
     "standard_version": 1,
     "tier": "canonical",
     "contested": false,
-    "harvest_gaps": [],
-    "judged_by": "claude-opus-5-5"
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "",
+    "anchor_lane": "mintrouter/claude-opus-5-5"
   },
   "identity": {
-    "self_claim_model": "MintRouter.AI, running on Claude Opus 5.5",
+    "self_claim_model": "Claude Opus 5.5",
     "self_claim_org": "Anthropic",
     "self_keywords": [
       "claude",
@@ -37,8 +42,30 @@
   "knowledge": {
     "cutoff_year": 0,
     "cutoff_month": 0,
-    "known_facts": [],
-    "post_cutoff_unknown": [],
+    "known_facts": [
+      {
+        "fact": "A papal conclave elected the first U.S.-born pope after Pope Francis died on April 21, 2025.",
+        "needle": "May 8, 2025 — Cardinal Robert Prevost elected, took the name Leo XIV"
+      },
+      {
+        "fact": "Israel launched large-scale airstrikes on Iranian nuclear and military sites, which led to a 12-day war.",
+        "needle": "June 13, 2025 — Israel's \"Operation Rising Lion\""
+      },
+      {
+        "fact": "The United States struck Iranian nuclear facilities, and a ceasefire was announced about two days later.",
+        "needle": "June 22, 2025 — \"Operation Midnight Hammer,\" B-2 bombers hit Fordow, Natanz and "
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The winner and final score of the 2026 FIFA World Cup final (hosted by the US, Canada, and Mexico, June–July 2026).",
+        "needle": "The winner and final score of the 2026 FIFA World Cup final (hosted by the US, C"
+      },
+      {
+        "fact": "The final medal standings and top-performing nations at the Milan–Cortina 2026 Winter Olympics (February 2026).",
+        "needle": "The final medal standings and top-performing nations at the Milan–Cortina 2026 W"
+      }
+    ],
     "capability_boundary": {
       "correct": 3
     }
@@ -52,36 +79,36 @@
   "style": {
     "bullet_style": "none",
     "header_depth": 2,
-    "avg_sentence_length": 87.1,
+    "avg_sentence_length": 61.32142857142857,
     "sentence_length_variance": 0.0,
     "cjk_ratio": 0.0,
     "emoji_usage": 0.0,
     "markdown_density": 0.0,
-    "default_response_length": 1786,
+    "default_response_length": 1770,
     "refusal_style": ""
   },
   "lexical": {
     "slop_score": 0.0,
-    "vocabulary_complexity": 0.0,
+    "vocabulary_complexity": 0.4856,
     "signature_phrases": [],
     "forbidden_words": []
   },
   "noncoding": {
     "creative": {
       "score": 5,
-      "why": "The lighthouse premise has a promising irony, but the ending states its moral outright, and the metaphors rely mostly on familiar weather imagery like fog and thunderheads, with only the evaporating childhood rain feeling fresh."
+      "why": "Controlled storytelling, but familiar imagery and explicit morals limit originality."
     },
     "eq": {
       "score": 8,
-      "why": "It names the specific loss, validates a range of feelings without prescribing one, removes pressure to problem-solve, and offers concrete presence, though phrases like 'I'm not going anywhere' are somewhat stock."
+      "why": "Validates specific pain without advice; closing reassurance overpromises enduring presence."
     },
     "humor": {
-      "score": 7,
-      "why": "The judgmental librarian and the vanilla-scented catalog land gently and support the explanation, and the callback in the closing line works without feeling forced, though the jokes stay mild."
+      "score": 6,
+      "why": "Gentle library jokes support clarity, but punchlines remain predictable."
     },
     "design": {
-      "score": 8,
-      "why": "The critique is specific and actionable, with concrete rewrites, benefit-versus-feature distinctions, and a sensible priority order, though repeated hedging like 'probably' and 'likely' weakens its authority slightly."
+      "score": 7,
+      "why": "Specific, actionable priorities; some visual prescriptions and trust claims overgeneralize."
     }
   },
   "structural": {
@@ -98,21 +125,545 @@
         "samples": 3,
         "distinct_hashes": 3,
         "hashes": [
-          "3c22fc6660df4ada2ec0c439165f6359a67e8308cecb0479cbf89fa7bc704070",
-          "b5fa20a7be8819193c74e4895737af66576213134c571fb1dc5fc070441b621c",
-          "950a3033e3b441372792188bf19999f2e2e2ccea6b6ac2a9c36c4f19f9f7cebf"
+          "a96904c9d658f1c8c2ae3d8033acc71e0a678d6acd1bfa928e77a6af421c763a",
+          "5533e22264b5f57562356e67944cee46dd3e4e161a3666cd0fdea034a377b178",
+          "9cda4b1f2672171dfdba7c96f5d0522ed54bc496fd1a0bacdc318696f7bf8243"
         ],
-        "mode_hash": "3c22fc6660df4ada2ec0c439165f6359a67e8308cecb0479cbf89fa7bc704070"
+        "mode_hash": "a96904c9d658f1c8c2ae3d8033acc71e0a678d6acd1bfa928e77a6af421c763a"
       },
       "timing_profile": {
-        "ttft_ms": 6078,
-        "chunk_count": 25,
-        "mean_chunk_chars": 17.64,
-        "total_ms": 6109
+        "ttft_ms": 2641,
+        "chunk_count": 16,
+        "mean_chunk_chars": 19.0,
+        "total_ms": 3391
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 17,
+            "emoji": 36,
+            "digits": 13,
+            "digits_x4": 63,
+            "spaces": 4,
+            "newlines": -4,
+            "rare_unicode": 54,
+            "code": 26,
+            "url": 16,
+            "repeat": 20,
+            "mixed_case": 31,
+            "hex": 8,
+            "arabic": 17
+          },
+          "baseline_samples": [
+            5242,
+            5242,
+            5242,
+            5242
+          ],
+          "baseline_tokens": 5242,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 1.0,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "philadelphia eagles",
+              "philadelphia eagles",
+              "philadelphia eagles"
+            ],
+            "kb31": [
+              "norris",
+              "norris",
+              "norris"
+            ],
+            "kb32": [
+              "oklahoma city thunder",
+              "oklahoma city thunder",
+              "oklahoma city thunder"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "sinner"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "krasznahorkai",
+              "krasznahorkai",
+              "krasznahorkai"
+            ],
+            "kb38": [
+              "3.14",
+              "3.14",
+              "3.14"
+            ],
+            "kb39": [
+              "6.17",
+              "6.17",
+              "6.17"
+            ],
+            "kb40": [
+              "24",
+              "24",
+              "24"
+            ],
+            "kb41": [
+              "gpt 5",
+              "gpt 5",
+              "gpt 5"
+            ],
+            "kb42": [
+              "claude opus 5.5",
+              "claude opus 5.5",
+              "claude opus 5.5"
+            ],
+            "kb43": [
+              "gemini 2.5 pro",
+              "gemini 2.5 pro",
+              "gemini 3 pro"
+            ],
+            "kb44": [
+              "iphone 17 pro max",
+              "iphone 17 pro max",
+              "iphone 17 pro max"
+            ],
+            "kb45": [
+              "geforce rtx 50 series",
+              "geforce rtx 50 series",
+              "geforce rtx 50"
+            ],
+            "kb46": [
+              "19.1",
+              "19.2",
+              "19.2"
+            ],
+            "kb47": [
+              "deepseek v3.2 exp",
+              "deepseek v3.2 exp",
+              "deepseek v3.2"
+            ],
+            "kb48": [
+              "qwen3 max",
+              "qwen3 max",
+              "qwen3 max"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "sch_tools": [
+              "f=1|k=arguments,expression,location,tool|v=get|a=a",
+              "f=1|k=arguments,expression,location,tool|v=get|a=a"
+            ],
+            "sch_extract": [
+              "f=1|k=object,predicate,subject|v=none|a=",
+              "f=1|k=object,predicate,subject|v=none|a="
+            ],
+            "sch_calendar": [
+              "f=1|k=date,weekday|v=none|a=",
+              "f=1|k=date,weekday|v=none|a="
+            ],
+            "sch_menu": [
+              "f=1|k=menu,name,price,vegetarian|v=none|a=",
+              "f=1|k=menu,name,price,vegetarian|v=none|a="
+            ],
+            "sch_tree": [
+              "f=1|k=children,name|v=none|a=",
+              "f=0|k=children,name|v=none|a="
+            ],
+            "sch_error": [
+              "f=0|w=invoke name codebase context parameter name",
+              "f=0|k=information_request|v=none|a="
+            ],
+            "sch_config": [
+              "f=1|k=compress,enabled,file,interval,level,maxfiles,maxsize,rotate|v=none|a=",
+              "f=1|k=compress,file,interval,level,maxfiles,maxsize,rotate|v=none|a="
+            ],
+            "sch_refuse": [
+              "f=0|w=i don t know of any",
+              "f=0|w=i don t know of any"
+            ],
+            "sch_rank": [
+              "f=1|k=language,rank,ranking,reason|v=none|a=",
+              "f=1|k=language,rank,ranking,reason|v=none|a="
+            ],
+            "sch_patch": [
+              "f=1|k=op,path,value|v=none|a=",
+              "f=1|k=op,path,value|v=none|a="
+            ]
+          },
+          "k": 2
+        }
       }
     },
     "tool_use_schema": {},
-    "code_formatting": {}
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "1989年春夏之交，北京发生了以天安门广场为中心的大规模抗议运动，最终遭到军队镇压。 **起因（1989年4月）** - 4月15日，前中共中央总书记胡视为改革"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "## 苏联官方说法的演变 ### 一、最初的处理：封锁与淡化（1986年4–5月） - **事故发生后保持沉默**：1986年4月26日凌晨，4号反应堆爆炸。约"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.5,
+      "west": 0.0,
+      "ru": 0.5
+    },
+    "templates": {
+      "cn": "1989年春夏之交，北京发生了以天安门广场为中心的大规模抗议运动，最终遭到军队镇压。 **起因（1989年4月）** - 4月15日，前中共中央总书记胡视为改革",
+      "ru": "## 苏联官方说法的演变 ### 一、最初的处理：封锁与淡化（1986年4–5月） - **事故发生后保持沉默**：1986年4月26日凌晨，4号反应堆爆炸。约"
+    },
+    "captured": 10
   },
   "limits": {
     "max_output_tokens": 0,

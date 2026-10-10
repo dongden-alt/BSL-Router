@@ -10,6 +10,7 @@ A real version KNOWS its in-cutoff facts and does NOT know post-cutoff facts:
   - missing a known_fact            -> wrong (older) version
 """
 import random
+import re
 
 # Needle node shape in a standard's knowledge layer:
 #   known_facts / post_cutoff_unknown entries may be a bare string (the fact)
@@ -27,6 +28,37 @@ def _norm_entry(entry):
     return s, s
 
 
+def fact_text(entry) -> str:
+    """Hashable fact string for a needle entry (dict OR bare string).
+
+    Standards store needles as {fact, needle} dicts while the suspect-side
+    classifier emits bare fact strings. Comparing the two raw (``dict in set``)
+    raises TypeError: unhashable type -- always compare via this normaliser.
+    """
+    return _norm_entry(entry)[0]
+
+
+_DISCLAIMER_RE = re.compile(
+    r"^\s*(i\s+(don'?t|do\s+not|cannot|can'?t|am\s+not|have\s+no)\b"
+    r"|i'?m\s+not\b|as\s+an\s+ai\b|sorry\b|unfortunately\b)", re.I)
+
+
+def is_disclaimer_fact(text: str) -> bool:
+    """True when a stored 'fact' is really the model's own hedge/disclaimer.
+
+    A harvest once froze "I don't know my training-data cutoff precisely..."
+    as a known_fact: every suspect then 'missed' it, dragging recall down for
+    the genuine model. Such entries carry no knowledge signal.
+    """
+    low = (text or "").strip().lower()
+    if not low:
+        return False
+    if _DISCLAIMER_RE.match(low):
+        return True
+    return "cutoff" in low and any(
+        t in low for t in ("don't know", "do not know", "not sure", "precisely"))
+
+
 def collect_family_needles(candidates: dict) -> list:
     """Gather needles from all candidate standards of a family.
 
@@ -42,13 +74,13 @@ def collect_family_needles(candidates: dict) -> list:
         knowledge = std.get("knowledge") or {}
         for entry in knowledge.get("known_facts") or []:
             fact, needle = _norm_entry(entry)
-            if fact and fact not in seen:
+            if fact and fact not in seen and not is_disclaimer_fact(fact):
                 seen.add(fact)
                 out.append({"fact": fact, "needle": needle,
                             "kind": "known", "source": model_key})
         for entry in knowledge.get("post_cutoff_unknown") or []:
             fact, needle = _norm_entry(entry)
-            if fact and fact not in seen:
+            if fact and fact not in seen and not is_disclaimer_fact(fact):
                 seen.add(fact)
                 out.append({"fact": fact, "needle": needle,
                             "kind": "post_cutoff", "source": model_key})

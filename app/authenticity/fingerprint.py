@@ -1,4 +1,5 @@
 """Feature extraction from probe responses."""
+import datetime
 import re
 from dataclasses import dataclass, field
 
@@ -62,6 +63,14 @@ class FingerprintFeatures:
     #         "json_strict": bool, "json_mode": "supported"|"unsupported"|"error"}
     boundary_signature: dict = field(default_factory=dict)
 
+    # REFUSAL/ALIGNMENT SIGNATURE — family-level corroborator (never
+    # decisive). Populated by the gate's refusal lane (deep mode) from
+    # neutral public-topic probes; mirrors the harvest-time refusal capture
+    # stored on the standard's RefusalLayer.
+    # shape: {"axes": {axis: {"en": {"verdict","template"}, "zh": {...}}},
+    #         "delta": {axis: float}, "templates": {axis: str}, "captured": int}
+    refusal_signature: dict = field(default_factory=dict)
+
     # V6b STABILITY PROFILE — temp=0 identical-probe repetition (3 samples).
     # Populated by the gate's L2 lane (only when abstaining after L1).
     # shape: {"probe_id": str, "samples": 3, "distinct_hashes": int,
@@ -74,6 +83,11 @@ class FingerprintFeatures:
     # shape: {"ttft_ms": int, "chunk_count": int,
     #         "mean_chunk_chars": float, "total_ms": int}
     timing_profile: dict = field(default_factory=dict)
+
+    # STANDARD v2 PROFILE -- judge-free, fake-resistant evidence (see
+    # standard_v2.py): {"tokenizer": {...}, "capability_curve": {...},
+    # "knowledge_bank": {...}}. Populated by the gate's v2 lane (deep mode).
+    v2_profile: dict = field(default_factory=dict)
 
 
 # Self-identification phrases to strip for behavior-column classification
@@ -203,10 +217,26 @@ def extract_features(results: list, family_ref: dict) -> FingerprintFeatures:
 
         elif result.probe_id == "cutoff_probe":
             features.reported_cutoff = content.strip()
-            # Try to extract year/month
-            year_match = re.search(r'(\d{4})', content)
-            if year_match:
-                features.cutoff_year = int(year_match.group(1))
+            # Range-gate: a plausible model knowledge cutoff is 2019..now+1.
+            # The old code took the FIRST 4-digit number anywhere in the reply,
+            # which froze garbage (6647-2, 2007-0) into standards.
+            _now = datetime.datetime.now().year
+            _lo, _hi = 2019, _now + 1
+            _CUTOFF_CTX = ("cutoff", "cut-off", "training data", "trained",
+                           "knowledge", "up to", "as of", "until")
+            # Prefer a year that appears NEAR cutoff vocabulary; the reply may
+            # mention unrelated years (token counts, dates in an example).
+            _cands = []
+            for m in re.finditer(r"\d{4}", content):
+                y = int(m.group(0))
+                if not (_lo <= y <= _hi):
+                    continue
+                _w = content[max(0, m.start() - 90):m.start()].lower()
+                _ctx = any(k in _w for k in _CUTOFF_CTX)
+                _cands.append((_ctx, y, m.start()))
+            _cands.sort(key=lambda c: (not c[0], c[2]))  # context first, then earliest
+            if _cands:
+                features.cutoff_year = _cands[0][1]
             month_names = {
                 "january": 1, "february": 2, "march": 3, "april": 4,
                 "may": 5, "june": 6, "july": 7, "august": 8,
@@ -216,11 +246,19 @@ def extract_features(results: list, family_ref: dict) -> FingerprintFeatures:
                 if name in lower:
                     features.cutoff_month = num
                     break
-            # Also try numeric month
-            month_match = re.search(r'(\d{4})[-/](\d{1,2})', content)
+            # Also try numeric month (YYYY-MM / YYYY/MM).
+            month_match = re.search(r"(\d{4})[-/](\d{1,2})", content)
             if month_match:
-                features.cutoff_year = int(month_match.group(1))
-                features.cutoff_month = int(month_match.group(2))
+                _y = int(month_match.group(1))
+                _m = int(month_match.group(2))
+                if _lo <= _y <= _hi:
+                    features.cutoff_year = _y
+                    if 1 <= _m <= 12:
+                        features.cutoff_month = _m
+            # A month with no year is not a usable cutoff: drop it rather than
+            # freeze a half-signal (the audit showed rows like 2007-0 / 0-2).
+            if features.cutoff_month and not features.cutoff_year:
+                features.cutoff_month = 0
 
         elif result.probe_id == "capability_boundary":
             correct = 0

@@ -409,7 +409,7 @@ def test_t5_truncated_tool_call_drops_and_signals_max_tokens():
     """
     state = {}
     chunks = [
-        {"id": "x", "model": "claude-opus-4-6-thinking", "choices": [{"index": 0, "delta": {"tool_calls": [
+        {"id": "x", "model": "claude-opus-5-5-high", "choices": [{"index": 0, "delta": {"tool_calls": [
             {"index": 0, "id": "call_1", "type": "function", "function": {"name": "write_to_file", "arguments": ""}}
         ]}, "finish_reason": None}]},
         # Truncated argument JSON — unterminated string, but REPAIRABLE.
@@ -461,7 +461,7 @@ def test_t6_model_mapping_synonyms_and_regex_and_tab():
     assert normalize_model("gemini-3.5-flash-high") == "gemini-3-flash-agent"
     # Regex cascade.
     assert normalize_model("gemini-flash-medium-foo") == "gemini-3.5-flash-low"
-    assert normalize_model("opus-mega") == "claude-opus-4-6-thinking"
+    assert normalize_model("opus-mega") == "claude-opus-5-5-high"
     # Tab-completion passthrough.
     assert normalize_model("tab-complete") == "tab-complete"
     assert normalize_model("tab_foo") == "tab_foo"

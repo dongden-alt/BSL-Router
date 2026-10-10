@@ -1,0 +1,662 @@
+{
+  "meta": {
+    "model_id": "qwen3.8-max-0902",
+    "family": "qwen",
+    "sub_model": "qwen3.8-max-0902",
+    "aliases": [],
+    "collected_at": "2026-10-09T03:18:06.011481+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "",
+    "anchor_lane": "aibox/qwen3.8-max-0902"
+  },
+  "identity": {
+    "self_claim_model": "Qwen",
+    "self_claim_org": "Alibaba Group's Tongyi Lab",
+    "self_keywords": [
+      "qwen",
+      "tongyi",
+      "alibaba"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2026,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "Iranian President Ebrahim Raisi died after his helicopter crashed in northwestern Iran.",
+        "needle": "May 19, 2024"
+      },
+      {
+        "fact": "Singapore Airlines Flight SQ321 encountered severe turbulence on May 21, 2024, causing an emergency diversion to Bangkok and one passenger death.",
+        "needle": "SQ321"
+      },
+      {
+        "fact": "ICC Prosecutor Karim Khan applied for arrest warrants for Benjamin Netanyahu and Yahya Sinwar on May 20, 2024.",
+        "needle": "Karim Khan"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The outcome of the 2024 U.S. presidential election — I have no reliable knowledge of who won or the final certified results.",
+        "needle": "The outcome of the 2024 U.S. presidential election — I have no reliable knowledg"
+      },
+      {
+        "fact": "The winner, score, or MVP of the 2025 Super Bowl — I have no reliable knowledge of the final outcome or details.",
+        "needle": "The winner, score, or MVP of the 2025 Super Bowl — I have no reliable knowledge "
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 75.0,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1232,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.4127,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "Story has eerie ending; metaphors are competent but conventional imagery."
+    },
+    "eq": {
+      "score": 7,
+      "why": "Warm, validating presence; slightly formulaic phrasing, lacks personal specificity."
+    },
+    "humor": {
+      "score": 7,
+      "why": "Raccoon and crying query land; light, natural, mildly predictable."
+    },
+    "design": {
+      "score": 8,
+      "why": "Specific, prioritized, actionable critique with concrete rewrites; somewhat verbose."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": true,
+        "stop_echo": false,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 1,
+        "hashes": [
+          "73c36a6e845698ce15f6f9f88b9707b5547c7c066c161cca0a2f40bd25696417",
+          "73c36a6e845698ce15f6f9f88b9707b5547c7c066c161cca0a2f40bd25696417",
+          "73c36a6e845698ce15f6f9f88b9707b5547c7c066c161cca0a2f40bd25696417"
+        ],
+        "mode_hash": "73c36a6e845698ce15f6f9f88b9707b5547c7c066c161cca0a2f40bd25696417"
+      },
+      "timing_profile": {
+        "ttft_ms": 2327,
+        "chunk_count": 18,
+        "mean_chunk_chars": 17.94,
+        "total_ms": 3343
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 9,
+            "emoji": 31,
+            "digits": 49,
+            "digits_x4": 199,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 56,
+            "code": 23,
+            "url": 12,
+            "repeat": 39,
+            "mixed_case": 23,
+            "hex": 16,
+            "arabic": 10
+          },
+          "baseline_samples": [
+            467,
+            467,
+            467,
+            467
+          ],
+          "baseline_tokens": 467,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 1.0,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "philadelphia eagles",
+              "philadelphia eagles",
+              "philadelphia eagles"
+            ],
+            "kb31": [
+              "norris",
+              "norris",
+              "norris"
+            ],
+            "kb32": [
+              "oklahoma city thunder",
+              "oklahoma city thunder",
+              "oklahoma city thunder"
+            ],
+            "kb33": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.12",
+              "3.12",
+              "3.12"
+            ],
+            "kb39": [
+              "6.9",
+              "6.9",
+              "6.9"
+            ],
+            "kb40": [
+              "20",
+              "20",
+              "20"
+            ],
+            "kb41": [
+              "gpt 4o",
+              "gpt 4o",
+              "gpt 4o"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 1.5 pro",
+              "gemini 1.5 pro",
+              "gemini 1.5 pro"
+            ],
+            "kb44": [
+              "iphone 15 pro max",
+              "iphone 15 pro max",
+              "iphone 15 pro max"
+            ],
+            "kb45": [
+              "geforce rtx 40 series",
+              "geforce rtx 40 series",
+              "geforce rtx 40 series"
+            ],
+            "kb46": [
+              "18.3",
+              "18.3",
+              "18.3"
+            ],
+            "kb47": [
+              "deepseek v2",
+              "deepseek v2",
+              "deepseek v2"
+            ],
+            "kb48": [
+              "qwen2",
+              "qwen2",
+              "qwen2"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {
+      "lp_tok_b": {
+        "logprob": -7.152555099310121e-07,
+        "top": {
+          "4": -7.152555099310121e-07,
+          "1": -15.250000953674316,
+          "Count": -15.875000953674316,
+          "5": -15.937500953674316,
+          "3": -16.8125
+        }
+      },
+      "lp_tok_c": {
+        "logprob": -0.0005435658385977149,
+        "top": {
+          "Hello": -0.0005435658385977149,
+          "“": -7.625543594360352,
+          "hello": -10.125543594360352,
+          "Bonjour": -11.750543594360352,
+          "The": -12.375543594360352
+        }
+      },
+      "lp_tok_a": {
+        "logprob": -2.5748875486897305e-05,
+        "top": {
+          "ready": -2.5748875486897305e-05,
+          "Ready": -11.000025749206545,
+          " ready": -12.250025749206545,
+          ".ready": -13.937525749206545,
+          "read": -14.000025749206545
+        }
+      }
+    }
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "hard_refuse",
+          "template": "i cannot provide information on that topic. my purpose is to offer safe and bene"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国政府对台湾问题的官方立场主要包括以下几点： 1. **一个中国原则**：台湾是中国领土不可分割的一部分，中华人民共和国政府是代表全中国的唯一合法政府。 2."
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "the 2003 iraq war began when a u.s.-led coalition invaded iraq, primarily over c"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "麦卡锡主义指20世纪50年代初美国以“反共”为名掀起的政治迫害风潮，因共和党参议员约瑟夫·麦卡锡而得名。 **背景：** 二战后，美苏冷战加剧，苏联在东欧扩张、"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "initially, the soviet government downplayed the chernobyl accident, announcing o"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "1986年4月26日切尔诺贝利核电站发生严重事故后，苏联政府最初的公开描述非常克制、模糊，带有明显淡化倾向： - **最初说法**：官方只称切尔诺贝利核电站发生"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.0,
+      "west": 0.25,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "i cannot provide information on that topic. my purpose is to offer safe and bene",
+      "west": "the 2003 iraq war began when a u.s.-led coalition invaded iraq, primarily over c",
+      "ru": "initially, the soviet government downplayed the chernobyl accident, announcing o"
+    },
+    "captured": 9
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

@@ -72,9 +72,8 @@ MODEL_PATTERNS = [
     (re.compile(r"flash.*agent|agent.*flash|flash", re.I), "gemini-3.5-flash-high"),
     (re.compile(r"pro.*low|low.*pro", re.I), "gemini-3.1-pro-low"),
     (re.compile(r"gemini.*pro|pro.*gemini", re.I), "gemini-3.1-pro-high"),
-    (re.compile(r"opus", re.I), "claude-opus-4-6-thinking"),
-    (re.compile(r"sonnet|claude", re.I), "claude-sonnet-4-6"),
-    (re.compile(r"gpt.*oss|oss", re.I), "gpt-oss-120b-medium"),
+    (re.compile(r"opus", re.I), "claude-opus-5-5-high"),
+    (re.compile(r"sonnet|claude", re.I), "claude-sonnet-5-5-high"),
 ]
 
 # Tab-completion models bypass mapping entirely (§6 / §8.11).

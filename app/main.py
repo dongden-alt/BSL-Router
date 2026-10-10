@@ -1454,15 +1454,24 @@ def load_config():
 # 2026-09-25: the 3 Gemini 3.5 Flash slots were retired (the 3.6 Flash family
 # supersedes them). They live in _ANTIGRAVITY_OBSOLETE_SLOTS so saved configs
 # auto-purge them on the next validation pass.
+# 2026-10-06: the Claude Sonnet 4.6, Claude Opus 4.6 (Thinking) and GPT-OSS
+# 120B (Medium) slots were retired per the refreshed Antigravity IDE menu.
+# The two Claude slots migrate (saved configs retarget to the new 5.5 High
+# slots via _ANTIGRAVITY_LEGACY_SLOT_MIGRATIONS); GPT-OSS has no successor
+# slot and lives in _ANTIGRAVITY_OBSOLETE_SLOTS so saved configs auto-purge
+# it on the next validation pass.
 ANTIGRAVITY_INTEGRATION_SLOTS = (
     "gemini-3.6-flash-high",
     "gemini-3.6-flash-medium",
     "gemini-3.6-flash-low",
     "gemini-3.1-pro-low",
     "gemini-3.1-pro-high",
-    "claude-sonnet-4-6",
-    "claude-opus-4-6-thinking",
-    "gpt-oss-120b-medium",
+    "claude-opus-5-5-low",
+    "claude-opus-5-5-medium",
+    "claude-opus-5-5-high",
+    "claude-sonnet-5-5-low",
+    "claude-sonnet-5-5-medium",
+    "claude-sonnet-5-5-high",
 )
 _ANTIGRAVITY_INTEGRATION_SLOT_SET = frozenset(ANTIGRAVITY_INTEGRATION_SLOTS)
 # The legacy ``gemini-3-flash-agent`` alias migrates to the surviving Flash-high
@@ -1475,6 +1484,11 @@ _ANTIGRAVITY_LEGACY_SLOT_MIGRATIONS = {
     # flash / glm-5.3-flash were offered as fallbacks but are not needed while
     # gemini-3.6-flash-high stays live.
     "gemini-3-flash": "gemini-3.6-flash-high",
+    # 2026-10-06 (user directive): the Claude 4.6 slots were retired upstream
+    # (refreshed Antigravity IDE menu). Sonnet 4.6 was the Thinking variant
+    # ≈ high effort; both retarget to the new 5.5 High slots.
+    "claude-sonnet-4-6": "claude-sonnet-5-5-high",
+    "claude-opus-4-6-thinking": "claude-opus-5-5-high",
 }
 _ANTIGRAVITY_OBSOLETE_SLOTS = frozenset({
     "gemini-default",
@@ -1484,6 +1498,8 @@ _ANTIGRAVITY_OBSOLETE_SLOTS = frozenset({
     "gemini-3.5-flash-medium",
     "gemini-3.5-flash-high",
     "gemini-3.5-flash-low",
+    # 2026-10-06: no GPT-OSS successor slot exists; purge saved mappings.
+    "gpt-oss-120b-medium",
 })
 _ANTIGRAVITY_NATIVE_BASE_URL = "https://daily-cloudcode-pa.googleapis.com"
 _ANTIGRAVITY_NATIVE_HOSTS = frozenset({
@@ -4256,6 +4272,44 @@ async def start_auth_harvest(request: Request):
     judge_key = _r_key or (judge.get("api_key") or "").strip()
     judge_model = (judge.get("model") or cfg.get("judge_model") or "").strip()
 
+    # HARD RULE: the judge must be a DIFFERENT family from the suspect (never
+    # the suspect itself). A same-family judge inflates non-coding scores; a
+    # self-judge is circular. Drop an offending judge and leave an honest
+    # no_judge gap rather than freeze a biased standard.
+    try:
+        _sf = detect_family(model_id) or ""
+        _jf = detect_family(judge_model) or ""
+        if _sf and judge_model and (_jf == _sf or judge_model == model_id):
+            logger.warning("AUTH harvest: judge %s (family=%s) conflicts with "
+                           "suspect family=%s — dropping judge", judge_model,
+                           _jf, _sf)
+            judge_model = ""
+    except Exception:
+        pass
+
+    # HARD RULE (2026-10-08): canonical standards (source_tag empty) may only be
+    # benchmarked off TRUSTED sources. Untrusted relays/proxies (vsllm, a6api,
+    # agentrouter, sharellm, chat2api, ...) must never be frozen into a benchmark.
+    # Provider-tagged harvests (source_tag set) are reference snapshots and are
+    # exempt — they don't enter the canonical match pool.
+    _TRUSTED_SRC = ("codex", "antigravity", "mintrouter", "aibox")
+    if not source_tag:
+        _src = (model_id.split("/")[0] if "/" in model_id else "").strip().lower()
+        if _src not in _TRUSTED_SRC:
+            return JSONResponse(
+                {"error": f"untrusted source '{_src or model_id}' — canonical "
+                          f"standards may only be harvested from: "
+                          f"{', '.join(_TRUSTED_SRC)}",
+                 "refused": True},
+                status_code=400)
+        # LANE POLICY (2026-10-08): a trusted SOURCE is not enough -- the family's
+        # STANDARD lane is mandatory (glm -> aibox/ZHIPU/, kimi -> aibox/kimi/,
+        # deepseek -> aibox/ds/ ...). See app/authenticity/lanes.py.
+        from app.authenticity.lanes import lane_violation as _lane_violation
+        _lv = _lane_violation(model_id)
+        if _lv:
+            return JSONResponse({"error": _lv, "refused": True}, status_code=400)
+
     _AUTH_HARVEST_STATUS[model_id] = {"status": "running", "detail": ""}
 
     async def _job():
@@ -4283,7 +4337,7 @@ async def start_auth_harvest(request: Request):
     return JSONResponse({"started": True, "model_id": model_id})
 
 
-@app.get("/api/authenticity/standards/harvest/status/{model_id}")
+@app.get("/api/authenticity/standards/harvest/status/{model_id:path}")
 async def auth_harvest_status(model_id: str):
     return JSONResponse(_AUTH_HARVEST_STATUS.get(model_id, {"status": "unknown", "detail": ""}))
 
@@ -4377,6 +4431,10 @@ async def run_auth_test(request: Request):
     endpoint, api_key = _router_self_endpoint_and_key()
 
     cfg = dict(_auth_cfg_get())
+    cfg.setdefault("probe_ttft_s", 75)
+    cfg.setdefault("probe_idle_s", 30)
+    cfg.setdefault("probe_retries", 2)  # was 1; cold-start after restart needs 2
+    cfg.setdefault("total_timeout_s", 240)
 
     # Bug 3 fix: pass the MODE to the gate (it derives max_tier itself) instead
     # of setting cfg["max_tier"] which the gate never read. auto/normal run the
@@ -4384,6 +4442,13 @@ async def run_auth_test(request: Request):
     gate_mode = "deep" if mode == "deep" else "normal"
     if force_rerun:
         cfg["no_cache"] = True   # bug 4: bypass the verdict cache
+
+    # Logic-hole fix (2026-10-08): a cancel flag left set by a PREVIOUS run — or a
+    # cancel POSTed just before this one started — made THIS run abort immediately
+    # and report verdict=cancelled / confidence=0. The flag means "cancel the run
+    # that was in flight when it was set", never "veto the next run", so clear it on
+    # entry. `finally` below already discards it for the normal path.
+    _AUTH_TEST_CANCEL.discard(model_id)
 
     _AUTH_TEST_STATUS[model_id] = {"step": "start", "label": "Queued",
                                    "ts": __import__("time").time()}
@@ -4402,7 +4467,19 @@ async def run_auth_test(request: Request):
         )
         _auth_persist_verdict(model_id, verdict)
         # Auto-escalation: ambiguous shallow result → re-run ONCE in deep mode.
-        if mode == "auto" and verdict.verdict in ("unverifiable", "family_match"):
+        # GUARD: don't escalate when the normal test already produced a strong
+        # sub-model match (score >= 0.70 with a named best_model) — that's
+        # sufficient evidence without burning the deep battery.
+        _ev = verdict.evidence if isinstance(verdict.evidence, dict) else {}
+        _strong_match = (verdict.submodel_score >= 0.70 and bool(verdict.submodel_match))
+        # A non-separable TIE between sub-version standards is ambiguous BY
+        # DEFINITION: a high score on a tied pair is false confidence, not
+        # evidence (the qwen3-8-max vs -0902 / opus-5 vs opus-5-5 failure).
+        # So alias_group OVERRIDES the strong-match guard below.
+        _alias = list((_ev.get("match_dimensions", {}) or {}).get("_alias_group") or [])
+        _ambiguous = verdict.verdict in ("unverifiable", "family_match") and not _strong_match
+        if (mode == "auto" and (_ambiguous or bool(_alias))
+                and model_id not in _AUTH_TEST_CANCEL):
             _AUTH_TEST_STATUS[model_id] = {"step": "escalate",
                                            "label": "Ambiguous — escalating to Deep",
                                            "ts": __import__("time").time()}
@@ -9627,7 +9704,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             return agen
         return afz_guard(agen, sid, **afz_kwargs)
 
-    def _midstream_transport_fallback(stats, _emit, status_code: int, err: str) -> None:
+    def _midstream_transport_fallback(
+        stats, _emit, status_code: int, err: str, partial_text: str = ""
+    ) -> None:
         """Normalize a mid-stream transport death into the ONE fallback signal.
 
         BUG J (2026-08-04) — THE "freeze on any error" ROOT CAUSE.
@@ -9644,12 +9723,19 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         as every other recoverable failure, so the existing catchers advance the
         chain exactly as they do for a non-200 or a stall.
 
-        THE `out == 0` GATE IS THE CRUX. With zero content tokens delivered,
-        nothing the client can render has been sent, so failover is invisible
-        and correct. Once content HAS been delivered, splicing a second
-        provider's response into the same live parser would corrupt the
-        transcript — so we fall through and let the caller emit its terminal
-        frame instead. Never retry after bytes of model output.
+        DELIVERED CONTENT IS THE CRUX (2026-10-09). The old `out == 0` gate
+        could never fire: `stats["out"]` is fed exclusively by the terminal
+        usage frame, and the socket dies BEFORE that frame ever arrives, so
+        `out` is 0 on every mid-stream death and the flag below never armed.
+        The discriminator is now OR-ed evidence of renderable content the
+        client already received: `_emit.emitted` (set only for real content —
+        keepalive/scaffolding deliberately does not set it), a non-empty
+        `partial_text` from the truncation detector, and `out > 0` retained
+        purely as a back-compat term. With zero delivered content, failover
+        is invisible and correct. Once content HAS been delivered, splicing a
+        second provider's response into the same live parser would corrupt
+        the transcript — so we fall through and let the caller emit its
+        terminal frame instead. Never retry after bytes of model output.
 
         Closes over _retry_state / active_chain / _cache_breakpoints /
         original_model / _chain_deadline / model / target_model /
@@ -9658,6 +9744,18 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         """
         stats["status"] = status_code
         stats["error"] = err
+        # DELIVERED-CONTENT evidence (2026-10-09, DEFECT B1): OR-ed priority —
+        # real renderable emissions, then detector partial text, then the
+        # usage-frame-derived `out` as a back-compat last resort. `out` alone
+        # is always 0 on a mid-stream death (the terminal usage frame never
+        # arrives), so it can no longer be the sole gate.
+        _delivered = bool(getattr(_emit, "emitted", False)) or bool(partial_text) or stats.get("out", 0) > 0
+        # ENTRY gate (2026-10-09): the ORIGINAL `out == 0` test, NOT `_delivered`.
+        # `partial_text` accumulates thought/reasoning deltas, and the Gemini lane
+        # deliberately does NOT mark_emitted() thought frames buffered pre-commit —
+        # so a thought-only death has out=0/emitted=False but non-empty partial_text
+        # and MUST still reach this failover block (may_fallback() below is the real
+        # emission veto; the FLAG gate further down is where `_delivered` decides).
         if stats.get("out", 0) == 0:
             _mid_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
             if active_chain and _mid_next_idx < len(active_chain):
@@ -9702,20 +9800,78 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     reason="midstream_transport_chain_exhausted",
                 )
         # No fallback taken: bench the dead leaf so auto-heal avoids it next time.
-        # MIDSTREAM CONTINUATION (2026-09-23): on out>0 the BUG J guard above
-        # deliberately declines to splice a SECOND provider into the live parser
-        # (transcript corruption). Instead, flag the death so the post-loop
+        # MIDSTREAM CONTINUATION (2026-10-09): the flag below is set on
+        # DELIVERED-CONTENT evidence (`_delivered` — emitted frames, detector
+        # partial_text, or out>0), NOT on `out` alone: `out` is
+        # usage-frame-derived and therefore 0 on every mid-stream death, so an
+        # out>0 test could never arm it. A set flag routes the post-loop
         # AntiStop continuation splice — which resumes the SAME provider/model
         # from the partial text already accumulated, no live-parser splice —
-        # can complete the response. out==0 takes the combo failover above and
-        # must NOT set this flag. The splice site gates the actual behaviour on
-        # _combo_infinite_retry_enabled(config) so the opt-out contract holds.
-        if stats.get("out", 0) > 0:
+        # so a complete answer is still delivered instead of a terminal 502.
+        # The ENTRY gate above remains `out == 0` (legacy); emission-safety is
+        # may_fallback()'s veto inside the block, so delivered-content deaths
+        # fall through to here and set the flag. The splice site gates the
+        # actual behaviour on _combo_infinite_retry_enabled(config) so the
+        # opt-out contract holds.
+        if _delivered:
             stats[TRANSPORT_DIED_PARTIAL_FLAG] = True
         try:
             bench_leaf(config, provider_name, target_model, status_code, err, stats.get("out", 0))
         except Exception:
             pass
+
+    def _continuation_status_guard():
+        """Guard stats against the stale 502 a COMPLETED continuation would leave.
+
+        DEFECT B2 (2026-10-09, the reported "force stop 502"): every splice site
+        used to leave `stats` at the 502 the transport death had written, so the
+        `finally:` obs.log_request printed an ERROR row for a request that had
+        actually completed, and the Gemini lane's `400 <= status` block
+        (~L12188-12197) emitted a client-visible terminal_error_frame(502) on
+        top of a COMPLETE answer. This helper captures the pre-splice
+        status/error plus delivered-content baselines and returns _commit,
+        which restores stats to 200/None and pops TRANSPORT_DIED_PARTIAL_FLAG
+        only when the splice provably delivered content AND stats' status/error
+        still equal the captured pre-splice values. That third condition is
+        critical: the Anthropic and Gemini continuation loops run INSIDE
+        _transport_guarded, so if the continuation itself dies mid-way,
+        _midstream_transport_fallback runs again and writes a FRESH 502 + error
+        into stats — restoring 200 then would mask that genuine second death,
+        so _commit returns without touching stats when status/error changed.
+
+        WHY the caller passes counters in instead of _commit reading _emit: the
+        Gemini site drains through an asyncio.Queue (_drain_openai_source -> _q
+        -> outer pump ~L12593) and the Anthropic site through StreamNormalizer,
+        so chunks can still be in flight when _commit runs and _emit.byte_count
+        / _detector.partial_text can LAG behind what was actually yielded. The
+        splice loop's local chunk/byte counting is the deterministic signal.
+        """
+        _pre_status = stats.get("status")
+        _pre_error = stats.get("error")
+        _pre_text_len = len(_detector.partial_text or "")
+        _pre_bytes = int(getattr(_emit, "byte_count", 0) or 0)
+
+        def _commit(chunks_yielded: int, cont_bytes: int) -> None:
+            if chunks_yielded <= 0:
+                return
+            if not (
+                cont_bytes > 0
+                or len(_detector.partial_text or "") > _pre_text_len
+                or int(getattr(_emit, "byte_count", 0) or 0) > _pre_bytes
+            ):
+                return
+            if stats.get("status") != _pre_status or stats.get("error") != _pre_error:
+                return
+            stats["status"] = 200
+            stats["error"] = None
+            stats.pop(TRANSPORT_DIED_PARTIAL_FLAG, None)
+            print(
+                f"[AntiStop] continuation restored status 200 after transport death "
+                f"({len(_detector.partial_text or '')} chars)",
+                flush=True,
+            )
+
+        return _commit
 
     async def _transport_guarded(_agen, stats, _emit, status_code: int = 502):
         """Wrap a raw upstream iterator so transport death routes to fallback.
@@ -9737,7 +9893,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             raise
         except (httpx.RemoteProtocolError, httpx.TransportError, httpx.TimeoutException, TimeoutError, asyncio.TimeoutError) as _mid_err:
             _midstream_transport_fallback(
-                stats, _emit, status_code, f"midstream_transport: {_mid_err}"
+                stats, _emit, status_code, f"midstream_transport: {_mid_err}",
+                partial_text=getattr(_detector, "partial_text", "") or "",
             )
 
     client_label = "gemini" if client_wants_gemini else ("anthropic" if client_wants_anthropic else "openai")
@@ -10379,7 +10536,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     # instead of falling through to `except Exception` (which
                     # never advanced the chain and left the IDE waiting).
                     _midstream_transport_fallback(
-                        stats, _emit, 502, f"midstream_transport: {_mid_err}"
+                        stats, _emit, 502, f"midstream_transport: {_mid_err}",
+                        partial_text=_detector.partial_text or "",
                     )
                     # Not re-raised: fallback declined (content already sent, or
                     # chain exhausted). Fall through to the terminal frame below.
@@ -10425,6 +10583,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     used=_cont_state["used"],
                 ):
                     _cont_state["used"] = True
+                    _cont_commit = _continuation_status_guard()
                     try:
                         _cont_payload = build_continuation_stream_payload(upstream_payload, _detector.partial_text)
                         if _cont_payload:
@@ -10444,8 +10603,21 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 stream_req=_build_req(_cont_payload), stream_payload=_cont_payload
                             )
                             _cont_resp.raise_for_status()
+                            _cont_chunks = 0
+                            _cont_bytes = 0
                             try:
                                 async for _cc in _pump(_cont_resp.aiter_raw(), _emit, _attempt, "openai-cont"):
+                                    # Feed the continuation through the detector (2026-10-09):
+                                    # this lane never fed it, so partial_text did not grow
+                                    # (useless as a success signal here), _backfill_missing_usage
+                                    # below could not see the delivered continuation text, and
+                                    # the zero-output guard could then misfire a combo fallback
+                                    # AFTER a restored 200. Feeding is safe:
+                                    # build_continuation_stream_payload already consumed the
+                                    # pre-splice text above.
+                                    _detector.feed(_cc)
+                                    _cont_chunks += 1
+                                    _cont_bytes += len(_cc) if _cc else 0
                                     _emit.mark_emitted(_cc)
                                     yield _cc
                             finally:
@@ -10453,7 +10625,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     await _cont_resp.aclose()
                                 except Exception:
                                     pass
+                        # Successful splice: restore the death's 502 to 200 so the
+                        # finally-log and the 4xx terminal-frame guard report the
+                        # truth (DEFECT B2). A failed splice keeps 502 truthfully.
+                        _cont_commit(_cont_chunks, _cont_bytes)
                     except Exception as _ce:
+                        # No _cont_commit here: a failed splice must keep reporting
+                        # the 502 the transport death wrote (stats stay untouched).
                         print(f"[AntiStop] continuation failed (fail-open): {_ce}", flush=True)
                 # USAGE BACKFILL (2026-09-27): aggregator relays (MintRouter)
                 # stream content but drop the terminal usage frame, leaving
@@ -11111,6 +11289,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             used=_cont_state["used"],
                         ):
                             _cont_state["used"] = True
+                            _cont_commit = _continuation_status_guard()
                             try:
                                 _cont_payload = build_continuation_stream_payload(upstream_payload, _detector.partial_text)
                                 if _cont_payload:
@@ -11130,14 +11309,26 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                         stream_req=_build_req(_cont_payload), stream_payload=_cont_payload
                                     )
                                     _cont_resp.raise_for_status()
+                                    _cont_chunks = 0
+                                    _cont_bytes = 0
                                     try:
+                                        # No _detector.feed here: this lane's chunks reach the
+                                        # detector through the outer normalizer/pump path, and
+                                        # feeding raw OpenAI SSE into a lane whose client output
+                                        # is Anthropic SSE would double-count.
                                         async for _cc in _transport_guarded(_pump(_cont_resp.aiter_raw(), _emit, _attempt, "anthropic-egress-cont"), stats, _emit):
+                                            _cont_chunks += 1
+                                            _cont_bytes += len(_cc) if _cc else 0
                                             yield _cc
                                     finally:
                                         try:
                                             await _cont_resp.aclose()
                                         except Exception:
                                             pass
+                                    # Successful splice: restore the death's 502 to 200 (DEFECT
+                                    # B2) so the finally-log and the 4xx terminal-frame guard
+                                    # report the truth. A failed splice keeps 502 truthfully.
+                                    _cont_commit(_cont_chunks, _cont_bytes)
                             except Exception as _ce:
                                 print(f"[AntiStop] continuation failed (fail-open): {_ce}", flush=True)
 
@@ -11640,6 +11831,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             used=_cont_state["used"],
                         ):
                             _cont_state["used"] = True
+                            _cont_commit = _continuation_status_guard()
                             try:
                                 _cont_payload = build_continuation_stream_payload(upstream_payload, _detector.partial_text)
                                 if _cont_payload:
@@ -11659,19 +11851,30 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                         stream_req=_build_req(_cont_payload), stream_payload=_cont_payload
                                     )
                                     _cont_resp.raise_for_status()
+                                    _cont_chunks = 0
+                                    _cont_bytes = 0
                                     try:
                                         _cont_raw = _transport_guarded(_pump(_cont_resp.aiter_raw(), _emit, 0, "gemini-cont"), stats, _emit)
                                         if _is_anthropic_fmt:
                                             _cont_src = _normalizer.convert_anthropic_to_openai(_cont_raw)
                                         else:
                                             _cont_src = _cont_raw
+                                        # No _detector.feed here: chunks reach the detector via
+                                        # the outer pump (the asyncio.Queue drain ~L12593), so
+                                        # feeding raw upstream frames here would double-count.
                                         async for _cc in _cont_src:
+                                            _cont_chunks += 1
+                                            _cont_bytes += len(_cc) if _cc else 0
                                             yield _cc
                                     finally:
                                         try:
                                             await _cont_resp.aclose()
                                         except Exception:
                                             pass
+                                    # Successful splice: restore the death's 502 to 200 (DEFECT
+                                    # B2) so the finally-log and the 4xx terminal-frame guard
+                                    # below report the truth. A failed splice keeps 502 truthfully.
+                                    _cont_commit(_cont_chunks, _cont_bytes)
                             except Exception as _ce:
                                 print(f"[AntiStop] continuation failed (fail-open): {_ce}", flush=True)
 

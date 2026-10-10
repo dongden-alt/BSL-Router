@@ -201,20 +201,20 @@ class TestPlanShape(unittest.TestCase):
 
     def test_kimi_has_gold_double_depth(self):
         by_tier = {e["tier"]: e["pinned_model"] for e in rfd.PLAN if e["family"] == "kimi"}
-        self.assertEqual(by_tier.get("gold"), "aibox/kimi-k3")
-        self.assertEqual(by_tier.get("double"), "mintrouter/kimi-k3")
+        self.assertEqual(by_tier.get("gold"), "aibox/kimi/kimi-k3")
+        self.assertEqual(by_tier.get("double"), "aibox/kimi-k3")
         self.assertEqual(by_tier.get("depth"), "chat2api/workbuddy-web/kimi-k3")
 
     def test_glm_has_gold_double_depth(self):
         by_tier = {e["tier"]: e["pinned_model"] for e in rfd.PLAN if e["family"] == "glm"}
-        self.assertEqual(by_tier.get("gold"), "aibox/glm-5.3")
+        self.assertEqual(by_tier.get("gold"), "aibox/ZHIPU/GLM-5.3")
         self.assertEqual(by_tier.get("double"), "mintrouter/glm-5.3")
         self.assertEqual(by_tier.get("depth"), "chat2api/zai-web1/glm-5.3-flash-max")
 
     def test_glm_gold_uses_plain_5_3_not_prime(self):
         golds = [e["pinned_model"] for e in rfd.PLAN
                  if e["family"] == "glm" and e["tier"] == "gold"]
-        self.assertEqual(golds, ["aibox/glm-5.3"])
+        self.assertEqual(golds, ["aibox/ZHIPU/GLM-5.3"])
 
     def test_gemini_reference_models(self):
         refs = [e["pinned_model"] for e in rfd.PLAN if e["family"] == "gemini"]
@@ -419,13 +419,13 @@ class TestRunOrchestration(WithTmpOut):
         with mock.patch("builtins.print"):
             results = rfd.run("kimi", call=caller, out_path=self.out_path)
         self.assertEqual(sorted(k for k in results if k != "_consensus"),
-                         ["aibox/kimi-k3", "chat2api/workbuddy-web/kimi-k3",
-                          "mintrouter/kimi-k3"])
+                         ["aibox/kimi-k3", "aibox/kimi/kimi-k3",
+                          "chat2api/workbuddy-web/kimi-k3"])
         # persisted file matches returned results
         on_disk = json.load(open(self.out_path, encoding="utf-8"))
+        self.assertEqual(on_disk["aibox/kimi/kimi-k3"]["ceiling"], "16K")
+        self.assertEqual(on_disk["aibox/kimi/kimi-k3"]["tokenizer"]["ptok"], 77)
         self.assertEqual(on_disk["aibox/kimi-k3"]["ceiling"], "16K")
-        self.assertEqual(on_disk["aibox/kimi-k3"]["tokenizer"]["ptok"], 77)
-        self.assertEqual(on_disk["mintrouter/kimi-k3"]["ceiling"], "16K")
         # consensus block present for kimi
         self.assertIn("kimi", on_disk["_consensus"])
         ck = on_disk["_consensus"]["kimi"]

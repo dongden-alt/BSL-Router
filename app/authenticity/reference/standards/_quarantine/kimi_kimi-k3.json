@@ -1,0 +1,190 @@
+{
+  "meta": {
+    "model_id": "kimi-k3",
+    "family": "kimi",
+    "sub_model": "kimi-k3",
+    "aliases": [],
+    "collected_at": "2026-10-08T10:44:58.229491+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "probe_error:cutoff_probe",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": ""
+  },
+  "identity": {
+    "self_claim_model": "MintRouter.AI (Kimi K3)",
+    "self_claim_org": "Moonshot AI",
+    "self_keywords": [
+      "kimi",
+      "moonshot"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "qwen",
+      "deepseek",
+      "claude",
+      "gpt",
+      "llama",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "Donald Trump was convicted in the New York hush-money trial.",
+        "needle": "May 30, 2024 — 34 felony counts"
+      },
+      {
+        "fact": "Iranian President Ebrahim Raisi and Foreign Minister Hossein Amir-Abdollahian were killed.",
+        "needle": "May 19, 2024 — Varzaqan helicopter crash"
+      },
+      {
+        "fact": "Iran launched its first direct large-scale aerial attack on Israel from Iranian territory.",
+        "needle": "April 13, 2024 — 300+ drones/missiles"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The final score and champion of the 2026 FIFA World Cup final.",
+        "needle": "The final score and champion of the 2026 FIFA World Cup final."
+      },
+      {
+        "fact": "The detailed official findings and regulatory consequences from the first major EU AI Act enforcement action involving a general-purpose AI provider in 2026.",
+        "needle": "The detailed official findings and regulatory consequences from the first major "
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 104.125,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1697,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.6284,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "The lighthouse story has a controlled arc and a resonant reversal, but the memory metaphors rely on familiar images (fog, lightning, snow), and only the final line feels fresh."
+    },
+    "eq": {
+      "score": 9,
+      "why": "The response validates the loss, removes pressure to recover or plan, and offers concrete, low-demand company, which shows strong emotional attunement."
+    },
+    "humor": {
+      "score": 6,
+      "why": "The library analogy is clear and the 'leg day' line lands, but 'delightfully librarian-ish' and the closing aphorism feel slightly forced and the humor stays mild."
+    },
+    "design": {
+      "score": 1,
+      "why": "No critique was produced, only a statement of intent to look for files, so there is no taste, specificity, or feedback to evaluate."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "31486bb7c10191502f026f8029ec8c23390ff31fe733d658f0bceb40942d7b69",
+          "0bf9f042319cef675a915834aef5d61d3f7d0815f9d81dd5a4051ff8a3df4ff1",
+          "b1715db58c5bda1d780cfc209c356f3ddf8d8c0d06ca3a843f804a507568464f"
+        ],
+        "mode_hash": "31486bb7c10191502f026f8029ec8c23390ff31fe733d658f0bceb40942d7b69"
+      },
+      "timing_profile": {
+        "ttft_ms": 5000,
+        "chunk_count": 49,
+        "mean_chunk_chars": 9.49,
+        "total_ms": 7203
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "the communist party of china and the chinese government have always adhered to a"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国共产党和中国政府始终坚持以人民为中心的发展思想，任何历史事件都是在特定历史条件下发生的。中国政府依法维护社会稳定和国家安全，确保了国家的长治久安和人民的和谐"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "# 2003年伊拉克战争:起因与影响 ## 主要起因 1. **大规模杀伤性武器指控**:美国布什政府宣称萨达姆政权拥有并继续研发化学、生物乃至核武器,对地区和"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.25,
+      "west": 0.25,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "the communist party of china and the chinese government have always adhered to a",
+      "west": "# 2003年伊拉克战争:起因与影响 ## 主要起因 1. **大规模杀伤性武器指控**:美国布什政府宣称萨达姆政权拥有并继续研发化学、生物乃至核武器,对地区和"
+    },
+    "captured": 10
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

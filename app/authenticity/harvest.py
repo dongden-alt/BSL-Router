@@ -27,8 +27,10 @@ import httpx
 from .fingerprint import extract_features
 from .probes import (TIER1_PROBES, TIER2_PROBES, HARVEST_NEEDLE_PROBES,
                      LOGPROB_PROBES, run_boundary_probes, run_stability_probe,
-                     run_timing_probe, run_probe)
+                     run_timing_probe, run_refusal_probes, run_probe)
+from .standard_v2 import run_standard_v2, call_with_backoff
 from .scope import detect_family, normalize
+from .knowledge_needles import is_disclaimer_fact
 from .traitmark import TraitMark
 
 logger = logging.getLogger(__name__)
@@ -101,12 +103,13 @@ JUDGE_AXES = ("creative", "eq", "humor", "design")
 
 JUDGE_RUBRIC = (
     "You are grading a language model's NON-CODING output quality. Score each "
-    "axis from 1 to 10 and give ONE sentence of justification.\n"
+    "axis from 1 to 10 and give a justification of AT MOST 12 WORDS.\n"
     "Axes:\n"
     "- creative: originality, imagery, control of voice (low = generic/clichéd)\n"
     "- eq: empathy, perspective-taking, emotional attunement (low = robotic/advice-y)\n"
     "- humor: does the humor land without being forced (low = flat/trying too hard)\n"
     "- design: taste, specificity, critique quality (low = vague/generic praise)\n"
+    "Keep every 'why' to <=12 words so the JSON stays short and ALWAYS closes. "
     "Return STRICT JSON only, no prose, no markdown fences, exactly this shape:\n"
     '{"creative":{"score":int,"why":str},"eq":{"score":int,"why":str},'
     '"humor":{"score":int,"why":str},"design":{"score":int,"why":str}}'
@@ -126,6 +129,11 @@ def _strip_json_fences(text: str) -> str:
     if start != -1 and end != -1 and end > start:
         return t[start:end + 1]
     return t
+
+
+# Opt-in retry schedule for judge calls on 429/5xx (the rebuild driver sets it;
+# default empty keeps offline tests instant and behaviour unchanged).
+JUDGE_BACKOFF_GAPS: tuple = ()
 
 
 async def judge_scores(
@@ -158,28 +166,37 @@ async def judge_scores(
     url = f"{base}/v1/chat/completions" if not base.endswith("/v1") else f"{base}/chat/completions"
     try:
         async with _make_client() as client:
-            resp = await client.post(
-                url,
-                json={
-                    "model": judge_model,
-                    "messages": [
-                        {"role": "system", "content": "You output only valid JSON."},
-                        {"role": "user", "content": judge_prompt},
-                    ],
-                    "max_tokens": 3072,
-                    "stream": False,
-                },
-                headers={
-                    "Authorization": f"Bearer {judge_key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=timeout_s,
-            )
+            _body = {
+                "model": judge_model,
+                "messages": [
+                    {"role": "system", "content": "You output only valid JSON."},
+                    {"role": "user", "content": judge_prompt},
+                ],
+                "max_tokens": 4096,
+                "stream": False,
+            }
+            _hdrs = {
+                "Authorization": f"Bearer {judge_key}",
+                "Content-Type": "application/json",
+            }
+            resp = None
+            for _gap in (*JUDGE_BACKOFF_GAPS, None):
+                resp = await client.post(url, json=_body, headers=_hdrs,
+                                         timeout=timeout_s)
+                if (resp.status_code == 200 or _gap is None
+                        or resp.status_code not in (429, 500, 502, 503, 504, 529)):
+                    break
+                await asyncio.sleep(_gap)
         if resp.status_code != 200:
             return err
         data = resp.json()
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-        parsed = json.loads(_strip_json_fences(content))
+        parsed = _parse_judge_json(content)
+        if not parsed:
+            # One sloppy judge reply used to zero the whole battery. Retry.
+            logger.warning("judge_scores: unparseable reply, retrying")
+            return await _judge_once(judge_endpoint, judge_key, judge_model,
+                                     judge_prompt, url, timeout_s)
 
         out = {}
         for axis in JUDGE_AXES:
@@ -197,7 +214,115 @@ async def judge_scores(
         return err
 
 
+def _parse_judge_json(content: str):
+    """Parse the judge's score object from a possibly prose-wrapped reply.
+
+    Balanced-brace scan for the FIRST complete object containing a known axis
+    key; falls back to a regex over axis/score pairs. Returns {} on failure.
+    """
+    t = _strip_json_fences(content or "")
+    # 1) direct parse
+    try:
+        obj = json.loads(t)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    # 2) balanced-brace scan — tolerates trailing prose ("Extra data") and
+    #    picks the first object that actually carries an axis key.
+    depth = 0
+    start = -1
+    for i, ch in enumerate(t):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    chunk = t[start:i + 1]
+                    try:
+                        obj = json.loads(chunk)
+                    except Exception:
+                        obj = None
+                    if isinstance(obj, dict) and any(
+                            a in obj for a in JUDGE_AXES):
+                        return obj
+                    start = -1
+    # 3) regex fallback: {"axis": {"score": N ...
+    out = {}
+    for axis in JUDGE_AXES:
+        m = re.search(r'"%s"\s*:\s*\{[^}]*?"score"\s*:\s*(\d+)' % re.escape(axis), t)
+        if m:
+            why = re.search(r'"%s"\s*:\s*\{[^}]*?"why"\s*:\s*"([^"]*)"'
+                            % re.escape(axis), t)
+            out[axis] = {"score": int(m.group(1)),
+                         "why": (why.group(1) if why else "")[:400]}
+    return out if out else None
+
+
+async def _judge_once(judge_endpoint, judge_key, judge_model, judge_prompt,
+                      url, timeout_s):
+    """One retry attempt at the judge call (same prompt). NEVER raises."""
+    err = {a: {"score": 0, "why": "judge_error"} for a in JUDGE_AXES}
+    try:
+        async with _make_client() as client:
+            resp = await client.post(
+                url,
+                json={
+                    "model": judge_model,
+                    "messages": [
+                        {"role": "system", "content": "You output only valid JSON."},
+                        {"role": "user", "content": judge_prompt},
+                    ],
+                    "max_tokens": 3072,
+                    "stream": False,
+                },
+                headers={"Authorization": f"Bearer {judge_key}",
+                         "Content-Type": "application/json"},
+                timeout=timeout_s,
+            )
+        if resp.status_code != 200:
+            return err
+        data = resp.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+        parsed = _parse_judge_json(content)
+        if not parsed:
+            return err
+        out = {}
+        for axis in JUDGE_AXES:
+            node = parsed.get(axis) or {}
+            try:
+                score = int(node.get("score", 0))
+            except (TypeError, ValueError):
+                score = 0
+            out[axis] = {"score": max(0, min(10, score)),
+                         "why": str(node.get("why", ""))[:400]}
+        return out
+    except Exception as exc:
+        logger.warning("judge_scores retry failed: %s", exc)
+        return err
+
+
 # ── Harvest ──────────────────────────────────────────────────────────────────
+
+_PERSONA_NAMES = ("mintrouter", "aibox", "antigravity", "vsllm",
+                  "openrouter", "router", "relay", "proxy")
+_PERSONA_RE = re.compile(
+    r"(?i)\b(?:" + "|".join(_PERSONA_NAMES) + r")\b[\w.\-]*|"
+    r"\b(?:running on|powered by|served by|via|through)\b")
+
+
+def _strip_persona(text: str) -> str:
+    """Remove provider/relay persona wording from a self-claim so the frozen
+    identity reflects the MODEL, not whichever wrapper the anchor lane adds."""
+    if not text:
+        return ""
+    cleaned = _PERSONA_RE.sub(" ", text)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,.;:-")
+    return cleaned
+
 
 def _parse_needle_entries(text: str) -> list:
     """Parse anchor self-reported needle text into {fact, needle} entries.
@@ -215,6 +340,8 @@ def _parse_needle_entries(text: str) -> list:
             fact, needle = fact.strip(), needle.strip()
         else:
             fact, needle = line, ""
+        if fact and is_disclaimer_fact(fact):
+            continue  # audit C8: disclaimers are not facts
         if fact and fact not in [e["fact"] for e in out]:
             out.append({"fact": fact, "needle": (needle or fact)[:80]})
     return out[:8]
@@ -263,12 +390,21 @@ async def harvest_model(
     tm = TraitMark()
     tm.meta.model_id = model_id
     tm.meta.family = detect_family(model_id) or ""
-    tm.meta.sub_model = normalize(model_id)
+    _sub = normalize(model_id)
+    if not (source_tag or "").strip():
+        # CANONICAL harvest: a provider-prefixed sub_model ('codex/gpt-5.6-sol')
+        # is private-infrastructure-tagged and gets filtered OUT of both the
+        # canonical and public testable lists by the _PRIV regex. Strip the
+        # provider/ prefix so the bare standard ('gpt-5.6-sol') surfaces.
+        # Source-tagged harvests keep the full id (private calibration refs).
+        _sub = _sub.split("/")[-1]
+    tm.meta.sub_model = _sub
     tm.meta.tier = "canonical"
     tm.meta.collected_at = datetime.datetime.now(
         datetime.timezone.utc).isoformat()
     tm.meta.collected_from = [endpoint]
     tm.meta.source_tag = (source_tag or "").strip()
+    tm.meta.anchor_lane = model_id
     if not hasattr(tm.meta, "harvest_gaps"):
         # MetaLayer gained harvest_gaps; from_dict filters unknown fields, so
         # setting it here is forward/backward compatible either way.
@@ -284,16 +420,21 @@ async def harvest_model(
     needle_known_text = ""
     needle_post_text = ""
     logprob_profile = {}
+    v2_profile = {}
 
     try:
         async with _make_client() as client:
+
+            _sem = asyncio.Semaphore(int(cfg.get("concurrency", 64)))
+            _gaps = tuple(cfg.get("backoff_gaps", ()))
 
             async def _probe(probe, tier):
                 if (time.monotonic() - t0) > total_timeout:
                     gaps.append(f"timeout_before:{probe['id']}")
                     return None
-                r = await run_probe(client, endpoint, api_key, model_id,
-                                    probe, probe_timeout)
+                async with _sem:
+                    r = await call_with_backoff(client, endpoint, api_key, model_id,
+                                                probe, probe_timeout, gaps=_gaps)
                 r.tier = tier
                 if r.error:
                     gaps.append(f"probe_error:{probe['id']}")
@@ -303,10 +444,26 @@ async def harvest_model(
                 if (time.monotonic() - t0) > total_timeout:
                     gaps.append(f"timeout_before:{probe['id']}")
                     return None
-                r = await run_probe(client, endpoint, api_key, model_id, probe,
-                                    probe_timeout,
-                                    extra={"logprobs": True, "top_logprobs": 5,
-                                           "temperature": 0})
+                async with _sem:
+                    r = await call_with_backoff(
+                        client, endpoint, api_key, model_id, probe, probe_timeout,
+                        extra={"logprobs": True, "top_logprobs": 5,
+                               "temperature": 0}, gaps=_gaps)
+                r.tier = 2
+                return r
+
+            async def _probe_lp_once(probe):
+                # Preflight MUST NOT retry: the router surfaces kimi's 400
+                # logprob rejection as a 502, which backoff classifies as
+                # retryable, firing the probe len(gaps)+1 times. One shot.
+                if (time.monotonic() - t0) > total_timeout:
+                    gaps.append(f"timeout_before:{probe['id']}")
+                    return None
+                async with _sem:
+                    r = await run_probe(
+                        client, endpoint, api_key, model_id, probe, probe_timeout,
+                        extra={"logprobs": True, "top_logprobs": 5,
+                               "temperature": 0}, retries=0)
                 r.tier = 2
                 return r
 
@@ -318,8 +475,22 @@ async def harvest_model(
                 tier_jobs += [(_probe(p, 2)) for p in TIER2_PROBES]
             # Version-discrimination capture: needles (self-reported) + logprobs.
             tier_jobs += [_probe(p, 2) for p in HARVEST_NEEDLE_PROBES]
-            tier_jobs += [_probe_lp(p) for p in LOGPROB_PROBES]
+            # Logprob preflight (2026-10-09): some lanes (aibox/kimi) reject
+            # logprobs:true with 400/502 -- every lp probe is then a PAID,
+            # guaranteed-failed call. Probe support ONCE with LOGPROB_PROBES[0];
+            # the battery only runs when the preflight PROVES support (200 +
+            # actual logprobs payload), and the preflight result doubles as the
+            # first sample. An unsupported lane costs exactly one probe, not N.
+            _lp_pf = await _probe_lp_once(LOGPROB_PROBES[0]) if LOGPROB_PROBES else None
+            _lp_supported = (_lp_pf is not None and _lp_pf.status_code == 200
+                             and _lp_pf.logprobs is not None)
+            if _lp_supported:
+                tier_jobs += [_probe_lp(p) for p in LOGPROB_PROBES[1:]]
+            elif LOGPROB_PROBES:
+                gaps.append("logprob:unsupported_by_lane")
             tier_results = [r for r in await asyncio.gather(*tier_jobs) if r]
+            if _lp_pf is not None and not _lp_pf.error:
+                tier_results.append(_lp_pf)
 
             # Split needle + logprob results back out by probe id.
             for r in tier_results:
@@ -368,6 +539,27 @@ async def harvest_model(
                         client, endpoint, api_key, model_id, probe_timeout)
             except Exception as exc:
                 gaps.append(f"timing_capture_error:{str(exc)[:120]}")
+            refusal_signature = {}
+            try:
+                if (time.monotonic() - t0) < total_timeout:
+                    refusal_signature = await run_refusal_probes(
+                        client, endpoint, api_key, model_id, probe_timeout)
+            except Exception as exc:
+                gaps.append(f"refusal_capture_error:{str(exc)[:120]}")
+            # Standard v2 (tokenizer deltas / capability curve / knowledge bank).
+            # Own budget: the full bank would never fit the 300s battery budget.
+            v2_profile = {}
+            if cfg.get("v2", True):
+                try:
+                    v2_profile = await asyncio.wait_for(
+                        run_standard_v2(client, endpoint, api_key, model_id,
+                                        int(cfg.get("v2_probe_timeout_s", 180)),
+                                        mode="harvest",
+                                        concurrency=int(cfg.get("v2_concurrency", 4)),
+                                        gaps=tuple(cfg.get("backoff_gaps", ()))),
+                        timeout=float(cfg.get("v2_total_timeout_s", 1500)))
+                except Exception as exc:
+                    gaps.append(f"v2_capture_error:{type(exc).__name__}:{str(exc)[:100]}")
     except Exception as exc:
         gaps.append(f"probe_batch_error:{str(exc)[:120]}")
 
@@ -402,10 +594,26 @@ async def harvest_model(
             _struct["stability_profile"] = stability_profile
         if isinstance(timing_profile, dict) and timing_profile.get("chunk_count"):
             _struct["timing_profile"] = timing_profile
+        if cfg.get("v2", True):
+            if isinstance(v2_profile, dict) and (v2_profile.get("tokenizer")
+                                                  or v2_profile.get("capability_curve")
+                                                  or v2_profile.get("knowledge_bank")):
+                _struct["v2"] = v2_profile
+            for _lane in ("tokenizer", "capability_curve", "knowledge_bank"):
+                if not (isinstance(v2_profile, dict) and v2_profile.get(_lane)):
+                    gaps.append(f"v2_{_lane}:unavailable")
         if not _struct.get("boundary_signature"):
             gaps.append("boundary:unavailable")
         if not _struct.get("stability_profile"):
             gaps.append("stability:unavailable")
+        # Refusal/alignment signature into the dedicated RefusalLayer.
+        if isinstance(refusal_signature, dict) and refusal_signature.get("axes"):
+            tm.refusal.axes = refusal_signature.get("axes", {})
+            tm.refusal.delta_signature = refusal_signature.get("delta", {})
+            tm.refusal.templates = refusal_signature.get("templates", {})
+            tm.refusal.captured = int(refusal_signature.get("captured", 0))
+        else:
+            gaps.append("refusal:unavailable")
         if not _struct.get("timing_profile"):
             gaps.append("timing:unavailable")
 
@@ -421,8 +629,8 @@ async def harvest_model(
             any((getattr(pr, "thinking", "") or "") for pr in tier_results))
 
         idn = tm.identity
-        idn.self_claim_model = getattr(feats, "claimed_model", "") or ""
-        idn.self_claim_org = getattr(feats, "claimed_org", "") or ""
+        idn.self_claim_model = _strip_persona(getattr(feats, "claimed_model", "") or "")
+        idn.self_claim_org = _strip_persona(getattr(feats, "claimed_org", "") or "")
         idn.self_keywords = list(family_ref.get("self_keywords", []))
         idn.impostor_keywords = list(family_ref.get("impostor_keywords", []))
     except Exception as exc:
@@ -438,6 +646,23 @@ async def harvest_model(
                 axis, {"score": 0, "why": "judge_error"}))
     elif include_noncoding:
         gaps.append("noncoding:no_judge_or_outputs")
+
+    # Lexical layer (slop + vocabulary). Computed from the harvested non-coding
+    # outputs — mirrors gate.py's live formula (same wordlist + TTR) so the
+    # frozen standard and the live suspect are comparable. Never gated on the
+    # judge: this is deterministic signal, independent of judge availability.
+    if include_noncoding and noncoding_outputs:
+        try:
+            joined = " ".join(o["content"] for o in noncoding_outputs if o.get("content"))
+            words = re.findall(r"[A-Za-z']+", joined)
+            ttr = (len(set(w.lower() for w in words)) / len(words)) if words else 0.0
+            slop = sum(joined.lower().count(w) for w in
+                       ("delve", "tapestry", "landscape", "testament", "navigate",
+                        "crucial", "vibrant", "furthermore", "moreover", "elevate"))
+            tm.lexical.slop_score = round(slop / max(len(words), 1), 4)
+            tm.lexical.vocabulary_complexity = round(ttr, 4)
+        except Exception as exc:
+            gaps.append(f"lexical_compute_error:{str(exc)[:120]}")
 
     try:
         tm.meta.judged_by = judge_model if (judge_endpoint and judge_key and judge_model) else ""

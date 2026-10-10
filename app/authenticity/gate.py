@@ -14,6 +14,7 @@ Flow (fail-open always — never raises):
   5. compute_reality fuses scope + family + sub-model match + modifications.
   6. Cache stable verdicts. Log with verdict.headline().
 """
+import asyncio
 import json
 import logging
 import time
@@ -76,8 +77,17 @@ async def authenticity_check(
         try:
             if callable(on_progress):
                 on_progress(step, label)
+        except RuntimeError:
+            raise  # cooperative cancel must propagate, never swallowed
         except Exception:
             pass
+
+    def _check_cancel():
+        """Fire the cooperative cancel between probes (on_progress only fires
+        at named step transitions, which are too coarse to catch a cancel mid-
+        battery)."""
+        if callable(on_progress):
+            on_progress("_cancel_check", "")
 
     # Bug 3 fix: derive the tier budget from the requested MODE when the
     # caller didn't pin max_tier. Previously main.py set cfg["max_tier"] but
@@ -130,6 +140,32 @@ async def authenticity_check(
         probe_timeout = config.get("probe_timeout_s", 30)
         total_timeout = config.get("total_timeout_s", 90)
 
+        # Probe retry/TTFT policy (2026-10-07 wiring): OLD defaults — unset
+        # keys give ttft=None / retries=0, the exact legacy scalar path, so
+        # production callers that never set these are unchanged.
+        _probe_ttft = config.get("probe_ttft_s")   # None when unset -> legacy path
+        _probe_idle = config.get("probe_idle_s")
+        _probe_retries = int(config.get("probe_retries", 0) or 0)
+
+        def _probe_kwargs(lane_fn) -> dict:
+            """Forward the retry/TTFT policy to a probe lane ONLY when that
+            lane callable accepts the keywords (run_probe does; the
+            boundary/stability/timing wrappers pick them up when probes.py
+            grows them). Keeps monkeypatched lane fakes with the older
+            signature TypeError-free: unset policy = today's behavior."""
+            try:
+                import inspect as _inspect
+                _params = _inspect.signature(lane_fn).parameters
+            except Exception:
+                return {}
+            _kw = {}
+            for _name, _val in (("ttft_s", _probe_ttft),
+                                ("idle_s", _probe_idle),
+                                ("retries", _probe_retries)):
+                if _name in _params:
+                    _kw[_name] = _val
+            return _kw
+
         probe_errors: list = []
         family_verdict = None
         match_result = None
@@ -140,8 +176,10 @@ async def authenticity_check(
             _progress("tier1", "Normal · identity/style probes")
             tier1_results = []
             for probe in TIER1_PROBES:
+                _check_cancel()
                 result = await run_probe(
                     client, endpoint_base, api_key, model_id, probe, probe_timeout,
+                    **_probe_kwargs(run_probe),
                 )
                 result.tier = 1
                 tier1_results.append(result)
@@ -186,8 +224,10 @@ async def authenticity_check(
                 _progress("tier2", "Deep · cutoff/capability probes")
                 tier2_results = []
                 for probe in TIER2_PROBES:
+                    _check_cancel()
                     result = await run_probe(
                         client, endpoint_base, api_key, model_id, probe, probe_timeout,
+                        **_probe_kwargs(run_probe),
                     )
                     result.tier = 2
                     tier2_results.append(result)
@@ -217,7 +257,9 @@ async def authenticity_check(
                     import re as _re
                     nc_results = []
                     for p in NONCODING_PROBES:
-                        r = await run_probe(client, endpoint_base, api_key, model_id, p, probe_timeout)
+                        _check_cancel()
+                        r = await run_probe(client, endpoint_base, api_key, model_id, p, probe_timeout,
+                                            **_probe_kwargs(run_probe))
                         r.tier = 3
                         nc_results.append((p, r))
                         if r.error:
@@ -244,6 +286,8 @@ async def authenticity_check(
                         else:
                             nc["judge_gap"] = "no_judge_config"
                         features.noncoding = nc
+                except RuntimeError:
+                    raise  # cooperative cancel: never swallowed by fail-open
                 except Exception as _nc_exc:
                     logger.warning("non-coding lane failed (fail-open): %s", _nc_exc)
 
@@ -270,7 +314,8 @@ async def authenticity_check(
                             _progress("needles", "Deep · knowledge-needle probes")
                             probe = build_needle_probe(needles)
                             r = await run_probe(client, endpoint_base, api_key,
-                                                model_id, probe, probe_timeout)
+                                                model_id, probe, probe_timeout,
+                                                **_probe_kwargs(run_probe))
                             if r.status_code == 200 and r.content:
                                 features.knowledge_needles = classify_needle_answers(
                                     r.content, needles)
@@ -294,8 +339,12 @@ async def authenticity_check(
                             r = await run_probe(
                                 client, endpoint_base, api_key, model_id, p,
                                 probe_timeout,
+                                # stream:False pins the logprob lane to the
+                                # scalar body (the streamed lane carries no
+                                # logprobs — probes.py contract).
                                 extra={"logprobs": True, "top_logprobs": 5,
-                                       "temperature": 0},
+                                       "temperature": 0, "stream": False},
+                                **_probe_kwargs(run_probe),
                             )
                             if r.status_code == 200 and r.logprobs:
                                 first = (r.logprobs.get("content") or [{}])[0]
@@ -323,7 +372,8 @@ async def authenticity_check(
                         from .probes import run_boundary_probes
                         _progress("boundary", "Deep · L1 boundary signature")
                         sig = await run_boundary_probes(
-                            client, endpoint_base, api_key, model_id, probe_timeout)
+                            client, endpoint_base, api_key, model_id, probe_timeout,
+                            **_probe_kwargs(run_boundary_probes))
                         if sig and any(v for k, v in sig.items()
                                        if k not in ("finish_reason", "json_mode")):
                             features.boundary_signature = sig
@@ -333,6 +383,54 @@ async def authenticity_check(
                                 match_result = match_submodel(features, _b4)
                     except Exception as _bnd_exc:
                         logger.warning("V6a boundary lane failed (fail-open): %s", _bnd_exc)
+
+                # ── REFUSAL/ALIGNMENT lane (deep mode, ALWAYS) ──
+                # Neutral public-topic probes; the zh-vs-en refusal delta per axis
+                # fingerprints the model FAMILY (not the sub-version). Corroborator
+                # only: must not alter identified_as, must not alone produce REAL.
+                # Fail-open + budget guard like the lanes above; router-only traffic.
+                if (time.monotonic() - t0) < total_timeout and features is not None:
+                    try:
+                        _check_cancel()
+                        from .probes import run_refusal_probes
+                        _progress("refusal", "Deep · L1 refusal/alignment signature")
+                        rsig = await run_refusal_probes(
+                            client, endpoint_base, api_key, model_id, probe_timeout,
+                            **_probe_kwargs(run_refusal_probes))
+                        if rsig and rsig.get("axes"):
+                            features.refusal_signature = rsig
+                            _b4r = _load_match_baselines(model_id)
+                            if _b4r:
+                                match_result = match_submodel(features, _b4r)
+                    except RuntimeError:
+                        raise  # cooperative cancel must propagate
+                    except Exception as _ref_exc:
+                        logger.warning("refusal lane failed (fail-open): %s", _ref_exc)
+
+                # ── STANDARD v2 lane (deep mode, ALWAYS) ──
+                # Tokenizer usage-deltas + programmatic capability curve +
+                # truth-free knowledge bank. Judge-free; fresh instances every
+                # run so a cache/replay cannot answer them. Fail-open.
+                if (time.monotonic() - t0) < total_timeout and features is not None:
+                    try:
+                        _check_cancel()
+                        from .standard_v2 import run_standard_v2
+                        _progress("v2", "Deep · v2 tokenizer / capability curve / knowledge bank")
+                        _v2 = await asyncio.wait_for(
+                            run_standard_v2(
+                                client, endpoint_base, api_key, model_id,
+                                probe_timeout, mode="live"),
+                            timeout=max(30.0, total_timeout - (time.monotonic() - t0)))
+                        if _v2 and (_v2.get("tokenizer") or _v2.get("capability_curve")
+                                    or _v2.get("knowledge_bank")):
+                            features.v2_profile = _v2
+                            _b4v = _load_match_baselines(model_id)
+                            if _b4v:
+                                match_result = match_submodel(features, _b4v)
+                    except RuntimeError:
+                        raise  # cooperative cancel must propagate
+                    except Exception as _v2_exc:
+                        logger.warning("v2 lane failed (fail-open): %s", _v2_exc)
 
                 # ── V6b STABILITY lane (L2, deep mode, only if ABSTAINING) ──
                 # temp=0 identical-probe repetition; carries veto power
@@ -346,7 +444,8 @@ async def authenticity_check(
                         from .probes import run_stability_probe
                         _progress("stability", "Deep · L2 stability profile")
                         prof = await run_stability_probe(
-                            client, endpoint_base, api_key, model_id, probe_timeout)
+                            client, endpoint_base, api_key, model_id, probe_timeout,
+                            **_probe_kwargs(run_stability_probe))
                         if prof and prof.get("mode_hash"):
                             features.stability_profile = prof
                             _l2_landed = True
@@ -366,7 +465,8 @@ async def authenticity_check(
                         from .probes import run_timing_probe
                         _progress("timing", "Deep · L3 timing profile")
                         prof = await run_timing_probe(
-                            client, endpoint_base, api_key, model_id, probe_timeout)
+                            client, endpoint_base, api_key, model_id, probe_timeout,
+                            **_probe_kwargs(run_timing_probe))
                         if prof and prof.get("chunk_count"):
                             features.timing_profile = prof
                             # Advisory-only: store the profile but do NOT
@@ -375,6 +475,49 @@ async def authenticity_check(
                             # spend budget for an identical verdict.
                     except Exception as _tim_exc:
                         logger.warning("V7 timing lane failed (fail-open): %s", _tim_exc)
+
+                # ── JUDGE TIE-BREAK (deep, only on a TRUE tie) ──
+                # When the matcher still abstains AND best/runner-up are within
+                # the 0.05 discrimination gap, deterministic signals cannot pick
+                # a winner. Hand the tied top candidates to the judge (a
+                # different family) to pick the closest standard. Overrides the
+                # match only when the judge is decisive (confidence >= 0.6).
+                if (match_result is not None and match_result.abstain
+                        and features is not None
+                        and (time.monotonic() - t0) < total_timeout):
+                    try:
+                        _gap = match_result.match_score - match_result.runner_up_score
+                        _jep = config.get("judge_endpoint", "")
+                        _jkey = config.get("judge_key", "")
+                        _jmodel = config.get("judge_model", "")
+                        if (_gap < 0.05 and _jep and _jkey and _jmodel
+                                and match_result.best_model):
+                            _progress("judge_tiebreak", "Deep · judge ranking tied candidates")
+                            from .judge_rank import rank_candidates
+                            _allb = _load_match_baselines(model_id)
+                            _tied = {k: _allb.get(k) for k in
+                                     (match_result.best_model, match_result.runner_up)
+                                     if k and k in _allb}
+                            if _tied:
+                                _pick = await rank_candidates(
+                                    _jep, _jkey, _jmodel, features, _tied)
+                                # REAL requires total >= REAL_THRESHOLD AND a
+                                # matched model. Supplying `matched` on a weak
+                                # deterministic score would flip FAKE/abstain to
+                                # REAL. Only let a decisive judge break a tie
+                                # when the deterministic evidence is already
+                                # borderline-strong (>= 0.70).
+                                if (_pick and _pick.get("confidence", 0) >= 0.6
+                                        and match_result.match_score >= 0.70):
+                                    match_result.matched_model = _pick["id"]
+                                    match_result.abstain = False
+                                    match_result.dimensions["judge_tiebreak"] = {
+                                        "picked": _pick["id"],
+                                        "confidence": _pick["confidence"],
+                                        "why": _pick.get("why", ""),
+                                    }
+                    except Exception as _jt_exc:
+                        logger.warning("judge tie-break failed (fail-open): %s", _jt_exc)
 
         # Fuse into a reality verdict
         _progress("verdict", "Composing verdict")

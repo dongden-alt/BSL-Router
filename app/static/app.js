@@ -81,140 +81,125 @@ const OAUTH_PROVIDER_CONFIG = {
     cursor: { flowType: 'import_token' },
 };
 
-// Predefined model lists for OAuth providers — mirrors 9Router's AI_PROVIDERS
-// (extracted from 9router/app/.next-cli-build/server/chunks/2573.js).
-// OAuth tokens cannot fetch /v1/models, so these must be static.
+// Predefined model lists for OAuth providers — MIRROR of app/oauth.py's
+// OAUTH_PROVIDER_MODELS (the backend source of truth, served at
+// GET /api/oauth/providers/models). OAuth tokens cannot fetch /v1/models, so
+// these must be static. KEEP THE TWO FILES IN SYNC — edit oauth.py first.
+// 2026-10-07 refresh: stripped retired generations, added latest confirmed IDs
+// (sources: Anthropic platform docs, GitHub Copilot supported-models, Cursor
+// models, xAI live registry).
 const OAUTH_PROVIDER_MODELS = {
     claude: [
-        { id: 'claude-opus-5' },
-        { id: 'claude-fable-5' },
-        { id: 'claude-sonnet-5' },
+        { id: 'claude-fable-5-1' },
+        { id: 'claude-opus-5-5' },
+        { id: 'claude-sonnet-5-5' },
         { id: 'claude-haiku-4-5-20251001' },
     ],
     codex: [
+        { id: 'gpt-6.1-sol' },
+        { id: 'gpt-6-sol' },
+        { id: 'gpt-6-luna' },
+        { id: 'gpt-6-astra' },
         { id: 'gpt-5.6-sol' },
-        { id: 'gpt-5.6-sol-review' },
         { id: 'gpt-5.6-terra' },
-        { id: 'gpt-5.6-terra-review' },
         { id: 'gpt-5.6-luna' },
-        { id: 'gpt-5.6-luna-review' },
         { id: 'gpt-5.5' },
-        { id: 'gpt-5.5-review' },
-        { id: 'gpt-5.4' },
-        { id: 'gpt-5.4-review' },
-        { id: 'gpt-5.4-mini' },
-        { id: 'gpt-5.4-mini-review' },
-        { id: 'gpt-5.3-codex-spark' },
-        { id: 'gpt-5.3-codex-spark-review' },
         { id: 'gpt-5.5-image', kind: 'image' },
-        { id: 'gpt-5.4-image', kind: 'image' },
-        { id: 'gpt-5.3-image', kind: 'image' },
     ],
     antigravity: [
         { id: 'gemini-3.6-flash-high' },
         { id: 'gemini-3.6-flash-medium' },
         { id: 'gemini-3.6-flash-low' },
-        { id: 'gemini-3.5-flash-high' },
-        { id: 'gemini-3-flash-agent' },
-        { id: 'gemini-3.5-flash-low' },
-        { id: 'gemini-3.5-flash-extra-low' },
-        { id: 'gemini-pro-agent' },
         { id: 'gemini-3.1-pro-low' },
-        { id: 'claude-sonnet-4-6' },
-        { id: 'claude-opus-4-6-thinking' },
-        { id: 'gpt-oss-120b-medium' },
-
+        { id: 'gemini-3.1-pro-high' },
+        { id: 'gemini-pro-agent' },
+        { id: 'claude-opus-5-5-high' },
+        { id: 'claude-opus-5-5-medium' },
+        { id: 'claude-opus-5-5-low' },
+        { id: 'claude-sonnet-5-5-high' },
+        { id: 'claude-sonnet-5-5-medium' },
+        { id: 'claude-sonnet-5-5-low' },
         { id: 'gemini-3.1-flash-image', kind: 'image' },
     ],
     github: [
-        { id: 'gpt-5.2' },
-        { id: 'gpt-5.2-codex' },
-        { id: 'gpt-5.3-codex' },
+        { id: 'gpt-6.1-sol' },
+        { id: 'gpt-6-sol' },
+        { id: 'gpt-6-luna' },
+        { id: 'gpt-6-astra' },
+        { id: 'gpt-5.6-sol' },
+        { id: 'gpt-5.6-terra' },
+        { id: 'gpt-5.6-luna' },
+        { id: 'gpt-5.5' },
         { id: 'gpt-5.4' },
         { id: 'gpt-5.4-mini' },
-        { id: 'claude-haiku-4.5' },
-        { id: 'claude-opus-4.5' },
-        { id: 'claude-sonnet-4.5' },
-        { id: 'claude-sonnet-4.6' },
-        { id: 'claude-opus-4.6' },
-        { id: 'claude-opus-4.7' },
-        { id: 'gemini-2.5-pro' },
-        { id: 'gemini-3-flash-preview' },
-        { id: 'gemini-3.1-pro-preview' },
+        { id: 'gpt-5-mini' },
+        { id: 'gpt-5.3-codex' },
+        { id: 'claude-fable-5-1' },
+        { id: 'claude-opus-5-5' },
+        { id: 'claude-sonnet-5-5' },
+        { id: 'claude-haiku-4-5' },
+        { id: 'gemini-3.8-flash' },
+        { id: 'gemini-3.7-flash' },
+        { id: 'grok-4.7' },
+        { id: 'grok-4.6' },
+        { id: 'grok-4.5' },
         { id: 'grok-code-fast-1' },
-        { id: 'oswe-vscode-prime' },
-        { id: 'goldeneye-free-auto' },
+        { id: 'kimi-k3' },
+        { id: 'mai-code-1.1-flash' },
         { id: 'text-embedding-3-small', kind: 'embedding' },
         { id: 'text-embedding-3-large', kind: 'embedding' },
     ],
     'grok-cli': [
-        { id: 'grok-build' },
+        { id: 'grok-4.20' },
+        { id: 'grok-4.20-multi-agent' },
+        { id: 'grok-4.7' },
+        { id: 'grok-4.6' },
         { id: 'grok-4.5' },
-        { id: 'grok-4.5-high' },
-        { id: 'grok-4.5-medium' },
-        { id: 'grok-4.5-low' },
+        { id: 'grok-4.3' },
+        { id: 'grok-code-fast-1' },
     ],
     kiro: [
-        { id: 'claude-opus-5' },
-        { id: 'claude-opus-5-thinking' },
-        { id: 'claude-opus-5-agentic' },
-        { id: 'claude-opus-5-thinking-agentic' },
-        { id: 'claude-opus-4.8' },
-        { id: 'claude-opus-4.8-thinking' },
-        { id: 'claude-opus-4.8-agentic' },
-        { id: 'claude-opus-4.8-thinking-agentic' },
-        { id: 'claude-opus-4.7' },
-        { id: 'claude-opus-4.7-thinking' },
-        { id: 'claude-opus-4.7-agentic' },
-        { id: 'claude-opus-4.7-thinking-agentic' },
-        { id: 'claude-opus-4.5' },
-        { id: 'claude-opus-4.5-thinking' },
-        { id: 'claude-opus-4.5-agentic' },
-        { id: 'claude-opus-4.5-thinking-agentic' },
-        { id: 'claude-sonnet-5' },
-        { id: 'claude-sonnet-4.5' },
+        { id: 'claude-fable-5-1' },
+        { id: 'claude-fable-5-1-thinking' },
+        { id: 'claude-fable-5-1-agentic' },
+        { id: 'claude-fable-5-1-thinking-agentic' },
+        { id: 'claude-opus-5.5' },
+        { id: 'claude-opus-5.5-thinking' },
+        { id: 'claude-opus-5.5-agentic' },
+        { id: 'claude-opus-5.5-thinking-agentic' },
+        { id: 'claude-sonnet-5.5' },
+        { id: 'claude-sonnet-5.5-thinking' },
+        { id: 'claude-sonnet-5.5-agentic' },
+        { id: 'claude-sonnet-5.5-thinking-agentic' },
         { id: 'claude-haiku-4.5' },
+        { id: 'gpt-6-sol' },
+        { id: 'gpt-6-luna' },
+        { id: 'gpt-6-astra' },
+        { id: 'gpt-5.6-sol' },
+        { id: 'gpt-5.6-terra' },
+        { id: 'gpt-5.6-luna' },
         { id: 'deepseek-3.2' },
         { id: 'qwen3-coder-next' },
         { id: 'glm-5' },
         { id: 'MiniMax-M2.5' },
+        { id: 'kimi-k3' },
+    ],
+    cursor: [
+        { id: 'composer-2.5' },
+        { id: 'claude-5.5-opus-high-thinking' },
+        { id: 'claude-5.5-opus-high' },
+        { id: 'claude-5.5-opus' },
+        { id: 'claude-5.5-sonnet-thinking' },
+        { id: 'claude-5.5-sonnet' },
+        { id: 'claude-5.1-fable' },
+        { id: 'gemini-3.8-flash' },
+        { id: 'gemini-3.1-pro' },
+        { id: 'muse-spark-1.3' },
         { id: 'gpt-5.6-sol' },
         { id: 'gpt-5.6-terra' },
         { id: 'gpt-5.6-luna' },
-        { id: 'claude-sonnet-5-thinking' },
-        { id: 'claude-sonnet-4.5-thinking' },
-        { id: 'claude-haiku-4.5-thinking' },
-        { id: 'gpt-5.6-sol-thinking' },
-        { id: 'gpt-5.6-terra-thinking' },
-        { id: 'gpt-5.6-luna-thinking' },
-        { id: 'claude-sonnet-5-agentic' },
-        { id: 'claude-sonnet-4.5-agentic' },
-        { id: 'claude-haiku-4.5-agentic' },
-        { id: 'gpt-5.6-sol-agentic' },
-        { id: 'gpt-5.6-terra-agentic' },
-        { id: 'gpt-5.6-luna-agentic' },
-        { id: 'claude-sonnet-5-thinking-agentic' },
-        { id: 'claude-sonnet-4.5-thinking-agentic' },
-        { id: 'claude-haiku-4.5-thinking-agentic' },
-        { id: 'gpt-5.6-sol-thinking-agentic' },
-        { id: 'gpt-5.6-terra-thinking-agentic' },
-        { id: 'gpt-5.6-luna-thinking-agentic' },
-    ],
-    cursor: [
-        { id: 'default' },
-        { id: 'claude-4.5-opus-high-thinking' },
-        { id: 'claude-4.5-opus-high' },
-        { id: 'claude-4.5-sonnet-thinking' },
-        { id: 'claude-4.5-sonnet' },
-        { id: 'claude-4.5-haiku' },
-        { id: 'claude-4.5-opus' },
-        { id: 'gpt-5.2-codex' },
-        { id: 'claude-4.6-opus-max' },
-        { id: 'claude-4.6-sonnet-medium-thinking' },
-        { id: 'kimi-k2.5' },
-        { id: 'gemini-3-flash-preview' },
-        { id: 'gpt-5.2' },
-        { id: 'gpt-5.3-codex' },
+        { id: 'grok-4.7' },
+        { id: 'grok-4.6' },
     ],
 };
 
@@ -600,6 +585,14 @@ async function fetchConfig() {
         // OAuth tokens can't fetch /v1/models, so these must be static.
         // Merge strategy: seed if empty, and backfill any missing predefined models
         // so new additions (e.g. image models) propagate to existing configs.
+        //
+        // DISABLED BY DEFAULT (2026-10-07, user directive): every seeded or
+        // backfilled model lands with enabled:false so a catalog refresh can
+        // never silently start routing traffic to a model the operator has not
+        // vetted. The operator enables models manually. Backfill is append-only
+        // and never removes or re-enables rows already in the config, so
+        // stripping a model from the catalog above leaves existing config rows
+        // (and their enabled state) untouched.
         KNOWN_PROVIDERS.oauth.forEach(p => {
             const prov = globalConfig.providers[p.id];
             const predefined = OAUTH_PROVIDER_MODELS[p.id];
@@ -608,7 +601,7 @@ async function fetchConfig() {
                     prov.models = predefined.map(m => ({
                         id: m.id,
                         name: m.id,
-                        enabled: true
+                        enabled: false
                     }));
                 } else {
                     // Backfill: add any predefined models not already in the config
@@ -618,7 +611,7 @@ async function fetchConfig() {
                             prov.models.push({
                                 id: m.id,
                                 name: m.id,
-                                enabled: true
+                                enabled: false
                             });
                         }
                     });
@@ -3405,9 +3398,12 @@ const AG_SLOTS=[
     {key:'gemini-3.6-flash-low',label:'Gemini 3.6 Flash (Low)'},
     {key:'gemini-3.1-pro-low',label:'Gemini 3.1 Pro (Low)'},
     {key:'gemini-3.1-pro-high',label:'Gemini 3.1 Pro (High)'},
-    {key:'claude-sonnet-4-6',label:'Claude Sonnet 4.6 (Thinking)'},
-    {key:'claude-opus-4-6-thinking',label:'Claude Opus 4.6 (Thinking)'},
-    {key:'gpt-oss-120b-medium',label:'GPT-OSS 120B (Medium)'}
+    {key:'claude-opus-5-5-low',label:'Claude Opus 5.5 (Low)'},
+    {key:'claude-opus-5-5-medium',label:'Claude Opus 5.5 (Medium)'},
+    {key:'claude-opus-5-5-high',label:'Claude Opus 5.5 (High)'},
+    {key:'claude-sonnet-5-5-low',label:'Claude Sonnet 5.5 (Low)'},
+    {key:'claude-sonnet-5-5-medium',label:'Claude Sonnet 5.5 (Medium)'},
+    {key:'claude-sonnet-5-5-high',label:'Claude Sonnet 5.5 (High)'}
 ];
 function agConfig(){if(!globalConfig.antigravity_integration||typeof globalConfig.antigravity_integration!=='object')globalConfig.antigravity_integration={};let c=globalConfig.antigravity_integration;if(!c.mappings||typeof c.mappings!=='object')c.mappings={};if(typeof c.enabled!=='boolean')c.enabled=false;return c;}
 function agEsc(v){return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
@@ -4031,6 +4027,7 @@ const _authState = {
                            // never trigger authLoadRecentResults().
     runningId: '',         // router model_id of the in-flight test (step polling)
     abortCtl: null,        // AbortController of the in-flight fetch (cancel)
+    stepLabel: '',        // last live step label written by the poller; survives re-renders
 };
 
 const _AUTH_VERDICT_META = {
@@ -4082,10 +4079,9 @@ function renderAuthenticityTab() {
     if (!container) return;
     const st = _authState;
 
-    // Tab-switch continuity: while a test is running, a full re-render would
-    // wipe the live step indicator and is wasted work — the step poller owns
-    // the label. Only the data boxes refresh on tab re-entry (see the end).
-    if (st.running) { _authRefreshBoxes(); return; }
+    // A full render is safe while a test runs: the template paints the running
+    // form from the state flags, the poller re-targets #auth-step-label by id
+    // on each tick, and the stored step label restores the text across re-renders.
 
     // Provider options for the suspect (only selectable providers with models).
     const providers = globalConfig.providers || {};
@@ -4155,7 +4151,7 @@ function renderAuthenticityTab() {
             </label>
           </div>
           <div id="auth-step-indicator" class="auth-step-indicator" style="${st.running ? '' : 'display:none'}">
-            <span class="auth-step-dot"></span><span id="auth-step-label">Starting…</span>
+            <span class="auth-step-dot"></span><span id="auth-step-label">${_authEsc(st.stepLabel || 'Starting…')}</span>
           </div>
         </div>
 
@@ -4247,7 +4243,7 @@ function _authReportHTML(v) {
         <div style="border-left:3px solid ${zoneColor[primary.zone] || '#9ca3af'};padding-left:10px;margin-bottom:${alts.length ? '10px' : '0'}">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <strong style="color:${zoneColor[primary.zone] || '#9ca3af'}">${primary.best_guess ? 'Best guess: ' : ''}${_authEsc(primary.label)}</strong>
-            ${primary.identified_as ? `<span>as <code>${_authEsc(primary.identified_as)}</code></span>` : ''}
+            ${primary.identified_as ? `<span>${primary.identified_kind === 'family' ? 'family' : 'as'} <code>${_authEsc(primary.identified_as)}</code></span>` : ''}
             ${zoneBadge(primary.zone)}
             ${primary.best_guess ? '<span class="auth-bestguess">low confidence</span>' : ''}
           </div>
@@ -4264,6 +4260,14 @@ function _authReportHTML(v) {
           ${a.rationale ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${_authEsc(a.rationale)}</div>` : ''}
         </div>`).join('')}
       </div>` : '';
+    const cands = (primary && Array.isArray(primary.closest_candidates)) ? primary.closest_candidates : [];
+    const candsHTML = (cands.length && (v.verdict === 'family_match' || v.verdict === 'unverifiable')) ? `
+      <div class="auth-mods" style="margin-top:8px;border:1px dashed var(--border-color);border-radius:8px;padding:10px">
+        <div class="setting-desc" style="margin-bottom:6px">Closest candidate standards (best-guess, not a confirmed identification):</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${cands.map(c => `<span class="auth-conf-badge" style="border-color:${zoneColor[c.zone] || '#9ca3af'};color:${zoneColor[c.zone] || '#9ca3af'}"><code>${_authEsc(c.id)}</code>&nbsp;· ${(c.score * 100).toFixed(0)}% · ${_authEsc((c.zone || '').replace(/_/g, ' '))}</span>`).join('')}
+        </div>
+      </div>` : '';
     return `
       <div class="auth-banner" style="border-color:${meta.color};background:${meta.color}14">
         <div class="auth-verdict" style="color:${meta.color}">${meta.label}</div>
@@ -4271,11 +4275,12 @@ function _authReportHTML(v) {
         <div class="auth-conf-badge" style="border-color:${meta.color};color:${meta.color}">${_authEsc((v.confidence_level || '').replace(/_/g, ' '))}</div>
       </div>
       <div class="auth-meta-row">
-        ${v.identified_as ? `<span><strong>Identified as:</strong> ${_authEsc(v.identified_as)}</span>` : ''}
+        ${v.identified_as ? `<span><strong>Identified as:</strong> ${_authEsc(v.identified_as)}${v.submodel_match ? '' : ' <span style="color:var(--text-muted)">(family only — sub-version unconfirmed)</span>'}</span>` : ''}
         ${v.family ? `<span><strong>Family:</strong> ${_authEsc(v.family)}</span>` : ''}
         ${v.focus ? `<span><strong>Focus:</strong> ${_authEsc(v.focus)}</span>` : ''}
       </div>
       ${conclusionsHTML}
+      ${candsHTML}
       ${modsHTML}
       ${evidence ? `<details class="auth-evidence"><summary>Raw evidence</summary><pre>${_authEsc(evidence)}</pre></details>` : ''}
       <div class="auth-latency">${v.latency_ms != null ? 'latency: ' + v.latency_ms + ' ms' : ''}</div>`;
@@ -4363,7 +4368,7 @@ window.authRunTest = async function () {
     if (st.running) return; // double-click guard
     const routerId = st.testModel.includes('/') ? st.testModel : (st.testProviderKey + '/' + st.testModel);
 
-    st.running = true; st.report = null; st.runningId = routerId;
+    st.running = true; st.report = null; st.runningId = routerId; st.stepLabel = '';
     renderAuthenticityTab();
     const ctl = new AbortController(); st.abortCtl = ctl;
     _authStartStepPolling(routerId);
@@ -4387,7 +4392,7 @@ window.authRunTest = async function () {
             st.report = { verdict: 'error', headline: 'Request failed: ' + e.message, confidence_level: 'none', conclusions: [] };
         }
     } finally {
-        st.running = false; st.runningId = ''; st.abortCtl = null;
+        st.running = false; st.runningId = ''; st.abortCtl = null; st.stepLabel = '';
         _authStopStepPolling(); renderAuthenticityTab();
     }
 };
@@ -4399,7 +4404,7 @@ window.authCancelTest = function () {
     if (st.runningId) {
         fetch('/api/authenticity/test/cancel/' + encodeURIComponent(st.runningId), { method: 'POST' }).catch(() => {});
     }
-    st.running = false; st.runningId = '';
+    st.running = false; st.runningId = ''; st.stepLabel = '';
     _authStopStepPolling(); renderAuthenticityTab();
 };
 
@@ -4414,8 +4419,12 @@ function _authStartStepPolling(routerId) {
             const r = await fetch('/api/authenticity/test/status/' + encodeURIComponent(routerId));
             if (!r.ok) return; // 404 = stale router pre-restart; never spam UI
             const s = await r.json();
-            const el = document.getElementById('auth-step-label');
-            if (el && s && s.label) el.textContent = s.label;
+            if (!_authState.running) return; // stale in-flight response after stop/cancel
+            if (s && s.label) {
+                _authState.stepLabel = s.label;
+                const el = document.getElementById('auth-step-label');
+                if (el) el.textContent = s.label;
+            }
         } catch (e) { /* fail-open */ }
     }, 700);
 }

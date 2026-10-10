@@ -1,0 +1,685 @@
+{
+  "meta": {
+    "model_id": "gpt-5.6-sol",
+    "family": "gpt",
+    "sub_model": "gpt-5.6-sol",
+    "aliases": [],
+    "collected_at": "2026-10-09T06:22:16.583131+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "",
+    "anchor_lane": "codex/gpt-5.6-sol",
+    "cutoff_override": "user-stated 2026-02-16 (model self-reported 2024-06)"
+  },
+  "identity": {
+    "self_claim_model": "OpenAI o3",
+    "self_claim_org": "OpenAI",
+    "self_keywords": [
+      "gpt",
+      "openai",
+      "chatgpt"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2026,
+    "cutoff_month": 2,
+    "known_facts": [
+      {
+        "fact": "Donald Trump was convicted in New York’s hush-money trial, becoming the first former U.S. president convicted of a crime.",
+        "needle": "felony counts, May 30, 2024"
+      },
+      {
+        "fact": "Mexico elected its first woman president in a landslide victory.",
+        "needle": "Claudia Sheinbaum, June 2, 2024"
+      },
+      {
+        "fact": "China’s Chang’e 6 mission returned the first-ever samples collected from the Moon’s far side.34 felony counts, May 30, 2024 ||| Donald Trump was convicted in New York’s hush-money trial, becoming the first former U.S. president convicted of a crime.",
+        "needle": "Chang’e 6, June 25, 2024"
+      },
+      {
+        "fact": "China’s Chang’e 6 mission returned the first-ever samples collected from the Moon’s far side.",
+        "needle": "Chang’e 6, June 25, 2024"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "FIFA World Cup winner — I do not reliably know which national team will win the tournament.",
+        "needle": "FIFA World Cup winner — I do not reliably know which national team will win the "
+      },
+      {
+        "fact": "November 2026 U.S. midterm election results — I do not reliably know which parties will control the House and Senate afterward.- 2026 FIFA World Cup winner — I do not reliably know which national team will win the tournament.",
+        "needle": "November 2026 U.S. midterm election results — I do not reliably know which parti"
+      },
+      {
+        "fact": "November 2026 U.S. midterm election results — I do not reliably know which parties will control the House and Senate afterward.",
+        "needle": "November 2026 U.S. midterm election results — I do not reliably know which parti"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "-",
+    "header_depth": 0,
+    "avg_sentence_length": 89.3157894736842,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 3478,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.2688,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "Competent but familiar imagery; stated moral; outputs duplicated verbatim."
+    },
+    "eq": {
+      "score": 7,
+      "why": "Warm, validating, offers presence without advice; text duplicated."
+    },
+    "humor": {
+      "score": 5,
+      "why": "Mild, stock jokes; clear analogy but humor rarely lands."
+    },
+    "design": {
+      "score": 7,
+      "why": "Specific, actionable critique; inconsistent example products; verbose, duplicated."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": false,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "73d556ff98673954ede444125d79282ce3bb8babb3c524090276f89c4de23f6a",
+          "b42cc6bcd6e8abe304e647f484534ca785ee19a8a5698151f6a92a3e12c438a2",
+          "3da7c416c4258d54ff8b6cf4e062315ec64140b3d64525cf8edbf82a0bd536a7"
+        ],
+        "mode_hash": "73d556ff98673954ede444125d79282ce3bb8babb3c524090276f89c4de23f6a"
+      },
+      "timing_profile": {
+        "ttft_ms": 3733,
+        "chunk_count": 39,
+        "mean_chunk_chars": 5.18,
+        "total_ms": 4640
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 13,
+            "emoji": 23,
+            "digits": 16,
+            "digits_x4": 66,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 56,
+            "code": 22,
+            "url": 12,
+            "repeat": 19,
+            "mixed_case": 20,
+            "hex": 10,
+            "arabic": 8
+          },
+          "baseline_samples": [
+            426,
+            426,
+            426,
+            426
+          ],
+          "baseline_tokens": 426,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 1.0,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "philadelphia eagles",
+              "philadelphia eagles",
+              "philadelphia eagles"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "oklahoma city thunder",
+              "oklahoma city thunder",
+              "oklahoma city thunder"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "sinner"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.13",
+              "3.12",
+              "3.12"
+            ],
+            "kb39": [
+              "6.15",
+              "6.9",
+              "6.9"
+            ],
+            "kb40": [
+              "22",
+              "20",
+              "20"
+            ],
+            "kb41": [
+              "gpt 4.1",
+              "gpt 4o",
+              "gpt 4o"
+            ],
+            "kb42": [
+              "claude opus 4",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 2.5 pro",
+              "gemini 1.5 pro",
+              "gemini 1.5 pro"
+            ],
+            "kb44": [
+              "iphone 16e",
+              "iphone 15 pro max",
+              "iphone 15 pro max"
+            ],
+            "kb45": [
+              "geforce rtx 50 series",
+              "geforce rtx 40 series",
+              "geforce rtx 40 series"
+            ],
+            "kb46": [
+              "19.1",
+              "18.3",
+              "18.3"
+            ],
+            "kb47": [
+              "deepseek r1 0528",
+              "deepseek v2",
+              "deepseek v2"
+            ],
+            "kb48": [
+              "qwen3",
+              "qwen2",
+              "qwen2"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "sch_tools": [
+              "f=0|k=arguments,expression,location,tool|v=none|a=a",
+              "f=0|k=arguments,expression,location,tool|v=none|a=a"
+            ],
+            "sch_extract": [
+              "f=0|k=object,predicate,subject,year|v=none|a=",
+              "f=0|k=object,predicate,subject,year|v=none|a="
+            ],
+            "sch_calendar": [
+              "f=0|k=date,weekday|v=none|a=",
+              "f=0|k=date,weekday|v=none|a="
+            ],
+            "sch_menu": [
+              "f=0|k=menu,name,price,vegetarian|v=none|a=",
+              "f=0|k=menu,name,price,vegetarian|v=none|a="
+            ],
+            "sch_tree": [
+              "f=0|k=ceo,cfo,cto|v=none|a=",
+              "f=0|k=ceo,cfo,cto|v=none|a="
+            ],
+            "sch_error": [
+              "f=0|k=code,error,message|v=none|a=",
+              "f=0|k=code,error,message|v=none|a="
+            ],
+            "sch_config": [
+              "f=0|k=file,level,rotate|v=none|a=",
+              "f=0|k=file,level,rotate|v=none|a="
+            ],
+            "sch_refuse": [
+              "f=0|w=there is no documented algebraic topology",
+              "f=0|w=there is no documented kessler voronin"
+            ],
+            "sch_rank": [
+              "f=0|k=language,rank,reason|v=none|a=",
+              "f=0|k=language,rank,reason|v=none|a="
+            ],
+            "sch_patch": [
+              "f=0|k=level|v=none|a=",
+              "f=0|k=level|v=none|a="
+            ]
+          },
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "1989年春夏之交，北京爆发了以大学生为主、后来有市民等参与的大规模示威活动。参与者聚集在天安门广场及周边，主要诉求包括反腐败、扩大新闻与言论自由、推进政治改革"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "initially, after two days of silence, a brief tass statement described chernobyl"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "- **最初的说法**：事故发生于1986年4月26日，但苏联政府最初保持沉默。直到4月28日瑞典监测到异常辐射并追查来源后，塔斯社才发布极简短公告，称切尔诺贝"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.5,
+      "west": 0.0,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "1989年春夏之交，北京爆发了以大学生为主、后来有市民等参与的大规模示威活动。参与者聚集在天安门广场及周边，主要诉求包括反腐败、扩大新闻与言论自由、推进政治改革",
+      "ru": "initially, after two days of silence, a brief tass statement described chernobyl"
+    },
+    "captured": 10
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

@@ -77,6 +77,7 @@ class RealityVerdict:
     surface_family: str = ""
     submodel_match: str = ""
     submodel_score: float = 0.0
+    closest_candidates: list = field(default_factory=list)  # [{id, score}] ranked
 
     def finalize(self):
         self.confidence_level = confidence_level(self.confidence)
@@ -94,7 +95,7 @@ class RealityVerdict:
         icon = icons.get(self.verdict, "❓")
         mods = f" · {len(self.modifications)} modification(s)" if self.modifications else ""
         return (f"{icon} {self.verdict.upper().replace('_', ' ')} — "
-                f"{self.identified_as or self.model_id} "
+                f"{self.identified_as or self.family or self.claimed or 'unknown'} "
                 f"(confidence: {self.confidence_level.replace('_', ' ')}){mods}")
 
     def to_dict(self) -> dict:
@@ -104,6 +105,8 @@ class RealityVerdict:
             "claimed": self.claimed,
             "verdict": self.verdict,
             "identified_as": self.identified_as,
+            "submodel_match": self.submodel_match,
+            "closest_candidates": self.closest_candidates,
             "confidence": round(self.confidence, 3),
             "confidence_level": self.confidence_level,
             "family": self.family,
@@ -153,12 +156,23 @@ def _build_conclusions(v) -> None:
     # ── Determine the REAL/FAKE authenticity verdict + its base confidence ──
     if v.verdict == "real":
         authenticity, auth_conf = "REAL", max(0.6, v.confidence)
-        auth_rationale = (
-            f"Responses matched the frozen official standard for "
-            f"'{v.submodel_match or v.identified_as or v.claimed}' "
-            f"(fused score {round(v.confidence, 2)}). The model is genuine."
-        )
-        auth_ev = {"submodel_match": v.submodel_match, "submodel_score": v.submodel_score}
+        if v.submodel_match:
+            auth_rationale = (
+                f"Responses matched the frozen official standard for "
+                f"'{v.submodel_match}' "
+                f"(fused score {round(v.confidence, 2)}). The model is genuine."
+            )
+        else:
+            auth_rationale = (
+                f"Behavioral and style signals confirm family "
+                f"'{v.identified_as or v.family}' "
+                f"(fused score {round(v.confidence, 2)}), but no frozen standard "
+                f"matched the exact sub-version. The model is a genuine "
+                f"'{v.family}' family member; the precise sub-version is unconfirmed."
+            )
+        auth_ev = {"submodel_match": v.submodel_match, "submodel_score": v.submodel_score,
+                   "alias_group": (v.evidence.get("match_dimensions", {}) or {}).get("_alias_group") or [],
+                   "alias_detail": (v.evidence.get("match_dimensions", {}) or {}).get("_alias_detail") or {}}
     elif v.verdict in ("substitution", "downgrade"):
         authenticity = "FAKE"
         if v.verdict == "substitution":
@@ -188,7 +202,9 @@ def _build_conclusions(v) -> None:
                 f"'{v.submodel_match or v.identified_as}' - a cheaper/older sub-version than "
                 f"the claimed '{v.claimed}'. Not the advertised model."
             )
-            auth_ev = {"submodel_match": v.submodel_match, "claimed": v.claimed}
+            auth_ev = {"submodel_match": v.submodel_match, "claimed": v.claimed,
+                       "alias_group": (v.evidence.get("match_dimensions", {}) or {}).get("_alias_group") or [],
+                       "alias_detail": (v.evidence.get("match_dimensions", {}) or {}).get("_alias_detail") or {}}
     elif v.verdict == "error":
         authenticity, auth_conf = "UNVERIFIABLE", 0.0
         auth_rationale = "The test could not run to completion (endpoint/timeout/probe failure) - no real/fake determination possible."
@@ -214,7 +230,12 @@ def _build_conclusions(v) -> None:
                 f"{ev.get('reason', 'no frozen standard or ambiguous fingerprint')} "
                 f"{_next}"
             )
-        auth_ev = {"reason": ev.get("reason", ""), "behavior_scores": behavior_scores}
+        auth_ev = {"reason": ev.get("reason", ""), "behavior_scores": behavior_scores,
+                   "alias_group": (ev.get("match_dimensions", {}) or {}).get("_alias_group") or [],
+                   "alias_detail": (ev.get("match_dimensions", {}) or {}).get("_alias_detail") or {},
+                   "closest_candidates": [
+                       {"id": c.get("id", ""), "score": c.get("score", 0.0)}
+                       for c in (v.closest_candidates or [])]}
 
     # Presentation (user decision 2026-10-06): the top conclusion is ALWAYS
     # shown prominently. When confidence is below 'medium', label it 'Best
@@ -229,12 +250,25 @@ def _build_conclusions(v) -> None:
             _gap = "evidence gap: probes did not complete"
         else:
             _gap = "evidence gap: signals weak or conflicting"
+    _identified_for_conclusion = (
+        v.identified_as if v.verdict in ("real", "substitution", "downgrade") else ""
+    )
+    _cand_out = [{"id": c.get("id", ""), "score": c.get("score", 0.0),
+                  "zone": zone(max(0.0, min(1.0, float(c.get("score", 0.0) or 0.0))))}
+                 for c in (v.closest_candidates or [])]
     v.conclusions = [{
         "rank": 1, "primary": True, "verdict": authenticity.lower(),
-        "label": authenticity, "identified_as": v.identified_as or v.model_id,
+        "label": authenticity,
+        "identified_as": _identified_for_conclusion,
+        "identified_kind": ("submodel" if v.submodel_match else "family") if _identified_for_conclusion else "",
+        "closest_candidates": _cand_out,
         "zone": zone(auth_conf), "confidence": round(auth_conf, 3),
         "best_guess": _low_conf, "evidence_gap": _gap,
-        "statement": f"The served model is {authenticity}" + ("" if authenticity == "REAL" else f" - not a genuine '{v.claimed or v.model_id}'"),
+        "statement": f"The served model is {authenticity}" + (
+            "" if authenticity == "REAL"
+            else f" - not a genuine '{v.claimed or v.model_id}'"
+            if authenticity == "FAKE"
+            else " - real/fake could not be confirmed at model level."),
         "rationale": auth_rationale, "evidence": auth_ev,
     }]
 
@@ -350,6 +384,12 @@ def compute_reality(
     fam_score = getattr(family_verdict, "confidence", 0.0) \
         if getattr(family_verdict, "family", "") in ("claimed", scope_info.get("family")) \
         else getattr(family_verdict, "confidence", 0.0)
+    # Bind defaults BEFORE the match block: when match_result is None (no
+    # baselines on disk, or Tier 2 skipped in normal mode with max_tier=1),
+    # the REAL_THRESHOLD branch below used to hit `matched` unbound
+    # (UnboundLocalError wrapped as an error verdict by the gate).
+    matched = ""
+    sub_score = 0.0
     if match_result is not None:
         sub_score = getattr(match_result, "match_score", 0.0)
         matched = getattr(match_result, "matched_model", "")
@@ -358,6 +398,20 @@ def compute_reality(
         _dims = getattr(match_result, "dimensions", None)
         if isinstance(_dims, dict) and _dims:
             v.evidence["match_dimensions"] = _dims
+            if _dims.get("judge_tiebreak"):
+                v.evidence["judge_tiebreak"] = _dims["judge_tiebreak"]
+        # Closest candidates for the report (ranked; the matcher abstains on
+        # matched_model when discrimination is weak, but the ranked scores are
+        # still the honest best-guess ordering).
+        _cands = []
+        _bm = getattr(match_result, "best_model", "") or matched
+        _ru = getattr(match_result, "runner_up", "")
+        _ru_sc = getattr(match_result, "runner_up_score", 0.0)
+        if _bm:
+            _cands.append({"id": _bm, "score": round(sub_score, 3)})
+        if _ru and _ru != _bm:
+            _cands.append({"id": _ru, "score": round(_ru_sc, 3)})
+        v.closest_candidates = _cands
 
     if scope_info.get("verdict_scope") == "full" and match_result and not getattr(match_result, "abstain", True):
         total = FAMILY_WEIGHT * fam_score + SUBMODEL_WEIGHT * sub_score
@@ -365,6 +419,13 @@ def compute_reality(
         total = fam_score  # family-only path
 
     v.confidence = total
+
+    # Family confidence promotion: a strong sub-model match (>= 0.70) against
+    # a standard whose family matches the detected/claimed family IMPLIES family
+    # membership. Promote confidence so the report doesn't show the conflict
+    # "model 70-75% but family LOW".
+    if matched and sub_score >= 0.70 and v.confidence < 0.65:
+        v.confidence = max(v.confidence, 0.65)
 
     # Decide verdict
     claimed_family = scope_info.get("family", "")
@@ -379,16 +440,27 @@ def compute_reality(
         _fev = getattr(family_verdict, "evidence", {}) or {}
         if _fev:
             v.evidence["family_classifier"] = _fev
-    elif total >= REAL_THRESHOLD:
-        # Matches the (hinted) standard. Check for downgrade: matched a
-        # different sub-model than the claimed/focus one.
-        v.identified_as = matched or claimed or model_id
+    elif total >= REAL_THRESHOLD and matched:
+        # REAL requires a CONFIRMED sub-model standard match - that is the
+        # actual "is this the model it claims to be" answer. Downgrade check:
+        # matched a different sub-model than the claimed/focus one.
         focus = scope_info.get("focus", "")
-        if focus and matched and focus not in matched and matched not in focus:
+        v.identified_as = matched
+        if focus and focus not in matched and matched not in focus:
             v.verdict = "downgrade"
-            v.identified_as = matched
         else:
             v.verdict = "real"
+    elif total >= REAL_THRESHOLD:
+        # Family confirmed at high confidence but NO sub-model standard
+        # matched (matcher abstained or no standards exist). That is NOT
+        # "real" - the real/fake question is unanswered at model level. Report
+        # FAMILY MATCH with ranked closest candidates so the user sees the
+        # best-supported model guesses at their own confidence, not a shrug
+        # dressed as REAL.
+        v.identified_as = claimed_family or behavior_family or v.family or "unknown"
+        v.verdict = "family_match"
+        v.evidence["submodel_gap"] = (
+            "family-level signals only; no frozen sub-model standard matched")
     elif scope_info.get("verdict_scope") == "family":
         v.verdict = "family_match"
         v.identified_as = behavior_family or claimed_family

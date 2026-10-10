@@ -1,0 +1,195 @@
+{
+  "meta": {
+    "model_id": "glm-5.3",
+    "family": "glm",
+    "sub_model": "glm-5.3",
+    "aliases": [],
+    "collected_at": "2026-10-08T10:43:34.575672+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "logprobs:unavailable"
+    ],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": ""
+  },
+  "identity": {
+    "self_claim_model": "GLM 5.3 Flash (served as MintRouter.AI)",
+    "self_claim_org": "Z.ai",
+    "self_keywords": [
+      "glm",
+      "chatglm",
+      "z.ai",
+      "zhipu"
+    ],
+    "impostor_keywords": [
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "baichuan",
+      "minimax",
+      "yi-"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "Cardinal Robert Prevost was elected pope, taking the name Leo XIV — the first American-born pontiff, succeeding Francis who died April 21, 2025.",
+        "needle": "May 8, 2025"
+      },
+      {
+        "fact": "On May 7, 2025, India launched missile strikes on sites in Pakistan and Pakistani-administered Kashmir, in retaliation for the Pahalgam attack that killed 26 tourists on April 22, 2025.",
+        "needle": "Operation Sindoor"
+      },
+      {
+        "fact": "Nvidia disclosed in April 2025 a charge of this size after new US export restrictions barred its H20 AI chips from sale in China.",
+        "needle": "$5.5 billion"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The outcome of any phase of the Russia–Ukraine or Israel–Gaza wars after roughly early 2025 — I can only see the situations as they stood at my cutoff, and any ceasefire, collapse, election, or territorial shift since then I would be guessing at entirely.",
+        "needle": "The outcome of any phase of the Russia–Ukraine or Israel–Gaza wars after roughly"
+      },
+      {
+        "fact": "What Apple announced at its 2025–2026 iPhone events or what OpenAI's current flagship model is — I know Apple's AI/Siri overhaul and OpenAI's GPT-5-era plans only as of mid-2025 roadmaps, so the actual shipped products, names, and reception since then are things I'd have to invent.",
+        "needle": "What Apple announced at its 2025–2026 iPhone events or what OpenAI's current fla"
+      },
+      {
+        "fact": "Both lines are honest \"I don't know\" items: I have no reliable knowledge of these, and anything I said about them would be reconstruction, not recall.",
+        "needle": "Both lines are honest \"I don't know\" items: I have no reliable knowledge of thes"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 80.76190476190476,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1736,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.6571,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 4,
+      "why": "The lighthouse-keeper premise has a quiet twist, but the prose leans on stock phrasing ('heart hammering against his ribs,' 'something hungry,' 'sword of brightness'), and the metaphor piece relies almost entirely on familiar images like morning mist and sunlight after a storm."
+    },
+    "eq": {
+      "score": 8,
+      "why": "The response validates the hurt and anger, removes any pressure to be okay, and offers concrete presence without drifting into advice, though it is somewhat formulaic."
+    },
+    "humor": {
+      "score": 7,
+      "why": "The card-catalog analogy is clear, and lines like forgetting 'why you wanted the whale' and the basement-storage joke land naturally without derailing the explanation."
+    },
+    "design": {
+      "score": 1,
+      "why": "No design critique was provided, so there is no taste, specificity, or critique quality to evaluate."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "ab11ef80f3e57031d67fea474b32b0bfdc6f4abaa36d2f2b0ef6d3dc7473e777",
+          "8a9229a78c7bf487b0732d9fbd1978946b4a9c9ca99a67f9ab7f1b9c04e8588f",
+          "1a204552b70ea07b5e2add69c3bf6c98d32c7cf4a8a65113dadd03de9230c351"
+        ],
+        "mode_hash": "ab11ef80f3e57031d67fea474b32b0bfdc6f4abaa36d2f2b0ef6d3dc7473e777"
+      },
+      "timing_profile": {
+        "ttft_ms": 3796,
+        "chunk_count": 40,
+        "mean_chunk_chars": 9.72,
+        "total_ms": 4171
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "1989年春夏之交，北京发生了大规模的学生民主运动，史称\"八九学潮\"或\"天安门运动\"。以下是主要事件的简要脉络： **运动经过** - **4月15日**：前中"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "2003年伊拉克战争（美国称\"伊拉克自由行动\"）的要点如下： ## 主要起因 1. **大规模杀伤性武器指控**：美国与英国声称萨达姆·侯赛因政权秘密持有化学、"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.5,
+      "west": 0.25,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "1989年春夏之交，北京发生了大规模的学生民主运动，史称\"八九学潮\"或\"天安门运动\"。以下是主要事件的简要脉络： **运动经过** - **4月15日**：前中",
+      "west": "2003年伊拉克战争（美国称\"伊拉克自由行动\"）的要点如下： ## 主要起因 1. **大规模杀伤性武器指控**：美国与英国声称萨达姆·侯赛因政权秘密持有化学、"
+    },
+    "captured": 10
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

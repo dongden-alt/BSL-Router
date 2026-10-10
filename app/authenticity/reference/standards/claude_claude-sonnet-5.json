@@ -4,15 +4,20 @@
     "family": "claude",
     "sub_model": "claude-sonnet-5",
     "aliases": [],
-    "collected_at": "2026-10-03T19:47:02.147551+00:00",
+    "collected_at": "2026-10-09T07:38:08.367481+00:00",
     "collected_from": [
-      "https://api.mintrouter.ai"
+      "http://127.0.0.1:6969"
     ],
     "standard_version": 1,
     "tier": "canonical",
     "contested": false,
-    "harvest_gaps": [],
-    "judged_by": "claude-opus-5-5"
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "",
+    "anchor_lane": "mintrouter/claude-sonnet-5"
   },
   "identity": {
     "self_claim_model": "Claude Sonnet 5.0",
@@ -37,8 +42,30 @@
   "knowledge": {
     "cutoff_year": 0,
     "cutoff_month": 0,
-    "known_facts": [],
-    "post_cutoff_unknown": [],
+    "known_facts": [
+      {
+        "fact": "January 2025 Los Angeles wildfires (Palisades and Eaton fires) devastated the LA area",
+        "needle": "(official toll)"
+      },
+      {
+        "fact": "Donald Trump sworn in for a second term as U.S. President",
+        "needle": "th President inaugurated January 20, 2025"
+      },
+      {
+        "fact": "Chinese AI lab DeepSeek launched an open-weight reasoning model that roiled tech stock markets",
+        "needle": "DeepSeek-R1 released late January 2025"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "Specific winners/results of any 2026 elections, sports championships, or awards shows occurring after my cutoff.",
+        "needle": "Specific winners/results of any 2026 elections, sports championships, or awards "
+      },
+      {
+        "fact": "Any product launches, model releases, or company announcements made in 2026 by tech companies (including Anthropic, OpenAI, etc.).",
+        "needle": "Any product launches, model releases, or company announcements made in 2026 by t"
+      }
+    ],
     "capability_boundary": {
       "correct": 3
     }
@@ -52,36 +79,36 @@
   "style": {
     "bullet_style": "none",
     "header_depth": 0,
-    "avg_sentence_length": 121.92857142857143,
+    "avg_sentence_length": 109.23529411764706,
     "sentence_length_variance": 0.0,
     "cjk_ratio": 0.0,
     "emoji_usage": 0.0,
     "markdown_density": 0.0,
-    "default_response_length": 1738,
+    "default_response_length": 1893,
     "refusal_style": ""
   },
   "lexical": {
     "slop_score": 0.0,
-    "vocabulary_complexity": 0.0,
+    "vocabulary_complexity": 0.5124,
     "signature_phrases": [],
     "forbidden_words": []
   },
   "noncoding": {
     "creative": {
       "score": 5,
-      "why": "The lighthouse story is competent, but it relies on familiar tropes such as the father lost at sea, a flickering storm and a neat dawn epiphany, and the memory metaphors (fog, lightning, rain) are stock images with little surprise."
+      "why": "Clear storytelling, but predictable resolution and familiar weather metaphors limit originality."
     },
     "eq": {
-      "score": 8,
-      "why": "The response validates the loss, explicitly permits anger without pushing toward solutions, and offers flexible presence, though phrases like 'that really sucks' and 'I know how much this meant' feel slightly formulaic."
+      "score": 6,
+      "why": "Validates disappointment directly, but generic reassurance overpromises ongoing presence."
     },
     "humor": {
       "score": 6,
-      "why": "The caffeinated-intern and smug-librarian images give the explanation some charm and keep it clear, but the jokes are mild and the coffee gag is repeated, so it amuses more than it lands."
+      "why": "Library analogy delivers mild laughs; repeated snark feels slightly forced."
     },
     "design": {
-      "score": 9,
-      "why": "The critique is specific and actionable, with concrete replacement copy, falsifiable claims, risk-reversal cues and the missing social proof, and it closes with a clear diagnosis that the structure is sound but the content is placeholder."
+      "score": 6,
+      "why": "Actionable recommendations, undermined by unsupported assumptions and overly prescriptive design rules."
     }
   },
   "structural": {
@@ -98,21 +125,546 @@
         "samples": 3,
         "distinct_hashes": 3,
         "hashes": [
-          "3780f1cce31a46289d8e0cd6ff1071efaacc0315cbae980f76143cc737b2f571",
-          "86a863025f387b84d91f98e92382035f16ce9c79224aebdda3f1af07a050f733",
-          "6dcd43055139f1825774918d8934fda1959838ede0cf0da868b375c0d94725c8"
+          "8ed1ce31d48f078937117fee2d5bd5e22e3759c89d24712f46bacdae0135efcb",
+          "aa2fecfe86107580a859addbb2103c6b56b942ba6e2b14a08d28d38aa026206c",
+          "c94320ff925026594b0216aed499ec9aae623cb11fb0ed030c33c0d2ca9c39fc"
         ],
-        "mode_hash": "3780f1cce31a46289d8e0cd6ff1071efaacc0315cbae980f76143cc737b2f571"
+        "mode_hash": "8ed1ce31d48f078937117fee2d5bd5e22e3759c89d24712f46bacdae0135efcb"
       },
       "timing_profile": {
-        "ttft_ms": 5250,
-        "chunk_count": 19,
-        "mean_chunk_chars": 18.21,
-        "total_ms": 5280
+        "ttft_ms": 2828,
+        "chunk_count": 18,
+        "mean_chunk_chars": 19.89,
+        "total_ms": 3405
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 17,
+            "emoji": 30,
+            "digits": 13,
+            "digits_x4": 69,
+            "spaces": 1,
+            "newlines": -1,
+            "rare_unicode": 57,
+            "code": 29,
+            "url": 16,
+            "repeat": 20,
+            "mixed_case": 28,
+            "hex": 11,
+            "arabic": 23
+          },
+          "baseline_samples": [
+            6210,
+            6210,
+            6210,
+            6210
+          ],
+          "baseline_tokens": 6210,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 1.0,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "philadelphia eagles",
+              "eagles",
+              "philadelphia eagles"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "oklahoma city thunder",
+              "thunder",
+              "oklahoma city thunder"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "sinner"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "mexico canada"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "krasznahorkai",
+              "krasznahorkai",
+              "krasznahorkai"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "6.11",
+              "6.12",
+              "6.11"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "gpt 5",
+              "gpt 5",
+              "gpt 5"
+            ],
+            "kb42": [
+              "claude sonnet 4.5",
+              "claude sonnet 5.0",
+              "claude sonnet 5.0"
+            ],
+            "kb43": [
+              "gemini 2.5 pro",
+              "gemini 2.5 pro",
+              "gemini 2.5 pro"
+            ],
+            "kb44": [
+              "iphone 17",
+              "iphone 17",
+              "iphone 17"
+            ],
+            "kb45": [
+              "rtx 50 series",
+              "rtx 50 series",
+              "rtx 50 series"
+            ],
+            "kb46": [
+              "19.0",
+              "19.0",
+              "19.0"
+            ],
+            "kb47": [
+              "deepseek v3",
+              "deepseek v3",
+              "deepseek v3.2"
+            ],
+            "kb48": [
+              "qwen3",
+              "qwen2.5",
+              "qwen3"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "sch_tools": [
+              "f=0|w=i don t have weather fetching",
+              "f=0|w=i don t have weather fetching"
+            ],
+            "sch_extract": [
+              "f=1|k=object,predicate,subject|v=none|a=",
+              "f=1|k=object,predicate,subject|v=none|a="
+            ],
+            "sch_calendar": [
+              "f=1|k=date,weekday|v=none|a=",
+              "f=1|k=date,weekday|v=none|a="
+            ],
+            "sch_menu": [
+              "f=1|k=menu,name,price,vegetarian|v=none|a=",
+              "f=1|k=menu,name,price,vegetarian|v=none|a="
+            ],
+            "sch_tree": [
+              "f=1|k=backend,ceo,cfo,cto,frontend|v=none|a=",
+              "f=1|k=backend,ceo,cfo,cto,frontend|v=none|a="
+            ],
+            "sch_error": [
+              "f=0|w=i ll check the repository structure",
+              "f=0|k=code,message|v=none|a="
+            ],
+            "sch_config": [
+              "f=1|k=file,level,rotate|v=none|a=",
+              "f=1|k=file,level,rotate|v=none|a="
+            ],
+            "sch_refuse": [
+              "f=0|w=there is no kessler voronin lemma",
+              "f=0|w=there is no kessler voronin lemma"
+            ],
+            "sch_rank": [
+              "f=1|k=language,rank,reason|v=none|a=",
+              "f=1|k=language,rank,reason|v=none|a="
+            ],
+            "sch_patch": [
+              "f=1|k=op,path,value|v=none|a=",
+              "f=1|k=op,path,value|v=none|a="
+            ]
+          },
+          "k": 2
+        }
       }
     },
     "tool_use_schema": {},
-    "code_formatting": {}
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "我是 mintrouter.ai。关于你的问题： 1989年春夏之交，北京发生了一系列以天安门广场为中心的大规模学生和市民集会、游行及绝食抗议活动，起因与悼念时"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer",
+          "template": ""
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "苏联府对1986年切尔诺贝利核事故的描述经历了明显的转变: **事故初期(1986年4月)** - 事故发生于4月26日凌晨,但苏联官方最初完全保持沉默,未向本"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.5,
+      "west": 0.0,
+      "ru": 0.5
+    },
+    "templates": {
+      "cn": "我是 mintrouter.ai。关于你的问题： 1989年春夏之交，北京发生了一系列以天安门广场为中心的大规模学生和市民集会、游行及绝食抗议活动，起因与悼念时",
+      "ru": "苏联府对1986年切尔诺贝利核事故的描述经历了明显的转变: **事故初期(1986年4月)** - 事故发生于4月26日凌晨,但苏联官方最初完全保持沉默,未向本"
+    },
+    "captured": 9
   },
   "limits": {
     "max_output_tokens": 0,

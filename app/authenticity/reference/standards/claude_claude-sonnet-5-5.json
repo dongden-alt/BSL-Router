@@ -4,18 +4,23 @@
     "family": "claude",
     "sub_model": "claude-sonnet-5-5",
     "aliases": [],
-    "collected_at": "2026-10-03T19:45:52.942243+00:00",
+    "collected_at": "2026-10-09T07:48:07.752761+00:00",
     "collected_from": [
-      "https://api.mintrouter.ai"
+      "http://127.0.0.1:6969"
     ],
     "standard_version": 1,
     "tier": "canonical",
     "contested": false,
-    "harvest_gaps": [],
-    "judged_by": "claude-opus-5-5"
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "",
+    "anchor_lane": "mintrouter/claude-sonnet-5-5"
   },
   "identity": {
-    "self_claim_model": "I'm MintRouter.AI, running on Claude from Anthropic. I don't have an exact version I can state.",
+    "self_claim_model": "Claude Sonnet 5.5",
     "self_claim_org": "Anthropic (original creator of the underlying model)",
     "self_keywords": [
       "claude",
@@ -37,8 +42,22 @@
   "knowledge": {
     "cutoff_year": 0,
     "cutoff_month": 0,
-    "known_facts": [],
-    "post_cutoff_unknown": [],
+    "known_facts": [
+      {
+        "fact": "If you want, I can list events from earlier periods that I know well, or you can give me a date range and I'll say which events I'm confident about and flag the ones I'm not.",
+        "needle": "If you want, I can list events from earlier periods that I know well, or you can"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The winner and final results of the next FIFA World Cup after my training data ends, including the final score and the top scorer.",
+        "needle": "The winner and final results of the next FIFA World Cup after my training data e"
+      },
+      {
+        "fact": "The specific features, benchmarks, and release dates of AI models from any lab released after my cutoff, including newer versions of the model I run on.",
+        "needle": "The specific features, benchmarks, and release dates of AI models from any lab r"
+      }
+    ],
     "capability_boundary": {
       "correct": 3
     }
@@ -50,38 +69,38 @@
     "numeric_precision": {}
   },
   "style": {
-    "bullet_style": "1.",
+    "bullet_style": "none",
     "header_depth": 0,
-    "avg_sentence_length": 64.17857142857143,
+    "avg_sentence_length": 68.3076923076923,
     "sentence_length_variance": 0.0,
     "cjk_ratio": 0.0,
     "emoji_usage": 0.0,
     "markdown_density": 0.0,
-    "default_response_length": 1853,
+    "default_response_length": 1823,
     "refusal_style": ""
   },
   "lexical": {
-    "slop_score": 0.0,
-    "vocabulary_complexity": 0.0,
+    "slop_score": 0.0011,
+    "vocabulary_complexity": 0.5128,
     "signature_phrases": [],
     "forbidden_words": []
   },
   "noncoding": {
     "creative": {
-      "score": 5,
-      "why": "The lighthouse story has a satisfying arc, but its cottage-lantern detail never pays off, and the memory piece stacks familiar weather metaphors (fog, river, drizzle) without fresh imagery or a distinctive voice."
+      "score": 4,
+      "why": "Polished prose, but familiar imagery and an unearned revelation limit originality."
     },
     "eq": {
       "score": 8,
-      "why": "The response validates the specific loss, permits a range of feelings without pushing fixes, and offers flexible presence, though phrases like 'gut punch' lean slightly formulaic."
+      "why": "Validates disappointment without rushing solutions; closing reassurance overpromises ongoing presence."
     },
     "humor": {
-      "score": 7,
-      "why": "The card-catalog analogy is clear and lands several dry jokes ('better attendance,' 'very tidy way to be lost'), though some lines like 'leave feeling smug' are mild rather than funny."
+      "score": 5,
+      "why": "Gentle library jokes support clarity but rarely deliver memorable laughs."
     },
     "design": {
-      "score": 9,
-      "why": "The critique is specific and actionable, explaining why each element fails, offering concrete rewrites and microcopy, and ending with a sensible priority order, with only minor padding from hedged assumptions."
+      "score": 7,
+      "why": "Actionable priorities and examples, weakened by assumptions and formulaic conversion advice."
     }
   },
   "structural": {
@@ -98,21 +117,546 @@
         "samples": 3,
         "distinct_hashes": 3,
         "hashes": [
-          "ccacc182d5ba6e7138813b3ec8a4b55c9decb5fa1cdce86b65178b797f2913f7",
-          "6d6aa803b174642ee5283f9ff89a24332d8dcb4611879132c6dca046d06548f2",
-          "2be5156c749bffc40f8a7e3fa285877afb990a7c4dd1229f104cbad4212f0cd6"
+          "371d98702fffd19b8482acdf15a85401ffc311cfaf50cd47e95e94a01da2107a",
+          "dc36bcf85190cd150479525290cabc25c9c348fb4b54ce416dad5703a722f343",
+          "363d7fb01dbe0aff3f4998b46cf1be1e1917a3a97c992a26003d0921ef7ae1df"
         ],
-        "mode_hash": "ccacc182d5ba6e7138813b3ec8a4b55c9decb5fa1cdce86b65178b797f2913f7"
+        "mode_hash": "371d98702fffd19b8482acdf15a85401ffc311cfaf50cd47e95e94a01da2107a"
       },
       "timing_profile": {
-        "ttft_ms": 4969,
-        "chunk_count": 14,
-        "mean_chunk_chars": 18.0,
-        "total_ms": 5016
+        "ttft_ms": 2578,
+        "chunk_count": 19,
+        "mean_chunk_chars": 16.26,
+        "total_ms": 4688
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 14,
+            "emoji": 30,
+            "digits": 10,
+            "digits_x4": 66,
+            "spaces": 4,
+            "newlines": -1,
+            "rare_unicode": 63,
+            "code": 29,
+            "url": 16,
+            "repeat": 17,
+            "mixed_case": 28,
+            "hex": 11,
+            "arabic": 20
+          },
+          "baseline_samples": [
+            6209,
+            6212,
+            6212,
+            6212
+          ],
+          "baseline_tokens": 6212,
+          "jitter": 3,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 0.75,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 1.0,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "philadelphia eagles",
+              "philadelphia eagles",
+              "philadelphia eagles"
+            ],
+            "kb31": [
+              "norris",
+              "norris",
+              "norris"
+            ],
+            "kb32": [
+              "oklahoma city thunder",
+              "oklahoma city thunder",
+              "oklahoma city thunder"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "sinner"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "krasznahorkai",
+              "krasznahorkai",
+              "krasznahorkai"
+            ],
+            "kb38": [
+              "3.14",
+              "3.14",
+              "3.14"
+            ],
+            "kb39": [
+              "6.17",
+              "6.17",
+              "6.17"
+            ],
+            "kb40": [
+              "24",
+              "24",
+              "24"
+            ],
+            "kb41": [
+              "gpt 5",
+              "gpt 5",
+              "gpt 5"
+            ],
+            "kb42": [
+              "claude sonnet 5.5",
+              "claude opus 4.1",
+              "claude sonnet 5.5"
+            ],
+            "kb43": [
+              "gemini 2.5 pro",
+              "gemini 2.5 pro",
+              "gemini 2.5 pro"
+            ],
+            "kb44": [
+              "iphone 17 pro max",
+              "iphone 17 pro max",
+              "iphone 17 pro max"
+            ],
+            "kb45": [
+              "rtx 50 series",
+              "rtx 50 series",
+              "rtx 50 series"
+            ],
+            "kb46": [
+              "19.2",
+              "19.2",
+              "19.2"
+            ],
+            "kb47": [
+              "deepseek v3.2",
+              "deepseek v3.2",
+              "deepseek v3.2"
+            ],
+            "kb48": [
+              "qwen3 max",
+              "qwen3 max",
+              "qwen3 max"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "san marino",
+              "monaco",
+              "san marino"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "sch_tools": [
+              "f=0|k=arguments,city,expression,tool|v=get|a=a",
+              "f=1|k=arguments,expression,location,tool|v=get|a=a"
+            ],
+            "sch_extract": [
+              "f=1|k=object,predicate,subject|v=none|a=",
+              "f=1|k=object,predicate,subject|v=none|a="
+            ],
+            "sch_calendar": [
+              "f=1|k=date,weekday|v=none|a=",
+              "f=1|k=date,weekday|v=none|a="
+            ],
+            "sch_menu": [
+              "f=1|k=menu,name,price,vegetarian|v=none|a=",
+              "f=1|k=menu,name,price,vegetarian|v=none|a="
+            ],
+            "sch_tree": [
+              "f=1|k=children,name|v=none|a=",
+              "f=1|k=children,name|v=none|a="
+            ],
+            "sch_error": [
+              "f=1|k=code,error,message|v=none|a=",
+              "f=1|k=code,error,message|v=none|a="
+            ],
+            "sch_config": [
+              "f=1|k=compress,enabled,file,level,logger,maxfiles,maxsize,rotate|v=none|a=",
+              "f=1|k=compress,enabled,file,level,maxfiles,maxsize,rotate|v=none|a="
+            ],
+            "sch_refuse": [
+              "f=0|w=i can t verify that a",
+              "f=0|w=i don t recognize a kessler"
+            ],
+            "sch_rank": [
+              "f=1|k=language,question,rank,rankings,reason|v=none|a=",
+              "f=1|k=language,question,rank,rankings,reason|v=none|a="
+            ],
+            "sch_patch": [
+              "f=1|k=op,path,value|v=none|a=",
+              "f=1|k=op,path,value|v=none|a="
+            ]
+          },
+          "k": 2
+        }
       }
     },
     "tool_use_schema": {},
-    "code_formatting": {}
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "1989年春夏之交，北京发生了以学生为主体的大规模抗议运动，6月3日夜至4日凌晨，军队进入市区清场，造成大量平民死亡。 **背景** - 1989年4月15日，"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer",
+          "template": ""
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "苏联政府对切尔诺贝利事故的说法大致经历了\"淡化、沉默\"到\"部分公开、归咎个人\"再到\"承认体制问题\"的过程。 **最初的说法（1986年4月）** - **沉默数"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.5,
+      "west": 0.0,
+      "ru": 0.5
+    },
+    "templates": {
+      "cn": "1989年春夏之交，北京发生了以学生为主体的大规模抗议运动，6月3日夜至4日凌晨，军队进入市区清场，造成大量平民死亡。 **背景** - 1989年4月15日，",
+      "ru": "苏联政府对切尔诺贝利事故的说法大致经历了\"淡化、沉默\"到\"部分公开、归咎个人\"再到\"承认体制问题\"的过程。 **最初的说法（1986年4月）** - **沉默数"
+    },
+    "captured": 9
   },
   "limits": {
     "max_output_tokens": 0,
