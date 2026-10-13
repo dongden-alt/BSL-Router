@@ -22,6 +22,11 @@ from pathlib import Path
 
 import httpx
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # annotation-only; runtime import stays function-local (fail-open)
+    from .scoring import RealityVerdict
+
 logger = logging.getLogger(__name__)
 
 _MODULE_DIR = Path(__file__).parent

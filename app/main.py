@@ -4280,16 +4280,19 @@ async def start_auth_harvest(request: Request):
     # NOTE: the module-level `detect_family` is fel_wiring's 2-arg version; the
     # 1-arg call raised TypeError, swallowed below, so this guard never ran.
     from app.authenticity.scope import detect_family as _auth_family
+    import logging as _logging
+
+    _logger = _logging.getLogger(__name__)
     try:
         _sf = _auth_family(model_id) or ""
         _jf = _auth_family(judge_model) or ""
         if _sf and judge_model and (_jf == _sf or judge_model == model_id):
-            logger.warning("AUTH harvest: judge %s (family=%s) conflicts with "
+            _logger.warning("AUTH harvest: judge %s (family=%s) conflicts with "
                            "suspect family=%s — dropping judge", judge_model,
                            _jf, _sf)
             judge_model = ""
     except Exception as _jg_exc:
-        logger.warning("AUTH harvest: judge family guard failed: %s: %s",
+        _logger.warning("AUTH harvest: judge family guard failed: %s: %s",
                        type(_jg_exc).__name__, _jg_exc)
 
     # HARD RULE (2026-10-08): canonical standards (source_tag empty) may only be
