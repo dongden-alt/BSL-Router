@@ -64,6 +64,49 @@ class MatchResult:
     ranked: list = field(default_factory=list)
 
 
+_SELF_REPORTED_CUTOFF_RE = r"(?i)self-reported\s+(\d{4})-(\d{1,2})"
+
+
+def _self_reported_cutoff(baseline: dict):
+    """Extract the model's honest self-reported cutoff from a standard's
+    meta.cutoff_override, e.g. "user-stated 2026-02-16 (model self-reported
+    2024-06)" -> (2024, 6). Fail-open: absent or unparseable -> None, so
+    behaviour is identical to standards without the field."""
+    import re
+    raw = (baseline.get("meta") or {}).get("cutoff_override") or ""
+    m = re.search(_SELF_REPORTED_CUTOFF_RE, raw)
+    if not m:
+        return None
+    try:
+        return int(m.group(1)), int(m.group(2))
+    except (TypeError, ValueError):
+        return None
+
+
+def _cutoff_score(feat_year: int, feat_month: int,
+                  base_year: int, base_month: int) -> float:
+    """Cutoff-dimension rules (unchanged from the pre-FIX-L inline block):
+    same year -> 0.8 if either month unknown, 1.0 on exact month, 0.8 within
+    one month, else 0.3; year off by exactly one -> 0.3; wider -> 0.0;
+    either side unknown -> neutral 0.5."""
+    if feat_year > 0 and base_year > 0:
+        if feat_year == base_year:
+            if not feat_month or not base_month:
+                # FIX I (2026-10-13): month 0 = UNKNOWN month, not a
+                # mismatch. glm-5-3's standard is 2024-0, so the genuine
+                # model scored 0.3 (month-mismatch) on a year agreement.
+                return 0.8
+            if feat_month == base_month:
+                return 1.0
+            if abs(feat_month - base_month) <= 1:
+                return 0.8
+            return 0.3
+        if abs(feat_year - base_year) == 1:
+            return 0.3
+        return 0.0
+    return 0.5  # unknown — neutral
+
+
 def match_submodel(
     features,
     baselines: dict,
@@ -107,25 +150,20 @@ def match_submodel(
         _know = baseline.get("knowledge") or {}
         baseline_year = baseline.get("cutoff_year", 0) or _know.get("cutoff_year", 0)
         baseline_month = baseline.get("cutoff_month", 0) or _know.get("cutoff_month", 0)
-        if features.cutoff_year > 0 and baseline_year > 0:
-            if features.cutoff_year == baseline_year:
-                if not features.cutoff_month or not baseline_month:
-                    # FIX I (2026-10-13): month 0 = UNKNOWN month, not a
-                    # mismatch. glm-5-3's standard is 2024-0, so the genuine
-                    # model scored 0.3 (month-mismatch) on a year agreement.
-                    dims["cutoff"] = 0.8
-                elif features.cutoff_month == baseline_month:
-                    dims["cutoff"] = 1.0
-                elif abs(features.cutoff_month - baseline_month) <= 1:
-                    dims["cutoff"] = 0.8
-                else:
-                    dims["cutoff"] = 0.3
-            elif abs(features.cutoff_year - baseline_year) == 1:
-                dims["cutoff"] = 0.3
-            else:
-                dims["cutoff"] = 0.0
-        else:
-            dims["cutoff"] = 0.5  # unknown — neutral
+        dims["cutoff"] = _cutoff_score(features.cutoff_year, features.cutoff_month,
+                                       baseline_year, baseline_month)
+        # FIX L (2026-10-13): contested cutoff - see
+        # .brain/cc_tasks/authenticity_cutoff_override.md. When the standard
+        # records that its stored cutoff is user-asserted and differs from the
+        # model's honest self-report (meta.cutoff_override), score against BOTH
+        # dates and keep the max: a genuine model matching EITHER must not be
+        # penalized, while a date matching NEITHER still scores low.
+        if dims["cutoff"] < 1.0:
+            _sr_cutoff = _self_reported_cutoff(baseline)
+            if _sr_cutoff is not None:
+                dims["cutoff"] = max(dims["cutoff"], _cutoff_score(
+                    features.cutoff_year, features.cutoff_month,
+                    _sr_cutoff[0], _sr_cutoff[1]))
 
         score += dims["cutoff"] * 0.5
 
