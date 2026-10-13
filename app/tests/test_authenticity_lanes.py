@@ -152,5 +152,12 @@ def test_cascade_lane_map_kimi_uses_moonshot_lane():
     assert mod.LANE_MAP["kimi_kimi-k3.json"] == "aibox/kimi/kimi-k3"
     for fname, lane in mod.LANE_MAP.items():
         if fname.startswith(("kimi_", "glm_", "deepseek_")):
-            assert L.lane_violation(lane) is None, (fname, lane)
+            v = L.lane_violation(lane)
+            if v is None:
+                continue  # canonical-legal lane
+            # Registered double-reference lanes (e.g. chat2api/zai-web2/
+            # glm-5.3-flash-max, the glm-5.3-flash double) are legal cascade
+            # sources -- source-tagged corroboration, never a canonical anchor.
+            assert L.is_double_reference(lane) and "DOUBLE-REFERENCE" in v, (
+                fname, lane, v)
 

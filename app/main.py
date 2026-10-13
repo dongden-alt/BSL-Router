@@ -82,6 +82,13 @@ from app.middleware.thinking_fallback import (
 )
 import app.observability as obs
 from app.utils.model_resolver import resolve_active_connection, reset_provider_round_robin_state
+from app.utils.model_resolver import set_affinity_hook as _set_affinity_hook
+from app import oauth_antiban as _oauth_antiban
+
+# OAuth anti-ban: session-sticky account affinity pre-filter inside the shared
+# resolver. Registered once at import; the hook itself is fail-open and no-ops
+# when no session key is published for the current request context.
+_set_affinity_hook(_oauth_antiban.resolver_affinity_hook)
 from app.circuit_breaker import init_breaker, reconfigure_breaker, get_breaker
 from app.antifreeze import (
     next_stream_id,
@@ -3534,6 +3541,14 @@ async def update_config(request: Request):
         # Without this, RR counters leak stale indices after combo add/remove/reorder.
         ROUND_ROBIN_STATE.clear()
         reset_provider_round_robin_state()
+        # OAuth anti-ban: config edits may reorder/rekey connections — drop
+        # sticky bindings and cached per-account clients so nothing pins to a
+        # stale index or keeps a socket to a removed account. Fail-open.
+        try:
+            _oauth_antiban.reset_store()
+            _oauth_antiban.reset_clients()
+        except Exception:
+            pass
 
         return JSONResponse({"status": "success"})
     except ValueError as e:
@@ -8325,6 +8340,21 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
 async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool = False, client_wants_gemini: bool = False, _retry_state: dict = None, request: Request = None, _stream_guard: bool = True):
 
     config = cs_get_config()
+
+    # OAuth anti-ban: derive this request's sticky session identity ONCE per
+    # frame (retry frames re-derive the same key from the same body) and publish
+    # it to the resolver's affinity hook via contextvar. Disabled config -> no
+    # key published -> hook no-ops. Fail-open: derivation must never break routing.
+    try:
+        _oab_cfg = _oauth_antiban.resolve_antiban_config(config)
+        if _oab_cfg.get("enabled"):
+            _oauth_antiban.set_request_session_key(
+                _oauth_antiban.derive_session_key(
+                    body, request, _oab_cfg.get("session_key_fields")
+                )
+            )
+    except Exception as _oab_e:
+        print(f"[oauth_antiban] session-key derivation fail-open: {_oab_e}", flush=True)
     print(f"[AFZ-FORENSIC] heartbeat route=chat active_streams={active_stream_count()}", flush=True)
     requested_model = body.get("model", "gpt-4o")
     model = _normalize_blacksand_model_id(requested_model)
@@ -9546,12 +9576,36 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         client = wrap_commandcode_upstream_client(
             _get_client_for_proxy(_egress_proxy), target_model
         )
-    elif provider_config.get("ssl_verify", True) is False:
-        # Provider uses a self-signed cert (e.g. api.iamhc.cn, api.hcnsec.cn).
-        # Disable TLS verification for this provider only.
-        client = _get_ssl_disabled_client(_egress_proxy)
     else:
-        client = _get_client_for_proxy(_egress_proxy)
+        # OAuth anti-ban account-keyed egress isolation: each OAuth account gets
+        # its own cached AsyncClient (own proxy/IP + private keep-alive pool) so
+        # sibling accounts never share a socket. Gated on an OAuth credential
+        # marker on the ACTIVE connection — not the provider name — so a plain
+        # API-key row (or a test double) registered under an OAuth-named lane
+        # stays on the shared proxy client seam. Fail-open on any error.
+        _oab_client = None
+        try:
+            if (
+                _oauth_antiban.resolve_antiban_config(config).get("enabled")
+                and _oauth_antiban.is_oauth_connection(active_conn)
+            ):
+                _oab_client = _oauth_antiban.get_client_for_account(
+                    _oauth_antiban.account_identity(active_conn, _active_conn_index),
+                    _egress_proxy,
+                    verify=bool(provider_config.get("ssl_verify", True)),
+                    build_client=_build_hardened_client,
+                )
+        except Exception as _oab_ce:
+            print(f"[oauth_antiban] account client fail-open: {_oab_ce}", flush=True)
+            _oab_client = None
+        if _oab_client is not None:
+            client = _oab_client
+        elif provider_config.get("ssl_verify", True) is False:
+            # Provider uses a self-signed cert (e.g. api.iamhc.cn, api.hcnsec.cn).
+            # Disable TLS verification for this provider only.
+            client = _get_ssl_disabled_client(_egress_proxy)
+        else:
+            client = _get_client_for_proxy(_egress_proxy)
 
 
     # OAuth 401-retry guard: ensures we only retry once per request on 401.

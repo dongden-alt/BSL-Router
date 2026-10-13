@@ -289,6 +289,7 @@ def resolve_combo(
         chain = combo.get("chain", [])
 
         active_chain = []
+        _dropped_entries = []
         for chain_entry in chain:
             chain_model, cm_target, cm_provider, cm_thinking = _parse_chain_entry(chain_entry, config)
 
@@ -309,6 +310,10 @@ def resolve_combo(
             if cm_provider:
                 if _validate_provider_model(config, cm_provider, cm_target):
                     active_chain.append((cm_target, cm_provider, cm_thinking))
+                else:
+                    _dropped_entries.append(
+                        f"{cm_provider}/{cm_target} (model missing/disabled or no active connection)"
+                    )
                 continue
 
             # Backward compatibility for old bare model IDs.
@@ -323,6 +328,16 @@ def resolve_combo(
                     break
             if cm_provider:
                 active_chain.append((cm_target, cm_provider, cm_thinking))
+            else:
+                _dropped_entries.append(f"{chain_model} (no enabled provider/model match)")
+
+        if _dropped_entries:
+            print(
+                f"[Combo] {model}: dropped {len(_dropped_entries)} invalid chain entr"
+                f"{'y' if len(_dropped_entries) == 1 else 'ies'} at resolution -> "
+                + "; ".join(_dropped_entries),
+                flush=True,
+            )
 
         if not active_chain:
             return ComboResolution(
@@ -335,13 +350,22 @@ def resolve_combo(
         try:
             import app.error_prevention as _ep_filter
             filtered_chain = []
+            _banned_drops = []
             for cm_t, cm_p, cm_th in active_chain:
                 banned, _, _ = _ep_filter.check_ban(config, cm_p, cm_t)
                 if not banned:
                     filtered_chain.append((cm_t, cm_p, cm_th))
+                else:
+                    _banned_drops.append(f"{cm_p}/{cm_t}")
             if filtered_chain:
                 active_chain = filtered_chain
             # If all banned, keep original list so downstream ban check surfaces 503.
+            if _banned_drops:
+                print(
+                    f"[Combo] {model}: ban pre-filter dropped {len(_banned_drops)} entr"
+                    f"{'y' if len(_banned_drops) == 1 else 'ies'} -> " + "; ".join(_banned_drops),
+                    flush=True,
+                )
         except Exception as _epf_err:
             print(f"[Combo] ban pre-filter failed (non-blocking): {_epf_err}")
 

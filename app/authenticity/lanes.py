@@ -120,6 +120,11 @@ def lane_violation(lane_id: str) -> Optional[str]:
     if not prefixes:
         return f"lane '{lane_id}' refused: no canonical lane defined for family '{family}'"
     if not any(lane.startswith(p) for p in prefixes):
+        canonical = DOUBLE_REFERENCE_LANES.get(lane)
+        if canonical:
+            return (f"lane '{lane_id}' is a registered DOUBLE-REFERENCE lane "
+                    f"(source-tagged corroboration of '{canonical}'); canonical "
+                    f"lane is {', '.join(prefixes)}")
         if _is_double_candidate(lane, family):
             return (f"lane '{lane_id}' is a DOUBLE-REFERENCE lane for {family} "
                     f"(source-tagged only); canonical lane is "

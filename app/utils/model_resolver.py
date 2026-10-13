@@ -42,6 +42,21 @@ def reset_provider_round_robin_state() -> None:
         _PROVIDER_RR_STATE.clear()
 
 
+# ── OAuth anti-ban affinity hook (registered by app.main at import) ──
+# Callable signature:
+#   hook(provider_name, provider_config, eligible, model_id, breaker)
+#       -> shrunk eligible list (or the same list). MUST be fail-open.
+# A module-level hook keeps app.oauth_antiban decoupled from this resolver:
+# no import cycle, and tests can swap in a stub.
+_AFFINITY_HOOK = None
+
+
+def set_affinity_hook(fn) -> None:
+    """Register (or clear, with None) the session-affinity pre-filter."""
+    global _AFFINITY_HOOK
+    _AFFINITY_HOOK = fn
+
+
 def _get_model_meta(provider_config: dict, model_id: str) -> Optional[dict]:
     """Return the model metadata dict for model_id in provider_config, or None."""
     for m in provider_config.get("models", []):
@@ -144,6 +159,18 @@ def _pick_connection(
 
     if not eligible:
         return None, None
+
+    # OAuth anti-ban: session-sticky account affinity pre-filter. Registered by
+    # app.main at import; collapses `eligible` to the session's bound account so
+    # one IDE session never round-robins across N OAuth identities. Fail-open:
+    # an exception or empty return leaves the pool exactly as the breaker made it.
+    if _AFFINITY_HOOK is not None and eligible:
+        try:
+            _aff = _AFFINITY_HOOK(provider_name, provider_config, eligible, model_id, breaker)
+            if _aff:
+                eligible = _aff
+        except Exception:
+            pass  # fail-open: affinity is an optimization, never a gate
 
     use_round_robin = bool(provider_config.get("round_robin"))
 
