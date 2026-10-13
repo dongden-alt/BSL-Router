@@ -443,6 +443,8 @@ async def harvest_model(
     needle_post_text = ""
     logprob_profile = {}
     v2_profile = {}
+    _consistency_paraphrase_text = ""
+    _consistency_fact_answers = []
 
     try:
         async with _make_client() as client:
@@ -527,6 +529,40 @@ async def harvest_model(
                         "top": {t.get("token"): t.get("logprob")
                                 for t in (first.get("top_logprobs") or [])},
                     }
+
+            # Phase 4 consistency gates (opt-in, <= 7 extra paid calls).
+            if cfg.get("consistency_v2", False):
+                try:
+                    from .consistency import (
+                        paraphrase_needle_prompt,
+                        fact_check_probes,
+                    )
+                    # 1. Paraphrase the needle_known_edge prompt and re-ask.
+                    _nk_probe = next(
+                        (p for p in HARVEST_NEEDLE_PROBES
+                         if p.get("id") == "needle_known_edge"), None)
+                    if _nk_probe and needle_known_text:
+                        _para_probe = {
+                            "id": "consistency_paraphrase",
+                            "prompt": paraphrase_needle_prompt(
+                                _nk_probe.get("prompt", "")),
+                            "max_tokens": _nk_probe.get("max_tokens", 1024),
+                        }
+                        _r_para = await _probe(_para_probe, 2)
+                        if _r_para and not _r_para.error:
+                            _consistency_paraphrase_text = _r_para.content or ""
+                    # 2. Fact-check: re-ask up to 6 harvested known-facts.
+                    _con_facts = _parse_needle_entries(needle_known_text)
+                    _fc_probes = fact_check_probes(_con_facts)
+                    if _fc_probes:
+                        _fc_results = await asyncio.gather(
+                            *[_probe(p, 2) for p in _fc_probes])
+                        _consistency_fact_answers = [
+                            (r.content or "") if (r and not r.error) else ""
+                            for r in _fc_results
+                        ]
+                except Exception as exc:
+                    gaps.append(f"consistency_error:{str(exc)[:120]}")
 
             # Tier 2.5 non-coding (parallel; outputs kept for the judge)
             if include_noncoding:
@@ -626,6 +662,27 @@ async def harvest_model(
                           "discriminator"):
                 if not (isinstance(v2_profile, dict) and v2_profile.get(_lane)):
                     gaps.append(f"v2_{_lane}:unavailable")
+        # Phase 4 consistency scoring (opt-in).
+        if cfg.get("consistency_v2", False):
+            try:
+                from .consistency import (
+                    agreement_score,
+                    fact_consistency,
+                    detect_cutoff_contradictions,
+                )
+                _con: dict = {}
+                if _consistency_paraphrase_text and needle_known_text:
+                    _con["agreement_score"] = agreement_score(
+                        needle_known_text, _consistency_paraphrase_text)
+                _con_facts = _parse_needle_entries(needle_known_text)
+                if _con_facts and _consistency_fact_answers:
+                    _con["fact_consistency"] = fact_consistency(
+                        _con_facts, _consistency_fact_answers)
+                _con["cutoff_contradictions"] = detect_cutoff_contradictions(
+                    k.cutoff_year, k.cutoff_month, v2_profile)
+                _struct["consistency_v2"] = _con
+            except Exception as exc:
+                gaps.append(f"consistency_score_error:{str(exc)[:120]}")
         if not _struct.get("boundary_signature"):
             gaps.append("boundary:unavailable")
         if not _struct.get("stability_profile"):
