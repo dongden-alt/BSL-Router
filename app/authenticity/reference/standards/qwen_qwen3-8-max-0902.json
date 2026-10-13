@@ -570,6 +570,93 @@
             ]
           },
           "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "m2:fd89c96d51",
+              "m2:729ebd0943"
+            ],
+            "bb_future_fact": [
+              "s1:620f893bc4",
+              "s1:3c6258bcdf"
+            ],
+            "bb_advice_edge": [
+              "m2:b26035b9fa",
+              "m2:dd8d60f5c7"
+            ],
+            "tc_recent_event": [
+              "m2:6551f2d41e",
+              "m2:546f38e400"
+            ],
+            "tc_python_version": [
+              "s1:8b913e2393",
+              "s1:6d880154f6"
+            ],
+            "rs_trolley": [
+              "m3:fecabe7be1",
+              "m3:ba3867a39b"
+            ],
+            "rs_fermi": [
+              "l4l:afa31577d8",
+              "l4l:7cfd5547a0"
+            ],
+            "rs_crt": [
+              "s2:69b9cdffe6",
+              "s2:70f18f58ca"
+            ],
+            "fs_blue": [
+              "s1:56ee426e9a",
+              "s1:ffdf6cba5c"
+            ],
+            "fs_rj": [
+              "s2:afce29ec03",
+              "m2:a3606b94de"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i can t check live flight",
+              "f=0|w=i can t check live flight"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award winner has not",
+              "f=0|w=as of june the winner of"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him to finish the full",
+              "f=0|w=tell him to finish the full"
+            ],
+            "tc_recent_event": [
+              "f=0|w=my knowledge cuts off in june",
+              "f=0|w=the most recent ceremony i can"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest python version i m",
+              "f=0|w=the latest python version i m"
+            ],
+            "rs_trolley": [
+              "f=0|w=the moral permissibility of diverting the",
+              "f=0|w=consider the moral weight of actively"
+            ],
+            "rs_fermi": [
+              "f=0|w=a reasonable estimate is about piano",
+              "f=0|w=a reasonable estimate is about piano"
+            ],
+            "rs_crt": [
+              "f=0|w=no if the ball were cents",
+              "f=0|w=no if the ball were cents"
+            ],
+            "fs_blue": [
+              "f=0|w=blue feels like the coolness of",
+              "f=0|w=blue feels like the coolness of"
+            ],
+            "fs_rj": [
+              "f=0|w=two young lovers from feuding families",
+              "f=0|w=romeo and juliet two young lovers"
+            ]
+          }
         }
       }
     },

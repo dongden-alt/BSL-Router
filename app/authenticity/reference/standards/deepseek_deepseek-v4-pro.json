@@ -557,48 +557,90 @@
         },
         "discriminator": {
           "answers": {
-            "sch_tools": [
-              "f=0|k=arguments,expression,location,tool|v=get|a=a",
-              "f=1|k=arguments,city,expression,id,tool|v=get|a=a"
+            "bb_tools_unavailable": [
+              "m2:47c23cdef8",
+              "m2r:8fdd7a31b8"
             ],
-            "sch_extract": [
-              "f=0|k=object,place,predicate,subject,year|v=none|a=",
-              "f=0|k=attribute,entity,value|v=none|a="
+            "bb_future_fact": [
+              "s1:4d84edb6a6",
+              "s1:3d0f19e605"
             ],
-            "sch_calendar": [
-              "f=0|k=date,weekday|v=none|a=",
-              "f=0|k=date,weekday|v=none|a="
+            "bb_advice_edge": [
+              "m2:81557b7b05",
+              "m2:58d126d978"
             ],
-            "sch_menu": [
-              "f=0|k=name,price,vegetarian|v=none|a=",
-              "f=0|k=items,name,price,vegetarian|v=none|a="
+            "tc_recent_event": [
+              "m2:ea90d9086e",
+              "m2:4c615c2102"
             ],
-            "sch_tree": [
-              "f=0|k=backend,ceo,cfo,cto,frontend|v=none|a=",
-              "f=0|k=backend,ceo,cfo,cto,frontend|v=none|a="
+            "tc_python_version": [
+              "s1:1e5daae6ce",
+              "s1:cd6a0eca1c"
             ],
-            "sch_error": [
-              "f=0|k=code,error,message|v=none|a=",
-              "f=1|k=code,error,message,status|v=none|a="
+            "rs_trolley": [
+              "m3:9ad3b26408",
+              "m3:f191b40aeb"
             ],
-            "sch_config": [
-              "f=0|k=file,level,maxfiles,maxsize,rotate|v=none|a=",
-              "f=0|k=file,level,rotate|v=none|a="
+            "rs_fermi": [
+              "l2l:78387ebb5b",
+              "m1l:fa50c2c76e"
             ],
-            "sch_refuse": [
-              "f=0|w=there is no established kessler voronin",
-              "f=0|w=the kessler voronin lemma was first"
+            "rs_crt": [
+              "s3:b544e61877",
+              "s3:3ca8bf34b1"
             ],
-            "sch_rank": [
-              "f=0|k=language,rank,ranking,reason|v=none|a=",
-              "f=0|k=language,rank,rankings,reason|v=none|a="
+            "fs_blue": [
+              "m1:e99dfcf0bc",
+              "m1:6c6041bb21"
             ],
-            "sch_patch": [
-              "f=0|k=op,path,value|v=none|a=",
-              "f=0|k=op,path,value|v=none|a="
+            "fs_rj": [
+              "m2:1351b4afb6",
+              "m2:f2ee2dd9b6"
             ]
           },
-          "k": 2
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i can t check real time",
+              "f=0|w=i don t have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the award has not yet been",
+              "f=0|w=the turing award has not yet"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him to keep taking the",
+              "f=0|w=tell him to keep taking the"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent olympics opening ceremony",
+              "f=0|w=the most recent olympics opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=as of my training knowledge the",
+              "f=0|w=from my training knowledge the latest"
+            ],
+            "rs_trolley": [
+              "f=0|w=one should consider whether the moral",
+              "f=0|w=key considerations include the moral difference"
+            ],
+            "rs_fermi": [
+              "f=0|w=estimate about piano tuners in chicago",
+              "f=0|w=using a fermi style estimate chicago"
+            ],
+            "rs_crt": [
+              "f=0|w=no if the ball were cents",
+              "f=0|w=no if the ball were cents"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the quiet cool feeling",
+              "f=0|w=blue is the calm cool vastness"
+            ],
+            "fs_rj": [
+              "f=0|w=in verona romeo montague and juliet",
+              "f=0|w=romeo montague and juliet capulet fall"
+            ]
+          }
         }
       }
     },

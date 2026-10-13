@@ -188,7 +188,7 @@ def test_helper_source_contract():
     code = _region_code()
     region = _fallback_region()
     for needle in (
-        "\ndef _continuation_status_guard():\n",
+        "\ndef _continuation_status_guard(_emit):\n",
         "\n_pre_status = stats.get(\"status\")\n",
         "\n_pre_error = stats.get(\"error\")\n",
         "\n_pre_text_len = len(_detector.partial_text or \"\")\n",
@@ -211,7 +211,7 @@ def test_helper_single_definition_and_call_sites():
     # ONE shared helper, no copy-paste variants at the splice sites...
     assert src.count("def _continuation_status_guard") == 1
     # ...and exactly three call sites (1 def line + 3 calls = 4 occurrences)
-    assert src.count("_continuation_status_guard()") == 4
+    assert src.count("_continuation_status_guard(_emit)") == 4
 
 
 def test_commit_called_at_all_three_splice_sites():

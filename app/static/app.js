@@ -4048,7 +4048,18 @@ function _authEsc(s) {
 }
 
 function _authFamilyOf(modelId) {
-    return String(modelId || '').toLowerCase().split(/[\-\/]/)[0];
+    // Judge ids are provider-qualified ('codex/gpt-5.6-sol'): the family is the
+    // MODEL segment, never the provider key.
+    const s = String(modelId || '').toLowerCase();
+    return s.slice(s.lastIndexOf('/') + 1).split('-')[0];
+}
+
+// Routable judge id. The router rejects a bare model registered under several
+// providers (HTTP 404 "Ambiguous bare model ... qualify the lane explicitly"),
+// which silently killed noncoding grading AND the judge tie-break (2026-10-12).
+function _authQualifiedId(pKey, modelId) {
+    const id = String(modelId || '');
+    return id.includes('/') ? id : `${pKey}/${id}`;
 }
 
 // Resolve a family-level judge suggestion (e.g. 'gpt') to a ROUTABLE id from
@@ -4062,7 +4073,7 @@ function _authResolveJudge(famName) {
         const p = providers[key] || {};
         if (!isProviderSelectable(p)) continue;
         const hit = (p.models || []).find(m => m && m.enabled !== false && _authFamilyOf(m.id) === fam);
-        if (hit) return hit.id;
+        if (hit) return _authQualifiedId(key, hit.id);
     }
     return '';
 }
@@ -4071,7 +4082,39 @@ function _authResolveJudge(famName) {
 // filters disabled via getModelsDropdownWithCombosHTML). Suggestions resolve to
 // routable ids via _authResolveJudge, so the selected judge always runs.
 function _authJudgesEnabledHTML(selectedValue) {
-    return getModelsDropdownWithCombosHTML(selectedValue);
+    // Same groups as getModelsDropdownWithCombosHTML, but provider models carry
+    // a provider-qualified value. Combo aliases / BSL models stay as-is (they
+    // are routable names on their own).
+    let html = '';
+    const combos = Array.isArray(globalConfig.combos) ? globalConfig.combos : [];
+    const comboAliases = new Set();
+    if (combos.length > 0) {
+        html += `<optgroup label="Combo Models">`;
+        combos.forEach(c => {
+            if (!c || !c.alias || comboAliases.has(c.alias)) return;
+            comboAliases.add(c.alias);
+            html += `<option value="${_authEsc(c.alias)}" ${c.alias === selectedValue ? 'selected' : ''}>${_authEsc(c.alias)}</option>`;
+        });
+        html += `</optgroup>`;
+    }
+    html += _bslModelsOptgroupHTML(selectedValue);
+    const providers = globalConfig.providers || {};
+    const entries = Object.keys(providers).map(pKey => ({
+        pKey, p: providers[pKey], label: providers[pKey].name || pKey,
+    })).sort((a, b) => a.label.localeCompare(b.label));
+    for (const { pKey, p, label } of entries) {
+        if (_isBlacksandProvider(pKey)) continue;
+        if (!isProviderSelectable(p)) continue;
+        const surviving = (p.models || []).filter(m => m && m.enabled !== false && !comboAliases.has(m.id));
+        if (surviving.length === 0) continue;
+        html += `<optgroup label="${_authEsc(label)}">`;
+        surviving.forEach(m => {
+            const val = _authQualifiedId(pKey, m.id);
+            html += `<option value="${_authEsc(val)}" ${val === selectedValue ? 'selected' : ''}>${_authEsc(m.name || m.id)}</option>`;
+        });
+        html += `</optgroup>`;
+    }
+    return html;
 }
 
 function renderAuthenticityTab() {
@@ -4372,6 +4415,7 @@ window.authRunTest = async function () {
     renderAuthenticityTab();
     const ctl = new AbortController(); st.abortCtl = ctl;
     _authStartStepPolling(routerId);
+    let asyncJob = false;
     try {
         const resp = await fetch('/api/authenticity/test', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4383,7 +4427,13 @@ window.authRunTest = async function () {
                 force_rerun: !!st.forceRerun,
             }),
         });
-        st.report = await resp.json();
+        if (resp.status === 202) {
+            // Async job submitted — verdict arrives via the step poller below.
+            asyncJob = true;
+        } else {
+            // Legacy sync response or immediate error — render directly.
+            st.report = await resp.json();
+        }
     } catch (e) {
         if (e && e.name === 'AbortError') {
             st.report = { verdict: 'cancelled', headline: 'Test cancelled by user', confidence_level: 'none', conclusions: [] };
@@ -4392,8 +4442,12 @@ window.authRunTest = async function () {
             st.report = { verdict: 'error', headline: 'Request failed: ' + e.message, confidence_level: 'none', conclusions: [] };
         }
     } finally {
-        st.running = false; st.runningId = ''; st.abortCtl = null; st.stepLabel = '';
-        _authStopStepPolling(); renderAuthenticityTab();
+        if (!asyncJob) {
+            st.running = false; st.runningId = ''; st.abortCtl = null; st.stepLabel = '';
+            _authStopStepPolling(); renderAuthenticityTab();
+        }
+        // If asyncJob, the step poller owns the lifecycle and will clean up
+        // when it detects a terminal status (done/error/cancelled).
     }
 };
 
@@ -4424,6 +4478,18 @@ function _authStartStepPolling(routerId) {
                 _authState.stepLabel = s.label;
                 const el = document.getElementById('auth-step-label');
                 if (el) el.textContent = s.label;
+            }
+            // Async job terminal detection: when the backend reports a final
+            // status, deliver the verdict and tear down the polling lifecycle.
+            const jobStatus = (s && s.status) || 'running'; // missing = legacy compat
+            if (jobStatus !== 'running' && jobStatus !== 'idle') {
+                _authState.report = (s && s.verdict) || s;
+                _authState.running = false;
+                _authState.runningId = '';
+                _authState.abortCtl = null;
+                _authState.stepLabel = '';
+                _authStopStepPolling();
+                renderAuthenticityTab();
             }
         } catch (e) { /* fail-open */ }
     }, 700);

@@ -110,8 +110,11 @@ authenticity:
   suspect_action: "warn"            # warn
   probe_timeout_s: 30               # per-probe timeout
   total_timeout_s: 90               # full battery timeout
+  v2_min_budget_s: 150              # deep mode: guaranteed floor for the v2 lanes (sibling splitter)
+  deep_total_timeout_s: 480         # auto->deep escalation budget (full deep battery measured 262s)
   # Judge LLM grades T2.5 non-coding probes (creative/EQ/humor/design). PICK A FRONTIER
   # MODEL FROM A DIFFERENT FAMILY THAN THE SUSPECT - same-family judges bias scores.
   # Blank = Testing Tab asks the user to choose (never hardcoded; public repo).
   judge_model: ""
   judge_endpoint: ""
+  judge_timeout_s: 180              # per judge call (noncoding grading + tie-break); some judges are slow

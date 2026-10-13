@@ -24,6 +24,13 @@ from app.authenticity.probes import (
 )
 
 
+# Module-wide: canary-path resolution does real DNS and getaddrinfo stalls
+# intermittently exceed the global 10s pytest.ini ceiling (environmental, not
+# a regression). The known-good full-suite baseline ran at timeout=60; this
+# mark scopes that ceiling to this file only.
+pytestmark = pytest.mark.timeout(60)
+
+
 def _run(coro):
     """Run an async coroutine in a sync test (no pytest-asyncio needed)."""
     return asyncio.run(coro)
@@ -154,7 +161,10 @@ class TestStabilityDimension:
         res = match_submodel(feats, {"std": _baseline()})
         assert res.dimensions["stability"] == 0.4
 
-    def test_stability_full_mismatch(self):
+    def test_stability_determinism_class_mismatch_not_compared(self):
+        # FIX K (2026-10-13): deterministic standard vs non-deterministic live
+        # run is serving-side batching, not weights (genuine glm-5.3 on the
+        # SAME provider as its gold standard flipped distinct 1 -> 3). Old: 0.0.
         feats = FingerprintFeatures()
         feats.stability_profile = {
             "probe_id": "stability_poem_sea", "samples": 3,
@@ -162,7 +172,7 @@ class TestStabilityDimension:
             "mode_hash": "b" * 64,
         }
         res = match_submodel(feats, {"std": _baseline()})
-        assert res.dimensions["stability"] == 0.0
+        assert res.dimensions["stability"] is None
 
     def test_stability_missing_baseline_is_none(self):
         feats = FingerprintFeatures()
@@ -199,7 +209,7 @@ class TestStabilityDimension:
         }
         res = match_submodel(feats, {"std": _baseline()})  # low base → abstain anyway
         assert res.abstain is True
-        assert res.dimensions["stability"] == 0.0
+        assert res.dimensions["stability"] is None  # FIX K: class mismatch not compared
 
 
 # ── 3. Matcher: timing advisory-only ─────────────────────────────────────────
@@ -363,7 +373,7 @@ def _mk_result(content="x", status_code=200, finish_reason="stop"):
 
 class TestGateCascade:
     def _run_gate(self, monkeypatch, abstain_after_v5, l2_resolves=False,
-                  fail_lane=None):
+                  fail_lane=None, cfg_override=None):
         """Drive authenticity_check's deep cascade with mocked lanes.
 
         Returns (verdict, calls) where calls records which lanes ran.
@@ -427,7 +437,8 @@ class TestGateCascade:
         monkeypatch.setattr(probes_mod, "run_timing_probe", fake_timing)
 
         cfg = {"cache_ttl_seconds": 0, "total_timeout_s": 90,
-               "probe_timeout_s": 5, "max_tier": 2}
+               "probe_timeout_s": 5, "max_tier": 2, "v2_min_budget_s": 1}
+        cfg.update(cfg_override or {})
         verdict = _run(gate.authenticity_check(
             model_id="claude-opus-5-5", endpoint_base="http://router.test",
             api_key="sk-router", config=cfg, mode="deep"))
@@ -453,6 +464,35 @@ class TestGateCascade:
         assert calls["boundary"] == 1
         assert calls["stability"] == 1
         assert calls["timing"] == 1
+
+    # -- lane_status: a null dimension must never be silent (2026-10-12) --
+    _ALL_DIMS = {"noncoding", "knowledge", "logprob", "boundary", "stability",
+                 "timing", "refusal", "tokenizer", "capability_curve",
+                 "knowledge_bank", "discriminator"}
+
+    def test_lane_status_covers_every_dimension_with_a_reason(self, monkeypatch):
+        verdict, _ = self._run_gate(monkeypatch, abstain_after_v5=False)
+        ls = verdict.evidence["lane_status"]
+        assert set(ls) == self._ALL_DIMS
+        assert all(isinstance(v, str) and v for v in ls.values())
+        assert ls["boundary"] == "ok"
+        # Decisive match -> L2/L3 skipped BY DESIGN, and said so.
+        assert ls["stability"] == "not_run_match_decisive"
+        assert ls["timing"] == "not_run_match_decisive"
+        # No claude standard carries logprobs (harvest_gaps) -> permanent.
+        assert ls["logprob"] == "no_baseline_data"
+        # No judge endpoint wired in this test -> attributable, not bare.
+        assert ls["noncoding"].startswith("no_live_data:")
+        assert verdict.evidence["evidence_complete"] is False
+
+    def test_lane_status_reports_budget_exhaustion(self, monkeypatch):
+        verdict, calls = self._run_gate(monkeypatch, abstain_after_v5=True,
+                                        cfg_override={"total_timeout_s": 0})
+        ls = verdict.evidence["lane_status"]
+        assert calls["boundary"] == 0
+        for dim in ("boundary", "refusal", "logprob", "tokenizer", "discriminator"):
+            assert ls[dim] == "skipped_budget_exhausted", (dim, ls[dim])
+        assert verdict.evidence["evidence_complete"] is False
 
     def test_lane_exception_swallowed_fail_open(self, monkeypatch):
         # Any lane raising must NOT propagate — gate returns a verdict.

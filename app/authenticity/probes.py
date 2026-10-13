@@ -303,9 +303,13 @@ async def _run_probe_network(
 
     async def attempt(n: int) -> ProbeResult:
         try:
+            # httpx `read` also bounds the wait for response headers / first
+            # byte, so read=idle (30s) silently overrode the TTFT deadline
+            # (75s) -- live tier probes died with ReadTimeout at ~30s. TTFT
+            # and idle are enforced by the asyncio.wait_for calls below.
             async with client.stream(
                 "POST", url, json=payload, headers=headers,
-                timeout=_sse_timeout(idle_deadline),
+                timeout=_sse_timeout(max(ttft_deadline, idle_deadline)),
             ) as resp:
                 if resp.status_code != 200:
                     return _record_probe_telemetry(
@@ -328,17 +332,33 @@ async def _run_probe_network(
                 finish_reason = ""
                 usage_seen = None
                 line_iter = resp.aiter_lines().__aiter__()
-                first = await asyncio.wait_for(line_iter.__anext__(),
-                                               ttft_deadline)
+                # FIX E (2026-10-13): __anext__ RAISES StopAsyncIteration at
+                # end of stream -- it never returns None. Upstreams that close
+                # the SSE stream without `data: [DONE]` (codex) used to fall
+                # into the generic except below, which DISCARDED every chunk
+                # already received and reported status 0 / "StopAsyncIteration
+                # (no message)" although the router logged 200 + output tokens.
+                try:
+                    first = await asyncio.wait_for(line_iter.__anext__(),
+                                                   ttft_deadline)
+                except StopAsyncIteration:
+                    return _record_probe_telemetry(
+                        probe, model_id, ProbeResult(
+                            probe_id=probe["id"], tier=0, status_code=0,
+                            content="", thinking="",
+                            latency_ms=int((time.monotonic() - t0) * 1000),
+                            error="empty stream (closed before first line)"),
+                        attempt=n)
                 while True:
                     line = first
                     first = None
                     if line is None:
-                        line = await asyncio.wait_for(line_iter.__anext__(),
-                                                      idle_deadline)
+                        try:
+                            line = await asyncio.wait_for(line_iter.__anext__(),
+                                                          idle_deadline)
+                        except StopAsyncIteration:
+                            break  # stream closed without [DONE]: keep content
                     if not line or not line.startswith("data:"):
-                        if line is None:
-                            break
                         continue
                     data_str = line[len("data:"):].strip()
                     if data_str == "[DONE]":
@@ -590,8 +610,12 @@ def compute_boundary_signature(stop_result, json_result,
     sig = {
         "stop_strict": False, "stop_echo": False, "finish_reason": "",
         "json_strict": False, "json_mode": json_mode,
+        # FIX D: "error" when the stop probe failed -> matcher skips the stop
+        # fields (their False defaults are not observed behavior).
+        "stop_mode": "error",
     }
     if stop_result is not None and getattr(stop_result, "status_code", 0) == 200:
+        sig["stop_mode"] = "ok"
         content = stop_result.content or ""
         sig["finish_reason"] = stop_result.finish_reason or ""
         lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
@@ -673,6 +697,7 @@ def compute_refusal_signature(results: dict) -> dict:
         en_refuse: dict = {}   # axis -> per-probe refuse tallies
         zh_refuse: dict = {}
         totals: dict = {}
+        failed: dict = {}      # axis -> failed-probe count (FIX D)
         for probe in REFUSAL_PROBES:
             axis, lang = probe["axis"], probe["lang"]
             totals[axis] = totals.get(axis, 0) + 1
@@ -684,6 +709,7 @@ def compute_refusal_signature(results: dict) -> dict:
                 # (most-severe-wins aggregation below assumes it).
                 slot.setdefault("verdict", "error")
                 slot.setdefault("template", "")
+                failed[axis] = failed.get(axis, 0) + 1
                 continue
             raw = result.content or ""
             text = raw.strip().lower()
@@ -715,6 +741,13 @@ def compute_refusal_signature(results: dict) -> dict:
                 templates[axis] = template
         delta: dict = {}
         for axis in axes_out:
+            # FIX D: an axis with ANY failed probe is incomplete -> its delta
+            # is not comparable with a fully captured baseline (a failed zh
+            # probe silently counted as "not refused"; an all-failed axis
+            # produced a fabricated 0.0). Omit it -> matcher compares only
+            # fully observed axes.
+            if failed.get(axis, 0):
+                continue
             delta[axis] = round(
                 (zh_refuse.get(axis, 0) - en_refuse.get(axis, 0))
                 / max(1, totals.get(axis, 0)), 3)
@@ -775,10 +808,17 @@ async def run_stability_probe(
             hashes.append("")
     valid = [h for h in hashes if h]
     distinct = len(set(valid))
-    mode_hash = Counter(valid).most_common(1)[0][0] if valid else ""
+    # 2026-10-13 FIX D: with <2 valid samples determinism is UNMEASURED. The
+    # old code returned distinct=1 + a mode hash from a single surviving
+    # sample (2/3 timed out live), which read as "deterministic" and scored
+    # 0.0 against every non-deterministic standard. No mode_hash -> the gate
+    # and harvest both treat the profile as not captured.
+    mode_hash = (Counter(valid).most_common(1)[0][0]
+                 if len(valid) >= 2 else "")
     return {
         "probe_id": "stability_poem_sea",
         "samples": 3,
+        "valid_samples": len(valid),
         "distinct_hashes": distinct,
         "hashes": hashes,
         "mode_hash": mode_hash,

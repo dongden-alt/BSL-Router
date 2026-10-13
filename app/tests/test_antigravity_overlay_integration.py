@@ -1,4 +1,4 @@
-﻿"""Focused direct Antigravity integration overlay tests; no real upstream calls."""
+"""Focused direct Antigravity integration overlay tests; no real upstream calls."""
 import asyncio
 import builtins
 import io
@@ -24,9 +24,12 @@ EXPECTED_AG_SLOTS = (
     "gemini-3.6-flash-low",
     "gemini-3.1-pro-low",
     "gemini-3.1-pro-high",
-    "claude-sonnet-4-6",
-    "claude-opus-4-6-thinking",
-    "gpt-oss-120b-medium",
+    "claude-opus-5-5-low",
+    "claude-opus-5-5-medium",
+    "claude-opus-5-5-high",
+    "claude-sonnet-5-5-low",
+    "claude-sonnet-5-5-medium",
+    "claude-sonnet-5-5-high",
 )
 EXPECTED_AG_LABELS = (
     "Gemini 3.6 Flash (High)",
@@ -34,9 +37,12 @@ EXPECTED_AG_LABELS = (
     "Gemini 3.6 Flash (Low)",
     "Gemini 3.1 Pro (Low)",
     "Gemini 3.1 Pro (High)",
-    "Claude Sonnet 4.6 (Thinking)",
-    "Claude Opus 4.6 (Thinking)",
-    "GPT-OSS 120B (Medium)",
+    "Claude Opus 5.5 (Low)",
+    "Claude Opus 5.5 (Medium)",
+    "Claude Opus 5.5 (High)",
+    "Claude Sonnet 5.5 (Low)",
+    "Claude Sonnet 5.5 (Medium)",
+    "Claude Sonnet 5.5 (High)",
 )
 REMOVED_AG_SLOTS = (
     "gemini-3-flash-agent",
@@ -47,6 +53,9 @@ REMOVED_AG_SLOTS = (
     "gemini-3.5-flash-medium",
     "gemini-3.5-flash-high",
     "gemini-3.5-flash-low",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium",
 )
 
 
@@ -307,7 +316,7 @@ def test_unmapped_live_envelope_without_google_credentials_returns_parseable_sse
         if line.startswith(b"data: ") and line != b"data: [DONE]"
     ]
     # FREEZE FIX (2026-08-07): the terminal contract is now a SOLE
-    # finishReason-bearing candidate frame â€” NO preceding bare {"error":...}
+    # finishReason-bearing candidate frame — NO preceding bare {"error":...}
     # frame. The old error -> terminal -> [DONE] sequence poisoned the
     # Antigravity Gemini parser (a top-level error object makes it stop
     # consuming the later finishReason candidate), freezing the IDE on

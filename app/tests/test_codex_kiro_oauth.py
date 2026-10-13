@@ -96,12 +96,20 @@ def test_strips_unsupported_params():
         "tools": [{"type": "function", "function": {"name": "x"}}],
     }
     result = codex_adapter.openai_to_responses(body)
+    # Unsupported params Codex rejects outright.
     for key in (
         "max_tokens", "max_output_tokens", "temperature", "top_p",
         "frequency_penalty", "presence_penalty", "stop", "logprobs",
-        "n", "response_format", "tools", "functions", "stream_options",
+        "n", "response_format", "functions", "stream_options",
     ):
         assert key not in result
+    # 2026-10-13: tool declarations are SUPPORTED and forward even on a
+    # history-free first turn (the old has_tool_history gate made first-turn
+    # tool use impossible -- the Antigravity IDE "tool call unavailable for
+    # codex oauth models" report). The chat-shape key is popped from the
+    # caller's dict and re-emitted in the Responses shape.
+    assert result["tools"] == [{"type": "function", "name": "x"}]
+    assert "tools" not in body
 
 
 # ── 4. responses_json_to_openai ──────────────────────────────────────────────

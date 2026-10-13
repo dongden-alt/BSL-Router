@@ -119,7 +119,7 @@ async def rank_candidates(
     judge_model: str,
     features,
     candidates: dict,
-    timeout_s: int = 60,
+    timeout_s: int = 180,
 ):
     """Rank tied candidate standards; return {"id","confidence","why"} or None.
 
@@ -147,6 +147,8 @@ async def rank_candidates(
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as client:
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code != 200:
+                logger.warning("judge rank_candidates: %s returned HTTP %s | body=%r",
+                               judge_model, resp.status_code, (resp.text or "")[:300])
                 return None
             data = resp.json()
             content = ((data.get("choices") or [{}])[0]
@@ -184,3 +186,37 @@ def coverage_adjust(dimensions: dict) -> dict:
         return {}
     total = sum(FEATURE_WEIGHTS[d] for d in present)
     return {d: FEATURE_WEIGHTS[d] / total for d in present}
+
+
+# Judge-free, truth-free lanes that actually split sibling versions (see the
+# 2026-10-10 canonical sweep). Style axes (sentence length, header depth) are
+# deliberately NOT here: they are within-family noise.
+DECISIVE_LANES = ("knowledge_bank", "capability_curve", "tokenizer", "discriminator")
+CONTRADICTION_MARGIN = 0.02
+
+
+def decisive_lane_margin(ranked: list, a_id: str, b_id: str):
+    """Weighted mean advantage of b over a on the decisive lanes both carry.
+
+    ranked: MatchResult.ranked ([{"id","score","dims"}]). Returns None when the
+    two candidates share no decisive lane (nothing to compare)."""
+    dims = {c.get("id"): (c.get("dims") or {}) for c in (ranked or [])
+            if isinstance(c, dict)}
+    da, db = dims.get(a_id), dims.get(b_id)
+    if da is None or db is None:
+        return None
+    shared = [d for d in DECISIVE_LANES
+              if isinstance(da.get(d), (int, float)) and isinstance(db.get(d), (int, float))]
+    if not shared:
+        return None
+    w = sum(FEATURE_WEIGHTS[d] for d in shared)
+    return sum(FEATURE_WEIGHTS[d] * (db[d] - da[d]) for d in shared) / w
+
+
+def judge_pick_contradicted(ranked: list, pick_id: str, other_id: str,
+                            margin: float = CONTRADICTION_MARGIN) -> bool:
+    """True when the decisive lanes favor `other_id` over the judge's pick by
+    >= margin. Live run 3 (opus-5-5 claimed): judge picked fable-5-1 while the
+    lanes favored opus-5-5 by 0.047 (kb 0.972 vs 0.917, tokenizer 0.45 vs 0.17)."""
+    m = decisive_lane_margin(ranked, pick_id, other_id)
+    return m is not None and m >= margin

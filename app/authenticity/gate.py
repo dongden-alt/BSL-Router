@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
 _REFERENCE_DIR = _MODULE_DIR / "reference"
 _BASELINE_DIR = _REFERENCE_DIR / "baselines"
+# v2 lanes that carry match evidence (the "version"/"mode"/"gap" keys do not).
+_V2_LANES = ("tokenizer", "capability_curve", "knowledge_bank", "discriminator")
+# Every match dimension that only the deep battery can produce.
+_DEEP_DIMS = ("noncoding", "knowledge", "logprob", "boundary", "refusal",
+              "stability", "timing") + _V2_LANES
 
 
 async def authenticity_check(
@@ -138,7 +143,10 @@ async def authenticity_check(
 
         # Run probes
         probe_timeout = config.get("probe_timeout_s", 30)
-        total_timeout = config.get("total_timeout_s", 90)
+        # Default 300 (was 90): a full deep battery measured 262s wall, so at
+        # 90 every budget-guarded lane after Tier 2 (including the v2 standard
+        # lanes) was silently skipped -> all v2 match dims null. Config still wins.
+        total_timeout = config.get("total_timeout_s", 300)
 
         # Probe retry/TTFT policy (2026-10-07 wiring): OLD defaults — unset
         # keys give ttft=None / retries=0, the exact legacy scalar path, so
@@ -170,6 +178,21 @@ async def authenticity_check(
         family_verdict = None
         match_result = None
         features = None
+        # Explicit reason for every lane that did NOT run (2026-10-12). Set at
+        # the skip site, so a null dimension is never silent or inferred.
+        _lane_skip: dict = {}
+        _v2_gap = ""
+
+        def _budget_ok(*lanes: str) -> bool:
+            _el = time.monotonic() - t0
+            if _el < total_timeout:
+                return True
+            for _l in lanes:
+                _lane_skip.setdefault(_l, "skipped_budget_exhausted")
+            logger.warning(
+                "AUTH %s: budget exhausted (%.0fs >= total_timeout_s=%s) -> skipping %s",
+                model_id, _el, total_timeout, ",".join(lanes))
+            return False
 
         async with httpx.AsyncClient() as client:
             # Tier 1
@@ -220,7 +243,7 @@ async def authenticity_check(
 
             # Tier 2 (if enabled and within time budget)
             max_tier = config.get("max_tier", 2)
-            if max_tier >= 2 and (time.monotonic() - t0) < total_timeout:
+            if max_tier >= 2 and _budget_ok("cutoff", "capability"):
                 _progress("tier2", "Deep · cutoff/capability probes")
                 tier2_results = []
                 for probe in TIER2_PROBES:
@@ -250,7 +273,10 @@ async def authenticity_check(
             # fail-open: any gap leaves features.noncoding empty (matcher then
             # abstains on that dimension instead of blocking).
             _deep = bool(config.get("deep_mode")) or str(config.get("mode", "")).lower() == "deep"
-            if _deep and (time.monotonic() - t0) < total_timeout and features is not None:
+            if not _deep:
+                for _l in _DEEP_DIMS:
+                    _lane_skip.setdefault(_l, "not_run_normal_mode")
+            if _deep and features is not None and _budget_ok(*_DEEP_DIMS):
                 _progress("tier25", "Deep · judge grading non-coding traits")
                 try:
                     from .harvest import NONCODING_PROBES, judge_scores
@@ -282,9 +308,23 @@ async def authenticity_check(
                         _jkey = config.get("judge_key", "")
                         _jmodel = config.get("judge_model", "")
                         if _jep and _jkey and _jmodel:
-                            nc["judge"] = await judge_scores(_jep, _jkey, _jmodel, nc_outputs)
+                            _js = await judge_scores(
+                                _jep, _jkey, _jmodel, nc_outputs,
+                                timeout_s=int(config.get("judge_timeout_s", 180) or 180))
+                            # judge_scores NEVER returns empty: on failure every
+                            # axis is {"score": 0, "why": "judge_error"}. Score 0
+                            # is "not compared" in the matcher, so keeping it
+                            # would hide the failure behind a null dimension.
+                            if any(isinstance(v, dict) and (v.get("score") or 0) > 0
+                                   for v in (_js or {}).values()):
+                                nc["judge"] = _js
+                            else:
+                                nc["judge_gap"] = f"judge_error:{_jmodel}"
                         else:
                             nc["judge_gap"] = "no_judge_config"
+                        if nc.get("judge_gap"):
+                            logger.warning("AUTH %s: noncoding judge gap -> %s",
+                                           model_id, nc["judge_gap"])
                         features.noncoding = nc
                 except RuntimeError:
                     raise  # cooperative cancel: never swallowed by fail-open
@@ -302,7 +342,7 @@ async def authenticity_check(
                 # battery -> not evadable by a cached benchmark response). Ask
                 # the suspect about each dated fact; a real version knows its
                 # in-cutoff facts and does NOT know post-cutoff facts.
-                if (time.monotonic() - t0) < total_timeout and features is not None:
+                if features is not None and _budget_ok("knowledge"):
                     try:
                         from .knowledge_needles import (
                             collect_family_needles, build_needle_probe,
@@ -330,7 +370,7 @@ async def authenticity_check(
                 # First-token logprobs on fixed probes: shifts with a single
                 # fine-tune step; retrieval/injection cannot touch the logit
                 # head. Skipped silently when the endpoint hides logprobs.
-                if (time.monotonic() - t0) < total_timeout and features is not None:
+                if features is not None and _budget_ok("logprob"):
                     try:
                         from .probes import LOGPROB_PROBES
                         _progress("v5", "Deep · V5 logprob tail")
@@ -367,15 +407,18 @@ async def authenticity_check(
                 # logprobs on this infrastructure). Fail-open + budget-guard,
                 # identical to the lanes above; router-only traffic.
                 _l1_landed = False
-                if (time.monotonic() - t0) < total_timeout and features is not None:
+                if features is not None and _budget_ok("boundary"):
                     try:
                         from .probes import run_boundary_probes
                         _progress("boundary", "Deep · L1 boundary signature")
                         sig = await run_boundary_probes(
                             client, endpoint_base, api_key, model_id, probe_timeout,
                             **_probe_kwargs(run_boundary_probes))
-                        if sig and any(v for k, v in sig.items()
-                                       if k not in ("finish_reason", "json_mode")):
+                        # FIX D: land only OBSERVED behavior. The old any-truthy
+                        # test dropped a real all-False stop result and would
+                        # accept the truthy "error" marker of a failed probe.
+                        if sig and (sig.get("stop_mode") == "ok"
+                                    or sig.get("json_mode") == "supported"):
                             features.boundary_signature = sig
                             _l1_landed = True
                             _b4 = _load_match_baselines(model_id)
@@ -389,7 +432,7 @@ async def authenticity_check(
                 # fingerprints the model FAMILY (not the sub-version). Corroborator
                 # only: must not alter identified_as, must not alone produce REAL.
                 # Fail-open + budget guard like the lanes above; router-only traffic.
-                if (time.monotonic() - t0) < total_timeout and features is not None:
+                if features is not None and _budget_ok("refusal"):
                     try:
                         _check_cancel()
                         from .probes import run_refusal_probes
@@ -407,39 +450,74 @@ async def authenticity_check(
                     except Exception as _ref_exc:
                         logger.warning("refusal lane failed (fail-open): %s", _ref_exc)
 
-                # ── STANDARD v2 lane (deep mode, ALWAYS) ──
-                # Tokenizer usage-deltas + programmatic capability curve +
-                # truth-free knowledge bank. Judge-free; fresh instances every
-                # run so a cache/replay cannot answer them. Fail-open.
-                if (time.monotonic() - t0) < total_timeout and features is not None:
+                # ── STANDARD v2 lane (deep mode, budget-guarded) ──
+                # Tokenizer usage-deltas + capability curve + knowledge bank +
+                # discriminator. Judge-free; fresh instances every run so a
+                # cache/replay cannot answer them. Fail-open; runs only while
+                # total_timeout budget remains.
+                #
+                # 2026-10-12 fix: v2 carries ~0.47 of the ranking weight and is
+                # the ONLY evidence that separates close siblings (opus-5 vs
+                # opus-5-5 vs sonnet-5-5). It used to get just the LEFTOVER
+                # budget (floor 30s) after needles/logprob/boundary/refusal had
+                # spent it, and the outer wait_for discarded every finished lane
+                # on timeout -> live runs ended with ALL v2 dims None ->
+                # sibling tie -> FAMILY MATCH forever, whatever scoring fix
+                # shipped. Now: (1) a guaranteed floor `v2_min_budget_s`
+                # (default 150s) even when earlier lanes overran, and (2) a
+                # sink dict so lanes that finished before the deadline survive.
+                if features is not None:
+                    _v2_sink: dict = {}
+                    _v2_floor = float(config.get("v2_min_budget_s", 150) or 150)
+                    _v2_budget = max(_v2_floor, total_timeout - (time.monotonic() - t0))
                     try:
                         _check_cancel()
                         from .standard_v2 import run_standard_v2
                         _progress("v2", "Deep · v2 tokenizer / capability curve / knowledge bank")
-                        _v2 = await asyncio.wait_for(
+                        await asyncio.wait_for(
                             run_standard_v2(
                                 client, endpoint_base, api_key, model_id,
-                                probe_timeout, mode="live"),
-                            timeout=max(30.0, total_timeout - (time.monotonic() - t0)))
-                        if _v2 and (_v2.get("tokenizer") or _v2.get("capability_curve")
-                                    or _v2.get("knowledge_bank")):
-                            features.v2_profile = _v2
-                            _b4v = _load_match_baselines(model_id)
-                            if _b4v:
-                                match_result = match_submodel(features, _b4v)
+                                probe_timeout, mode="live", sink=_v2_sink),
+                            timeout=_v2_budget)
                     except RuntimeError:
                         raise  # cooperative cancel must propagate
                     except Exception as _v2_exc:
-                        logger.warning("v2 lane failed (fail-open): %s", _v2_exc)
+                        # str(TimeoutError()) == '' -- log the TYPE so a budget
+                        # expiry is never again an empty, undiagnosable line.
+                        _v2_gap = f"v2_{type(_v2_exc).__name__}_after_{_v2_budget:.0f}s"
+                        logger.warning(
+                            "v2 lane failed (fail-open): %s: %s (budget=%.0fs, kept lanes=%s)",
+                            type(_v2_exc).__name__, _v2_exc, _v2_budget,
+                            [k for k in _V2_LANES if _v2_sink.get(k)])
+                    _v2 = _v2_sink
+                    if _v2.get("gap"):
+                        _v2_gap = ":".join(x for x in (_v2.get("gap"), _v2.get("gap_detail")) if x)
+                    if any(_v2.get(k) for k in _V2_LANES):
+                        features.v2_profile = _v2
+                        _b4v = _load_match_baselines(model_id)
+                        if _b4v:
+                            match_result = match_submodel(features, _b4v)
+                    elif _v2:
+                        # Lane returned but carried no usable axis (canary
+                        # unreachable or every per-lane budget expired) --
+                        # without this the all-None v2 dims downstream are
+                        # indistinguishable from a crashed lane.
+                        logger.warning(
+                            "v2 lane returned no usable lanes (gap=%s); "
+                            "v2 dims will be None", _v2_gap or "all_lanes_empty")
 
                 # ── V6b STABILITY lane (L2, deep mode, only if ABSTAINING) ──
                 # temp=0 identical-probe repetition; carries veto power
                 # (replaces V5's decisive role on logprob-hiding upstreams).
                 _l2_landed = False
+                if match_result is not None and not match_result.abstain:
+                    # By design (cost): L2/L3 only run to break an abstain.
+                    for _l in ("stability", "timing"):
+                        _lane_skip.setdefault(_l, "not_run_match_decisive")
                 if match_result is not None \
                         and match_result.abstain \
-                        and (time.monotonic() - t0) < total_timeout \
-                        and features is not None:
+                        and features is not None \
+                        and _budget_ok("stability"):
                     try:
                         from .probes import run_stability_probe
                         _progress("stability", "Deep · L2 stability profile")
@@ -458,9 +536,11 @@ async def authenticity_check(
                 # ── V7 TIMING lane (L3, deep mode, only if STILL abstaining) ──
                 # Streamed TTFT/chunk-count/chunk-size. Advisory-only evidence:
                 # never vetoes, never rescues. Fail-open always.
+                if match_result is not None and not match_result.abstain:
+                    _lane_skip.setdefault("timing", "not_run_match_decisive")
                 if match_result is not None and match_result.abstain \
-                        and (time.monotonic() - t0) < total_timeout \
-                        and features is not None:
+                        and features is not None \
+                        and _budget_ok("timing"):
                     try:
                         from .probes import run_timing_probe
                         _progress("timing", "Deep · L3 timing profile")
@@ -482,9 +562,13 @@ async def authenticity_check(
                 # a winner. Hand the tied top candidates to the judge (a
                 # different family) to pick the closest standard. Overrides the
                 # match only when the judge is decisive (confidence >= 0.6).
+                # NOT budget-gated (2026-10-12): live run logged
+                # `budget exhausted (509s >= 480) -> skipping judge_tiebreak`
+                # with a 0.028 gap -- the ONE step that resolves tied siblings
+                # was dropped. It is a single judge call already bounded by
+                # judge_timeout_s, so it always runs on a true tie.
                 if (match_result is not None and match_result.abstain
-                        and features is not None
-                        and (time.monotonic() - t0) < total_timeout):
+                        and features is not None):
                     try:
                         _gap = match_result.match_score - match_result.runner_up_score
                         _jep = config.get("judge_endpoint", "")
@@ -499,8 +583,45 @@ async def authenticity_check(
                                      (match_result.best_model, match_result.runner_up)
                                      if k and k in _allb}
                             if _tied:
-                                _pick = await rank_candidates(
-                                    _jep, _jkey, _jmodel, features, _tied)
+                                # FIX F (2026-10-13): live run 3 -- the judge
+                                # flipped genuine opus-5-5 (0.856) to fable-5-1
+                                # (0.836) citing sentence length / header depth,
+                                # while fable was WORSE on knowledge_bank (0.917
+                                # vs 0.972) and tokenizer (0.17 vs 0.45). Two
+                                # guards: (1) ask twice with the candidate order
+                                # swapped -- a position-biased pick is not a
+                                # pick; (2) reject a pick the deterministic v2
+                                # lanes contradict.
+                                import asyncio as _aio
+                                from .judge_rank import judge_pick_contradicted
+                                _jto = int(config.get("judge_timeout_s", 180) or 180)
+                                _rev = dict(reversed(list(_tied.items())))
+                                if len(_tied) > 1:
+                                    _p1, _p2 = await _aio.gather(
+                                        rank_candidates(_jep, _jkey, _jmodel, features,
+                                                        _tied, timeout_s=_jto),
+                                        rank_candidates(_jep, _jkey, _jmodel, features,
+                                                        _rev, timeout_s=_jto))
+                                else:
+                                    _p1 = _p2 = await rank_candidates(
+                                        _jep, _jkey, _jmodel, features, _tied,
+                                        timeout_s=_jto)
+                                _pick = None
+                                _jt_rec = {"forward": _p1, "reversed": _p2}
+                                if _p1 and _p2 and _p1.get("id") == _p2.get("id"):
+                                    _pick = {"id": _p1["id"],
+                                             "confidence": min(_p1.get("confidence", 0),
+                                                               _p2.get("confidence", 0)),
+                                             "why": _p1.get("why", "")}
+                                elif _p1 or _p2:
+                                    _jt_rec["rejected"] = "order_inconsistent"
+                                _ranked_l = list(getattr(match_result, "ranked", None) or [])
+                                _other = (match_result.runner_up
+                                          if _pick and _pick["id"] == match_result.best_model
+                                          else match_result.best_model)
+                                if _pick and judge_pick_contradicted(_ranked_l, _pick["id"], _other):
+                                    _jt_rec["rejected"] = "contradicted_by_decisive_lanes"
+                                    _pick = None
                                 # REAL requires total >= REAL_THRESHOLD AND a
                                 # matched model. Supplying `matched` on a weak
                                 # deterministic score would flip FAKE/abstain to
@@ -509,15 +630,116 @@ async def authenticity_check(
                                 # borderline-strong (>= 0.70).
                                 if (_pick and _pick.get("confidence", 0) >= 0.6
                                         and match_result.match_score >= 0.70):
+                                    # FIX G: the verdict must carry the PICKED
+                                    # model's own score, not the displaced
+                                    # leader's.
+                                    _sc = {c.get("id"): c.get("score") for c in _ranked_l
+                                           if isinstance(c, dict)}
+                                    if _pick["id"] != match_result.best_model \
+                                            and isinstance(_sc.get(_pick["id"]), (int, float)):
+                                        match_result.runner_up = match_result.best_model
+                                        match_result.runner_up_score = match_result.match_score
+                                        match_result.match_score = float(_sc[_pick["id"]])
                                     match_result.matched_model = _pick["id"]
                                     match_result.abstain = False
                                     match_result.dimensions["judge_tiebreak"] = {
                                         "picked": _pick["id"],
                                         "confidence": _pick["confidence"],
                                         "why": _pick.get("why", ""),
+                                        "accepted": True,
                                     }
+                                else:
+                                    _jt_rec["accepted"] = False
+                                    _jt_rec.setdefault(
+                                        "rejected", "not_decisive" if (_p1 or _p2) else "no_judge_reply")
+                                    match_result.dimensions["judge_tiebreak"] = _jt_rec
                     except Exception as _jt_exc:
                         logger.warning("judge tie-break failed (fail-open): %s", _jt_exc)
+
+        # ── LANE STATUS AUDIT (2026-10-12) ───────────────────────────────
+        # A null match dimension must NEVER be silent. Every budget-guarded
+        # lane above is skipped WITHOUT a log line when the clock runs out,
+        # so a run could report ran_full_battery=true while 10 of 13 match
+        # dimensions were null (live opus-5-5, 2026-10-11). Classify every
+        # dimension's evidence source so the reason is always on the record:
+        #   ok                       -> live evidence landed
+        #   no_baseline_data         -> NO candidate standard carries this
+        #                               axis, so it can never be compared
+        #                               (claude standards: logprob, see
+        #                               meta.harvest_gaps logprob:unsupported_by_lane)
+        #   skipped_budget_exhausted -> total_timeout_s ran out first
+        #   not_run_match_decisive   -> L2/L3 skipped by design (no abstain)
+        #   not_run_normal_mode      -> deep-only lane, shallow run
+        #   no_live_data[:reason]    -> lane ran but returned nothing usable
+        # Skip reasons are RECORDED at the skip site (_lane_skip), not inferred.
+        from .standard_v2 import v2_of as _v2_of
+        _pool_for_status = _load_match_baselines(model_id) or {}
+
+        def _baseline_has(getter) -> bool:
+            for _b in _pool_for_status.values():
+                try:
+                    if getter(_b):
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        def _ts(b: dict, k: str):
+            _s = b.get("structural") or {}
+            return (_s.get("tokenizer_signature") or {}).get(k) or _s.get(k) or b.get(k)
+
+        _v2_live = getattr(features, "v2_profile", None) or {}
+        _lane_sources = {
+            "noncoding": (lambda: bool((getattr(features, "noncoding", None) or {}).get("judge")),
+                          lambda: _baseline_has(lambda b: b.get("noncoding"))),
+            "knowledge": (lambda: bool(getattr(features, "knowledge_needles", None)),
+                          lambda: True),
+            "logprob": (lambda: bool(getattr(features, "logprob_profile", None)),
+                        lambda: _baseline_has(lambda b: _ts(b, "logprob_profile"))),
+            "boundary": (lambda: bool(getattr(features, "boundary_signature", None)),
+                         lambda: _baseline_has(lambda b: _ts(b, "boundary_signature"))),
+            "stability": (lambda: bool(getattr(features, "stability_profile", None)),
+                          lambda: _baseline_has(lambda b: _ts(b, "stability_profile"))),
+            "timing": (lambda: bool(getattr(features, "timing_profile", None)),
+                       lambda: _baseline_has(lambda b: _ts(b, "timing_profile"))),
+            "refusal": (lambda: bool(getattr(features, "refusal_signature", None)),
+                        lambda: _baseline_has(
+                            lambda b: (b.get("refusal") or {}).get("delta_signature"))),
+        }
+        for _ln in _V2_LANES:
+            _lane_sources[_ln] = (
+                (lambda k: (lambda: bool(_v2_live.get(k))))(_ln),
+                (lambda k: (lambda: _baseline_has(
+                    lambda b: (_v2_of(b) or {}).get(k))))(_ln),
+            )
+
+        _nc_gap = (getattr(features, "noncoding", None) or {}).get("judge_gap", "")
+        _live_reason = {"noncoding": _nc_gap}
+        _v2_lane_gaps = (_v2_live.get("lane_gaps") or {}) if isinstance(_v2_live, dict) else {}
+        for _ln in _V2_LANES:
+            _live_reason[_ln] = (_v2_gap or _v2_lane_gaps.get(_ln)
+                                 or ("lane_empty_or_timeout" if _v2_live else ""))
+
+        lane_status: dict = {}
+        for _name, (_live_ok, _base_ok) in _lane_sources.items():
+            try:
+                if _live_ok():
+                    lane_status[_name] = "ok"
+                elif _name in _lane_skip:
+                    lane_status[_name] = _lane_skip[_name]
+                elif not _base_ok():
+                    lane_status[_name] = "no_baseline_data"
+                else:
+                    _why = _live_reason.get(_name, "")
+                    lane_status[_name] = f"no_live_data:{_why}" if _why else "no_live_data"
+            except Exception as _ls_exc:
+                lane_status[_name] = f"status_error:{type(_ls_exc).__name__}"
+
+        _missing = {k: v for k, v in lane_status.items() if v != "ok"}
+        if _missing:
+            logger.warning(
+                "AUTH %s: %d/%d evidence lanes produced NO comparable data -> %s",
+                model_id, len(_missing), len(lane_status), _missing)
 
         # Fuse into a reality verdict
         _progress("verdict", "Composing verdict")
@@ -529,6 +751,11 @@ async def authenticity_check(
             latency_ms=_elapsed_ms(),
         )
         verdict.evidence["ran_full_battery"] = bool(config.get("max_tier", 1) >= 2)
+        # ran_full_battery only means "the deep tier was REQUESTED". These two
+        # say whether the evidence actually ARRIVED -- the distinction that let
+        # a 10-null result report ran_full_battery=true.
+        verdict.evidence["lane_status"] = lane_status
+        verdict.evidence["evidence_complete"] = not _missing
         if not _no_cache:
             cache.put(endpoint_base, model_id, verdict)
         _progress("done", verdict.verdict)
@@ -610,7 +837,15 @@ def _load_match_baselines(model_id: str) -> dict[str, dict]:
     store = BaselineStore(_BASELINE_DIR)
     merged: dict[str, dict] = {}
     if _BASELINE_DIR.exists():
-        merged.update(store.load_family(family_name))
+        # load_family keys keep the "family_" prefix while load_family_standards
+        # strips it -- normalize both to the stripped form so each model is ONE
+        # candidate carrying both the cutoff/capability baseline AND the frozen
+        # standard's v2 lanes. Previously the two key spaces produced parallel
+        # duplicate candidates and the baseline-keyed twin (no v2 data) won
+        # live matches with every v2 dim None.
+        for _k, _v in store.load_family(family_name).items():
+            _nk = _k[len(family_name) + 1:] if _k.startswith(family_name + "_") else _k
+            merged[_nk] = _v
     standards_dir = _REFERENCE_DIR / "standards"
     for key, std in store.load_family_standards(standards_dir, family_name).items():
         base = merged.get(key, {})

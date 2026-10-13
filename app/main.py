@@ -4132,6 +4132,7 @@ _AUTH_HARVEST_TASKS: dict = {}
 # test runs so "Testing..." is replaced by real step names ("Normal · step 3/7").
 _AUTH_TEST_STATUS: dict = {}
 _AUTH_TEST_CANCEL: set = set()
+_AUTH_TEST_TASKS: dict = {}  # model_id -> asyncio.Task (async job handle)
 
 
 def _auth_test_progress(model_id: str):
@@ -4276,16 +4277,20 @@ async def start_auth_harvest(request: Request):
     # the suspect itself). A same-family judge inflates non-coding scores; a
     # self-judge is circular. Drop an offending judge and leave an honest
     # no_judge gap rather than freeze a biased standard.
+    # NOTE: the module-level `detect_family` is fel_wiring's 2-arg version; the
+    # 1-arg call raised TypeError, swallowed below, so this guard never ran.
+    from app.authenticity.scope import detect_family as _auth_family
     try:
-        _sf = detect_family(model_id) or ""
-        _jf = detect_family(judge_model) or ""
+        _sf = _auth_family(model_id) or ""
+        _jf = _auth_family(judge_model) or ""
         if _sf and judge_model and (_jf == _sf or judge_model == model_id):
             logger.warning("AUTH harvest: judge %s (family=%s) conflicts with "
                            "suspect family=%s — dropping judge", judge_model,
                            _jf, _sf)
             judge_model = ""
-    except Exception:
-        pass
+    except Exception as _jg_exc:
+        logger.warning("AUTH harvest: judge family guard failed: %s: %s",
+                       type(_jg_exc).__name__, _jg_exc)
 
     # HARD RULE (2026-10-08): canonical standards (source_tag empty) may only be
     # benchmarked off TRUSTED sources. Untrusted relays/proxies (vsllm, a6api,
@@ -4404,13 +4409,23 @@ async def auth_test_cancel(model_id: str):
     HTTP response; this stops the backend wasting probe calls."""
     _AUTH_TEST_CANCEL.add(model_id)
     _AUTH_TEST_STATUS[model_id] = {"step": "cancelled", "label": "Cancelled by user",
+                                   "status": "cancelled",
+                                   "verdict": {"verdict": "cancelled",
+                                               "headline": "Test cancelled by user",
+                                               "confidence": 0},
                                    "ts": __import__("time").time()}
+    # Best-effort hard-stop: if a background job is mid-flight for this model,
+    # cancel the task too so it can't write a stale 'done' over this status.
+    _t = _AUTH_TEST_TASKS.get(model_id)
+    if _t and not _t.done():
+        _t.cancel()
     return JSONResponse({"cancelled": True, "model_id": model_id})
 
 
 @app.post("/api/authenticity/test")
 async def run_auth_test(request: Request):
-    """Run the authenticity gate on a suspect model. mode: normal|deep|auto.
+    """Submit an authenticity test job. Returns 202 immediately; poll
+    GET /api/authenticity/test/status/{model_id} for step feed + final verdict.
 
     auto = run normal first; if the verdict is unverifiable/family_match at low
     confidence, escalate to deep (max_tier=2).
@@ -4431,7 +4446,13 @@ async def run_auth_test(request: Request):
     endpoint, api_key = _router_self_endpoint_and_key()
 
     cfg = dict(_auth_cfg_get())
-    cfg.setdefault("probe_ttft_s", 75)
+    # 180s (2026-10-12): live opus-5-5 deep run lost 17/226 probe calls at
+    # exactly ~30s (ReadTimeout) -- probe_timeout_s was never set, so the gate
+    # default 30 applied to every v2 / stability / scalar probe while slow
+    # models legitimately need longer. Matches judge_timeout_s and the harvest
+    # v2_probe_timeout_s (both 180).
+    cfg.setdefault("probe_timeout_s", 180)
+    cfg.setdefault("probe_ttft_s", 180)
     cfg.setdefault("probe_idle_s", 30)
     cfg.setdefault("probe_retries", 2)  # was 1; cold-start after restart needs 2
     cfg.setdefault("total_timeout_s", 240)
@@ -4447,68 +4468,132 @@ async def run_auth_test(request: Request):
     # cancel POSTed just before this one started — made THIS run abort immediately
     # and report verdict=cancelled / confidence=0. The flag means "cancel the run
     # that was in flight when it was set", never "veto the next run", so clear it on
-    # entry. `finally` below already discards it for the normal path.
+    # entry. The job's `finally` discards it for the normal path.
     _AUTH_TEST_CANCEL.discard(model_id)
 
+    # Supersede any existing running job for this model (don't stack).
+    _old = _AUTH_TEST_TASKS.pop(model_id, None)
+    if _old and not _old.done():
+        _old.cancel()
+
     _AUTH_TEST_STATUS[model_id] = {"step": "start", "label": "Queued",
+                                   "status": "running",
                                    "ts": __import__("time").time()}
-    try:
-        verdict = await _auth_check(
-            model_id=model_id,
-            endpoint_base=endpoint,
-            api_key=api_key,
-            config=cfg,
-            reference_hint=reference_hint,
-            mode=gate_mode,
-            judge_endpoint=endpoint,
-            judge_key=api_key,
-            judge_model=judge_model,
-            on_progress=_auth_test_progress(model_id),
-        )
-        _auth_persist_verdict(model_id, verdict)
-        # Auto-escalation: ambiguous shallow result → re-run ONCE in deep mode.
-        # GUARD: don't escalate when the normal test already produced a strong
-        # sub-model match (score >= 0.70 with a named best_model) — that's
-        # sufficient evidence without burning the deep battery.
-        _ev = verdict.evidence if isinstance(verdict.evidence, dict) else {}
-        _strong_match = (verdict.submodel_score >= 0.70 and bool(verdict.submodel_match))
-        # A non-separable TIE between sub-version standards is ambiguous BY
-        # DEFINITION: a high score on a tied pair is false confidence, not
-        # evidence (the qwen3-8-max vs -0902 / opus-5 vs opus-5-5 failure).
-        # So alias_group OVERRIDES the strong-match guard below.
-        _alias = list((_ev.get("match_dimensions", {}) or {}).get("_alias_group") or [])
-        _ambiguous = verdict.verdict in ("unverifiable", "family_match") and not _strong_match
-        if (mode == "auto" and (_ambiguous or bool(_alias))
-                and model_id not in _AUTH_TEST_CANCEL):
-            _AUTH_TEST_STATUS[model_id] = {"step": "escalate",
-                                           "label": "Ambiguous — escalating to Deep",
-                                           "ts": __import__("time").time()}
+
+    async def _job():
+        try:
             verdict = await _auth_check(
                 model_id=model_id,
                 endpoint_base=endpoint,
                 api_key=api_key,
                 config=cfg,
                 reference_hint=reference_hint,
-                mode="deep",
+                mode=gate_mode,
                 judge_endpoint=endpoint,
                 judge_key=api_key,
                 judge_model=judge_model,
                 on_progress=_auth_test_progress(model_id),
             )
             _auth_persist_verdict(model_id, verdict)
-        return JSONResponse(verdict.to_dict())
-    except Exception as exc:
-        if "cancelled" in str(exc).lower():
-            return JSONResponse({"verdict": "cancelled", "headline": "Test cancelled by user", "confidence": 0}, status_code=200)
-        return JSONResponse({"error": str(exc)[:300], "verdict": "error"}, status_code=200)
-    finally:
-        _AUTH_TEST_CANCEL.discard(model_id)
+            # Auto-escalation: ambiguous shallow result → re-run ONCE in deep mode.
+            # GUARD: don't escalate when the normal test already produced a strong
+            # sub-model match (score >= 0.70 with a named best_model) — that's
+            # sufficient evidence without burning the deep battery.
+            _ev = verdict.evidence if isinstance(verdict.evidence, dict) else {}
+            _strong_match = (verdict.submodel_score >= 0.70 and bool(verdict.submodel_match))
+            # A non-separable TIE between sub-version standards is ambiguous BY
+            # DEFINITION: a high score on a tied pair is false confidence, not
+            # evidence (the qwen3-8-max vs -0902 / opus-5 vs opus-5-5 failure).
+            # So alias_group OVERRIDES the strong-match guard below.
+            _alias = list((_ev.get("match_dimensions", {}) or {}).get("_alias_group") or [])
+            _ambiguous = verdict.verdict in ("unverifiable", "family_match") and not _strong_match
+            if (mode == "auto" and (_ambiguous or bool(_alias))
+                    and model_id not in _AUTH_TEST_CANCEL):
+                _AUTH_TEST_STATUS[model_id] = {"step": "escalate",
+                                               "label": "Ambiguous — escalating to Deep",
+                                               "status": "running",
+                                               "ts": __import__("time").time()}
+                # Deep gets its OWN budget (2026-10-12): a full deep battery
+                # measured 262s wall, but it inherited the 240s shallow budget,
+                # so every late lane was budget-skipped -> null match dims.
+                _deep_cfg = dict(cfg)
+                _deep_cfg["total_timeout_s"] = max(
+                    float(cfg.get("total_timeout_s", 240) or 240),
+                    float(cfg.get("deep_total_timeout_s", 900) or 900))
+                verdict = await _auth_check(
+                    model_id=model_id,
+                    endpoint_base=endpoint,
+                    api_key=api_key,
+                    config=_deep_cfg,
+                    reference_hint=reference_hint,
+                    mode="deep",
+                    judge_endpoint=endpoint,
+                    judge_key=api_key,
+                    judge_model=judge_model,
+                    on_progress=_auth_test_progress(model_id),
+                )
+                _auth_persist_verdict(model_id, verdict)
+            if model_id in _AUTH_TEST_CANCEL:
+                # Cancel landed between the escalation guard and this terminal
+                # write — honour it instead of clobbering with 'done'.
+                _AUTH_TEST_STATUS[model_id] = {
+                    "step": "cancelled", "label": "Cancelled by user",
+                    "status": "cancelled",
+                    "verdict": {"verdict": "cancelled",
+                                "headline": "Test cancelled by user", "confidence": 0},
+                    "ts": __import__("time").time(),
+                }
+            else:
+                _AUTH_TEST_STATUS[model_id] = {
+                    "step": "done", "label": "Complete", "status": "done",
+                    "verdict": verdict.to_dict(),
+                    "ts": __import__("time").time(),
+                }
+        except asyncio.CancelledError:
+            # Superseded by a newer submission — don't clobber the new task's status.
+            _cur = _AUTH_TEST_TASKS.get(model_id)
+            if _cur is None or _cur.done():
+                _AUTH_TEST_STATUS[model_id] = {
+                    "step": "cancelled", "label": "Superseded by new test",
+                    "status": "cancelled",
+                    "verdict": {"verdict": "cancelled",
+                                "headline": "Test cancelled by user", "confidence": 0},
+                    "ts": __import__("time").time(),
+                }
+        except Exception as exc:
+            if "cancelled" in str(exc).lower():
+                _AUTH_TEST_STATUS[model_id] = {
+                    "step": "cancelled", "label": "Cancelled by user",
+                    "status": "cancelled",
+                    "verdict": {"verdict": "cancelled",
+                                "headline": "Test cancelled by user", "confidence": 0},
+                    "ts": __import__("time").time(),
+                }
+            else:
+                _AUTH_TEST_STATUS[model_id] = {
+                    "step": "error", "label": str(exc)[:100],
+                    "status": "error",
+                    "verdict": {"error": str(exc)[:300], "verdict": "error"},
+                    "ts": __import__("time").time(),
+                }
+        finally:
+            _AUTH_TEST_CANCEL.discard(model_id)
+
+    task = asyncio.create_task(_job())
+    _AUTH_TEST_TASKS[model_id] = task
+    return JSONResponse({
+        "started": True,
+        "model_id": model_id,
+        "status_url": f"/api/authenticity/test/status/{model_id}",
+    }, status_code=202)
 
 
 @app.get("/api/authenticity/test/status/{model_id:path}")
 async def auth_test_status(model_id: str):
-    """Bug 7: current pipeline step for the UI step indicator."""
-    return JSONResponse(_AUTH_TEST_STATUS.get(model_id, {"step": "idle", "label": ""}))
+    """Step feed + final verdict for the async test job.
+    Returns {step, label, ts, status, verdict?} where status is
+    idle|running|done|error|cancelled and verdict appears on terminal states."""
+    return JSONResponse(_AUTH_TEST_STATUS.get(model_id, {"step": "idle", "label": "", "status": "idle"}))
 
 
 # ─── Auto Error Prevention ──────────────────────────────────────────────────
@@ -9820,7 +9905,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         except Exception:
             pass
 
-    def _continuation_status_guard():
+    def _continuation_status_guard(_emit):
         """Guard stats against the stale 502 a COMPLETED continuation would leave.
 
         DEFECT B2 (2026-10-09, the reported "force stop 502"): every splice site
@@ -10583,7 +10668,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     used=_cont_state["used"],
                 ):
                     _cont_state["used"] = True
-                    _cont_commit = _continuation_status_guard()
+                    _cont_commit = _continuation_status_guard(_emit)
                     try:
                         _cont_payload = build_continuation_stream_payload(upstream_payload, _detector.partial_text)
                         if _cont_payload:
@@ -11289,7 +11374,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             used=_cont_state["used"],
                         ):
                             _cont_state["used"] = True
-                            _cont_commit = _continuation_status_guard()
+                            _cont_commit = _continuation_status_guard(_emit)
                             try:
                                 _cont_payload = build_continuation_stream_payload(upstream_payload, _detector.partial_text)
                                 if _cont_payload:
@@ -11811,7 +11896,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 pass
                             yield chunk
 
-                    if _is_anthropic_fmt:
+                    if provider_name == 'codex':
+                        # Codex upstream speaks Responses SSE (event:/data: pairs, no [DONE]).
+                        # Convert to OpenAI chat.completion.chunk SSE before the drain loop's
+                        # openai_chunk_to_gemini parse, mirroring the OpenAI egress lane (~L13201).
+                        openai_source = codex_adapter.responses_sse_to_openai_sse(_raw_ok())
+                    elif _is_anthropic_fmt:
                         _normalizer = StreamNormalizer(
                             "anthropic_sse", "openai_sse",
                             model_name=target_model or "bsl-routed",
@@ -11831,7 +11921,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             used=_cont_state["used"],
                         ):
                             _cont_state["used"] = True
-                            _cont_commit = _continuation_status_guard()
+                            _cont_commit = _continuation_status_guard(_emit)
                             try:
                                 _cont_payload = build_continuation_stream_payload(upstream_payload, _detector.partial_text)
                                 if _cont_payload:
@@ -11855,7 +11945,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     _cont_bytes = 0
                                     try:
                                         _cont_raw = _transport_guarded(_pump(_cont_resp.aiter_raw(), _emit, 0, "gemini-cont"), stats, _emit)
-                                        if _is_anthropic_fmt:
+                                        if provider_name == 'codex':
+                                            _cont_src = codex_adapter.responses_sse_to_openai_sse(_cont_raw)
+                                        elif _is_anthropic_fmt:
                                             _cont_src = _normalizer.convert_anthropic_to_openai(_cont_raw)
                                         else:
                                             _cont_src = _cont_raw

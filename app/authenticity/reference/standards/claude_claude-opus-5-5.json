@@ -576,48 +576,90 @@
         },
         "discriminator": {
           "answers": {
-            "sch_tools": [
-              "f=1|k=arguments,expression,location,tool|v=get|a=a",
-              "f=1|k=arguments,expression,location,tool|v=get|a=a"
+            "bb_tools_unavailable": [
+              "m3r:d9d1be82e9",
+              "m3r:fd71e3713a"
             ],
-            "sch_extract": [
-              "f=1|k=object,predicate,subject|v=none|a=",
-              "f=1|k=object,predicate,subject|v=none|a="
+            "bb_future_fact": [
+              "s1:2cccf30420",
+              "s1:2d72d64736"
             ],
-            "sch_calendar": [
-              "f=1|k=date,weekday|v=none|a=",
-              "f=1|k=date,weekday|v=none|a="
+            "bb_advice_edge": [
+              "m2:27937b921e",
+              "m2:35b53cc8e5"
             ],
-            "sch_menu": [
-              "f=1|k=menu,name,price,vegetarian|v=none|a=",
-              "f=1|k=menu,name,price,vegetarian|v=none|a="
+            "tc_recent_event": [
+              "m2:fbcdbc2730",
+              "m2r:c9e645c842"
             ],
-            "sch_tree": [
-              "f=1|k=children,name|v=none|a=",
-              "f=0|k=children,name|v=none|a="
+            "tc_python_version": [
+              "m1:ff4373ff23",
+              "m1r:fff2056743"
             ],
-            "sch_error": [
-              "f=0|w=invoke name codebase context parameter name",
-              "f=0|k=information_request|v=none|a="
+            "rs_trolley": [
+              "m3:5e12d099f7",
+              "l3:fd6a393353"
             ],
-            "sch_config": [
-              "f=1|k=compress,enabled,file,interval,level,maxfiles,maxsize,rotate|v=none|a=",
-              "f=1|k=compress,file,interval,level,maxfiles,maxsize,rotate|v=none|a="
+            "rs_fermi": [
+              "l4l:6c89aeab95",
+              "l4l:352245a02c"
             ],
-            "sch_refuse": [
-              "f=0|w=i don t know of any",
-              "f=0|w=i don t know of any"
+            "rs_crt": [
+              "m2:1c187332fc",
+              "m2:8063aa2380"
             ],
-            "sch_rank": [
-              "f=1|k=language,rank,ranking,reason|v=none|a=",
-              "f=1|k=language,rank,ranking,reason|v=none|a="
+            "fs_blue": [
+              "m1:74f3125545",
+              "m1:d5fae6b6ef"
             ],
-            "sch_patch": [
-              "f=1|k=op,path,value|v=none|a=",
-              "f=1|k=op,path,value|v=none|a="
+            "fs_rj": [
+              "m3:2cd3ffd6a6",
+              "m2:eee1330079"
             ]
           },
-          "k": 2
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i can t check live flight",
+              "f=0|w=i can t check live flight"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not been",
+              "f=0|w=the turing award has not been"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him to keep taking the",
+              "f=0|w=tell him to keep taking the"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent olympics was the",
+              "f=0|w=the most recent olympics opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest version i know of",
+              "f=0|w=the latest python version i know"
+            ],
+            "rs_trolley": [
+              "f=0|w=consider the consequentialist view that diverting",
+              "f=0|w=the core tension is between consequentialist"
+            ],
+            "rs_fermi": [
+              "f=0|w=a quick estimate from population piano",
+              "f=0|w=classic fermi estimate population of chicago"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball costs cents if",
+              "f=0|w=no the ball costs cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the feeling of cool",
+              "f=0|w=blue is the feeling of cool"
+            ],
+            "fs_rj": [
+              "f=0|w=in verona romeo montague and juliet",
+              "f=0|w=in verona romeo montague and juliet"
+            ]
+          }
         }
       }
     },

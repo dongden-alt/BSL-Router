@@ -359,11 +359,33 @@ def test_legacy_functions_key_converted(monkeypatch):
     assert "functions" not in body
 
 
-def test_bare_tools_declaration_without_tool_history_keeps_strip(monkeypatch):
-    """Forwarding is scoped to tool-carrying requests; a bare declaration
-    keeps the legacy strip behaviour pinned by
-    test_codex_kiro_oauth.test_strips_unsupported_params."""
+def test_bare_first_turn_declaration_forwards_tools(monkeypatch):
+    """BUG 2026-10-13: the old `has_tool_history` gate stripped tool
+    declarations unless the request ALREADY carried tool traffic. A first
+    turn is history-free by definition, so Codex never saw the tools and
+    could never emit a function_call -- the exact "tool call unavailable
+    for codex oauth models in Antigravity IDE" report. Bare declarations
+    now forward; the kill-switch is the only off-path."""
     monkeypatch.delenv("BSL_CODEX_FORWARD_TOOLS", raising=False)
+    body = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [dict(t) for t in _DECLARED_TOOLS],
+    }
+    result = codex_adapter.openai_to_responses(body)
+    assert result["tools"] == [{
+        "type": "function",
+        "name": "get_weather",
+        "description": "Get current weather",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+    }]
+    # The chat-shape key is still popped from the caller's dict.
+    assert "tools" not in body
+    # No tool item was invented on a history-free turn.
+    _assert_input_invariant(result)
+
+
+def test_bare_declaration_respects_kill_switch(monkeypatch):
+    monkeypatch.setenv("BSL_CODEX_FORWARD_TOOLS", "0")
     body = {
         "messages": [{"role": "user", "content": "hi"}],
         "tools": [dict(t) for t in _DECLARED_TOOLS],
@@ -421,15 +443,17 @@ def test_output_item_done_non_function_call_still_ignored():
     assert chunk is None
 
 
-def test_function_call_arguments_delta_passthrough():
+def test_function_call_arguments_delta_is_dropped():
+    """BUG 2026-10-13 (return direction): `response.output_item.done`
+    already carries the COMPLETE function_call item with full `arguments`.
+    Forwarding the incremental fragments too meant the Gemini accumulator
+    (compat/adapters/gemini.py) received fragments + the full payload and
+    concatenated both into one corrupt double-args buffer -> "Extra data"
+    json.loads failure -> call repaired or dropped -> phantom MAX_TOKENS."""
     chunk = codex_adapter._codex_event_to_openai_chunk(
         "response.function_call_arguments.delta", {"delta": '{"city"'}
     )
-    assert chunk is not None
-    tc = chunk["choices"][0]["delta"]["tool_calls"][0]
-    assert tc["index"] == 0
-    assert tc["function"]["arguments"] == '{"city"'
-    assert chunk["choices"][0]["finish_reason"] is None
+    assert chunk is None
 
 
 def test_completed_with_function_call_finishes_tool_calls():
@@ -483,9 +507,119 @@ def test_sse_text_then_tool_call_stream():
         }}),
     ]
     parsed = _collect_sse(events)
-    assert len(parsed) == 5
+    # The arguments-fragment event is dropped, so EXACTLY ONE tool_calls
+    # delta reaches the client -- carrying the complete arguments from
+    # output_item.done. No fragment+full double-concatenation.
+    assert len(parsed) == 4
     assert parsed[0]["choices"][0]["delta"] == {"role": "assistant"}
     assert parsed[1]["choices"][0]["delta"]["content"] == "Let me check."
-    assert parsed[2]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] == '{"city"'
-    assert parsed[3]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "get_weather"
-    assert parsed[4]["choices"][0]["finish_reason"] == "tool_calls"
+    tc = parsed[2]["choices"][0]["delta"]["tool_calls"][0]
+    assert tc["function"]["name"] == "get_weather"
+    assert tc["function"]["arguments"] == '{"city": "Paris"}'
+    assert tc["id"] == "call_w"
+    assert parsed[3]["choices"][0]["finish_reason"] == "tool_calls"
+
+
+# -- 8. Phase 3: non-stream lane (assemble + responses_json_to_openai) --
+
+def test_non_stream_lane_surfaces_function_calls():
+    """The non-stream client path buffers the SSE (main.py:13675 / 14345)
+    then walks ONLY the completed object. The old message-only walk dropped
+    every function_call, so buffered Codex clients never saw a tool call."""
+    events = [
+        ("response.output_text.delta", {"delta": "Let me check."}),
+        ("response.function_call_arguments.delta", {"delta": '{"city"'}),
+        ("response.output_item.done", {"item": dict(_FC_ITEM)}),
+        ("response.completed", {"response": {
+            "id": "resp_x", "model": "gpt-5.5", "status": "completed",
+            "output": [], "usage": {"input_tokens": 4, "output_tokens": 2},
+        }}),
+    ]
+
+    async def _run():
+        return await codex_adapter.assemble_responses_from_sse(
+            _aiter(_sse_bytes(events))
+        )
+
+    completed = asyncio.run(_run())
+    result = codex_adapter.responses_json_to_openai(completed, model="gpt-5.5")
+    msg = result["choices"][0]["message"]
+    assert msg["content"] == "Let me check."
+    assert msg["tool_calls"] == [{
+        "id": "call_w",
+        "type": "function",
+        "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+    }]
+    assert result["choices"][0]["finish_reason"] == "tool_calls"
+    assert result["usage"]["total_tokens"] == 6
+
+
+def test_non_stream_lane_text_only_keeps_stop():
+    events = [
+        ("response.output_text.delta", {"delta": "Hello"}),
+        ("response.completed", {"response": {
+            "id": "resp_x", "model": "gpt-5.5", "status": "completed",
+            "output": [], "usage": {},
+        }}),
+    ]
+
+    async def _run():
+        return await codex_adapter.assemble_responses_from_sse(
+            _aiter(_sse_bytes(events))
+        )
+
+    completed = asyncio.run(_run())
+    result = codex_adapter.responses_json_to_openai(completed, model="gpt-5.5")
+    assert result["choices"][0]["message"]["content"] == "Hello"
+    assert "tool_calls" not in result["choices"][0]["message"]
+    assert result["choices"][0]["finish_reason"] == "stop"
+
+
+def test_non_stream_lane_no_duplicate_function_call_graft():
+    """completed.output ALREADY carries the function_call item: the graft
+    must dedup by call_id rather than emit the same call twice."""
+    events = [
+        ("response.output_item.done", {"item": dict(_FC_ITEM)}),
+        ("response.completed", {"response": {
+            "id": "resp_x", "model": "gpt-5.5", "status": "completed",
+            "output": [dict(_FC_ITEM)], "usage": {},
+        }}),
+    ]
+
+    async def _run():
+        return await codex_adapter.assemble_responses_from_sse(
+            _aiter(_sse_bytes(events))
+        )
+
+    completed = asyncio.run(_run())
+    result = codex_adapter.responses_json_to_openai(completed, model="gpt-5.5")
+    tcs = result["choices"][0]["message"]["tool_calls"]
+    assert len(tcs) == 1
+    assert tcs[0]["id"] == "call_w"
+
+
+def test_non_stream_lane_parallel_calls_preserve_all_members():
+    """Two distinct call_ids in one turn must BOTH survive the graft and the
+    json walk -- a batch losing members is the drop-syndrome signature."""
+    fc2 = {"type": "function_call", "call_id": "call_t",
+           "name": "get_time", "arguments": '{"tz": "UTC"}'}
+    events = [
+        ("response.output_item.done", {"item": dict(_FC_ITEM)}),
+        ("response.output_item.done", {"item": dict(fc2)}),
+        ("response.completed", {"response": {
+            "id": "resp_x", "model": "gpt-5.5", "status": "completed",
+            "output": [], "usage": {},
+        }}),
+    ]
+
+    async def _run():
+        return await codex_adapter.assemble_responses_from_sse(
+            _aiter(_sse_bytes(events))
+        )
+
+    completed = asyncio.run(_run())
+    result = codex_adapter.responses_json_to_openai(completed, model="gpt-5.5")
+    tcs = result["choices"][0]["message"]["tool_calls"]
+    assert [t["id"] for t in tcs] == ["call_w", "call_t"]
+    assert [t["function"]["name"] for t in tcs] == ["get_weather", "get_time"]
+    assert result["choices"][0]["finish_reason"] == "tool_calls"

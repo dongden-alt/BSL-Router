@@ -175,3 +175,78 @@ def test_pairwise_uses_discriminator():
     # identical tokenizer (sim 1.0) + zero discriminator (sim 0.0) -> dist 0.5
     assert r["distance"] == 0.5
     assert r["separable"] is True
+
+
+# ---------------------------------------------------------- feature_bucket
+
+def test_feature_bucket_empty():
+    assert v2.feature_bucket("") == ""
+    assert v2.feature_bucket("   ") == ""
+
+
+def test_feature_bucket_deterministic():
+    t = ("A runaway trolley should be diverted. One life against five. "
+         "That is the calculus.")
+    assert v2.feature_bucket(t) == v2.feature_bucket(t)
+
+
+def test_feature_bucket_trivial_wobble_same_bucket():
+    base = "The ball is 5 cents."
+    for wob in ("The ball is 5 cents. ", "the ball is 5 cents", "The  ball   is 5 cents."):
+        assert v2.feature_bucket(wob) == v2.feature_bucket(base)
+
+
+def test_feature_bucket_distinct_content_distinct_bucket():
+    a = v2.feature_bucket("The ball costs five cents, not ten.")
+    b = v2.feature_bucket("Blue is the feeling of a cold ocean breeze.")
+    assert a and b and a != b
+
+
+def test_similarity_bucket_any_overlap():
+    a = _bank(p1=["h1", "h1b"], p2=["x"], p3=["z"], p4=["w"], p5=["v"])
+    b = _bank(p1=["h1b"], p2=["x"], p3=["q"], p4=["t"], p5=["u"])
+    # p1 overlaps via h1b, p2 exact -> 2/5
+    assert v2.similarity_discriminator(a, b) == 0.4
+
+
+# ------------------------------------------------- informative item filter
+
+def test_informative_discriminator_items_pairwise_disjoint():
+    # p1: A and C present disjoint shapes -> informative (can split that pair).
+    # p2: every candidate's shape overlaps every other -> noise floor, dropped.
+    cands = {
+        "A": _bank(p1=["s1:a"], p2=["m2:x"]),
+        "B": _bank(p1=["s1:b"], p2=["m2:y"]),
+        "C": _bank(p1=["l4f:c"], p2=["m2:z"]),
+    }
+    inf = v2.informative_discriminator_items(cands)
+    assert "p1" in inf
+    assert "p2" not in inf
+
+
+def test_informative_discriminator_items_tolerates_missing_probe():
+    # Regression (2026-10-11): the old probe-ID intersection collapsed to
+    # empty when ANY candidate lacked a probe. B lacks p1; p1 must still be
+    # evaluated on the candidates that carry it.
+    cands = {
+        "A": _bank(p1=["s1:a"], p2=["m2:x"]),
+        "B": _bank(p2=["m2:y"]),
+        "C": _bank(p1=["l4f:c"], p2=["m2:z"]),
+    }
+    assert "p1" in v2.informative_discriminator_items(cands)
+
+
+def test_informative_discriminator_items_needs_two_profiles():
+    assert v2.informative_discriminator_items({"A": _bank(p1=["s1:a"])}) == set()
+    assert v2.informative_discriminator_items({}) == set()
+
+
+def test_similarity_discriminator_informative_concentrates():
+    # 4 saturated probes (identical shapes everywhere) + 4 splitting probes.
+    # All-probes sim = 4/8 = 0.5; restricted to the 4 informative -> 0.0.
+    sat = {f"s{n}": ["m2:same"] for n in range(4)}
+    a = _bank(**sat, **{f"i{n}": [f"s1:a{n}"] for n in range(4)})
+    b = _bank(**sat, **{f"i{n}": [f"l4f:b{n}"] for n in range(4)})
+    informative = {f"i{n}" for n in range(4)}
+    assert v2.similarity_discriminator(a, b) == 0.5
+    assert v2.similarity_discriminator(a, b, informative) == 0.0

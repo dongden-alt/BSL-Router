@@ -577,48 +577,90 @@
         },
         "discriminator": {
           "answers": {
-            "sch_tools": [
-              "f=0|k=args,depends_on,expression,id,location,tool|v=get|a=a",
-              "f=1|k=arguments,city,depends_on,expression,id,tool,units|v=get|a=a"
+            "bb_tools_unavailable": [
+              "m3r:754808ea07",
+              "m3r:abbbb5a8f1"
             ],
-            "sch_extract": [
-              "f=1|k=object,predicate,subject,value_type|v=none|a=",
-              "f=1|k=object,predicate,subject|v=none|a="
+            "bb_future_fact": [
+              "m1r:ca1fbc0a12",
+              "m1:b124351e3e"
             ],
-            "sch_calendar": [
-              "f=0|k=date,weekday|v=none|a=",
-              "f=0|k=date,day|v=none|a="
+            "bb_advice_edge": [
+              "m2:0a6aec8d4d",
+              "m2:9dd0f33c8a"
             ],
-            "sch_menu": [
-              "f=1|k=menu,name,price,vegetarian|v=none|a=",
-              "f=1|k=menu,name,price,vegetarian|v=none|a="
+            "tc_recent_event": [
+              "m2r:7fb50eebb4",
+              "m2:caca84979b"
             ],
-            "sch_tree": [
-              "f=1|k=children,name|v=none|a=",
-              "f=1|k=children,name|v=none|a="
+            "tc_python_version": [
+              "m1:c2085e0795",
+              "m1:c60b5714a5"
             ],
-            "sch_error": [
-              "f=1|k=code,error,message,path,status,timestamp|v=none|a=",
-              "f=1|k=code,error,message|v=none|a="
+            "rs_trolley": [
+              "l3:31d5e37cdd",
+              "l3r:7b90966803"
             ],
-            "sch_config": [
-              "f=1|k=compress,enabled,file,interval,level,max_files,max_size_mb,rotate|v=none|a=",
-              "f=1|k=append,compress,enabled,file,interval,level,maxfiles,maxsizemb,path,rotate|v=none|a="
+            "rs_fermi": [
+              "l4l:a6fccd68bc",
+              "l4:d1fc7873fa"
             ],
-            "sch_refuse": [
-              "f=0|w=i can t find any record",
-              "f=0|w=i m not aware of any"
+            "rs_crt": [
+              "m2:3b5cb0e5d0",
+              "m2:f523210667"
             ],
-            "sch_rank": [
-              "f=0|k=language,rank,ranking,reason|v=none|a=",
-              "f=1|k=language,languages,rank,reason|v=none|a="
+            "fs_blue": [
+              "m1:d0ce52d6f7",
+              "m1:254432b055"
             ],
-            "sch_patch": [
-              "f=1|k=after,before,format,level,op,patch,path,value|v=none|a=",
-              "f=1|k=from,op,path,value|v=none|a="
+            "fs_rj": [
+              "m2:4aa06eba8b",
+              "m2:27b099de9f"
             ]
           },
-          "k": 2
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i don t have access to",
+              "f=0|w=i can t check sq s"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not yet",
+              "f=0|w=the turing award winner hasn t"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=he should finish the antibiotics exactly",
+              "f=0|w=tell him to finish the entire"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent olympics opening ceremony",
+              "f=0|w=the most recent olympics opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest version i m aware",
+              "f=0|w=the latest stable python release i"
+            ],
+            "rs_trolley": [
+              "f=0|w=the utilitarian calculation favors diverting the",
+              "f=0|w=a consequentialist weighing of outcomes suggests"
+            ],
+            "rs_fermi": [
+              "f=0|w=rough answer tuners order of magnitude",
+              "f=0|w=fermi estimate piano tuners in chicago"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball costs cents if",
+              "f=0|w=no the ball costs cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the color of the",
+              "f=0|w=blue is the cool quiet hush"
+            ],
+            "fs_rj": [
+              "f=0|w=in verona the young heirs of",
+              "f=0|w=in verona the young heirs of"
+            ]
+          }
         }
       }
     },

@@ -577,48 +577,90 @@
         },
         "discriminator": {
           "answers": {
-            "sch_tools": [
-              "f=0|k=arguments,expression,location,name|v=get|a=a",
-              "f=0|k=arguments,expression,location,name|v=get|a=a"
+            "bb_tools_unavailable": [
+              "m3r:a08e707ebf",
+              "m3r:6646d998f9"
             ],
-            "sch_extract": [
-              "f=0|k=object,predicate,subject|v=none|a=",
-              "f=0|k=relation,subject,value|v=none|a="
+            "bb_future_fact": [
+              "s1:b566458471",
+              "s1:1086a53644"
             ],
-            "sch_calendar": [
-              "f=0|k=date,day|v=none|a=",
-              "f=0|k=date,dayofweek|v=none|a="
+            "bb_advice_edge": [
+              "m2:e902880e74",
+              "m2:c071a114a3"
             ],
-            "sch_menu": [
-              "f=0|k=name,price,vegetarian|v=none|a=",
-              "f=0|k=name,price,vegetarian|v=none|a="
+            "tc_recent_event": [
+              "m2:684d362e71",
+              "m2:10be0d15d4"
             ],
-            "sch_tree": [
-              "f=0|k=backend,ceo,cfo,cto,frontend|v=none|a=",
-              "f=0|k=children,name|v=none|a="
+            "tc_python_version": [
+              "s1:5e11fc32fe",
+              "s1:332921c60b"
             ],
-            "sch_error": [
-              "f=0|k=code,error,message|v=none|a=",
-              "f=0|k=code,error,message|v=none|a="
+            "rs_trolley": [
+              "m3:ec388a7357",
+              "m3:fd240037e5"
             ],
-            "sch_config": [
-              "f=0|k=file,level,rotate|v=none|a=",
-              "f=0|k=file,level,rotate|v=none|a="
+            "rs_fermi": [
+              "l4l:ee4237754f",
+              "l4l:b6e5bc5cb7"
             ],
-            "sch_refuse": [
-              "f=0|w=there is no record of a",
-              "f=0|w=there is no recognized kessler voronin"
+            "rs_crt": [
+              "s2:941016d484",
+              "s2:88b1dfef71"
             ],
-            "sch_rank": [
-              "f=0|k=language,rank,reason|v=none|a=",
-              "f=0|k=language,rank,reason|v=none|a="
+            "fs_blue": [
+              "s1:f78515dd9b",
+              "m1:47869e7f24"
             ],
-            "sch_patch": [
-              "f=0|k=op,path,value|v=none|a=",
-              "f=0|k=op,path,value|v=none|a="
+            "fs_rj": [
+              "m2:6ca7018174",
+              "m2:a9df64b8f1"
             ]
           },
-          "k": 2
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i do not have access to",
+              "f=0|w=i do not have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not yet",
+              "f=0|w=the turing award has not yet"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him he must finish the",
+              "f=0|w=tell him he needs to finish"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the paris summer olympics opening ceremony",
+              "f=0|w=the paris summer olympics opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest stable version of python",
+              "f=0|w=the latest version of python i"
+            ],
+            "rs_trolley": [
+              "f=0|w=the primary consideration must be the",
+              "f=0|w=the primary consideration must be the"
+            ],
+            "rs_fermi": [
+              "f=0|w=here is a classic fermi estimation",
+              "f=0|w=to estimate the number of piano"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball costs cents if",
+              "f=0|w=no the ball costs cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the sensation of immersing",
+              "f=0|w=blue is the soothing sensation of"
+            ],
+            "fs_rj": [
+              "f=0|w=in verona two young lovers from",
+              "f=0|w=in verona romeo and juliet fall"
+            ]
+          }
         }
       }
     },

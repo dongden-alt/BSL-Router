@@ -800,7 +800,9 @@ See [config.example.yaml](../config.example.yaml) for a complete working templat
 | `POST /api/authenticity/standards/harvest` | Harvest a new standard from a trusted anchor (background) |
 | `GET /api/authenticity/standards/harvest/status/{model_id}` | Poll harvest job status |
 | `DELETE /api/authenticity/standards/{family}/{sub_model}` | Delete a frozen standard |
-| `POST /api/authenticity/test` | Run the authenticity gate on a suspect model (normal/deep/auto) |
+| `POST /api/authenticity/test` | Submit an authenticity gate job (auto = normal → escalate to deep on ambiguous). Returns **202 Accepted** immediately; verdict arrives via the status endpoint |
+| `GET /api/authenticity/test/status/{model_id}` | Poll job step feed + terminal verdict (`status`: idle/running/done/error/cancelled) |
+| `POST /api/authenticity/test/cancel/{model_id}` | Cancel a running job: sets the cancel flag, writes terminal `cancelled` status, and cancels the background task |
 
 ---
 
@@ -1022,28 +1024,71 @@ Xem [config.example.yaml](../config.example.yaml) để có template hoàn chỉ
 | **PyYAML** | Đọc file config |
 | **pydantic** | Kiểm tra dữ liệu |
 
-## Authenticity Standard v3 — `discriminator` lane (2026-10-09, CODE DONE)
+## Authenticity Standard v3 — `discriminator` lane (2026-10-09, CODE DONE; rebuilt 2026-10-10)
 
 Fourth v2-dimension added to `app/authenticity/standard_v2.py`, stored under
 `structural.tokenizer_signature.v2.discriminator` with shape
-`{"answers": {probe_id: [feature_string * k]}, "k": k}`.
+`{"answers": {probe_id: [bucket * k]}, "legacy_features": {probe_id: [schema_features * k]}, "k": k}`.
+`answers` holds `feature_bucket` whole-answer digests (PRIMARY compared field);
+`legacy_features` holds the old `schema_features` strings for offline comparison only.
 
 **Why (status: DONE, offline-verified; live re-scoring of existing standards PENDING):**
 tokenizer / capability_curve / knowledge_bank all saturate at the frontier, so
 `pairwise_separability` under-reported distance and violated transitivity
 (terra->astra 0.046 < terra->sol 0.075). The discriminator measures
-behavioural-schema habits — code-fence use, JSON key sets, tool verb, arg-key
-naming, refusal phrasing — which live probes proved differ per opus version
-(4.6/4.7/4.8/5/5.5 each emitted a distinct schema) and per gpt version
-(terra `{"tool":}` vs astra `{"name":}`). No capability ceiling, so it cannot saturate.
+behavioural response habits across a 10-probe / 4-family battery
+(behavioral boundary / temporal-cutoff / reasoning style / style self-consistency).
 
-**Scoring:** `similarity_discriminator` = agreement fraction over shared probes
-(`None` when <5 shared). `pairwise_separability` folds it into the mean alongside
-the other three; absent lanes are excluded, so standards harvested before v3
-remain fully scoreable — no migration required.
+**2026-10-10 battery rebuild:** the original 10 `sch_*` probes were audited 0/10
+stable+separable (over-constrained "JSON only" formats collapsed siblings onto one
+output; the `schema_features` prose prefix-branch kept only the first 6 words, which
+share safety-trained openers). The battery now constrains the QUESTION, never the
+output format, and `feature_bucket` (sha1-10 digest over the whole normalized answer,
+prefixed by a human-inspectable shape code) replaces prefix features as the compared
+field. `schema_features` is kept byte-identical and stored side-by-side as
+`legacy_features` for offline comparison.
+
+**Scoring:** `similarity_discriminator` = fraction of shared probes whose per-run
+bucket lists overlap exactly (`None` when <5 shared). `pairwise_separability` folds it
+into the mean alongside the other three; absent lanes are excluded, so standards
+harvested before v3 remain fully scoreable — no migration required.
+
+**2026-10-11 informative-filter correction:** `informative_discriminator_items` selects
+which probes are allowed to contribute to the score, so that probes on which every model
+answers identically (pure noise floor) cannot dilute the few probes that actually diverge.
+The previous implementation took a **33-way `set.intersection`** over the candidate pool's
+probe IDs, plus a single-anchor disjointness check. On the live 33-model pool that
+intersection collapsed to the **empty set** (one model missing one probe zeroes the whole
+intersection), so the scorer silently fell through to `all_probes` — every probe counted as
+informative, and the constant-answer majority pinned similarity near 1.0 for unrelated
+models. Replaced with a **union-based, pairwise-disjoint criterion**: a probe is eligible if
+it appears in ≥2 candidates, and it is informative if it separates **any** pair of models
+(not one fixed anchor). Measured on live standards: informative probes **0 → 18**
+(`bb_*`, `tc_*`, `rs_*`, `fs_blue`, `sch_*`); sibling `disc` similarity now spreads
+0.125–0.875 with self-match 1.0, instead of a saturated constant. The fix is pure in-memory
+set logic — no re-harvest, no backfill, no standard file rewritten (Rule 10).
 
 **Status labels:**
-- Lane implementation + wiring + tests — **DONE** (14/14 new, 54/54 existing).
-- Existing 16 references + 17 canonicals re-scored with the new axis — **PENDING**
-  (needs a discriminator backfill pass; ~20 calls/model).
-- Matcher/gate integration — **PLANNED** (compute_v2_dims already exposes it).
+- Lane implementation + wiring + tests — **DONE** (23/23 discriminator, 22/22 standard_v2).
+- Informative-probe filter (union-based pairwise-disjoint) — **DONE** (verified against all 60
+  live standard files; regression tests in `app/tests/test_authenticity_discriminator.py`).
+- Matcher veto near-miss instrumentation — **DONE** (`.brain/scratch/disc_veto_nearmiss.jsonl`,
+  capped ~1MB, never raises).
+- Backfill `--replace` flag — **DONE** (disjoint keyspace rotates wholesale; overlapping
+  merges per-key, new values win; failure leaves the file untouched).
+- Existing references + canonicals re-scored with the new battery — **DONE (32/33)**
+  (2026-10-11 wave 1: 3 lanes — glm-5-3-flash, qwen3.8-max, qwen3.8-max-0902;
+  2026-10-11 wave 2: 29/30 old-battery lanes rotated via targeted
+  `backfill_v2_lane.py --lane-name discriminator --replace`, ~20 calls each, k=2;
+  NO full re-harvest per Rule 10. Sole holdout: `deepseek-v4.1-flash` — anchor
+  lane `aibox/deepseek-v4.1-flash` returned HTTP 503 on every probe
+  (`model_not_found`: no available channel in the distributor's default group) and
+  the alternate `a6api` lane also 503s (`smart_route_no_active_candidates`), i.e.
+  an upstream-wide flash outage; the file was left untouched (fail-closed) and its
+  OLD_SCH keyspace shares 0 probes with the new battery → similarity returns None
+  → the lane abstains, never penalized. Retry once the aibox channel recovers.
+  27 provider snapshots have no discriminator lane and abstain by design,
+  excluded from the mean. Census: 60 standard files = 32 NEW_10 + 1 OLD_SCH +
+  27 no-lane, measured 2026-10-11.)
+- Live matcher/gate calibration — **PENDING** (threshold lives in `V2_VETO["discriminator"]`;
+  router `:6969` restart required to load the rebuilt battery — Rule 1, user-commanded only).

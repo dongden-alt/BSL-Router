@@ -568,48 +568,90 @@
         },
         "discriminator": {
           "answers": {
-            "sch_tools": [
-              "f=0|k=arguments,city,expression,tool|v=get|a=a",
-              "f=1|k=arguments,expression,location,tool|v=get|a=a"
+            "bb_tools_unavailable": [
+              "m3r:4f3519de8c",
+              "m3r:f7d2b0b1b9"
             ],
-            "sch_extract": [
-              "f=1|k=object,predicate,subject|v=none|a=",
-              "f=1|k=object,predicate,subject|v=none|a="
+            "bb_future_fact": [
+              "m1:b75990718a",
+              "s1r:82a7a354ff"
             ],
-            "sch_calendar": [
-              "f=1|k=date,weekday|v=none|a=",
-              "f=1|k=date,weekday|v=none|a="
+            "bb_advice_edge": [
+              "m2:ffb6a895ce",
+              "m2:e432815f2d"
             ],
-            "sch_menu": [
-              "f=1|k=menu,name,price,vegetarian|v=none|a=",
-              "f=1|k=menu,name,price,vegetarian|v=none|a="
+            "tc_recent_event": [
+              "m2r:4671078a90",
+              "m2r:6acbf9ac72"
             ],
-            "sch_tree": [
-              "f=1|k=children,name|v=none|a=",
-              "f=1|k=children,name|v=none|a="
+            "tc_python_version": [
+              "m1r:6ecf79ed15",
+              "m1:72eb45c1d8"
             ],
-            "sch_error": [
-              "f=1|k=code,error,message|v=none|a=",
-              "f=1|k=code,error,message|v=none|a="
+            "rs_trolley": [
+              "l3:0e87d3a3ff",
+              "l3:a782f98775"
             ],
-            "sch_config": [
-              "f=1|k=compress,enabled,file,level,logger,maxfiles,maxsize,rotate|v=none|a=",
-              "f=1|k=compress,enabled,file,level,maxfiles,maxsize,rotate|v=none|a="
+            "rs_fermi": [
+              "l4l:632f48706c",
+              "l4l:1d997fb3de"
             ],
-            "sch_refuse": [
-              "f=0|w=i can t verify that a",
-              "f=0|w=i don t recognize a kessler"
+            "rs_crt": [
+              "m2:799b283003",
+              "m2:be130e4369"
             ],
-            "sch_rank": [
-              "f=1|k=language,question,rank,rankings,reason|v=none|a=",
-              "f=1|k=language,question,rank,rankings,reason|v=none|a="
+            "fs_blue": [
+              "m1:e48b55ea08",
+              "m1:12e50949be"
             ],
-            "sch_patch": [
-              "f=1|k=op,path,value|v=none|a=",
-              "f=1|k=op,path,value|v=none|a="
+            "fs_rj": [
+              "m2:8d7a874c4f",
+              "m2:393785f4fe"
             ]
           },
-          "k": 2
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i can t check live flight",
+              "f=0|w=i can t check live flight"
+            ],
+            "bb_future_fact": [
+              "f=0|w=i don t know who won",
+              "f=0|w=i can t tell you who"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him not to stop on",
+              "f=0|w=tell him not to stop on"
+            ],
+            "tc_recent_event": [
+              "f=0|w=as of my knowledge the most",
+              "f=0|w=the most recent olympics i can"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest python version i m",
+              "f=0|w=the latest python version i m"
+            ],
+            "rs_trolley": [
+              "f=0|w=weigh the outcomes diverting the trolley",
+              "f=0|w=consider the moral framework in play"
+            ],
+            "rs_fermi": [
+              "f=0|w=i m mintrouter ai running on",
+              "f=0|w=i m mintrouter ai running on"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball costs cents if",
+              "f=0|w=no the ball costs cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the feeling of cool",
+              "f=0|w=blue is the calm cool feeling"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo and juliet children of feuding",
+              "f=0|w=two young lovers from feuding families"
+            ]
+          }
         }
       }
     },

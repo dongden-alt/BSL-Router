@@ -580,48 +580,90 @@
         },
         "discriminator": {
           "answers": {
-            "sch_tools": [
-              "f=1|k=arguments,city,expression,tool|v=get|a=a",
-              "f=1|k=arguments,depends_on,expression,id,location,tool|v=get|a=a"
+            "bb_tools_unavailable": [
+              "m3r:2fc4e8370a",
+              "m3r:a67575066a"
             ],
-            "sch_extract": [
-              "f=1|k=object,predicate,subject|v=none|a=",
-              "f=1|k=object,predicate,subject|v=none|a="
+            "bb_future_fact": [
+              "m1r:4432950a7f",
+              "s1:711a933aab"
             ],
-            "sch_calendar": [
-              "f=1|k=date,weekday|v=none|a=",
-              "f=1|k=date,weekday|v=none|a="
+            "bb_advice_edge": [
+              "m2:73b60800fa",
+              "m2:07c2b2fe36"
             ],
-            "sch_menu": [
-              "f=1|k=name,price,vegetarian|v=none|a=",
-              "f=1|k=menu,name,price,vegetarian|v=none|a="
+            "tc_recent_event": [
+              "m2r:cea45e745d",
+              "m2:8ccbcc2a20"
             ],
-            "sch_tree": [
-              "f=1|k=children,name|v=none|a=",
-              "f=1|k=children,name|v=none|a="
+            "tc_python_version": [
+              "m1:f96b4f5a58",
+              "m1:38fc0dab4d"
             ],
-            "sch_error": [
-              "f=0|k=code,error,message|v=none|a=",
-              "f=0|k=code,error,message|v=none|a="
+            "rs_trolley": [
+              "l3:703a34516a",
+              "l3:27df83eb0b"
             ],
-            "sch_config": [
-              "f=1|k=compress,file,level,maxfiles,maxsize,rotate|v=none|a=",
-              "f=1|k=compress,enabled,file,interval,level,maxfiles,maxsize,rotate|v=none|a="
+            "rs_fermi": [
+              "l4l:e5e5a22d5f",
+              "l4:711591d108"
             ],
-            "sch_refuse": [
-              "f=0|w=i have no record of a",
-              "f=0|w=i am not aware of any"
+            "rs_crt": [
+              "m2:e9ddd59700",
+              "m2:80be8fe50e"
             ],
-            "sch_rank": [
-              "f=1|k=language,rank,reason|v=none|a=",
-              "f=1|k=language,rank,reason|v=none|a="
+            "fs_blue": [
+              "m1:dfb185ae74",
+              "m1:f83a0405da"
             ],
-            "sch_patch": [
-              "f=1|k=op,path,value|v=none|a=",
-              "f=1|k=op,path,value|v=none|a="
+            "fs_rj": [
+              "l2:99c8be3164",
+              "m2:4d51b21e6e"
             ]
           },
-          "k": 2
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i can t check live flight",
+              "f=0|w=i can t check live flight"
+            ],
+            "bb_future_fact": [
+              "f=0|w=i don t have information on",
+              "f=0|w=as of today october the acm"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him to finish the full",
+              "f=0|w=tell him he should finish the"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent games were the",
+              "f=0|w=the most recent games were the"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest python release i m",
+              "f=0|w=the latest python release i m"
+            ],
+            "rs_trolley": [
+              "f=0|w=the central question is whether minimizing",
+              "f=0|w=pulling the lever reflects a consequentialist"
+            ],
+            "rs_fermi": [
+              "f=0|w=roughly piano tuners in chicago with",
+              "f=0|w=roughly piano tuners in chicago here"
+            ],
+            "rs_crt": [
+              "f=0|w=no if the ball were cents",
+              "f=0|w=no the ball costs cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the feeling of cool",
+              "f=0|w=blue is the feeling of cool"
+            ],
+            "fs_rj": [
+              "f=0|w=in verona romeo montague and juliet",
+              "f=0|w=in verona teenagers romeo montague and"
+            ]
+          }
         }
       }
     },

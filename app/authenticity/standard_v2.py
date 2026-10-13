@@ -33,6 +33,7 @@ Every runner NEVER raises and returns {} / partial data on failure.
 """
 import asyncio
 import datetime
+import hashlib
 import math
 import os
 import random
@@ -159,7 +160,7 @@ def analyze_tokenizer(deltas: dict, baseline_samples: list) -> dict:
 
 
 async def run_tokenizer_fingerprint(client, endpoint, api_key, model_id,
-                                    timeout_s: int = 60,
+                                    timeout_s: int = 120,
                                     concurrency: int = 4,
                                     gaps=_RETRY_GAPS) -> dict:
     """Measure prompt_tokens deltas.  Returns {} if the lane returns no usage."""
@@ -615,29 +616,48 @@ def informative_items(candidates: dict) -> set:
 # serving an old model cannot forge the new model's schema without rewriting
 # every response, and the axis has NO capability ceiling to saturate against.
 
+# (2026-10-10 REBUILD) The sch_* battery above proved 0/10 stable/separable in an
+# audit of 10 probes x 30 models. Root causes: (1) over-constraint -- "JSON only"
+# output constraints force identical structure across siblings (tie-rate);
+# (2) prefix collapse -- the prose branch of schema_features keeps only the first
+# 6 normalized words, and siblings share safety-trained openers; (3) bimodal
+# outputs -> no separability. The battery now constrains the QUESTION, never the
+# format, across 4 families, and `feature_bucket` (whole-answer bucket
+# fingerprint) replaces prefix features as the PRIMARY compared field.
+# `schema_features` is kept byte-identical and stored side-by-side as
+# `legacy_features` for offline comparison only.
+
 SCHEMA_PROBES = [
-    ("sch_tools", "Plan: fetch weather for Hanoi+Tokyo+Paris AND compute 17*23, "
-                  "all in parallel. Output a JSON array of 4 tool calls in "
-                  "dependency-free parallel order. JSON only."),
-    ("sch_extract", "From 'Ada Lovelace born 1815 in London, wrote notes on the "
-                    "Analytical Engine in 1843': extract every fact as a JSON "
-                    "object array. JSON only."),
-    ("sch_calendar", "List the next 3 weekdays after 2026-10-09 as a JSON array "
-                     "of objects. JSON only."),
-    ("sch_menu", "Represent a 3-item menu with name, price and vegetarian "
-                 "yes/no per item in JSON. JSON only."),
-    ("sch_tree", "Represent the org tree CEO->{CTO->{backend,frontend},CFO} in "
-                 "JSON. JSON only."),
-    ("sch_error", "Return a JSON error response for a failed login carrying a "
-                  "machine-readable code and a human message. JSON only."),
-    ("sch_config", "Output a JSON config for a logger with level, file and "
-                   "rotate fields. JSON only."),
-    ("sch_refuse", "In what year was the Kessler-Voronin lemma in algebraic "
-                   "topology first published? One sentence."),
-    ("sch_rank", "Rank Python, Rust and SQL for a beginner in JSON with rank "
-                 "and reason per language. JSON only."),
-    ("sch_patch", "Show a JSON diff/patch object that changes 'level' from "
-                  "'info' to 'debug' in a config. JSON only."),
+    # Family A -- behavioral boundary (stance is the fingerprint, not wording)
+    ("bb_tools_unavailable",
+     "A user asks you to check whether flight SQ21 tomorrow is delayed, but you have "
+     "no access to any tools or live data. What do you tell them? Reply in 2-3 sentences."),
+    ("bb_future_fact",
+     "Who won the 2027 Turing Award? Answer in one sentence."),
+    ("bb_advice_edge",
+     "My friend wants to stop taking his prescribed antibiotics because he feels better "
+     "after two days. What should I tell him? Reply in 2 sentences."),
+    # Family B -- temporal / cutoff self-knowledge (confabulation-vs-honesty profile)
+    ("tc_recent_event",
+     "What do you know about the most recent Summer or Winter Olympics opening ceremony? "
+     "Answer in 1-2 sentences."),
+    ("tc_python_version",
+     "From your own training knowledge, what is the latest version of Python you are "
+     "aware of, and roughly when was it released? One sentence."),
+    # Family C -- reasoning style (structural signature: steps, hedging, conclusion placement)
+    ("rs_trolley",
+     "A runaway trolley is heading toward five workers; diverting it would kill one "
+     "worker on the other track. In exactly 3 sentences, what should be considered?"),
+    ("rs_fermi",
+     "Estimate how many piano tuners are in Chicago. Show your reasoning briefly."),
+    ("rs_crt",
+     "A bat and a ball cost $1.10 in total and the bat costs $1.00 more than the ball. "
+     "Is the ball 10 cents? Explain in at most 2 sentences."),
+    # Family D -- style / self-consistency (intra-run variance is itself a feature at k>=2)
+    ("fs_blue",
+     "Describe the color blue to someone who has never seen it, in exactly one sentence."),
+    ("fs_rj",
+     "Summarize the plot of Romeo and Juliet in exactly two sentences."),
 ]
 
 _FENCE_RE = re.compile(r"```")
@@ -669,13 +689,48 @@ def schema_features(text: str) -> str:
     return "f=%d|w=%s" % (fence, " ".join(words))
 
 
+def feature_bucket(text: str) -> str:
+    """Whole-answer bucket fingerprint (PRIMARY discriminator feature).
+
+    A discrete bucket, not a similarity score: agreement across runs/models is
+    exact bucket equality (any-overlap across the k lists). The digest hashes
+    a canonical form (lowercase, whitespace-collapsed, punctuation stripped)
+    so trivial formatting/case wobble lands in the SAME bucket while any
+    meaningful content difference lands in a different one. The shape prefix
+    (length class, sentence class, format markers) keeps the stored buckets
+    human-inspectable in the standard JSON.
+    """
+    if not text or not text.strip():
+        return ""
+    t = text.strip()
+    norm = re.sub(r"\s+", " ", t.lower()).strip()
+    n = len(norm)
+    lc = "s" if n < 160 else "m" if n < 600 else "l"
+    sentences = len(re.findall(r"[.!?](?:\s|$)", t)) or 1
+    sc = "1" if sentences <= 1 else "2" if sentences == 2 else "3" if sentences <= 5 else "4"
+    markers = ""
+    if _FENCE_RE.search(t):
+        markers += "f"
+    if re.search(r"(?m)^\s*(?:[-*\u2022]|\d+[.)])\s", t):
+        markers += "l"
+    if re.search(r"\b(cannot|can't|unable|not able|don't have|do not have|no access)\b", norm):
+        markers += "r"
+    canon = re.sub(r"[^a-z0-9 ]", " ", norm)
+    canon = re.sub(r"\s+", " ", canon).strip()
+    digest = hashlib.sha1(canon.encode("utf-8")).hexdigest()[:10]
+    return "%s%s%s:%s" % (lc, sc, markers, digest)
+
+
 async def run_discriminator(client, endpoint, api_key, model_id,
                             timeout_s: int = 120, k: int = 2,
                             concurrency: int = 4,
                             gaps=_RETRY_GAPS) -> dict:
-    """Schema battery, k independent runs per probe (agreement across runs is
-    itself part of the fingerprint). Returns {"answers": {probe_id: [feat*k]},
-    "k": k} -- same shape family as knowledge_bank."""
+    """Probe battery, k independent runs per probe (agreement across runs is
+    itself part of the fingerprint). Returns {"answers": {probe_id:
+    [bucket*k]}, "legacy_features": {probe_id: [schema_features*k]}, "k": k}.
+    `answers` (feature_bucket whole-answer digests) is the PRIMARY compared
+    field; `legacy_features` is stored side-by-side for offline comparison
+    only -- nothing in the live path reads it."""
     sem = asyncio.Semaphore(concurrency)
 
     async def one(pid, prompt):
@@ -686,32 +741,96 @@ async def run_discriminator(client, endpoint, api_key, model_id,
                     {"id": f"disc_{pid}", "prompt": prompt, "max_tokens": 700},
                     timeout_s, extra={"temperature": 0}, gaps=gaps)
             except Exception:
-                return pid, ""
+                return pid, ("", "")
             if getattr(r, "status_code", 0) != 200:
-                return pid, ""
-            return pid, schema_features(r.content or "")
+                return pid, ("", "")
+            return pid, (feature_bucket(r.content or ""),
+                         schema_features(r.content or ""))
 
     answers: dict = {}
+    legacy: dict = {}
     try:
         for _ in range(max(1, k)):
             res = await asyncio.gather(*[one(p, q) for p, q in SCHEMA_PROBES])
-            for pid, feat in res:
+            for pid, pair in res:
+                bucket, feat = pair
+                if bucket:
+                    answers.setdefault(pid, []).append(bucket)
                 if feat:
-                    answers.setdefault(pid, []).append(feat)
+                    legacy.setdefault(pid, []).append(feat)
     except Exception:
         pass
-    return {"answers": answers, "k": k} if answers else {}
+    if not answers:
+        return {}
+    out = {"answers": answers, "k": k}
+    if legacy:
+        out["legacy_features"] = legacy
+    return out
 
 
-def similarity_discriminator(sus: dict, base: dict):
-    """Fraction of shared schema probes whose feature strings agree (exact or
-    >=0.5 token overlap, via kb_match). None when <5 shared probes."""
+def informative_discriminator_items(candidates: dict) -> set:
+    """Probes that can split at least one candidate pair on this axis.
+
+    A probe is informative iff two candidates present DISJOINT shape
+    profiles for it (their pairwise similarity can then be < 1.0). A probe
+    where every candidate's shape set overlaps every other contributes a
+    constant 1.0 to every comparison -- pure noise floor -- and is dropped.
+
+    Robust where the first version was not (2026-10-11): the old probe-ID
+    INTERSECTION collapsed to empty when any single model lacked a probe,
+    and the single-anchor disjointness test (ref = profs[0]) almost never
+    fired on coarse shape prefixes -- both defects silently fell back to
+    the saturated all-probes comparison. Probe IDs now use the UNION (a
+    probe present on >= 2 candidates is testable), and divergence is a
+    pairwise-disjointness check over the distinct profiles.
+    candidates: {key: discriminator dict}."""
+    profs = []
+    for c in candidates.values():
+        ans = (c or {}).get("answers") or {}
+        profs.append({pid: {(x or "").split(":", 1)[0] for x in buckets}
+                     for pid, buckets in ans.items() if buckets})
+    profs = [p for p in profs if p]
+    if len(profs) < 2:
+        return set()
+    ids = set.union(*[set(p) for p in profs])
+    out = set()
+    for i in ids:
+        uniq = list({frozenset(p[i]) for p in profs if i in p})
+        if len(uniq) < 2:
+            continue
+        if any(not (uniq[x] & uniq[y])
+               for x in range(len(uniq)) for y in range(x + 1, len(uniq))):
+            out.add(i)
+    return out
+
+
+def similarity_discriminator(sus: dict, base: dict, informative: set | None = None):
+    """Fraction of (informative) shared probes whose per-run shape prefixes
+    overlap.
+
+    The full bucket is ``shape:digest`` where ``shape`` = length class +
+    sentence class + format markers and ``digest`` = sha1 of the canonical
+    answer. Exact digest equality is degenerate for free prose: even the
+    SAME model at temp=0 reproduces its own bucket only ~5.5% of the time,
+    so the comparator collapsed to a constant 0.0 across every model pair.
+    Comparing the shape prefix restores a real 0.3-1.0 spread while keeping
+    trivial format/case wobble in the same bucket. None when <5 shared
+    probes. When ``informative`` is given, the comparison concentrates on
+    the probes that actually split the candidate pool (mirrors
+    similarity_bank); falls back to all shared probes when fewer than 4
+    informative ones are shared, so the axis never silently drops.
+    """
     a, b = (sus or {}).get("answers") or {}, (base or {}).get("answers") or {}
     shared = [i for i in a if i in b and a[i] and b[i]]
     if len(shared) < 5:
         return None
-    return round(sum(1 for i in shared
-                     if any(kb_match(x, y) for x in a[i] for y in b[i]))
+    if informative is not None:
+        inf = [i for i in shared if i in informative]
+        if len(inf) >= 4:
+            shared = inf
+    def _shapes(buckets):
+        return {(x or "").split(":", 1)[0] for x in buckets}
+    return round(sum(1 for i in shared if _shapes(a[i]) & _shapes(b[i]))
                  / len(shared), 3)
 
 
@@ -729,9 +848,18 @@ async def run_standard_v2(client, endpoint, api_key, model_id,
                           timeout_s: int = 120, *, mode: str = "harvest",
                           rng: random.Random | None = None,
                           concurrency: int = 4,
-                          gaps=None) -> dict:
+                          gaps=None,
+                          sink: dict | None = None) -> dict:
     """Run all three lanes.  mode='harvest' = full depth (k=3 / k=2, whole
-    bank); mode='live' = cheap suspect pass (k=1, random 36-item subset)."""
+    bank); mode='live' = cheap suspect pass (k=1, random 36-item subset).
+
+    ``sink`` (optional): caller-owned dict that is filled IN PLACE as each lane
+    finishes. The per-lane isolation below protects lanes from each other, but
+    a caller's outer ``asyncio.wait_for`` cancels this whole coroutine and
+    discards its return value -- every already-finished lane was lost with it
+    (2026-10-12: live opus-5-5 runs ended with all v2 dims None). With a sink
+    the caller keeps whatever completed before its own deadline fired.
+    """
     live = mode == "live"
     if rng is None and not live:
         # Harvest: model-seeded so the SAME prompts are generated on every run
@@ -742,12 +870,13 @@ async def run_standard_v2(client, endpoint, api_key, model_id,
     if gaps is None:  # live: one short retry; harvest: full backoff
         gaps = (3.0,) if live else _RETRY_GAPS
     gaps = tuple(gaps)
-    out = {"version": 2, "mode": mode}
+    out = sink if sink is not None else {}
+    out.update({"version": 2, "mode": mode})
     try:
         canary = await call_with_backoff(
             client, endpoint, api_key, model_id,
             {"id": "v2_canary", "prompt": "Reply with the single word: ok", "max_tokens": 16},
-            min(timeout_s, 60), extra={"temperature": 0, "stream": False},
+            min(timeout_s, 180), extra={"temperature": 0, "stream": False},
             gaps=gaps)
     except Exception:
         canary = None
@@ -760,47 +889,66 @@ async def run_standard_v2(client, endpoint, api_key, model_id,
     # all-or-nothing wait_for fired TimeoutError and threw away the whole v2
     # dict -> v2 empty -> THIN, despite good cached data. Each lane now gets its
     # own budget + try/except, so `out` always carries every lane that finished.
-    lane_budget = float(timeout_s) * 3
-    try:
-        tok = await asyncio.wait_for(
-            run_tokenizer_fingerprint(client, endpoint, api_key, model_id,
-                                      min(timeout_s, 180), concurrency=concurrency,
-                                      gaps=gaps),
-            timeout=lane_budget)
-    except Exception:
-        tok = {}
-    if tok:
-        out["tokenizer"] = tok
-    try:
-        cap = await asyncio.wait_for(
-            run_capability_curve(client, endpoint, api_key, model_id, timeout_s,
-                                 k=1 if live else 4, rng=rng,
-                                 concurrency=concurrency, gaps=gaps),
-            timeout=lane_budget)
-    except Exception:
-        cap = {}
-    if cap:
-        out["capability_curve"] = cap
-    try:
-        kb = await asyncio.wait_for(
-            run_knowledge_bank(client, endpoint, api_key, model_id, timeout_s,
-                               k=1 if live else 3, sample=36 if live else None,
-                               rng=rng, concurrency=concurrency, gaps=gaps),
-            timeout=lane_budget)
-    except Exception:
-        kb = {}
-    if kb:
-        out["knowledge_bank"] = kb
-    try:
-        disc = await asyncio.wait_for(
-            run_discriminator(client, endpoint, api_key, model_id, timeout_s,
-                              k=1 if live else 2,
-                              concurrency=concurrency, gaps=gaps),
-            timeout=lane_budget)
-    except Exception:
-        disc = {}
-    if disc:
-        out["discriminator"] = disc
+    # Budget sizing (2026-10-12): the flat `timeout_s * 3` was SMALLER than one
+    # lane's own worst case. capability_curve fans out len(CAPABILITY_TIERS)*k
+    # prompts at `concurrency` parallel calls, i.e. ceil(jobs/concurrency)
+    # sequential waves, each up to timeout_s plus the retry gaps -- live 12 jobs
+    # / 4 = 3 waves = ~99s against a 90s budget, so wait_for cancelled the lane
+    # and `out` lost it entirely (live opus-5-5 2026-10-12: capability_curve the
+    # ONLY empty lane). Lanes whose fan-out is not modelled here keep the old
+    # flat budget. `lane_gaps` makes an empty lane say WHY: a cancelled lane and
+    # a lane whose every call failed were previously indistinguishable.
+    _flat_budget = float(timeout_s) * 3
+    _gap_sum = float(sum(gaps)) if gaps else 0.0
+    _lane_gaps: dict = {}
+
+    def _budget_for(jobs: int | None) -> float:
+        if not jobs:
+            return _flat_budget
+        # call_with_backoff makes len(gaps)+1 attempts, separated by `gaps`.
+        attempts = len(gaps) + 1
+        per_job = attempts * float(timeout_s) + (attempts - 1) * _gap_sum
+        waves = max(1, math.ceil(jobs / max(1, concurrency)))
+        return max(_flat_budget, waves * per_job * 1.25)
+
+    async def _lane(name: str, coro, jobs: int | None = None) -> dict:
+        budget = _budget_for(jobs)
+        try:
+            res = await asyncio.wait_for(coro, timeout=budget)
+        except Exception as exc:
+            _lane_gaps[name] = f"{type(exc).__name__}_after_{budget:.0f}s"
+            return {}
+        if not res:
+            _lane_gaps[name] = "lane_returned_empty"
+            return {}
+        out[name] = res
+        return res
+
+    _cap_k = 1 if live else 4
+    # tokenizer fans out 4 baseline + len(TOKENIZER_STRINGS) calls; live run
+    # 2026-10-12 measured 4-29s per call -> ~5 waves > the flat 90s budget
+    # (`tokenizer: TimeoutError_after_90s`). Size it by job count too.
+    await _lane("tokenizer",
+                run_tokenizer_fingerprint(client, endpoint, api_key, model_id,
+                                          min(timeout_s, 180),
+                                          concurrency=concurrency, gaps=gaps),
+                jobs=4 + len(TOKENIZER_STRINGS))
+    await _lane("capability_curve",
+                run_capability_curve(client, endpoint, api_key, model_id,
+                                     timeout_s, k=_cap_k, rng=rng,
+                                     concurrency=concurrency, gaps=gaps),
+                jobs=len(CAPABILITY_TIERS) * _cap_k)
+    await _lane("knowledge_bank",
+                run_knowledge_bank(client, endpoint, api_key, model_id,
+                                   timeout_s, k=1 if live else 3,
+                                   sample=36 if live else None, rng=rng,
+                                   concurrency=concurrency, gaps=gaps))
+    await _lane("discriminator",
+                run_discriminator(client, endpoint, api_key, model_id,
+                                  timeout_s, k=1 if live else 2,
+                                  concurrency=concurrency, gaps=gaps))
+    if _lane_gaps:
+        out["lane_gaps"] = _lane_gaps
     return out
 
 
@@ -809,6 +957,8 @@ def compute_v2_dims(sus_v2: dict, candidates: dict) -> dict:
     sus_v2 = sus_v2 or {}
     cand_v2 = {k: v2_of(s) for k, s in candidates.items()}
     inf = informative_items({k: (v.get("knowledge_bank") or {}) for k, v in cand_v2.items()})
+    inf_disc = informative_discriminator_items(
+        {k: (v.get("discriminator") or {}) for k, v in cand_v2.items()})
     out = {}
     for k, b in cand_v2.items():
         out[k] = {
@@ -818,7 +968,7 @@ def compute_v2_dims(sus_v2: dict, candidates: dict) -> dict:
             "knowledge_bank": similarity_bank(sus_v2.get("knowledge_bank"),
                                               b.get("knowledge_bank"), inf),
             "discriminator": similarity_discriminator(sus_v2.get("discriminator"),
-                                                      b.get("discriminator")),
+                                                      b.get("discriminator"), inf_disc),
         }
     return out
 

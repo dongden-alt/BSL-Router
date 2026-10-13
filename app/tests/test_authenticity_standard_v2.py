@@ -311,3 +311,62 @@ def test_v2_lane_failure_modes_are_failopen():
                                             rng=random.Random(1))
     res = _run(go())
     assert res == {"version": 2, "mode": "live", "gap": "lane_unreachable"}
+
+
+def test_outer_timeout_keeps_finished_lanes_via_sink(monkeypatch):
+    """2026-10-12 regression: the gate's outer wait_for cancelled the whole v2
+    coroutine and discarded every lane that had already finished -> all v2
+    dims None on live runs. With a sink, finished lanes must survive."""
+    class _Ok:
+        status_code = 200
+
+    async def fake_canary(*a, **k):
+        return _Ok()
+
+    async def fake_tok(*a, **k):
+        return {"deltas": {"a": 1}}
+
+    async def fake_cap(*a, **k):
+        return {"tiers": {"1": 1.0}}
+
+    async def stall(*a, **k):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(v2, "call_with_backoff", fake_canary)
+    monkeypatch.setattr(v2, "run_tokenizer_fingerprint", fake_tok)
+    monkeypatch.setattr(v2, "run_capability_curve", fake_cap)
+    monkeypatch.setattr(v2, "run_knowledge_bank", stall)
+    monkeypatch.setattr(v2, "run_discriminator", stall)
+
+    sink: dict = {}
+
+    async def go():
+        try:
+            await asyncio.wait_for(
+                v2.run_standard_v2(None, "http://x", "k", "m", timeout_s=30,
+                                   mode="live", rng=random.Random(1), sink=sink),
+                timeout=0.3)
+        except asyncio.TimeoutError:
+            return "timed_out"
+        return "finished"
+
+    assert _run(go()) == "timed_out"
+    assert sink["tokenizer"] == {"deltas": {"a": 1}}
+    assert sink["capability_curve"] == {"tiers": {"1": 1.0}}
+    assert "knowledge_bank" not in sink and "discriminator" not in sink
+
+
+def test_sink_is_optional_and_return_value_unchanged(monkeypatch):
+    """Callers that pass no sink (harvest path) get the same dict shape back."""
+    def handler(req):
+        return httpx.Response(500, json={})
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            s: dict = {}
+            r = await v2.run_standard_v2(c, "http://x", "k", "m", mode="live",
+                                         rng=random.Random(1), sink=s)
+            return r, s
+    r, s = _run(go())
+    assert r is s
+    assert r == {"version": 2, "mode": "live", "gap": "lane_unreachable"}

@@ -575,48 +575,90 @@
         },
         "discriminator": {
           "answers": {
-            "sch_tools": [
-              "f=0|k=arguments,city,expression,tool|v=get|a=a",
-              "f=0|k=arguments,city,expression,tool|v=get|a=a"
+            "bb_tools_unavailable": [
+              "m3r:2a6c399908",
+              "m2r:1584f27cef"
             ],
-            "sch_extract": [
-              "f=1|k=object,predicate,subject|v=none|a=",
-              "f=0|k=object,predicate,subject|v=none|a="
+            "bb_future_fact": [
+              "m1r:fd11368605",
+              "m1:ee6bc71f2c"
             ],
-            "sch_calendar": [
-              "f=0|k=date,weekday|v=none|a=",
-              "f=0|k=date,weekday|v=none|a="
+            "bb_advice_edge": [
+              "m2:f8ff6bcb4a",
+              "m2:e0a4bbbdcf"
             ],
-            "sch_menu": [
-              "f=0|k=menu,name,price,vegetarian|v=none|a=",
-              "f=1|k=name,price,vegetarian|v=none|a="
+            "tc_recent_event": [
+              "m1:ff1a6294f6",
+              "m2:3ad1ea1105"
             ],
-            "sch_tree": [
-              "f=0|k=children,name|v=none|a=",
-              "f=1|k=children,name|v=none|a="
+            "tc_python_version": [
+              "s1:3590f3a80b",
+              "s1:52fe8bd510"
             ],
-            "sch_error": [
-              "f=1|k=code,error,message|v=none|a=",
-              "f=1|k=code,error,message|v=none|a="
+            "rs_trolley": [
+              "l3:6eff62dca5",
+              "l3:f634ac114c"
             ],
-            "sch_config": [
-              "f=1|k=compress,enabled,file,level,max_age_days,max_backups,max_size_mb,rotate|v=none|a=",
-              "f=0|k=compress,file,level,maxage,maxfiles,maxsize,rotate|v=none|a="
+            "rs_fermi": [
+              "l4l:6e1c4f5332",
+              "l1l:c2883d3798"
             ],
-            "sch_refuse": [
-              "f=0|w=there is no kessler voronin lemma",
-              "f=0|w=i don t have reliable information"
+            "rs_crt": [
+              "m2:017bdb6ae0",
+              "m2:33c7bfe895"
             ],
-            "sch_rank": [
-              "f=0|k=language,rank,reason|v=none|a=",
-              "f=0|k=language,rank,reason|v=none|a="
+            "fs_blue": [
+              "m1:2ca9f64d41",
+              "m1:4b257394c5"
             ],
-            "sch_patch": [
-              "f=0|k=op,path,value|v=none|a=",
-              "f=0|k=op,path,value|v=none|a="
+            "fs_rj": [
+              "m2:55dee7fc4c",
+              "m2:c537fe6e02"
             ]
           },
-          "k": 2
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i don t have access to",
+              "f=0|w=i don t have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not been",
+              "f=0|w=the turing award has not yet"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him to finish the entire",
+              "f=0|w=tell him not to stop without"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent was the paris",
+              "f=0|w=the most recent olympics was the"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest stable python release in",
+              "f=0|w=the latest stable python version i"
+            ],
+            "rs_trolley": [
+              "f=0|w=the core tension is between the",
+              "f=0|w=first the utilitarian calculus diverting the"
+            ],
+            "rs_fermi": [
+              "f=0|w=piano tuners in chicago fermi estimate",
+              "f=0|w=fermi estimate piano tuners in chicago"
+            ],
+            "rs_crt": [
+              "f=0|w=no if the ball cost cents",
+              "f=0|w=no the ball costs cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the cool hush of",
+              "f=0|w=blue is the coolness of deep"
+            ],
+            "fs_rj": [
+              "f=0|w=in verona romeo montague and juliet",
+              "f=0|w=in verona romeo montague and juliet"
+            ]
+          }
         }
       }
     },

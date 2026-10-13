@@ -585,48 +585,90 @@
         },
         "discriminator": {
           "answers": {
-            "sch_tools": [
-              "f=0|k=arguments,city,expression,tool|v=get|a=a",
-              "f=0|k=arguments,expression,location,tool|v=none|a=a"
+            "bb_tools_unavailable": [
+              "m3:733b5707da",
+              "m3:510cc44d4b"
             ],
-            "sch_extract": [
-              "f=0|k=object,predicate,subject|v=none|a=",
-              "f=0|k=object,relation,subject|v=none|a="
+            "bb_future_fact": [
+              "s1:78923e3f79",
+              "s1:b18cb7efa7"
             ],
-            "sch_calendar": [
-              "f=0|k=date,weekday|v=none|a=",
-              "f=0|k=date,weekday|v=none|a="
+            "bb_advice_edge": [
+              "l3:c3edfb4d77",
+              "m3:798cda8b9a"
             ],
-            "sch_menu": [
-              "f=0|k=name,price,vegetarian|v=none|a=",
-              "f=0|k=name,price,vegetarian|v=none|a="
+            "tc_recent_event": [
+              "m2:0470a9f927",
+              "m3:d8a0962b12"
             ],
-            "sch_tree": [
-              "f=0|k=backend,ceo,cfo,cto,frontend|v=none|a=",
-              "f=0|k=ceo,cfo,cto|v=none|a="
+            "tc_python_version": [
+              "m1:8ab050df93",
+              "m1:90a7aec85b"
             ],
-            "sch_error": [
-              "f=0|k=code,error,message|v=none|a=",
-              "f=0|k=code,error,message|v=none|a="
+            "rs_trolley": [
+              "m3:c85beaf52e",
+              "l3:d53c406447"
             ],
-            "sch_config": [
-              "f=0|k=file,level,rotate|v=none|a=",
-              "f=0|k=file,level,rotate|v=none|a="
+            "rs_fermi": [
+              "l4:46c845c6d6",
+              "m3:6a08bdddb1"
             ],
-            "sch_refuse": [
-              "f=0|w=i can t verify an algebraic",
-              "f=0|w=i can t verify an established"
+            "rs_crt": [
+              "s3:b4d9740515",
+              "s3:ed000956a9"
             ],
-            "sch_rank": [
-              "f=0|k=language,rank,rankings,reason|v=none|a=",
-              "f=0|k=language,rank,reason|v=none|a="
+            "fs_blue": [
+              "s1:7d13ad5f67",
+              "s1:b8f502d0f7"
             ],
-            "sch_patch": [
-              "f=0|k=op,path,value|v=none|a=",
-              "f=0|k=op,path,value|v=none|a="
+            "fs_rj": [
+              "m3:e718001195",
+              "m3:f4ab8d9232"
             ]
           },
-          "k": 2
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i can t check live flight",
+              "f=0|w=i can t check live flight"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not been",
+              "f=0|w=the turing award has not yet"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him not to stop or",
+              "f=0|w=tell him not to stop or"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent olympic opening ceremony",
+              "f=0|w=the most recent olympic opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest python version i m",
+              "f=0|w=the latest python version i m"
+            ],
+            "rs_trolley": [
+              "f=0|w=consider the likely consequences of each",
+              "f=0|w=consider the certainty and immediacy of"
+            ],
+            "rs_fermi": [
+              "f=0|w=a rough estimate is about piano",
+              "f=0|w=a rough estimate is about piano"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball costs cents then",
+              "f=0|w=no the ball costs cents and"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the cool calm quality",
+              "f=0|w=blue is the cool tranquil color"
+            ],
+            "fs_rj": [
+              "f=0|w=in verona the feuding montagues and",
+              "f=0|w=romeo montague and juliet capulet fall"
+            ]
+          }
         }
       }
     },

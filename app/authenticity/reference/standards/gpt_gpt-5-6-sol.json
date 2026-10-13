@@ -586,48 +586,90 @@
         },
         "discriminator": {
           "answers": {
-            "sch_tools": [
-              "f=0|k=arguments,expression,location,tool|v=none|a=a",
-              "f=0|k=arguments,expression,location,tool|v=none|a=a"
+            "bb_tools_unavailable": [
+              "m2:6a881305bc",
+              "m3:bbefae8410"
             ],
-            "sch_extract": [
-              "f=0|k=object,predicate,subject,year|v=none|a=",
-              "f=0|k=object,predicate,subject,year|v=none|a="
+            "bb_future_fact": [
+              "m3:c5a3099b26",
+              "m3:c5a3099b26"
             ],
-            "sch_calendar": [
-              "f=0|k=date,weekday|v=none|a=",
-              "f=0|k=date,weekday|v=none|a="
+            "bb_advice_edge": [
+              "m2:e3dee32912",
+              "l3:149d2c4bcc"
             ],
-            "sch_menu": [
-              "f=0|k=menu,name,price,vegetarian|v=none|a=",
-              "f=0|k=menu,name,price,vegetarian|v=none|a="
+            "tc_recent_event": [
+              "l3:c7ddc7511c",
+              "l3:f4f7d73d44"
             ],
-            "sch_tree": [
-              "f=0|k=ceo,cfo,cto|v=none|a=",
-              "f=0|k=ceo,cfo,cto|v=none|a="
+            "tc_python_version": [
+              "m1:8ab050df93",
+              "s1:ae17d73218"
             ],
-            "sch_error": [
-              "f=0|k=code,error,message|v=none|a=",
-              "f=0|k=code,error,message|v=none|a="
+            "rs_trolley": [
+              "m3:d2d2cbc1a1",
+              "l3:0caea40689"
             ],
-            "sch_config": [
-              "f=0|k=file,level,rotate|v=none|a=",
-              "f=0|k=file,level,rotate|v=none|a="
+            "rs_fermi": [
+              "l4l:e8ac418c2f",
+              "l1l:e3167c8e73"
             ],
-            "sch_refuse": [
-              "f=0|w=there is no documented algebraic topology",
-              "f=0|w=there is no documented kessler voronin"
+            "rs_crt": [
+              "s3:bbd4e45207",
+              "m3:06f4460635"
             ],
-            "sch_rank": [
-              "f=0|k=language,rank,reason|v=none|a=",
-              "f=0|k=language,rank,reason|v=none|a="
+            "fs_blue": [
+              "s1:69765b65cd",
+              "m1:0ea5085254"
             ],
-            "sch_patch": [
-              "f=0|k=level|v=none|a=",
-              "f=0|k=level|v=none|a="
+            "fs_rj": [
+              "m2:b308c16172",
+              "l3:90d4246a6f"
             ]
           },
-          "k": 2
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i can t access live flight",
+              "f=0|w=i can t access live flight"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the acm a m turing award",
+              "f=0|w=the acm a m turing award"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him not to stop or",
+              "f=0|w=tell him not to stop or"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent olympic opening ceremony",
+              "f=0|w=the most recent olympic opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest python version i m",
+              "f=0|w=the latest python version i m"
+            ],
+            "rs_trolley": [
+              "f=0|w=consider the likely consequences of each",
+              "f=0|w=consider the likely harms of each"
+            ],
+            "rs_fermi": [
+              "f=0|w=estimate about piano tuners in chicago",
+              "f=0|w=estimate about full time equivalent piano"
+            ],
+            "rs_crt": [
+              "f=0|w=no if the ball costs cents",
+              "f=0|w=no if the ball costs cents"
+            ],
+            "fs_blue": [
+              "f=0|w=blue feels like cool water open",
+              "f=0|w=blue feels like cool water open"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo montague and juliet capulet teenagers",
+              "f=0|w=romeo montague and juliet capulet teenagers"
+            ]
+          }
         }
       }
     },

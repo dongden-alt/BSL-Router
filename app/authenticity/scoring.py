@@ -327,6 +327,45 @@ SUBMODEL_WEIGHT = 0.5
 
 REAL_THRESHOLD = 0.80
 SUBSTITUTION_THRESHOLD = 0.30
+# FIX G (2026-10-13): a tie between sibling standards resolved by an ACCEPTED
+# judge pick (order-consistent across both candidate orders, not contradicted
+# by the decisive v2 lanes -- see gate.py) that EQUALS the claimed sub-model is
+# confirmation, not ambiguity. The gate only accepts such a pick when the
+# deterministic score is already >= 0.70, so the fused bar is set there too.
+# Live run 3: genuine glm-5.3, judge picked glm-5-3 (0.88) and the verdict
+# still read UNVERIFIABLE at fused 0.756 < 0.80.
+JUDGE_CONFIRMED_THRESHOLD = 0.70
+
+# Sub-tier suffixes that name a DIFFERENT (cheaper) model, never an alias.
+_SUBTIER_TOKENS = {"flash", "mini", "lite", "nano", "air"}
+
+
+def canonical_submodel(name: str) -> str:
+    """'mintrouter/claude-opus-5-5' -> 'claude-opus-5-5'; 'ZHIPU/GLM-5.3' ->
+    'glm-5-3'; 'glm_glm-4.6' -> 'glm-4-6'. Provider/family prefixes dropped,
+    '.' and '_' unified to '-'."""
+    n = (name or "").strip().lower()
+    n = n.rsplit("/", 1)[-1]
+    n = n.rsplit("_", 1)[-1] if "_" in n else n
+    return n.replace(".", "-").strip("-")
+
+
+def same_submodel(a: str, b: str) -> bool:
+    """True when a and b name the same sub-model. One may extend the other only
+    by a non-version, non-sub-tier suffix ('kimi-k3' ~ 'kimi-k3-api'). A numeric
+    suffix is a different version ('claude-opus-5' vs 'claude-opus-5-5' -- the
+    old substring test called these equal) and a sub-tier suffix is a different
+    model ('glm-5-3' vs 'glm-5-3-flash')."""
+    ca, cb = canonical_submodel(a), canonical_submodel(b)
+    if not ca or not cb:
+        return False
+    if ca == cb:
+        return True
+    short, long_ = (ca, cb) if len(ca) < len(cb) else (cb, ca)
+    if not long_.startswith(short + "-"):
+        return False
+    first = long_[len(short) + 1:].split("-", 1)[0]
+    return not (first.isdigit() or first in _SUBTIER_TOKENS)
 
 
 def compute_reality(
@@ -404,7 +443,9 @@ def compute_reality(
         # matched_model when discrimination is weak, but the ranked scores are
         # still the honest best-guess ordering).
         _cands = []
-        _bm = getattr(match_result, "best_model", "") or matched
+        # FIX G: after an accepted judge pick, matched_model (with its own
+        # score) leads; best_model is the displaced deterministic leader.
+        _bm = matched or getattr(match_result, "best_model", "")
         _ru = getattr(match_result, "runner_up", "")
         _ru_sc = getattr(match_result, "runner_up_score", 0.0)
         if _bm:
@@ -412,6 +453,11 @@ def compute_reality(
         if _ru and _ru != _bm:
             _cands.append({"id": _ru, "score": round(_ru_sc, 3)})
         v.closest_candidates = _cands
+        # Full per-candidate breakdown (every standard in the pool, ranked):
+        # explains WHY the order is what it is, lane by lane.
+        _ranked = getattr(match_result, "ranked", None)
+        if isinstance(_ranked, list) and _ranked:
+            v.evidence["ranked_candidates"] = _ranked
 
     if scope_info.get("verdict_scope") == "full" and match_result and not getattr(match_result, "abstain", True):
         total = FAMILY_WEIGHT * fam_score + SUBMODEL_WEIGHT * sub_score
@@ -427,6 +473,21 @@ def compute_reality(
     if matched and sub_score >= 0.70 and v.confidence < 0.65:
         v.confidence = max(v.confidence, 0.65)
 
+    # FIX G2 (2026-10-13): the claimed sub-model. Without a Reference hint
+    # scope focus is empty, so the downgrade check never ran -- live run 3
+    # reported 'REAL - claude-fable-5-1' for a model sold as claude-opus-5-5.
+    # The model id the seller exposes IS the claim; derive it when no hint.
+    _focus = scope_info.get("focus") or ""
+    if not _focus and scope_info.get("verdict_scope") == "full":
+        _focus = canonical_submodel(claimed or model_id)
+    if _focus:
+        v.evidence["claimed_submodel"] = _focus
+    _jt = (getattr(match_result, "dimensions", None) or {}).get("judge_tiebreak") \
+        if match_result is not None else None
+    _judge_confirms_claim = bool(
+        matched and _focus and isinstance(_jt, dict) and _jt.get("accepted")
+        and _jt.get("picked") == matched and same_submodel(_focus, matched))
+
     # Decide verdict
     claimed_family = scope_info.get("family", "")
     behavior_family = getattr(family_verdict, "behavior_family", "")
@@ -440,16 +501,18 @@ def compute_reality(
         _fev = getattr(family_verdict, "evidence", {}) or {}
         if _fev:
             v.evidence["family_classifier"] = _fev
-    elif total >= REAL_THRESHOLD and matched:
+    elif matched and (total >= REAL_THRESHOLD
+                      or (_judge_confirms_claim and total >= JUDGE_CONFIRMED_THRESHOLD)):
         # REAL requires a CONFIRMED sub-model standard match - that is the
         # actual "is this the model it claims to be" answer. Downgrade check:
         # matched a different sub-model than the claimed/focus one.
-        focus = scope_info.get("focus", "")
         v.identified_as = matched
-        if focus and focus not in matched and matched not in focus:
+        if _focus and not same_submodel(_focus, matched):
             v.verdict = "downgrade"
         else:
             v.verdict = "real"
+            if _judge_confirms_claim and total < REAL_THRESHOLD:
+                v.evidence["resolved_by"] = "judge_tiebreak"
     elif total >= REAL_THRESHOLD:
         # Family confirmed at high confidence but NO sub-model standard
         # matched (matcher abstained or no standards exist). That is NOT

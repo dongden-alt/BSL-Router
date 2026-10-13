@@ -1,15 +1,49 @@
 """Deterministic sub-model matching against baselines (BazaarLink Layer 2)."""
+import json
+import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from .judge_rank import coverage_adjust, FEATURE_WEIGHTS
 from .knowledge_needles import fact_text, is_disclaimer_fact
-from .standard_v2 import compute_v2_dims, pairwise_separability
+from .standard_v2 import compute_v2_dims, pairwise_separability, v2_of
 
 # Soft vetoes for the v2 dimensions (same shape as the logprob/boundary vetoes:
 # a COMPARED dimension far below these on the would-be winner forces abstain).
 # Conservative until calibrated against live self-match distributions.
 V2_VETO = {"knowledge_bank": 0.45, "capability_curve": 0.40, "tokenizer": 0.50,
            "discriminator": 0.45}
+
+# Discriminator veto near-miss instrumentation (2026-10-10): every time the
+# would-be winner's compared discriminator sim lands under the V2_VETO floor,
+# log ONE JSON line for offline threshold calibration. Capped at ~1MB (last
+# half kept on overflow), repo-root anchored, and NEVER raises.
+_DISC_NEARMISS_LOG = (Path(__file__).resolve().parents[2]
+                      / ".brain" / "scratch" / "disc_veto_nearmiss.jsonl")
+
+
+def _log_disc_veto_nearmiss(features, winner: str, sim: float) -> None:
+    try:
+        candidate = (getattr(features, "model_id", None)
+                     or getattr(features, "model", None) or "?")
+        logger.info("[disc-nearmiss] candidate=%s sim=%.3f winner=%s",
+                    candidate, sim, winner)
+        p = _DISC_NEARMISS_LOG
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists() and p.stat().st_size > 1_000_000:
+            p.write_bytes(p.read_bytes()[-500_000:])
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "candidate": candidate,
+                "disc_sim": sim,
+                "would_be_winner": winner,
+            }) + "\n")
+    except Exception:
+        pass
 
 
 @dataclass
@@ -23,6 +57,11 @@ class MatchResult:
     best_model: str = ""      # ranked top model, kept even when abstaining
     effective_weights: dict = field(default_factory=dict)  # coverage-adjusted
     alias_group: list = field(default_factory=list)  # tied siblings v2 cannot separate
+    # Per-candidate breakdown, ranked best-first: [{"id", "score", "dims"}].
+    # Previously only the WINNER's dims were kept (plus the runner-up's total),
+    # so "why is model X second?" could not be answered from the verdict and had
+    # to be reconstructed offline. Purely additive - nothing reads it.
+    ranked: list = field(default_factory=list)
 
 
 def match_submodel(
@@ -70,7 +109,12 @@ def match_submodel(
         baseline_month = baseline.get("cutoff_month", 0) or _know.get("cutoff_month", 0)
         if features.cutoff_year > 0 and baseline_year > 0:
             if features.cutoff_year == baseline_year:
-                if features.cutoff_month == baseline_month:
+                if not features.cutoff_month or not baseline_month:
+                    # FIX I (2026-10-13): month 0 = UNKNOWN month, not a
+                    # mismatch. glm-5-3's standard is 2024-0, so the genuine
+                    # model scored 0.3 (month-mismatch) on a year agreement.
+                    dims["cutoff"] = 0.8
+                elif features.cutoff_month == baseline_month:
                     dims["cutoff"] = 1.0
                 elif abs(features.cutoff_month - baseline_month) <= 1:
                     dims["cutoff"] = 0.8
@@ -136,8 +180,13 @@ def match_submodel(
         kn_answers = kn_sus.get("answers") or []
         dims["knowledge"] = None  # not compared unless proven below
         if (base_known or base_post) and kn_answers:
+            # FIX D: an item with NO parsed answer line (reply truncated /
+            # failed mid-stream) was never answered -> not evidence. It used
+            # to count as a known-fact miss. An explicit 'unknown' is a real
+            # answer and still counts.
             asked = {fact_text(a.get("fact")) for a in kn_answers
-                     if isinstance(a, dict) and a.get("fact")}
+                     if isinstance(a, dict) and a.get("fact")
+                     and (a.get("answer") or "").strip()}
             if asked:
                 k_scope = [f for f in base_known if f in asked]
                 p_scope = [f for f in base_post if f in asked]
@@ -182,8 +231,13 @@ def match_submodel(
         if b_sus and b_base:
             skip_json = (b_sus.get("json_mode") != "supported"
                          or b_base.get("json_mode") != "supported")
+            # FIX D: a failed stop probe yields default False fields, not
+            # behavior. Legacy signatures (no stop_mode) count as observed.
+            skip_stop = (b_sus.get("stop_mode") == "error"
+                         or b_base.get("stop_mode") == "error")
             fields = [f for f in _b_fields
-                      if not (skip_json and f == "json_strict")]
+                      if not (skip_json and f == "json_strict")
+                      and not (skip_stop and f in ("stop_strict", "stop_echo"))]
             if fields:
                 sim = sum(1.0 for f in fields if bool(b_sus.get(f)) == bool(b_base.get(f))) / len(fields)
                 dims["boundary"] = round(sim, 3)
@@ -199,21 +253,30 @@ def match_submodel(
                    .get("tokenizer_signature", {}) or {}).get("stability_profile") \
             or (baseline.get("structural") or {}).get("stability_profile") \
             or baseline.get("stability_profile") or {}
-        if st_sus and st_base and st_sus.get("mode_hash") and st_base.get("mode_hash"):
+        def _st_valid(p: dict) -> int:
+            # FIX D: legacy profiles lack valid_samples -> count non-empty hashes.
+            v = p.get("valid_samples")
+            if isinstance(v, int):
+                return v
+            return sum(1 for h in (p.get("hashes") or []) if h)
+
+        if (st_sus and st_base and st_sus.get("mode_hash") and st_base.get("mode_hash")
+                and _st_valid(st_sus) >= 2 and _st_valid(st_base) >= 2):
             _sd, _bd = st_sus.get("distinct_hashes"), st_base.get("distinct_hashes")
-            if (isinstance(_sd, int) and isinstance(_bd, int) and _sd > 1 and _bd > 1):
-                # BOTH sides are non-deterministic at temp=0 (every sample
-                # differs): a mode hash is then one arbitrary sample and can
-                # NEVER match, so comparing it only manufactures a veto
-                # against the GENUINE model. Not informative -> not compared.
+            if (isinstance(_sd, int) and isinstance(_bd, int) and (_sd > 1 or _bd > 1)):
+                # FIX K (2026-10-13): EITHER side non-deterministic at temp=0
+                # -> not compared. Both non-deterministic: the mode hash is one
+                # arbitrary sample and can never match. Class mismatch (one
+                # deterministic, one not): serving-side batching, not weights --
+                # live run 3 hit genuine glm-5.3 on AI-BOX, the SAME provider
+                # the gold standard was harvested from (distinct=1), with a
+                # non-deterministic reply -> stability 0.0 + veto risk.
                 dims["stability"] = None
             elif st_sus.get("mode_hash") == st_base.get("mode_hash"):
                 dims["stability"] = 1.0
-            elif st_sus.get("distinct_hashes") == st_base.get("distinct_hashes"):
-                # same determinism behavior, different content
-                dims["stability"] = 0.4
             else:
-                dims["stability"] = 0.0
+                # both deterministic, different content
+                dims["stability"] = 0.4
         else:
             dims["stability"] = None  # either side missing/empty
 
@@ -352,6 +415,8 @@ def match_submodel(
         if _v is not None:
             if _v < _floor and not abstain:
                 abstain = True
+            if _d2 == "discriminator" and isinstance(_v, float) and _v < _floor:
+                _log_disc_veto_nearmiss(features, best_model, _v)
             best_dims = dict(best_dims)
             best_dims[_d2] = _v
 
@@ -378,6 +443,32 @@ def match_submodel(
             best_dims["_alias_group"] = alias_group
             best_dims["_alias_detail"] = _detail
 
+    # v2 diagnostic: when the suspect carried v2 lanes but every compared v2
+    # dim is None for the winner, record WHICH side lacked data so the next
+    # live run is self-explaining (suspect lane empty vs baseline lane absent).
+    # Purely additive; coverage_adjust only reads FEATURE_WEIGHTS keys, so the
+    # extra key never affects scoring.
+    if v2_sus:
+        _v_lanes = [k for k in ("tokenizer", "capability_curve",
+                                "knowledge_bank", "discriminator") if v2_sus.get(k)]
+        if _v_lanes and all(best_dims.get(_d) is None for _d in _v_lanes):
+            _base_v2 = v2_of(baselines.get(best_model) or {})
+            best_dims = dict(best_dims)
+            best_dims["_v2_diag"] = {
+                "suspect_lanes": _v_lanes,
+                "baseline_lanes": [_d for _d in _v_lanes if _base_v2.get(_d)],
+            }
+    else:
+        # Suspect carried NO v2 profile (live lane unreachable / every lane
+        # budget expired) while the winner's baseline HAS v2 data: record the
+        # attribution so an all-None v2 verdict points at the suspect side.
+        _base_v2 = v2_of(baselines.get(best_model) or {})
+        _b_lanes = [k for k in ("tokenizer", "capability_curve",
+                                "knowledge_bank", "discriminator") if _base_v2.get(k)]
+        if _b_lanes:
+            best_dims = dict(best_dims)
+            best_dims["_v2_diag"] = {"suspect_lanes": [], "baseline_lanes": _b_lanes}
+
     # Coverage-aware rescale: re-normalize the winner's dimension weights over
     # the dims actually compared, so a missing axis is neutral rather than an
     # implicit penalty. The raw base score stays in dimensions for audit.
@@ -395,6 +486,26 @@ def match_submodel(
                 (_ru.get(d) if _ru.get(d) is not None else 0.5) * w
                 for d, w in eff.items())
 
+    # Per-candidate breakdown, ranked best-first. The winner's score is the
+    # coverage-adjusted one; the others are scored on the SAME dimensions and
+    # weights so the ranking is comparable (missing -> neutral 0.5).
+    _ranked_out = []
+    for _m, _s in ranked:
+        _d = all_dimensions.get(_m, {})
+        if _m == best_model:
+            _sc = best_score
+        elif eff:
+            _sc = sum(
+                (_d.get(k) if _d.get(k) is not None else 0.5) * w
+                for k, w in eff.items())
+        else:
+            _sc = _s
+        _ranked_out.append({
+            "id": _m,
+            "score": round(float(_sc), 3),
+            "dims": {k: v for k, v in _d.items() if not k.startswith("_")},
+        })
+
     return MatchResult(
         matched_model=best_model if not abstain else "",
         match_score=best_score,
@@ -405,6 +516,7 @@ def match_submodel(
         best_model=best_model,
         effective_weights=eff,
         alias_group=alias_group,
+        ranked=_ranked_out,
     )
 
 

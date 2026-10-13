@@ -581,48 +581,90 @@
         },
         "discriminator": {
           "answers": {
-            "sch_tools": [
-              "f=0|k=arguments,city,expression,name|v=get|a=a",
-              "f=0|k=arguments,city,expression,name|v=get|a=a"
+            "bb_tools_unavailable": [
+              "m3:d2092c03e3",
+              "m3:7dc50b1129"
             ],
-            "sch_extract": [
-              "f=0|k=object,predicate,subject,year|v=none|a=",
-              "f=0|k=object,predicate,subject,year|v=none|a="
+            "bb_future_fact": [
+              "s1:fe079e64ff",
+              "s1:7c3925ca6c"
             ],
-            "sch_calendar": [
-              "f=0|k=date,weekday|v=none|a=",
-              "f=0|k=date,weekday|v=none|a="
+            "bb_advice_edge": [
+              "l3:e86ed4b97d",
+              "l3:b8f52344f1"
             ],
-            "sch_menu": [
-              "f=0|k=menu,name,price,vegetarian|v=none|a=",
-              "f=0|k=menu,name,price,vegetarian|v=none|a="
+            "tc_recent_event": [
+              "l3:d03cb3ebab",
+              "l3:d461a5b88f"
             ],
-            "sch_tree": [
-              "f=0|k=backend,ceo,cfo,cto,frontend|v=none|a=",
-              "f=0|k=backend,ceo,cfo,cto,frontend|v=none|a="
+            "tc_python_version": [
+              "m1:90a7aec85b",
+              "s1:8836338beb"
             ],
-            "sch_error": [
-              "f=0|k=code,error,message|v=none|a=",
-              "f=0|k=code,error,message|v=none|a="
+            "rs_trolley": [
+              "l3:60c07da267",
+              "l3:38b22ec8b0"
             ],
-            "sch_config": [
-              "f=0|k=enabled,file,level,maxfiles,maxsizemb,rotate|v=none|a=",
-              "f=0|k=file,level,rotate|v=none|a="
+            "rs_fermi": [
+              "l4l:08cf114c16",
+              "l4l:094bc74e8e"
             ],
-            "sch_refuse": [
-              "f=0|w=i can t verify any published",
-              "f=0|w=i can t identify a published"
+            "rs_crt": [
+              "m3:0bb8ac0b01",
+              "m3:0bb8ac0b01"
             ],
-            "sch_rank": [
-              "f=0|k=python,rank,reason,rust,sql|v=none|a=",
-              "f=0|k=language,rank,reason|v=none|a="
+            "fs_blue": [
+              "s1:9421771182",
+              "m1:ba9cc1f375"
             ],
-            "sch_patch": [
-              "f=0|k=op,path,value|v=none|a=",
-              "f=0|k=op,path,value|v=none|a="
+            "fs_rj": [
+              "l3:0a3e7ec1f3",
+              "m2:5404a5e4b5"
             ]
           },
-          "k": 2
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i can t check live flight",
+              "f=0|w=i don t have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the winner of the turing award",
+              "f=0|w=the turing award winner has not"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him to take the antibiotics",
+              "f=0|w=tell him not to stop or"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent olympic opening ceremony",
+              "f=0|w=the most recent olympic opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest python version i m",
+              "f=0|w=the latest python release i know"
+            ],
+            "rs_trolley": [
+              "f=0|w=consider the consequences diverting the trolley",
+              "f=0|w=consider the consequences of each option"
+            ],
+            "rs_fermi": [
+              "f=0|w=estimate about piano tuners in chicago",
+              "f=0|w=estimate roughly piano tuners in chicago"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball costs cents and",
+              "f=0|w=no the ball costs cents and"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the feeling of cool",
+              "f=0|w=blue is like the coolness of"
+            ],
+            "fs_rj": [
+              "f=0|w=in verona romeo montague and juliet",
+              "f=0|w=in verona romeo montague and juliet"
+            ]
+          }
         }
       }
     },

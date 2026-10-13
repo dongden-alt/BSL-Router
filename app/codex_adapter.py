@@ -85,7 +85,6 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
     messages = chat_body.get("messages", [])
     input_parts = []
     system_texts: list[str] = []
-    has_tool_history = False
 
     # BUG 2026-10-09: every non-system role used to be shipped verbatim, so a
     # chat tool result (role:"tool") reached Codex as input[6] with an illegal
@@ -109,7 +108,6 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
             system_texts.append(content or "")
         elif role in ("tool", "function"):
             # Tool result — legacy role:"function" behaves identically.
-            has_tool_history = True
             call_id = msg.get("tool_call_id")
             if call_id:
                 input_parts.append({
@@ -128,7 +126,6 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
         elif role == "assistant":
             tool_calls = msg.get("tool_calls") or []
             if tool_calls:
-                has_tool_history = True
                 # Accompanying assistant text precedes the function_call
                 # items (chat-history order).
                 if content:
@@ -176,17 +173,14 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
     effort = _resolve_effort(chat_body)
     body["reasoning"] = {"effort": effort}
 
-    # Tool-declaration forwarding (bug 2026-10-09, the input[6] role:"tool"
-    # 400): a function_call history item whose function was never declared is
-    # itself a likely 400, so requests that carry tool history get their
-    # tools/functions converted and forwarded on the constructed body. The
-    # BSL_CODEX_FORWARD_TOOLS kill-switch exists because the 2026-08-22 live
-    # probe recorded in the module docstring claimed tools were unsupported —
-    # that probe predates tool-history support. Forwarding is scoped to
-    # requests that actually carry tool history; a bare declaration with no
-    # tool traffic keeps the legacy strip behaviour (pinned by
-    # test_codex_kiro_oauth.test_strips_unsupported_params).
-    if has_tool_history and _codex_forward_tools_enabled():
+    # Tool-declaration forwarding: a bare first-turn declaration has NO
+    # tool history by definition, and Codex must see the declarations to
+    # ever emit a function_call — so tools forward on EVERY request that
+    # carries them, history or not (bug 2026-10-13: the old has_tool_history
+    # gate made first-turn tool use impossible, and turn 1 is always
+    # history-free). The BSL_CODEX_FORWARD_TOOLS kill-switch remains the
+    # single off-switch.
+    if _codex_forward_tools_enabled():
         tools_out = _convert_chat_tools(chat_body)
         if tools_out:
             body["tools"] = tools_out
@@ -288,15 +282,38 @@ def responses_json_to_openai(resp: dict, model: str) -> dict[str, Any]:
     `resp` is the full response object found inside `response.completed`.
     """
     text_parts = []
-    # Walk output items for text content.
+    tool_calls_out: list[dict] = []
+    # Walk output items for text content AND function calls. The old
+    # message-only walk silently dropped every function_call from the
+    # non-stream lane; clients buffered on this path never saw a tool call.
     for item in resp.get("output", []):
+        if not isinstance(item, dict):
+            continue
         if item.get("type") == "message":
             for c in item.get("content", []):
-                if c.get("type") == "output_text":
+                if isinstance(c, dict) and c.get("type") == "output_text":
                     text_parts.append(c.get("text", ""))
+        elif item.get("type") == "function_call" and item.get("name"):
+            args = item.get("arguments", "")
+            if not isinstance(args, str):
+                args = json.dumps(args) if args is not None else "{}"
+            tc: dict[str, Any] = {
+                "type": "function",
+                "function": {"name": item["name"], "arguments": args},
+            }
+            call_id = item.get("call_id") or item.get("id")
+            if call_id:
+                tc["id"] = call_id
+            tool_calls_out.append(tc)
 
     usage = resp.get("usage", {})
-    status = resp.get("status", "")
+
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": "".join(text_parts),
+    }
+    if tool_calls_out:
+        message["tool_calls"] = tool_calls_out
 
     return {
         "id": resp.get("id", f"resp-codex-{id(resp)}"),
@@ -305,11 +322,8 @@ def responses_json_to_openai(resp: dict, model: str) -> dict[str, Any]:
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": "".join(text_parts),
-            },
-            "finish_reason": "stop" if status == "completed" else "stop",
+            "message": message,
+            "finish_reason": "tool_calls" if tool_calls_out else "stop",
         }],
         "usage": {
             "prompt_tokens": usage.get("input_tokens", 0),
@@ -479,25 +493,12 @@ def _codex_event_to_openai_chunk(event_name: str, data: dict) -> dict | None:
         return None
 
     elif event_name == "response.function_call_arguments.delta":
-        # Incremental arguments fragment passthrough — arrives between
-        # output_item.added (ignored) and output_item.done.
-        frag = data.get("delta")
-        if isinstance(frag, str) and frag:
-            return {
-                "id": rid,
-                "object": "chat.completion.chunk",
-                "created": ts,
-                "model": data.get("model", "codex"),
-                "choices": [{
-                    "index": 0,
-                    "delta": {"tool_calls": [{
-                        "index": 0,
-                        "type": "function",
-                        "function": {"arguments": frag},
-                    }]},
-                    "finish_reason": None,
-                }],
-            }
+        # DROPPED (2026-10-13): per the Responses spec, response.output_item.done
+        # carries the COMPLETE function_call item including full `arguments`.
+        # Forwarding these incremental fragments as well meant the Gemini
+        # accumulator received fragments + the full payload and concatenated
+        # both into one corrupt double-args buffer. The done-event alone is
+        # the complete, authoritative emission.
         return None
 
     # Ignore all other event types (response.created, response.output_item.added, etc.)
@@ -519,6 +520,7 @@ async def assemble_responses_from_sse(raw_iter) -> dict:
     """
     completed = None
     delta_text_parts = []
+    function_call_items: list[dict] = []
     buf = b""
     current_event = None
     current_data_parts = []
@@ -533,6 +535,10 @@ async def assemble_responses_from_sse(raw_iter) -> dict:
             d = dj.get("delta") if isinstance(dj, dict) else None
             if isinstance(d, str) and d:
                 delta_text_parts.append(d)
+        elif event_name == "response.output_item.done":
+            it = dj.get("item") if isinstance(dj, dict) else None
+            if isinstance(it, dict) and it.get("type") == "function_call" and it.get("name"):
+                function_call_items.append(dict(it))
         elif event_name == "response.completed":
             completed = (dj.get("response") if isinstance(dj, dict) else None) or (dj if isinstance(dj, dict) else {})
 
@@ -577,5 +583,22 @@ async def assemble_responses_from_sse(raw_iter) -> dict:
             "status": "completed",
             "content": [{"type": "output_text", "text": text, "annotations": []}],
         }] + [o for o in output if isinstance(o, dict)]
+        completed["output"] = output
+    if isinstance(completed, dict) and function_call_items:
+        # Graft accumulated function_call items onto the completed response's
+        # output so responses_json_to_openai (which only walks completed
+        # output) emits them as message.tool_calls on the non-stream lane.
+        output = completed.get("output")
+        if not isinstance(output, list):
+            output = []
+        existing = {
+            (o.get("call_id") or o.get("id"))
+            for o in output
+            if isinstance(o, dict) and o.get("type") == "function_call"
+        }
+        for fc in function_call_items:
+            key = fc.get("call_id") or fc.get("id")
+            if key is None or key not in existing:
+                output.append(fc)
         completed["output"] = output
     return completed

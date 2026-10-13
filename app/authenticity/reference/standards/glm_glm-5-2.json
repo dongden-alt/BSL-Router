@@ -567,48 +567,90 @@
         },
         "discriminator": {
           "answers": {
-            "sch_tools": [
-              "f=1|k=args,expression,location,tool|v=get|a=a",
-              "f=1|k=args,expression,location,tool|v=get|a=a"
+            "bb_tools_unavailable": [
+              "m3r:2f73cddc62",
+              "m3r:638be01a53"
             ],
-            "sch_extract": [
-              "f=1|k=object,predicate,subject|v=none|a=",
-              "f=1|k=fact,location,object,subject,year|v=none|a="
+            "bb_future_fact": [
+              "s1:1f077b5c95",
+              "s1r:db3802c71b"
             ],
-            "sch_calendar": [
-              "f=0|k=date,weekday|v=none|a=",
-              "f=0|k=date,weekday|v=none|a="
+            "bb_advice_edge": [
+              "m1:b39f4d09fe",
+              "m2:937e35b664"
             ],
-            "sch_menu": [
-              "f=1|k=menu,name,price,vegetarian|v=none|a=",
-              "f=1|k=name,price,vegetarian|v=none|a="
+            "tc_recent_event": [
+              "m1:33bf677bc0",
+              "m2:b1fdd4dbb7"
             ],
-            "sch_tree": [
-              "f=1|k=children,name|v=none|a=",
-              "f=1|k=children,name|v=none|a="
+            "tc_python_version": [
+              "s1:bb5a03a3ac",
+              "s1:9977214957"
             ],
-            "sch_error": [
-              "f=1|k=code,error,message|v=none|a=",
-              "f=1|k=code,error,message|v=none|a="
+            "rs_trolley": [
+              "m3:bb9fd59a77",
+              "l3:5fe2b7750a"
             ],
-            "sch_config": [
-              "f=0|k=compress,file,level,max_age,max_files,max_size,rotate|v=none|a=",
-              "f=1|k=compress,file,level,max_age_days,max_files,max_size_mb,rotate|v=none|a="
+            "rs_fermi": [
+              "l4l:6c74091a75",
+              "l4:c49cee5e18"
             ],
-            "sch_refuse": [
-              "f=0|w=i m not familiar with a",
-              "f=0|w=i cannot reliably identify a result"
+            "rs_crt": [
+              "s2:3be7c1ebe3",
+              "m2:e3495106e3"
             ],
-            "sch_rank": [
-              "f=1|k=language,rank,rankings,reason|v=none|a=",
-              "f=1|k=language,rank,rankings,reason|v=none|a="
+            "fs_blue": [
+              "m1:e66ac79702",
+              "m1:de0e27e761"
             ],
-            "sch_patch": [
-              "f=1|k=op,path,value|v=none|a=",
-              "f=1|k=from,op,path,value|v=none|a="
+            "fs_rj": [
+              "m2:fa5a36f8f1",
+              "m2:c68838aa15"
             ]
           },
-          "k": 2
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i don t have access to",
+              "f=0|w=i don t have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not been",
+              "f=0|w=the turing award has not been"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=to finish the entire prescribed course",
+              "f=0|w=tell your friend to finish the"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent olympics was the",
+              "f=0|w=the most recent olympics was the"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest version of python i",
+              "f=0|w=the latest python version i m"
+            ],
+            "rs_trolley": [
+              "f=0|w=consider the utilitarian calculus that saving",
+              "f=0|w=three key considerations arise the utilitarian"
+            ],
+            "rs_fermi": [
+              "f=0|w=estimating piano tuners in chicago reasoning",
+              "f=0|w=estimating piano tuners in chicago reasoning"
+            ],
+            "rs_crt": [
+              "f=0|w=no if the ball were cents",
+              "f=0|w=no if the ball were cents"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the feeling of cool",
+              "f=0|w=blue is the feeling of cool"
+            ],
+            "fs_rj": [
+              "f=0|w=two young lovers from feuding families",
+              "f=0|w=two young lovers from the feuding"
+            ]
+          }
         }
       }
     },

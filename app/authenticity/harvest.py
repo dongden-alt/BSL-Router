@@ -141,7 +141,7 @@ async def judge_scores(
     judge_key: str,
     judge_model: str,
     probe_outputs: list,
-    timeout_s: int = 60,
+    timeout_s: int = 180,
 ) -> dict:
     """Grade non-coding probe outputs with the judge model. NEVER raises.
 
@@ -188,13 +188,17 @@ async def judge_scores(
                     break
                 await asyncio.sleep(_gap)
         if resp.status_code != 200:
+            logger.warning("judge_scores: %s returned HTTP %s | body=%r",
+                           judge_model, resp.status_code,
+                           (resp.text or "")[:300])
             return err
         data = resp.json()
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
         parsed = _parse_judge_json(content)
         if not parsed:
             # One sloppy judge reply used to zero the whole battery. Retry.
-            logger.warning("judge_scores: unparseable reply, retrying")
+            logger.warning("judge_scores: unparseable reply from %s | body=%r, retrying",
+                           judge_model, (resp.text or "")[:300])
             return await _judge_once(judge_endpoint, judge_key, judge_model,
                                      judge_prompt, url, timeout_s)
 
@@ -210,7 +214,14 @@ async def judge_scores(
             out[axis] = {"score": score, "why": why}
         return out
     except Exception as exc:
-        logger.warning("judge_scores failed: %s", exc)
+        # Log the TYPE: str(httpx.ReadTimeout()) can be '' (blank log lines).
+        # Log the raw body too -- that IS the evidence needed to name the cause.
+        try:
+            _body = (resp.text or "")[:300] if resp is not None else "<no response>"
+        except Exception:
+            _body = "<unreadable>"
+        logger.warning("judge_scores failed (%s): %s: %s | body=%r",
+                       judge_model, type(exc).__name__, exc, _body)
         return err
 
 
@@ -266,6 +277,7 @@ async def _judge_once(judge_endpoint, judge_key, judge_model, judge_prompt,
                       url, timeout_s):
     """One retry attempt at the judge call (same prompt). NEVER raises."""
     err = {a: {"score": 0, "why": "judge_error"} for a in JUDGE_AXES}
+    resp = None
     try:
         async with _make_client() as client:
             resp = await client.post(
@@ -284,11 +296,16 @@ async def _judge_once(judge_endpoint, judge_key, judge_model, judge_prompt,
                 timeout=timeout_s,
             )
         if resp.status_code != 200:
+            logger.warning("judge_scores retry: %s returned HTTP %s | body=%r",
+                           judge_model, resp.status_code,
+                           (resp.text or "")[:300])
             return err
         data = resp.json()
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
         parsed = _parse_judge_json(content)
         if not parsed:
+            logger.warning("judge_scores retry: %s reply still unparseable | body=%r",
+                           judge_model, (resp.text or "")[:300])
             return err
         out = {}
         for axis in JUDGE_AXES:
@@ -301,7 +318,12 @@ async def _judge_once(judge_endpoint, judge_key, judge_model, judge_prompt,
                          "why": str(node.get("why", ""))[:400]}
         return out
     except Exception as exc:
-        logger.warning("judge_scores retry failed: %s", exc)
+        try:
+            _body = (resp.text or "")[:300] if resp is not None else "<no response>"
+        except Exception:
+            _body = "<unreadable>"
+        logger.warning("judge_scores retry failed (%s): %s: %s | body=%r",
+                       judge_model, type(exc).__name__, exc, _body)
         return err
 
 
@@ -597,9 +619,11 @@ async def harvest_model(
         if cfg.get("v2", True):
             if isinstance(v2_profile, dict) and (v2_profile.get("tokenizer")
                                                   or v2_profile.get("capability_curve")
-                                                  or v2_profile.get("knowledge_bank")):
+                                                  or v2_profile.get("knowledge_bank")
+                                                  or v2_profile.get("discriminator")):
                 _struct["v2"] = v2_profile
-            for _lane in ("tokenizer", "capability_curve", "knowledge_bank"):
+            for _lane in ("tokenizer", "capability_curve", "knowledge_bank",
+                          "discriminator"):
                 if not (isinstance(v2_profile, dict) and v2_profile.get(_lane)):
                     gaps.append(f"v2_{_lane}:unavailable")
         if not _struct.get("boundary_signature"):
