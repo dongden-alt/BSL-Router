@@ -77,9 +77,24 @@ LANE_MAP: dict[str, str] = {
     "gpt_codex-gpt-6-astra.json":  "codex/gpt-6-astra",
     "gpt_mintrouter-gpt-6-1-sol_gpt-6-1-sol.json": "mintrouter/gpt-6.1-sol",
     # gemini
-    "gemini_antigravity-gemini-3-1-pro-low.json":   "antigravity/gemini-3.1-pro-low",
-    "gemini_antigravity-gemini-3-6-flash-high.json": "antigravity/gemini-3.6-flash-high",
-    "gemini_gemini-3-8-flash.json":                 "antigravity/gemini-3.8-flash",
+    # antigravity/gemini-3.6-flash-high is NOT registered (probing it would hit
+    # the broadcast quota-burn bug). The standard's filename-verified base model
+    # is gemini-3.8-flash, so probe the registered mintrouter sibling instead --
+    # behavioural lanes are provider-agnostic for the same base model.
+    # gemini-3.1-pro-low has no registered same-base lane (antigravity only
+    # registers 3.1-pro-HIGH) -> intentionally unmapped, cascade dims abstain.
+    "gemini_antigravity-gemini-3-6-flash-high_gemini-3-8-flash.json": "mintrouter/gemini-3.8-flash",
+    # --- distillation-suspect counterparts (2026-10-13 targeted backfill) ---
+    # These standards' meta.model_id is UNREGISTERED; probing it would trigger the
+    # router broadcast quota-burn bug. Each maps to a REGISTERED sibling lane that
+    # serves the SAME base model (behavioural lanes are provider-agnostic). The
+    # gemini-3.6-flash-high counterpart is intentionally OMITTED: no registered
+    # lane serves that base model, so it is never probed.
+    "gpt_codex-gpt-5-6-luna_gpt-6-luna.json":            "codex/gpt-5.6-luna",
+    "claude_a6api-claude-fable-5-1_claude-fable-5-1.json": "a6api/claude-fable-5-1",
+    "glm_zai-web2-glm-5-3-flash-max_zai-web2.json":      "chat2api/zai-web2/glm-5.3-flash-max",
+    "qwen_sharellm-qwen3-7-max_qwen3-7-max.json":        "aibox/qwen3.7-max",
+    "qwen_sharellm-qwen3-8-max_qwen3-8-max.json":        "aibox/qwen3.8-max",
 }
 
 _REGISTERED_IDS: frozenset | None = None
