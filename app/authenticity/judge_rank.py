@@ -158,7 +158,7 @@ async def rank_candidates(
         end = content.rfind("}")
         if start < 0 or end <= start:
             return None
-        obj = json.loads(content[start:end + 1])
+        obj, _ = json.JSONDecoder().raw_decode(content, start)
         idx = obj.get("best")
         conf = obj.get("confidence")
         if not isinstance(idx, int) or not (0 <= idx < len(keys)):

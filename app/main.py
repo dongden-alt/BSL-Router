@@ -7345,7 +7345,15 @@ def _anthropic_terminal_error_frames(err_text: str, model: str = "bsl-routed") -
     client that already disconnected does not raise here.
     """
     _mid = f"msg_bslerr_{int(time.time() * 1000)}"
-    _visible = f"[BSL Router] {err_text or 'stream_interrupted'}"
+    # SANITIZE (2026-10-14): err_text can carry raw httpx transport reprs (e.g.
+    # "midstream_transport: peer closed connection ... incomplete chunked read")
+    # or internal sentinel names -- render one stable client-facing sentence.
+    try:
+        from app.antifreeze import sanitize_client_error as _sce
+        _clean = _sce(err_text) if err_text else "stream_interrupted"
+    except Exception:
+        _clean = err_text or "stream_interrupted"
+    _visible = f"[BSL Router] {_clean}"
     return [
         (
             "event: message_start\n"
@@ -7385,10 +7393,18 @@ def _openai_terminal_error_frames(err_text: str, model: str = "bsl-routed", code
     builder (no mirror drift). Wrap each `yield` from this list in try/except so a
     client that already disconnected does not raise here.
     """
-    _visible = f"[BSL Router] {err_text or 'stream_interrupted'}"
+    # SANITIZE (2026-10-14): err_text can carry raw httpx transport reprs (e.g.
+    # "midstream_transport: peer closed connection ... incomplete chunked read")
+    # or internal sentinel names -- render one stable client-facing sentence.
+    try:
+        from app.antifreeze import sanitize_client_error as _sce
+        _clean = _sce(err_text) if err_text else "stream_interrupted"
+    except Exception:
+        _clean = err_text or "stream_interrupted"
+    _visible = f"[BSL Router] {_clean}"
     _cid = f"chatcmpl_bslerr_{int(time.time() * 1000)}"
     return [
-        f"data: {json.dumps({'error': {'message': err_text or 'stream_interrupted', 'type': 'proxy_error', 'code': code}})}\n\n".encode("utf-8"),
+        f"data: {json.dumps({'error': {'message': _clean, 'type': 'proxy_error', 'code': code}})}\n\n".encode("utf-8"),
         f"data: {json.dumps({'id': _cid, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'choices': [{'index': 0, 'delta': {'content': _visible}, 'finish_reason': 'stop'}]})}\n\n".encode("utf-8"),
         b"data: [DONE]\n\n",
     ]

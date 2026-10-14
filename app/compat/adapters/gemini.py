@@ -125,7 +125,18 @@ def terminal_error_frame(code: int, message: str, model: str = "") -> Dict[str, 
     reintroduce the freeze. A visible error message plus a clean stop is the
     safer contract.
     """
-    label = (message or "upstream error").strip()
+    # SANITIZE (2026-10-14): the caller passes stats["error"], which can carry a
+    # raw httpx repr ("midstream_transport: peer closed connection without
+    # sending complete message body (incomplete chunked read)") or an internal
+    # sentinel name. Render one stable client-facing sentence instead; the full
+    # detail stays in the server log. Lazy import: app.antifreeze lazily imports
+    # THIS module inside _terminal_frames, so a top-level import would be a
+    # cycle risk.
+    try:
+        from app.antifreeze import sanitize_client_error as _sce
+        label = _sce(message or "upstream error").strip()
+    except Exception:
+        label = (message or "upstream error").strip()
     return {
         "response": {
             "candidates": [

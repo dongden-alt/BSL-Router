@@ -479,6 +479,56 @@ added the cascade timeout markers, so `test_authenticity_cascade.py` ran inside 
 pre-fix bytecode. Python binds code at import; a green suite plus an untouched process is NOT a live fix.
 This is a process-lifecycle gap, not a second defect.
 
+#### Client error sanitization — transport reprs + combo sentinels never leak (2026-10-14)
+
+Two user-reported 502s, one CLASS of defect: internal exception text reaching the client error bubble.
+
+| Bug | Reported message | Root cause | Fix |
+|---|---|---|---|
+| **S1** — sentinel leak | `upstream error 502: upstream stream failed: _ComboWrapRestart` | Never-stop combo pass-boundary sentinels (`_ComboWrapRestart`, `_ComboFallbackNeeded`) fell into `afz_guard`'s catch-all `except BaseException` and were terminalized as client-visible 502s. | `afz_guard` re-raises internal sentinels untouched BEFORE the catch-all — sentinels stay control-flow, never become terminal frames. |
+| **S2** — raw transport repr | `upstream error 502: midstream_transport: peer closed connection without sending complete message body (incomplete chunked read)` | All three terminal-frame builders forwarded raw httpx exception text verbatim into the client bubble. | All three builders — `gemini.py::terminal_error_frame`, `main.py::_openai_terminal_error_frames`, `main.py::_anthropic_terminal_error_frames` — route the message through `sanitize_client_error`. |
+
+**Sanitizer contract** (`app/antifreeze.py::sanitize_client_error`): noisy transport tokens (`incomplete chunked read`, `peer closed connection`, `server disconnected`, `connection aborted`, `connection reset by peer`, `remote end closed`) collapse to ONE stable sentence — "upstream connection dropped mid-stream" — so clients see a consistent label across every httpx/anyio variant. Sentinel class names map to "internal retry signal". Legit short labels (`upstream_idle_timeout`, `zero_output_tokens`, `stream_stall`, `Upstream error 429: ...`) pass through UNCHANGED. Full transport detail stays in server-side logs; the client bubble is deliberately lossy.
+
+> [!CAUTION]
+> **Do not widen the sanitizer into a message rewriter.** It is a de-noise filter with a token list, not a classifier: unknown messages pass through untouched. A future transport failure whose text is not in `_NOISY_TRANSPORT_TOKENS` will still leak a raw repr — add the token, do not re-architect.
+
+Tests: `app/tests/test_combo_wrap_sentinel_not_terminalized.py` (10) — sentinel propagation through `afz_guard`, genuine-transport terminalization, exact-reported-message mapping pins, per-builder sanitization (Gemini / OpenAI / Anthropic). Verified: full suite **3737 passed, 0 failed** on BOTH CI legs (venv311 591.50 s, venv312 607.08 s). The lone dev-venv (Py3.10) failure `test_builtin_timeout_error_post_content_emits_terminal_error_frame` is PRE-EXISTING at HEAD — causality-proven two independent ways: git-stash of the 3 fix files, AND a pristine detached worktree at HEAD `1f67cc9` (verified 0 `raw_decode` / 0 `sanitize_client_error` hits, zero parallel-session contamination) that reproduces the identical `models=['m_partial','m_partial']` failure — and passes on both CI legs — the Py3.11+ `builtins.TimeoutError` aliasing artifact of AGENTS.md section 5. Status: 🔨 **CODE DONE**, awaiting a user-commanded `:6969` restart (code on disk != live code).
+
+#### Judge tie-break JSON extraction — raw_decode (2026-10-15)
+
+`judge_rank.py::rank_candidates` extracted the judge's JSON verdict with
+`content.find("{")` .. `content.rfind("}")` + `json.loads`. When a judge model emitted a second
+JSON object or brace-bearing prose after the verdict, the slice spanned both and raised
+`json.JSONDecodeError: Extra data` — and because the judge is fail-open by contract, the tie-break
+silently never fired (the fable-5 / sonnet-5-5 cross-family inversion symptom). Fix: one line —
+`json.JSONDecoder().raw_decode(content, start)` parses exactly ONE complete object from the first
+`{` and ignores the tail. Fail-open wrapper, idx/conf validation unchanged. Tests:
+`app/tests/test_judge_rank_json.py` (4) — trailing second object, trailing brace-prose, clean
+object, no-braces → None. Verified on the .venv311 CI leg together with the full suite
+(3737 passed / 0 failed, 591.5 s). Status: 🔨 **CODE DONE**, live with the next `:6969` restart.
+
+#### Gemini 4 argon rides the thinkingLevel enum contract (2026-10-15)
+
+`gemini-4-argon` (a6api / tokenforge `gemini-web/*` / aibox entries in `config.yaml`) previously
+fell through the `gemini-3` contract pattern (`gemini.*3|gemini-pro-agent`) into `gemini-legacy`'s
+numeric-budget path: `thinking: low` silently became an 8192-token `thinkingBudget` instead of the
+`thinkingLevel` enum the model speaks, and the admin UI only offered off/16k/32k.
+
+The enum contract now covers Gemini 4: pattern widened to `gemini.*[34]|gemini-4-argon|gemini-pro-agent`
+in [families/gemini.py](../app/compat/families/gemini.py) (contract + legacy exclude), mirrored in
+`_legacy_reference.py` and the UI spec in [app.js](../app/static/app.js) (`getThinkingSpec`).
+
+- Vocabulary: off / low / medium / high / max (xhigh coerces to max; legacy budget words map via
+  `_LEVEL_FALLBACK` — the live aibox `thinking: 32k` entry resolves to medium).
+- Transport shapes unchanged: native gemini → `generationConfig.thinkingConfig.thinkingLevel` +
+  `includeThoughts`; openai gateway → `reasoning_effort`; anthropic-shaped → `thinking.{type,
+  budget_tokens}`.
+- `thinking: auto` still emits nothing (effort_is_explicit gate) — zero behavioral change until a
+  level is selected.
+
+Status: 🔨 CODE DONE, awaiting a user-commanded `:6969` restart.
+
 ## Middleware Pipeline
 
 The routing pipeline consists of 36 middleware modules. Here's the full inventory:

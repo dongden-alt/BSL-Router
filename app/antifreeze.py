@@ -282,7 +282,19 @@ async def afz_guard(
         # terminal frame -- it hung up, which is precisely why we are here.
         raise
     except BaseException as _err:
-
+        # CONTROL-FLOW SENTINELS ARE NOT STREAM FAILURES (2026-10-14).
+        # _ComboWrapRestart (and any internal sentinel) is a pass-boundary
+        # control-flow exception used by the never-stop combo loop to abort the
+        # current pass and re-dispatch a fresh one. Its contract states it
+        # "never reaches a client". When a wrapped/re-raised copy escapes its
+        # ROOT-loop catcher and lands here, converting it into a terminal 502
+        # frame is exactly the bug the user reported:
+        #   "[BSL Router] upstream error 502: upstream stream failed:
+        #    _ComboWrapRestart"
+        # Pass internal sentinels through untouched; only genuine upstream
+        # transport failures below produce terminal frames.
+        if type(_err).__name__ in ("_ComboWrapRestart", "_ComboFallbackNeeded"):
+            raise
         # Upstream died mid-flight (RemoteProtocolError, ReadError, reset, ...).
         # Emitting the terminal frame is the whole point of this guard.
         print(
@@ -316,8 +328,27 @@ def _terminal_frames(protocol: str, err: BaseException, emitted: bool) -> list[b
     emitting OpenAI frames to a Gemini client is indistinguishable from emitting
     nothing -- a freeze produced by the very code meant to prevent one. This bug
     was hit for real on 2026-08-04; see `stream_deadline`'s `protocol` argument.
+
+    SANITIZATION (2026-10-14): the message shown to the client must NEVER carry
+    raw internal exception reprs. httpx's RemoteProtocolError renders the full
+    transport detail ('peer closed connection without sending complete message
+    body (incomplete chunked read)'), and control-flow sentinels render their
+    class name. Both leak internal state and confuse the client's error UI. The
+    client gets a short, stable, human-readable label; the full detail stays in
+    the server log printed by afz_guard.
     """
-    _msg = f"upstream stream failed: {type(err).__name__}"
+    _cls = type(err).__name__
+    # Map noisy/internal transport failures to a stable client-facing label.
+    if _cls in ("RemoteProtocolError", "ReadError", "WriteError", "ConnectError",
+                "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
+                "TransportError", "TimeoutException"):
+        _label = "upstream connection dropped mid-stream"
+    elif _cls.startswith("_Combo"):
+        # Control-flow sentinel that escaped its catcher: never surface it.
+        _label = "internal retry signal"
+    else:
+        _label = _cls
+    _msg = f"upstream stream failed: {_label}"
     if protocol == "gemini":
         try:
             from app.compat.adapters.gemini import (
@@ -345,4 +376,45 @@ def _terminal_frames(protocol: str, err: BaseException, emitted: bool) -> list[b
         )
     _frames.append(b"data: [DONE]\n\n")
     return _frames
+
+
+# ── Client-facing error message sanitizer (2026-10-14) ─────────────────────
+# Single chokepoint for turning an internal error string into something safe
+# to render in the client's error bubble. Used by _terminal_frames AND by the
+# adapter-level terminal_error_frame builders, so every protocol lane is
+# covered by one rule set.
+# Fail-open: anything unrecognized is returned unchanged rather than dropped.
+_NOISY_TRANSPORT_TOKENS = (
+    "incomplete chunked read",
+    "peer closed connection without sending complete message body",
+    "server disconnected without sending a complete response body",
+    "connection aborted",
+    "connection reset by peer",
+    "remote end closed connection",
+)
+
+
+def sanitize_client_error(message) -> str:
+    """Strip raw transport reprs / internal sentinel names from a client message.
+
+    WHY (2026-10-14, the second reported 502): the midstream transport death
+    wrote stats['error'] = f"midstream_transport: {_mid_err}" -- the RAW httpx
+    repr -- and the Gemini/OpenAI terminal frame builders forwarded it verbatim,
+    so the IDE showed:
+      "[BSL Router] upstream error 502: midstream_transport: peer closed
+       connection without sending complete message body (incomplete chunked
+       read)"
+    That is internal plumbing detail with no meaning to the end user, and it
+    makes every transport blip look like a new distinct bug. The full detail
+    stays in the server log; the client gets one stable sentence.
+    """
+    text = "" if message is None else str(message)
+    _cls = text.split(":", 1)[0].strip()
+    # Internal control-flow sentinels must never be surfaced.
+    if _cls.startswith("_Combo") or "_ComboWrapRestart" in text:
+        return "internal retry signal"
+    low = text.lower()
+    if any(tok in low for tok in _NOISY_TRANSPORT_TOKENS):
+        return "upstream connection dropped mid-stream"
+    return text
 
