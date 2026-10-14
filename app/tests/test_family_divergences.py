@@ -827,3 +827,52 @@ def test_step3_flash_models_remain_legacy_untouched(f_val, effort):
         f"{f_val}: matched the step-5 contract — step-3.x must stay legacy. "
         f"Contracts: {contract_ids}"
     )
+
+
+# ── DIVERGENCE: gemini-4-argon rides the thinkingLevel ENUM contract ──
+#
+# WHY LEGACY WAS WRONG: the gemini-3 contract pattern (gemini.*3|gemini-pro-agent)
+# never matched gemini-4-argon, so argon fell into the legacy numeric-budget
+# path — `thinking: low` silently became a 8192-token budget instead of the
+# thinkingLevel enum the model actually speaks.
+
+ARGON = "a6api/gemini-4-argon"
+ARGON_WEB = "gemini-web/gemini-4-argon-search"
+
+@pytest.mark.parametrize("f_val", [ARGON, ARGON_WEB, "aibox/gemini-4-argon"])
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "max"])
+def test_argon_native_uses_thinking_level_enum(f_val, effort):
+    out, _ = resolve_thinking(_payload(), f_val, effort, wire_format="gemini")
+    tc = _tc(out)
+    assert tc is not None, f"no generationConfig.thinkingConfig. Got: {out}"
+    assert tc["thinkingLevel"] == effort
+    assert tc["includeThoughts"] is True
+    assert "thinkingLevel" not in out
+    assert "thinkingBudget" not in tc
+
+def test_argon_openai_transport_uses_reasoning_effort():
+    out, _ = resolve_thinking(_payload(), ARGON, "medium", wire_format="openai")
+    assert out.get("reasoning_effort") == "medium"
+    assert "generationConfig" not in out
+
+def test_argon_anthropic_transport_uses_budget_tokens():
+    out, _ = resolve_thinking(_payload(), ARGON, "high", wire_format="anthropic")
+    assert out["thinking"]["type"] == "enabled"
+    assert out["thinking"]["budget_tokens"] == 32768
+    assert "generationConfig" not in out
+
+def test_argon_budget_word_legacy_config_maps_to_level():
+    # Live config carried thinking: 32k from the budget era — must degrade to
+    # the nearest enum level (medium), not leak a budget onto the enum wire.
+    out, _ = resolve_thinking(_payload(), ARGON, "32k", wire_format="gemini")
+    assert _tc(out)["thinkingLevel"] == "medium"
+
+def test_argon_xhigh_coerces_to_max():
+    out, _ = resolve_thinking(_payload(), ARGON, "xhigh", wire_format="openai")
+    assert out["reasoning_effort"] == "max"
+
+@pytest.mark.parametrize("f_val", [ARGON, ARGON_WEB])
+def test_argon_matches_gemini3_contract(f_val):
+    from app.compat.families import matches_contract
+    assert matches_contract(f_val, "gemini-3")
+    assert not matches_contract(f_val, "gemini-legacy")

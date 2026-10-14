@@ -4,7 +4,7 @@ Gemini family contracts.
 TWO axes of variation, which the legacy cascade conflated:
 
   AXIS 1 — model generation (what the setting MEANS):
-    - 3.x  -> thinkingLevel enum (low/medium/high/max)
+    - 3.x / 4.x (argon) -> thinkingLevel enum (low/medium/high/max)
     - 2.5  -> thinkingBudget numeric token count (-1 = dynamic)
 
   AXIS 2 — upstream transport (WHERE the setting goes on the wire):
@@ -194,10 +194,14 @@ CONTRACTS = [
         id="gemini-3",
         source=SOURCE,
         priority=90,
+        # Covers Gemini 3.x AND 4.x (argon) - both speak the thinkingLevel
+        # enum (low..max) instead of the legacy numeric-budget path.
         # gemini-pro-agent is Gemini 3.1 Pro served under an alias whose id
-        # contains no '3' - matched explicitly so it gets thinkingLevel enum
-        # semantics (low..max) instead of the legacy numeric-budget path.
-        pattern=r"gemini.*3|gemini-pro-agent",
+        # contains no digit. gemini-4-argon is named explicitly even though
+        # the .*[34] arm already matches it (slash-form ids like
+        # gemini-web/gemini-4-argon match too) - the arm makes intent
+        # greppable.
+        pattern=r"gemini.*[34]|gemini-4-argon|gemini-pro-agent",
         apply=_apply_gemini3,
         sanitize=_sanitize_gemini,
     ),
@@ -206,7 +210,7 @@ CONTRACTS = [
         source=SOURCE,
         priority=85,
         pattern=r"gemini",
-        exclude=r"gemini.*3|gemini-pro-agent",
+        exclude=r"gemini.*[34]|gemini-4-argon|gemini-pro-agent",
         apply=_apply_gemini_legacy,
         sanitize=_sanitize_gemini,
     ),

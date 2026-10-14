@@ -69,7 +69,7 @@ def legacy_apply_thinking(
     is_kimi = bool(re.search(r'kimi|k2\.|moonshot', f_val)) and not is_kimi_k3
     is_qwen = bool(re.search(r'qwen', f_val))
     is_chinese_m = bool(re.search(r'glm-|kimi|minimax|mimo|qwen', f_val)) and not is_kimi_k3
-    is_gemini_3 = bool(re.search(r'gemini.*3', f_val))
+    is_gemini_3 = bool(re.search(r'gemini.*[34]|gemini-4-argon', f_val))
     is_gemini = bool(re.search(r'gemini', f_val))
     is_openrouter = bool(re.search(r'openrouter|open-router', f_val))
 

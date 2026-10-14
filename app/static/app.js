@@ -1510,10 +1510,11 @@ function getThinkingSpec(modelId) {
     if (/hy[34]|hunyuan/.test(id)) return { effort: ['no_think','low','high'] };
     // Other Chinese reasoning models.
     if (/glm|mimo|minimax/.test(id)) return { effort: ['off','enable','adaptive'] };
-    // Gemini 3.x — thinkingLevel enum low/medium/high/max (families/gemini.py
-    // _VALID_LEVELS; xhigh coerces to max server-side). gemini-pro-agent is
-    // Gemini 3.1 Pro under an alias with no '3' in the id — matched explicitly.
-    if (/gemini.*3|gemini-pro-agent/.test(id)) return { effort: ['off','low','medium','high','max'] };
+    // Gemini 3.x/4.x (argon) — thinkingLevel enum low/medium/high/max
+    // (families/gemini.py _VALID_LEVELS; xhigh coerces to max server-side).
+    // gemini-pro-agent is Gemini 3.1 Pro under an alias with no digit in the
+    // id — matched explicitly; gemini-4-argon rides the same enum contract.
+    if (/gemini.*[34]|gemini-4-argon|gemini-pro-agent/.test(id)) return { effort: ['off','low','medium','high','max'] };
     if (/gemini/.test(id)) return { effort: ['off','16k','32k'] };
     // GPT-5.4 / 5.5
     if (/gpt-?5\.[45]/.test(id)) return { effort: ['off','low','medium','high','xhigh'] };
