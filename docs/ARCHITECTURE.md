@@ -508,6 +508,17 @@ silently never fired (the fable-5 / sonnet-5-5 cross-family inversion symptom). 
 object, no-braces → None. Verified on the .venv311 CI leg together with the full suite
 (3737 passed / 0 failed, 591.5 s). Status: 🔨 **CODE DONE**, live with the next `:6969` restart.
 
+**Decisive-lane live verification (2026-10-15):** a scoped in-process run (tokenizer +
+knowledge_bank only, live mode k=1, 63 calls across the three mintrouter Claude listings via
+`:6969`, no router restart) confirmed the decisive lanes discriminate as designed: sonnet-5-5
+and fable-5-1 both matched their own frozen standards (namesake CORRECT), while the
+"opus-5-5" listing fingerprinted as sonnet-5-5 (namesake MISMATCH; tokenizer baseline 5416 in
+the sonnet/fable ~6.2–6.4k band, not canonical opus 5242). No tie occurred, so the
+`raw_decode` path itself was not exercised live — it remains covered by
+`test_judge_rank_json.py`. The decisive-lane evidence is exactly the signal FIX F's
+`judge_pick_contradicted` guard reads; the original inversion (judge picking fable over opus on
+style) cannot survive these lanes once the judge tie-break is reachable.
+
 #### Gemini 4 argon rides the thinkingLevel enum contract (2026-10-15)
 
 `gemini-4-argon` (a6api / tokenforge `gemini-web/*` / aibox entries in `config.yaml`) previously
