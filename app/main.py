@@ -556,6 +556,74 @@ def _ladder_deadline(attempt: int) -> float:
     return STREAM_DEADLINE_LADDER[min(attempt, len(STREAM_DEADLINE_LADDER) - 1)]
 
 
+# AntiStop continuation-send retry (2026-10-15): the post-loop continuation
+# splice re-sends to the SAME upstream and previously died on a single
+# transient 5xx or transport error, surfacing a client-visible 502 after the
+# router had already delivered partial content. Retry send+raise_for_status
+# up to 3 total attempts with 0.5s/1.0s backoff. 4xx is NEVER retried
+# (deterministic client error). Retries only happen before any continuation
+# byte is yielded (zero transcript-duplication risk). On final failure the
+# last error is re-raised so the per-site `except Exception` fail-open keeps
+# the 502 stats truthful.
+CONTINUATION_SEND_MAX_ATTEMPTS = 3
+CONTINUATION_SEND_BACKOFF_BASE = 0.5
+
+
+def _continuation_send_retryable(err: BaseException) -> bool:
+    """True when a continuation-send failure is transient and worth retrying.
+
+    4xx HTTPStatusError is never retryable (deterministic rejection); 5xx is.
+    Transport/timeout errors are retryable. HTTPStatusError is a subclass of
+    httpx.HTTPError (a member of UPSTREAM_TRANSPORT_ERRORS), so the
+    status-code branch MUST be checked first.
+    """
+    if isinstance(err, httpx.HTTPStatusError):
+        return err.response is not None and err.response.status_code >= 500
+    return isinstance(err, UPSTREAM_TRANSPORT_ERRORS)
+
+
+async def _open_continuation_with_retry(send_fn, build_req, payload, label):
+    """Open a continuation stream response, retrying transient send failures.
+
+    send_fn:   _send_stream_with_thinking_fallback (request-scoped closure)
+    build_req: _build_req (request-scoped closure)
+    payload:   the continuation stream payload
+    label:     lane tag for logs ("openai-cont" / "anthropic-egress-cont" / "gemini-cont")
+
+    Returns the live (unclosed) streaming response with a non-error status.
+    Raises the last error when every attempt fails; never retries 4xx; sleeps
+    CONTINUATION_SEND_BACKOFF_BASE * 2**attempt_idx between attempts.
+    """
+    _last_err = None
+    for _attempt_idx in range(CONTINUATION_SEND_MAX_ATTEMPTS):
+        _resp = None
+        try:
+            _resp = await send_fn(
+                stream_req=build_req(payload), stream_payload=payload
+            )
+            _resp.raise_for_status()
+            return _resp
+        except Exception as _send_err:
+            _last_err = _send_err
+            if _resp is not None:
+                try:
+                    await _resp.aclose()
+                except Exception:
+                    pass
+            if (
+                not _continuation_send_retryable(_send_err)
+                or _attempt_idx >= CONTINUATION_SEND_MAX_ATTEMPTS - 1
+            ):
+                raise
+            print(
+                f"[AntiStop] continuation send attempt {_attempt_idx + 1} "
+                f"failed ({label}): {_send_err}; retrying",
+                flush=True,
+            )
+            await asyncio.sleep(CONTINUATION_SEND_BACKOFF_BASE * (2 ** _attempt_idx))
+    raise _last_err
+
+
 # ── SSE keepalive pre-first-chunk (Lane 3, 2026-09-07) ──────────────────────
 # CC SDK aborts a request with "Slow first byte: no stream chunk 30.0s after
 # request sent" when NOTHING reaches the client between forwarding upstream
@@ -10820,10 +10888,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     f"({len(_detector.partial_text)} chars)",
                                     flush=True,
                                 )
-                            _cont_resp = await _send_stream_with_thinking_fallback(
-                                stream_req=_build_req(_cont_payload), stream_payload=_cont_payload
+                            _cont_resp = await _open_continuation_with_retry(
+                                _send_stream_with_thinking_fallback, _build_req, _cont_payload, "openai-cont"
                             )
-                            _cont_resp.raise_for_status()
                             _cont_chunks = 0
                             _cont_bytes = 0
                             try:
@@ -11526,10 +11593,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             f"(Anthropic egress, {len(_detector.partial_text)} chars)",
                                             flush=True,
                                         )
-                                    _cont_resp = await _send_stream_with_thinking_fallback(
-                                        stream_req=_build_req(_cont_payload), stream_payload=_cont_payload
+                                    _cont_resp = await _open_continuation_with_retry(
+                                        _send_stream_with_thinking_fallback, _build_req, _cont_payload, "anthropic-egress-cont"
                                     )
-                                    _cont_resp.raise_for_status()
                                     _cont_chunks = 0
                                     _cont_bytes = 0
                                     try:
@@ -12073,10 +12139,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             f"(Gemini egress, {len(_detector.partial_text)} chars)",
                                             flush=True,
                                         )
-                                    _cont_resp = await _send_stream_with_thinking_fallback(
-                                        stream_req=_build_req(_cont_payload), stream_payload=_cont_payload
+                                    _cont_resp = await _open_continuation_with_retry(
+                                        _send_stream_with_thinking_fallback, _build_req, _cont_payload, "gemini-cont"
                                     )
-                                    _cont_resp.raise_for_status()
                                     _cont_chunks = 0
                                     _cont_bytes = 0
                                     try:
