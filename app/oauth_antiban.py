@@ -37,6 +37,7 @@ and OFF everywhere else.
 from __future__ import annotations
 
 import contextvars
+import random
 import threading
 import time
 from collections import OrderedDict
@@ -67,23 +68,61 @@ _DEFAULT_TTL_SECONDS = 1800
 _DEFAULT_MAX_SESSIONS = 512
 _DEFAULT_CLIENT_CACHE = 64
 
+_CLAUDE_FAMILY = frozenset({"claude", "claude_code", "claude-code", "claudecode"})
+
+_DEFAULTS = {
+    "enabled": True,
+    "affinity_ttl_seconds": _DEFAULT_TTL_SECONDS,
+    "affinity_max_sessions": _DEFAULT_MAX_SESSIONS,
+    "client_cache_size": _DEFAULT_CLIENT_CACHE,
+    # G1 cadence
+    "min_interval_seconds": 0.9,
+    "cadence_jitter": 0.35,
+    # G2 adaptive 429 backoff
+    "backoff_base_seconds": 1.0,
+    "backoff_max_seconds": 90.0,
+    "backoff_max_retries": 4,
+    # G3 lane pinning
+    "session_ttl_seconds": 1800,
+    # G6 usage budget
+    "usage_window_seconds": 18000,
+    "usage_budget_fraction": 0.9,
+    # G5 authenticity
+    "authenticity_threshold": 0.55,
+    "authenticity_enforce": False,  # default WARN-only; flip to block
+}
+
 
 def resolve_antiban_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Resolve tools.oauth_antiban with safe defaults. Pure, never mutates."""
     tools = (config or {}).get("tools", {})
     raw = tools.get("oauth_antiban") if isinstance(tools, dict) else None
     raw = raw if isinstance(raw, dict) else {}
-    return {
-        "enabled": bool(raw.get("enabled", True)),
-        "affinity_ttl_seconds": int(raw.get("affinity_ttl_seconds", _DEFAULT_TTL_SECONDS)),
-        "affinity_max_sessions": int(raw.get("affinity_max_sessions", _DEFAULT_MAX_SESSIONS)),
-        "session_key_fields": list(raw.get(
-            "session_key_fields",
-            ["metadata.session_id", "metadata.conversation_id",
-             "metadata.user_id", "prompt_cache_key", "user"],
-        )),
-        "client_cache_size": int(raw.get("client_cache_size", _DEFAULT_CLIENT_CACHE)),
-    }
+    out = dict(_DEFAULTS)
+    for k in _DEFAULTS:
+        if k in raw and raw[k] is not None:
+            out[k] = raw[k]
+    out["enabled"] = bool(out["enabled"])
+    out["authenticity_enforce"] = bool(out["authenticity_enforce"])
+    for k in (
+        "min_interval_seconds", "cadence_jitter", "backoff_base_seconds",
+        "backoff_max_seconds", "usage_budget_fraction", "authenticity_threshold",
+    ):
+        out[k] = float(out[k])
+    for k in (
+        "affinity_ttl_seconds", "affinity_max_sessions", "client_cache_size",
+        "backoff_max_retries", "session_ttl_seconds", "usage_window_seconds",
+    ):
+        out[k] = int(out[k])
+    # session_key_fields stays a list
+    if "session_key_fields" in raw and isinstance(raw["session_key_fields"], list):
+        out["session_key_fields"] = list(raw["session_key_fields"])
+    else:
+        out["session_key_fields"] = [
+            "metadata.session_id", "metadata.conversation_id",
+            "metadata.user_id", "prompt_cache_key", "user",
+        ]
+    return out
 
 
 def is_oauth_connection(conn: Any) -> bool:
@@ -92,7 +131,7 @@ def is_oauth_connection(conn: Any) -> bool:
     Name-level detection (`is_oauth_provider`) is deliberately looser: it exists
     to decide whether session AFFINITY should pin a provider's pool. Egress
     CLIENT isolation is a stronger, per-credential decision, so it requires real
-    evidence on the active row — an OAuth-marked lane registered under the name
+    evidence on the active row - an OAuth-marked lane registered under the name
     "codex" can still hold plain API-key connections, and those must stay on the
     shared proxy client path (same keep-alive pool, same proxy, same test seam).
     """
@@ -113,6 +152,10 @@ def is_oauth_provider(provider_name: str, provider_config: Optional[Dict[str, An
         if is_oauth_connection(conn):
             return True
     return False
+
+
+def is_claude_provider(provider_name: str) -> bool:
+    return (provider_name or "").strip().lower() in _CLAUDE_FAMILY
 
 
 def _dig(body: Dict[str, Any], dotted: str) -> Optional[str]:
@@ -213,9 +256,6 @@ class AffinityStore:
 
 
 # --- Request-scoped session identity (set by main's dispatch entry) ---
-# The resolver hook has no access to the request body, so main publishes the
-# derived session key through this contextvar. Each FastAPI request runs in its
-# own asyncio task, so the value dies with the task; reset is optional.
 _REQUEST_SESSION_KEY: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
     "bsl_oauth_antiban_session_key", default=None
 )
@@ -453,3 +493,519 @@ def reset_clients() -> None:
         _CLIENTS.clear()
     for c in clients:
         _close_client_best_effort(c)
+
+
+# ===========================================================================
+# Gap implementations G1-G6 (layered on top of the affinity primitives above)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# G1 -- Cadence governor (per-account jittered min-interval)
+# ---------------------------------------------------------------------------
+
+class CadenceGovernor:
+    """Per-account pacing: enforces a jittered minimum interval between sends.
+
+    Kills the *metronome* fingerprint: identical inter-request gaps. Each
+    account gets an independent lock + last-send timestamp; the wait is
+    base * (1 + U(0, jitter)) so cadence carries human entropy. The wait is
+    an asyncio sleep on the request task, never a thread block. Fail-open.
+    """
+
+    def __init__(self) -> None:
+        self._locks: Dict[str, Any] = {}
+        self._last: Dict[str, float] = {}
+        self._guard = threading.Lock()
+
+    def _lock_for(self, account: str):
+        import asyncio
+        with self._guard:
+            lk = self._locks.get(account)
+            if lk is None:
+                lk = asyncio.Lock()
+                self._locks[account] = lk
+            return lk
+
+    async def wait_turn(
+        self,
+        account: str,
+        min_interval: float,
+        jitter: float,
+        sleep=None,
+        monotonic=None,
+    ) -> float:
+        """Wait until this account may send again. Returns waited seconds.
+
+        `sleep` / `monotonic` injectable for tests. Never raises; on any error
+        returns 0.0 immediately (fail-open = no added latency).
+        """
+        try:
+            import asyncio
+            sleep = sleep or asyncio.sleep
+            monotonic = monotonic or time.monotonic
+            lock = self._lock_for(account)
+            async with lock:
+                now = monotonic()
+                last = self._last.get(account)
+                if last is None:
+                    self._last[account] = now
+                    return 0.0
+                target = float(min_interval) * (1.0 + random.uniform(0.0, max(0.0, jitter)))
+                gap = now - last
+                wait = target - gap
+                if wait > 0:
+                    await sleep(wait)
+                    now = monotonic()
+                else:
+                    wait = 0.0
+                self._last[account] = now
+                return wait
+        except Exception:
+            return 0.0
+
+
+# ---------------------------------------------------------------------------
+# G2 -- Adaptive 429 backoff (Retry-After aware, jittered, no retry-storm)
+# ---------------------------------------------------------------------------
+
+class BackoffGovernor:
+    """Per-account exponential backoff driven by upstream 429 signals.
+
+    Distinct from the circuit breaker: the breaker trips a *sick lane*; this
+    governor paces *re-attempts on a rate-limited but healthy account* so we
+    never retry-storm. Hard cap on consecutive retries per account. Fail-open.
+    """
+
+    def __init__(self) -> None:
+        self._state: Dict[str, Dict[str, float]] = {}
+        self._lock = threading.Lock()
+
+    def _bucket(self, account: str) -> Dict[str, float]:
+        return self._state.setdefault(account, {"retries": 0.0, "until": 0.0})
+
+    def blocked_until(self, account: str) -> float:
+        with self._lock:
+            return self._bucket(account).get("until", 0.0)
+
+    def should_retry(self, account: str, max_retries: int) -> bool:
+        with self._lock:
+            return self._bucket(account).get("retries", 0.0) < float(max_retries)
+
+    def next_delay(
+        self,
+        account: str,
+        base: float,
+        cap: float,
+        retry_after: Optional[float] = None,
+    ) -> float:
+        """Compute + commit the backoff delay for this account. Never raises."""
+        try:
+            with self._lock:
+                b = self._bucket(account)
+                n = b.get("retries", 0.0)
+                if retry_after is not None and retry_after >= 0:
+                    delay = float(retry_after)
+                else:
+                    delay = float(base) * (2.0 ** n)
+                delay = min(float(cap), delay)
+                delay = delay * (1.0 + random.uniform(0.0, 0.25))  # decorrelate
+                b["retries"] = n + 1.0
+                b["until"] = time.monotonic() + delay
+                return delay
+        except Exception:
+            return float(base)
+
+    def record_success(self, account: str) -> None:
+        with self._lock:
+            if account in self._state:
+                self._state[account] = {"retries": 0.0, "until": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# G3 -- Session-lane pinning (account <-> stable egress identity stickiness)
+# ---------------------------------------------------------------------------
+
+class SessionLaneStore:
+    """Bounded TTL+LRU map: session_key -> (account_id, egress_proxy).
+
+    The IP-level-lockout countermeasure: a session stays pinned to ONE account
+    AND that account's egress identity, so we never present N accounts over one
+    socket/IP within a session. In-memory by design.
+    """
+
+    def __init__(self, ttl_seconds: int = 1800, max_sessions: int = 512) -> None:
+        self._ttl = max(1, int(ttl_seconds))
+        self._max = max(1, int(max_sessions))
+        self._data: "OrderedDict[str, Tuple[Tuple[str, Optional[str]], float]]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def lookup(self, session_key: str) -> Optional[Tuple[str, Optional[str]]]:
+        now = time.monotonic()
+        with self._lock:
+            entry = self._data.get(session_key)
+            if entry is None:
+                return None
+            lane, ts = entry
+            if now - ts > self._ttl:
+                self._data.pop(session_key, None)
+                return None
+            self._data.move_to_end(session_key)
+            return lane
+
+    def bind(self, session_key: str, account_id: str, egress_proxy: Optional[str]) -> None:
+        with self._lock:
+            self._data[session_key] = ((account_id, egress_proxy), time.monotonic())
+            self._data.move_to_end(session_key)
+            while len(self._data) > self._max:
+                self._data.popitem(last=False)
+
+    def release(self, session_key: str) -> None:
+        with self._lock:
+            self._data.pop(session_key, None)
+
+    def __len__(self) -> int:  # pragma: no cover
+        with self._lock:
+            return len(self._data)
+
+
+# ---------------------------------------------------------------------------
+# G4 -- Claude session-lifecycle telemetry rhythm
+# ---------------------------------------------------------------------------
+
+class ClaudeSessionRhythm:
+    """Mimic the Claude Code harness session lifecycle, not just its headers.
+
+    Anthropic reads the *rhythm*: a session opens, keeps alive, sends turns
+    with human think-time, and carries a stable session id. We track per-session
+    turn count + last-turn time and expose the session header surface the real
+    CLI emits, plus a think-time hint the dispatcher can sleep on. Fail-open.
+    """
+
+    SESSION_HEADER = "x-claude-code-session-id"
+
+    def __init__(self, ttl_seconds: int = 1800) -> None:
+        self._ttl = max(1, int(ttl_seconds))
+        self._sessions: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _get(self, session_key: str) -> Dict[str, Any]:
+        import uuid
+        now = time.monotonic()
+        s = self._sessions.get(session_key)
+        if s is None or now - s.get("last", 0.0) > self._ttl:
+            s = {"session_id": uuid.uuid4().hex, "turns": 0, "opened": now, "last": now}
+            self._sessions[session_key] = s
+        self._sessions.move_to_end(session_key)
+        while len(self._sessions) > 512:
+            self._sessions.popitem(last=False)
+        return s
+
+    def headers_for(self, session_key: str) -> Dict[str, str]:
+        """Return the session-telemetry headers the dispatcher should merge."""
+        try:
+            with self._lock:
+                s = self._get(session_key)
+            return {self.SESSION_HEADER: s["session_id"]}
+        except Exception:
+            return {}
+
+    def note_turn(self, session_key: str) -> float:
+        """Record a turn; return suggested human think-time (s) before next turn."""
+        try:
+            with self._lock:
+                s = self._get(session_key)
+                now = time.monotonic()
+                s["turns"] += 1
+                s["last"] = now
+            if s["turns"] <= 1:
+                return 0.0
+            return random.uniform(0.4, 1.6)
+        except Exception:
+            return 0.0
+
+
+# ---------------------------------------------------------------------------
+# G5 -- Graded authenticity pre-send check (6-dimension score)
+# ---------------------------------------------------------------------------
+
+_AUTH_WEIGHTS = {
+    "client_identity": 0.28,    # official CLI headers/UA/profile pinned
+    "behavioral_cadence": 0.18,  # cadence governor engaged (not metronomic)
+    "network_origin": 0.18,     # dedicated egress / stable account IP
+    "account_graph": 0.12,      # session pinned to one account (no spray)
+    "quota_shape": 0.12,        # usage budget not already blown
+    "telemetry_session": 0.12,  # session lifecycle rhythm (Claude weighted)
+}
+
+
+def authenticity_score(
+    provider_name: str,
+    has_official_profile: bool,
+    cadence_engaged: bool,
+    has_stable_egress: bool,
+    session_pinned: bool,
+    usage_fraction: float,
+    session_rhythm: bool,
+) -> Tuple[float, Dict[str, float]]:
+    """Score an outgoing request on the 6 anti-ban dimensions.
+
+    Returns (score, breakdown). Fail-open: any internal error returns a
+    perfect-neutral score so a scoring bug can never block traffic.
+    """
+    try:
+        usage_ok = 1.0 if usage_fraction < 0.9 else max(0.0, 1.0 - (usage_fraction - 0.9) * 10.0)
+        parts = {
+            "client_identity": 1.0 if has_official_profile else 0.0,
+            "behavioral_cadence": 1.0 if cadence_engaged else 0.0,
+            "network_origin": 1.0 if has_stable_egress else 0.0,
+            "account_graph": 1.0 if session_pinned else 0.0,
+            "quota_shape": usage_ok,
+            "telemetry_session": 1.0 if session_rhythm else 0.0,
+        }
+        score = sum(_AUTH_WEIGHTS[k] * parts[k] for k in _AUTH_WEIGHTS)
+        return score, parts
+    except Exception:
+        return 1.0, {}
+
+
+def authenticity_grade(score: float) -> str:
+    if score >= 0.75:
+        return "human"
+    if score >= 0.5:
+        return "suspicious"
+    return "bot"
+
+
+# ---------------------------------------------------------------------------
+# G6 -- Per-account usage-budget tracker (Antigravity 5h sliding window)
+# ---------------------------------------------------------------------------
+
+class UsageBudgetTracker:
+    """Sliding-window per-account token-spend tracker.
+
+    Antigravity AI-Pro uses a 5h sliding window; the authentic pattern is to
+    drain one account toward its window edge, then lane-switch -- not to
+    round-robin-spray all accounts. We pace to a configurable fraction of the
+    window and report spend fraction so the dispatcher can prefer the
+    least-loaded account and never discover the limit via a 429. Fail-open.
+    """
+
+    def __init__(self, window_seconds: int = 18000) -> None:
+        self._window = max(60, int(window_seconds))
+        self._events: Dict[str, List[Tuple[float, float]]] = {}
+        self._lock = threading.Lock()
+
+    def _prune(self, account: str, now: float) -> List[Tuple[float, float]]:
+        evs = self._events.setdefault(account, [])
+        cutoff = now - self._window
+        i = 0
+        while i < len(evs) and evs[i][0] < cutoff:
+            i += 1
+        if i:
+            del evs[:i]
+        return evs
+
+    def record(self, account: str, tokens: float) -> None:
+        try:
+            with self._lock:
+                now = time.monotonic()
+                evs = self._prune(account, now)
+                evs.append((now, float(tokens)))
+        except Exception:
+            pass
+
+    def window_spend(self, account: str) -> float:
+        try:
+            with self._lock:
+                now = time.monotonic()
+                evs = self._prune(account, now)
+                return sum(t for _, t in evs)
+        except Exception:
+            return 0.0
+
+    def spend_fraction(self, account: str, budget_tokens: float) -> float:
+        if budget_tokens <= 0:
+            return 0.0
+        return min(1.0, self.window_spend(account) / float(budget_tokens))
+
+    def over_budget(self, account: str, budget_tokens: float, fraction: float) -> bool:
+        try:
+            return self.window_spend(account) >= float(budget_tokens) * float(fraction)
+        except Exception:
+            return False
+
+
+# ---------------------------------------------------------------------------
+# Process-global singletons for the gap governors
+# ---------------------------------------------------------------------------
+
+_CADENCE = CadenceGovernor()
+_BACKOFF = BackoffGovernor()
+_LANES = SessionLaneStore()
+_CLAUDE_RHYTHM = ClaudeSessionRhythm()
+_USAGE = UsageBudgetTracker()
+
+
+def get_cadence() -> CadenceGovernor:
+    return _CADENCE
+
+
+def get_backoff() -> BackoffGovernor:
+    return _BACKOFF
+
+
+def get_lanes() -> SessionLaneStore:
+    return _LANES
+
+
+def get_claude_rhythm() -> ClaudeSessionRhythm:
+    return _CLAUDE_RHYTHM
+
+
+def get_usage() -> UsageBudgetTracker:
+    return _USAGE
+
+
+def reset_all() -> None:
+    """Test/config-reload hook: drop ALL in-memory anti-ban state."""
+    global _STORE, _CADENCE, _BACKOFF, _LANES, _CLAUDE_RHYTHM, _USAGE
+    _STORE = AffinityStore()
+    _CADENCE = CadenceGovernor()
+    _BACKOFF = BackoffGovernor()
+    _LANES = SessionLaneStore()
+    _CLAUDE_RHYTHM = ClaudeSessionRhythm()
+    _USAGE = UsageBudgetTracker()
+
+
+# ---------------------------------------------------------------------------
+# High-level composed API used by the dispatcher (one call per send)
+# ---------------------------------------------------------------------------
+
+
+async def govern_pre_send(
+    provider_name: str,
+    conn: Dict[str, Any],
+    conn_index: Optional[int],
+    session_key: Optional[str],
+    config: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """One composed pre-send gate: G1 cadence + G3 lane pin + G4 + G5.
+
+    Returns a decision dict:
+      {proceed, waited, grade, score, pinned_account, pinned_egress, headers}
+    Fail-open: any internal error -> proceed=True with zero added latency.
+    """
+    decision = {
+        "proceed": True, "waited": 0.0, "grade": "unknown", "score": 1.0,
+        "pinned_account": None, "pinned_egress": None, "headers": {},
+    }
+    try:
+        cfg = resolve_antiban_config(config)
+        if not cfg["enabled"] or not is_oauth_provider(provider_name, None):
+            # fall back to connection-marker detection for custom-named lanes
+            if not (cfg["enabled"] and any(is_oauth_connection(c) for c in [conn])):
+                return decision
+
+        acct = account_identity(conn, conn_index)
+        session_key = session_key or current_request_session_key()
+
+        # G1 -- cadence governor (jittered min-interval)
+        decision["waited"] = await _CADENCE.wait_turn(
+            acct, cfg["min_interval_seconds"], cfg["cadence_jitter"],
+        )
+
+        # G3 -- session-lane pinning (account <-> egress identity)
+        pinned_egress = conn.get("egress_proxy")
+        if session_key:
+            lane = _LANES.lookup(session_key)
+            if lane is None:
+                _LANES.bind(session_key, acct, pinned_egress)
+            else:
+                pinned_account, pinned_egress = lane
+                decision["pinned_account"] = pinned_account
+            decision["pinned_egress"] = pinned_egress
+
+        # G4 -- Claude session rhythm headers
+        if session_key and is_claude_provider(provider_name):
+            decision["headers"] = _CLAUDE_RHYTHM.headers_for(session_key)
+            _CLAUDE_RHYTHM.note_turn(session_key)
+
+        # G5 -- graded authenticity pre-send
+        score, _parts = authenticity_score(
+            provider_name,
+            has_official_profile=bool(conn.get("header_profile") or conn.get("_profile")),
+            cadence_engaged=True,
+            has_stable_egress=bool(pinned_egress) or bool(conn.get("proxy_bypass")),
+            session_pinned=bool(session_key),
+            usage_fraction=_USAGE.spend_fraction(acct, float(conn.get("_usage_budget_tokens") or 0.0)),
+            session_rhythm=bool(decision["headers"]) or not is_claude_provider(provider_name),
+        )
+        decision["score"] = score
+        decision["grade"] = authenticity_grade(score)
+        if cfg["authenticity_enforce"] and score < cfg["authenticity_threshold"]:
+            decision["proceed"] = False
+            print(
+                "[antiban] BLOCK provider=%s grade=%s score=%.2f acct=%s"
+                % (provider_name, decision["grade"], score, acct),
+                flush=True,
+            )
+        elif score < cfg["authenticity_threshold"]:
+            print(
+                "[antiban] warn provider=%s grade=%s score=%.2f acct=%s"
+                % (provider_name, decision["grade"], score, acct),
+                flush=True,
+            )
+        return decision
+    except Exception as exc:
+        print("[antiban] pre-send fail-open (%s)" % type(exc).__name__, flush=True)
+        decision["proceed"] = True
+        return decision
+
+
+def govern_post_send(
+    provider_name: str,
+    conn: Dict[str, Any],
+    conn_index: Optional[int],
+    status_code: int,
+    retry_after: Optional[float] = None,
+    tokens_used: float = 0.0,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """One composed post-send gate: G2 adaptive backoff + G6 usage tracking.
+
+    Returns {retry, delay} for the dispatcher's retry loop. Fail-open.
+    """
+    out = {"retry": False, "delay": 0.0}
+    try:
+        cfg = resolve_antiban_config(config)
+        if not cfg["enabled"]:
+            return out
+        if not (is_oauth_provider(provider_name, None) or is_oauth_connection(conn)):
+            return out
+        acct = account_identity(conn, conn_index)
+
+        # G6 -- usage budget tracking
+        if tokens_used > 0:
+            _USAGE.record(acct, tokens_used)
+
+        # G2 -- adaptive 429 backoff, no retry-storm
+        if status_code == 429:
+            if not _BACKOFF.should_retry(acct, cfg["backoff_max_retries"]):
+                print(
+                    "[antiban] 429 retry-storm guard tripped provider=%s acct=%s"
+                    % (provider_name, acct),
+                    flush=True,
+                )
+                return out
+            delay = _BACKOFF.next_delay(
+                acct, cfg["backoff_base_seconds"], cfg["backoff_max_seconds"],
+                retry_after=retry_after,
+            )
+            out["retry"] = True
+            out["delay"] = delay
+        elif 200 <= status_code < 300:
+            _BACKOFF.record_success(acct)
+        return out
+    except Exception:
+        return out

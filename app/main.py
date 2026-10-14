@@ -3545,8 +3545,7 @@ async def update_config(request: Request):
         # sticky bindings and cached per-account clients so nothing pins to a
         # stale index or keeps a socket to a removed account. Fail-open.
         try:
-            _oauth_antiban.reset_store()
-            _oauth_antiban.reset_clients()
+            _oauth_antiban.reset_all()
         except Exception:
             pass
 
@@ -8355,6 +8354,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             )
     except Exception as _oab_e:
         print(f"[oauth_antiban] session-key derivation fail-open: {_oab_e}", flush=True)
+
+    # OAuth anti-ban G1/G3/G4/G5 pre-send gate is wired at the client-selection
+    # chokepoint (after egress client is chosen, before request build) where
+    # provider_name/active_conn/_active_conn_index/headers/config are all in scope.
+    # See the "OAuth anti-ban G1/G3/G4/G5" block inside the client-selection branch.
     print(f"[AFZ-FORENSIC] heartbeat route=chat active_streams={active_stream_count()}", flush=True)
     requested_model = body.get("model", "gpt-4o")
     model = _normalize_blacksand_model_id(requested_model)
@@ -9607,9 +9611,37 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         else:
             client = _get_client_for_proxy(_egress_proxy)
 
-
-    # OAuth 401-retry guard: ensures we only retry once per request on 401.
-    _oauth_401_retried = False
+    # ── OAuth anti-ban G1/G3/G4/G5: composed pre-send gate ────────────────
+    # Inserted at the chokepoint where provider_name, active_conn,
+    # _active_conn_index, headers, and config are ALL in scope — after client
+    # selection, before _build_req. Fail-open: any internal error proceeds with
+    # zero added latency. Gated on `enabled` AND an OAuth credential marker.
+    try:
+        _oab_cfg3 = _oauth_antiban.resolve_antiban_config(config)
+        if _oab_cfg3.get("enabled") and _oauth_antiban.is_oauth_connection(active_conn):
+            _oab_decision = await _oauth_antiban.govern_pre_send(
+                provider_name=provider_name,
+                conn=active_conn,
+                conn_index=_active_conn_index,
+                session_key=_oauth_antiban.current_request_session_key(),
+                config=config,
+            )
+            # G4: merge Claude session-rhythm headers into the outgoing request
+            _oab_headers = _oab_decision.get("headers", {})
+            if _oab_headers and isinstance(_oab_headers, dict):
+                for _hk, _hv in _oab_headers.items():
+                    if _hk.lower() not in headers:  # never override auth
+                        headers[_hk] = _hv
+            # G5: if authenticity_enforce=true and score below threshold, abort
+            if not _oab_decision.get("proceed", True):
+                return JSONResponse(
+                    {"error": f"[antiban] authenticity gate blocked {provider_name} "
+                              f"(grade={_oab_decision.get('grade','?')}, "
+                              f"score={_oab_decision.get('score',0):.2f})"},
+                    status_code=503,
+                )
+    except Exception as _oab_pre_e:
+        print(f"[oauth_antiban] pre-send gate fail-open: {_oab_pre_e}", flush=True)
 
     # Reusable request builder. Serializes deterministically (sort_keys) so any
     # rebuild — e.g. the thinking-degradation retry below — keeps byte-for-byte
@@ -9815,6 +9847,37 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     _thinking_retry_armed = False
             except Exception as _tf_err:
                 print(f"[ThinkingFallback] stream degrade-retry failed (non-blocking): {_tf_err}", flush=True)
+        # OAuth anti-ban G2/G6: feed the final status code to the backoff +
+        # usage governors. Fail-open: any error returns a no-op decision and
+        # never touches the live response. Cheap no-op for non-OAuth lanes.
+        try:
+            _oauth_antiban.govern_post_send(
+                provider_name=provider_name,
+                conn=active_conn if isinstance(active_conn, dict) else {},
+                conn_index=_active_conn_index,
+                status_code=getattr(_resp, "status_code", 0) or 0,
+                retry_after=None,
+                tokens_used=0.0,
+                config=config,
+            )
+        except Exception:
+            pass
+        # OAuth anti-ban G2/G6: feed the final status code + real token usage to
+        # the backoff + usage governors. Fail-open; cheap no-op for non-OAuth lanes.
+        try:
+            _usage_dict = _extract_usage(_resp) if hasattr(_resp, 'usage') else {}
+            _tokens = float((_usage_dict or {}).get("completion_tokens", 0) or 0)
+            _oauth_antiban.govern_post_send(
+                provider_name=provider_name,
+                conn=active_conn if isinstance(active_conn, dict) else {},
+                conn_index=_active_conn_index,
+                status_code=getattr(_resp, "status_code", 0) or 0,
+                retry_after=None,
+                tokens_used=_tokens,
+                config=config,
+            )
+        except Exception:
+            pass
         return _resp
 
     start_time = time.time()

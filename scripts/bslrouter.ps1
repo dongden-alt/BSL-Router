@@ -56,6 +56,45 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# W1 (audit 2026-10-14): *.out.log supervisor stdout redirects were UNCAPPED.
+# scripts/bslrouter.ps1 redirects app/mitm stdout with cmd `>>` (append mode).
+# That handle is held for the process lifetime, so the file can never be rotated
+# in-process; unchecked it grows forever across restarts (app.out.log hit 678MB,
+# mitm.out.log 231MB). This is slow-burn disk growth, NOT the §2 event-loop-stall
+# class (OS redirect costs zero Python time). Capped here at launcher Start-time,
+# before spawn, mirroring the _ERRLOG 50MB/10MB-tail policy in dualstack_serve.py.
+$script:OUTLOG_MAX_BYTES  = 50 * 1024 * 1024   # 50MB trigger (mirrors _ERRLOG_MAX_BYTES)
+$script:OUTLOG_TAIL_BYTES = 10 * 1024 * 1024   # keep the most recent 10MB on truncate
+
+function Rotate-OutLog([string]$Path) {
+    # Boot-time cap for a supervisor stdout log: if > 50MB, keep only its last
+    # ~10MB tail (aligned to the next newline so the kept tail starts on a full
+    # row). Fail-open: missing/under-cap/locked file -> no-op. Hygiene must never
+    # block Start.
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return $false }
+        $size = (Get-Item -LiteralPath $Path).Length
+        if ($size -le $script:OUTLOG_MAX_BYTES) { return $false }
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
+        try {
+            $tailStart = [Math]::Max(0, $size - $script:OUTLOG_TAIL_BYTES)
+            [void]$fs.Seek($tailStart, [System.IO.SeekOrigin]::Begin)
+            $tailLen = $size - $tailStart
+            $buf = New-Object byte[] $tailLen
+            $read = $fs.Read($buf, 0, $tailLen)
+            if ($read -lt $tailLen) { $buf = $buf[0..($read-1)] }
+            # Skip to first newline so the kept tail starts on a full row.
+            $nl = [Array]::IndexOf($buf, [byte]10)
+            if ($nl -ge 0 -and $nl -lt $buf.Length - 1) { $buf = $buf[($nl+1)..($buf.Length-1)] }
+            [void]$fs.Seek(0, [System.IO.SeekOrigin]::Begin)
+            $fs.Write($buf, 0, $buf.Length)
+            $fs.SetLength($buf.Length)
+        } finally { $fs.Dispose() }
+        Write-Host "Rotated $Path ($([Math]::Round($size/1MB,1))MB -> <=10MB tail)" -ForegroundColor DarkYellow
+        return $true
+    } catch { return $false }
+}
+
 # --- Project locations (auto-detected, so the command runs from anywhere) -----
 # $Root resolves to the repository root by walking up from this script's own
 # location (scripts/bslrouter.ps1 -> repo root). This keeps `bslrouter` runnable
@@ -429,6 +468,7 @@ function Start-App {
     Ensure-Prereqs
     if ($Background) {
         $out = Join-Path $LogDir 'app.out.log'
+        Rotate-OutLog $out | Out-Null   # W1: cap supervisor stdout redirect (50MB trigger)
         $err = Join-Path $LogDir 'app.err.log'
         # DUAL-STACK FIX (2026-08-27): uvicorn --host 0.0.0.0 is IPv4-only while
         # Windows resolves localhost -> ::1 first, so IPv6-first clients (Node
@@ -533,6 +573,7 @@ function Start-Mitm {
     try {
         if ($Background) {
             $out  = Join-Path $LogDir 'mitm.out.log'
+            Rotate-OutLog $out | Out-Null   # W1: cap supervisor stdout redirect (50MB trigger)
             $merr = Join-Path $LogDir 'mitm.err.log'
             # JOB-OBJECT ESCAPE + HIDDEN (2026-08-29): same pattern as the app
             # spawn below -- [wmiclass] Win32_Process.Create with ShowWindow=12
