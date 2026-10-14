@@ -379,3 +379,7 @@ re-run earlier that session. Burned credit twice for nothing.
   in the current message. Default is always the smallest targeted fix.
 - Before ANY harvest/backfill run: state the per-model call estimate and get the smallest-scope
   confirmation. "Fix X" means fix X, not re-run everything that includes X.
+
+## 11. HARD RULE - never push to GitHub without explicit in-session user confirmation (2026-10-14)
+
+**ZERO EXCEPTIONS. Before ANY `git push` (any branch, any remote, any repo state) the agent MUST ask the user in the current conversation and receive an explicit yes.** This stacks ON TOP of section 4's 4-gate pre-push verification - gates passing is necessary but NOT sufficient; the push command itself requires a fresh, explicit user confirmation each time. No silent pushes, no 'pushing since gates passed', no carrying confirmation across sessions or conversations. Applies to all agents (Antigravity, CC delegations, any future agent). User-stated 2026-10-14.
