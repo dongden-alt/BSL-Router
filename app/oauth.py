@@ -692,7 +692,7 @@ def _map_grok(tokens: dict[str, Any], post: dict[str, Any] | None = None) -> dic
 def _map_cursor(tokens: dict[str, Any], _: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "accessToken": tokens.get("accessToken"),
-        "refreshToken": None,
+        "refreshToken": tokens.get("refreshToken"),
         "expiresIn": tokens.get("expiresIn") or 86400,
         "providerSpecificData": {"machineId": tokens.get("machineId"), "authMethod": "imported"},
     }
@@ -843,7 +843,7 @@ OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
         "flowType": "device_code", "requestDeviceCode": _request_grok_device_code, "pollToken": _poll_grok, "postExchange": _post_exchange_grok, "mapTokens": _map_grok,
     },
     "cursor": {
-        "config": {"tokenStoragePath": r"%APPDATA%\Cursor\User\globalStorage\state.vscdb"},
+        "config": {"tokenStoragePath": r"%APPDATA%\Cursor\User\globalStorage\state.vscdb", "tokenUrl": "https://api2.cursor.sh/oauth/token", "clientId": "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"},
         "flowType": "import_token", "importTokens": lambda cfg: _cursor_token_from_state_db(cfg), "mapTokens": _map_cursor,
     },
     "kiro-import": {
@@ -1516,6 +1516,7 @@ def _cursor_token_from_state_db(config: dict[str, Any]) -> dict[str, Any]:
         connection = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
         with connection:
             access_token = _cursor_db_value(connection, "cursorAuth/accessToken")
+            refresh_token = _cursor_db_value(connection, "cursorAuth/refreshToken")
             # 9Router uses 'storage.serviceMachineId' key for the machine ID.
             machine_id = _cursor_db_value(connection, "storage.serviceMachineId")
             if not machine_id:
@@ -1526,13 +1527,20 @@ def _cursor_token_from_state_db(config: dict[str, Any]) -> dict[str, Any]:
     if isinstance(access_token, dict):
         machine_id = access_token.get("machineId") or machine_id
         access_token = access_token.get("accessToken") or access_token.get("token")
+    if isinstance(refresh_token, dict):
+        refresh_token = refresh_token.get("refreshToken") or refresh_token.get("token")
     if not isinstance(access_token, str) or not access_token:
         raise HTTPException(status_code=404, detail="Cursor access token was not found in its state database")
     expires_in = 86400
     claims = decode_jwt_payload(access_token)
     if isinstance(claims.get("exp"), (int, float)):
         expires_in = max(1, int(claims["exp"] - datetime.now(timezone.utc).timestamp()))
-    return {"accessToken": access_token, "machineId": machine_id if isinstance(machine_id, str) else None, "expiresIn": expires_in}
+    return {
+        "accessToken": access_token,
+        "refreshToken": refresh_token if isinstance(refresh_token, str) else None,
+        "machineId": machine_id if isinstance(machine_id, str) else None,
+        "expiresIn": expires_in,
+    }
 
 
 # NOTE: dedicated /kiro/import must stay ABOVE the generic /{provider}/import route
@@ -2089,11 +2097,49 @@ async def _grok_refresh_token(
     }
 
 
+async def _cursor_refresh_token(
+    refresh_token: str, config: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Refresh a Cursor OAuth2 access token via the native Cursor endpoint."""
+    config = config or OAUTH_PROVIDERS["cursor"]["config"]
+    raw = await _post_form(
+        config["tokenUrl"],
+        {
+            "grant_type": "refresh_token",
+            "client_id": config["clientId"],
+            "refresh_token": refresh_token,
+        },
+        "Cursor token refresh",
+    )
+    if raw.get("should_logout"):
+        raise HTTPException(
+            status_code=401,
+            detail="Cursor session revoked upstream (should_logout); re-import from the Cursor IDE",
+        )
+    access_token = _token_value(raw, "access_token", "accessToken")
+    if not isinstance(access_token, str) or not access_token:
+        raise HTTPException(
+            status_code=502, detail="Cursor token refresh returned no access token"
+        )
+    # Derive expires_in from the new JWT's exp claim (same logic as import path)
+    expires_in = 86400
+    claims = decode_jwt_payload(access_token)
+    if isinstance(claims.get("exp"), (int, float)):
+        expires_in = max(1, int(claims["exp"] - datetime.now(timezone.utc).timestamp()))
+    return {
+        "access_token": access_token,
+        "refresh_token": _token_value(raw, "refresh_token", "refreshToken")
+        or refresh_token,
+        "expires_in": expires_in,
+    }
+
+
 # Dispatch table: provider name -> refresh coroutine
 _REFRESH_DISPATCH: dict[str, Any] = {
     "antigravity": _google_refresh_token,
     "claude": _claude_refresh_token,
     "codex": _codex_refresh_token,
+    "cursor": _cursor_refresh_token,
     "github": _github_refresh_token,
     "grok-cli": _grok_refresh_token,
     "kiro": _kiro_refresh_token,
@@ -2242,7 +2288,7 @@ async def ensure_fresh_token(
 
     refresh_token = connection.get("refresh_token")
     if not refresh_token:
-        # No refresh token (e.g. Cursor import) - can't refresh.
+        # No refresh token - can't refresh.
         return stored_token
 
     refresh_fn = _REFRESH_DISPATCH.get(provider_name)
