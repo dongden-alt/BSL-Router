@@ -14,6 +14,10 @@ untouched):
   4. close truncation: terminate open strings, fix dangling comma/colon,
      balance unmatched {/[ in reverse open order.
   5. strip dangling commas before a closer:  {"k": 1,}      -> {"k": 1}
+  6. prepend a missing opening brace:        "k": 1        -> {"k": 1}
+     (a fragment whose leading "{" was lost to slot mis-attribution;
+      added 2026-10-15 together with split_extra_documents, which handles
+      buffers holding MULTIPLE complete documents concatenated)
 
 Pure functions, no I/O, no threads. Fail-open by contract: NEVER raises.
 """
@@ -27,6 +31,7 @@ from typing import Any, List, Optional, Tuple
 __all__ = [
     "repair_json_arguments",
     "repair_tool_calls_argument_strings",
+    "split_extra_documents",
 ]
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-]*")
@@ -263,7 +268,74 @@ def _ladder_candidates(args_str: str) -> List[str]:
         s5 = _strip_trailing_commas(cand)
         if s5 != cand and s5 not in candidates:
             candidates.append(s5)
+    # Step 6 (2026-10-15) -- missing opening brace. A fragment can lose its
+    # leading "{" when slot mis-attribution upstream peels it into another
+    # call's buffer (observed on the codex lane: raw args began
+    # '"CommandLine": ...'). Prepend the brace, then close-truncation
+    # finishes the document. Applied to the original and to the best earlier
+    # candidate, same layering as step 4; every candidate is still
+    # json.loads-validated by repair_json_arguments before acceptance.
+    if not args_str.lstrip().startswith("{"):
+        _bases6 = [args_str] + ([candidates[-1]] if candidates else [])
+        for _base6 in _bases6:
+            for _cand6 in ("{" + _base6, _close_truncation("{" + _base6)):
+                if _cand6 not in candidates:
+                    candidates.append(_cand6)
     return candidates
+
+
+# Cap on documents peeled from one concatenated buffer (2026-10-15).
+_MAX_SPLIT_DOCS = 8
+
+
+def split_extra_documents(s: str) -> List[str]:
+    """Split a buffer holding multiple concatenated JSON documents (2026-10-15).
+
+    Root cause this serves: an upstream that stamps every parallel tool call
+    with the same OpenAI index makes a downstream accumulator concatenate N
+    COMPLETE argument objects into one buffer -- '{"a":1}{"b":2}'. json.loads
+    fails with "Extra data" at the exact end of the first document; the
+    repair ladder's other rungs cannot help (each document is valid JSON --
+    the buffer just holds two of them), so the slot was dropped and clients
+    error-looped on retry.
+
+    Peels documents at each JSONDecodeError.pos while the error is
+    "Extra data", validates every peeled document with json.loads, and
+    returns the list ONLY when at least two documents were recovered and
+    nothing is left over. Any other outcome returns ``[s]`` (single element,
+    unchanged) so callers can treat ``len < 2`` as "no split". Fail-open:
+    NEVER raises.
+    """
+    try:
+        if not isinstance(s, str) or not s.strip():
+            return [s]
+        docs: List[str] = []
+        rest = s.lstrip()
+        for _ in range(_MAX_SPLIT_DOCS):
+            try:
+                json.loads(rest)
+                docs.append(rest)
+                rest = ""
+                break
+            except json.JSONDecodeError as e:
+                if "Extra data" not in str(e) or not e.pos or e.pos <= 0:
+                    return [s]
+                head = rest[: e.pos].rstrip()
+                if not head:
+                    return [s]
+                try:
+                    json.loads(head)
+                except Exception:
+                    return [s]
+                docs.append(head)
+                rest = rest[e.pos :].lstrip()
+            except Exception:
+                return [s]
+        if len(docs) >= 2 and not rest:
+            return docs
+        return [s]
+    except Exception:
+        return [s]
 
 
 def repair_json_arguments(s: str, max_bytes: int = DEFAULT_MAX_BYTES) -> Tuple[str, bool]:

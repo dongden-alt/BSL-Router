@@ -169,7 +169,7 @@ def terminal_error_frame(code: int, message: str, model: str = "") -> Dict[str, 
 # every heavily-fragmented batch left no durable evidence anywhere — it took
 # a purpose-built reproducer to find. These counters make the repair/drop rate
 # observable in-process.
-_TOOL_ARG_STATS = {"repaired": 0, "dropped": 0}
+_TOOL_ARG_STATS = {"repaired": 0, "dropped": 0, "split": 0}
 
 
 def get_tool_arg_stats() -> Dict[str, int]:
@@ -199,6 +199,21 @@ def _repair_tool_args(raw_args: str) -> Optional[Dict[str, Any]]:
         return parsed if isinstance(parsed, dict) else None
     except Exception:
         return None
+
+
+def _split_tool_args_documents(raw_args: str) -> "list[str]":
+    """Recover N COMPLETE JSON documents concatenated into one slot (2026-10-15).
+
+    Returns the validated documents when at least two exist (an index/id
+    collision upstream merged parallel calls into one buffer), else [].
+    Lazy import mirrors ``_repair_tool_args``; NEVER raises.
+    """
+    try:
+        from app.middleware.tool_arg_repair import split_extra_documents
+        docs = split_extra_documents(raw_args)
+        return docs if len(docs) >= 2 else []
+    except Exception:
+        return []
 
 
 def _inject_tool_metadata(args: Any, tool_name: str) -> Dict[str, Any]:
@@ -730,13 +745,48 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
         fn = tc.get("function") or {}
         raw_idx = tc.get("index")
         if isinstance(raw_idx, int) and not isinstance(raw_idx, bool):
-            key: Any = ("i", raw_idx)
+            existing = state["toolCallAccum"].get(("i", raw_idx))
+            tc_id = tc.get("id")
+            # INDEX-COLLISION GUARD (2026-10-15): an upstream that stamps the
+            # SAME explicit index on every parallel call (the codex adapter
+            # did exactly this pre-fix) merges N complete calls into one slot
+            # here -- their arguments concatenate and the flush drops the
+            # batch with "Extra data". When the slot is already claimed by a
+            # DIFFERENT call id, allocate a fresh sequence key for the
+            # newcomer instead of concatenating.
+            if (
+                existing is not None
+                and tc_id
+                and existing.get("id")
+                and existing["id"] != tc_id
+            ):
+                key: Any = ("s", state.get("toolCallSeq", 0))
+                state["toolCallSeq"] = state.get("toolCallSeq", 0) + 1
+                state.setdefault("toolCallIdKeys", {})[tc_id] = key
+            else:
+                key = ("i", raw_idx)
             state["toolCallLastKey"] = key
         else:
             tc_id = tc.get("id")
             id_keys = state.setdefault("toolCallIdKeys", {})
             if tc_id and tc_id in id_keys:
-                key = id_keys[tc_id]
+                prior_slot = state["toolCallAccum"].get(id_keys[tc_id])
+                # ID-COLLISION GUARD (2026-10-15): two DISTINCT calls sharing
+                # one id (upstream id fallback) also concatenate here. A
+                # different name on an args-bearing slot means a NEW call --
+                # re-key it instead of appending.
+                if (
+                    prior_slot is not None
+                    and prior_slot.get("args")
+                    and fn.get("name")
+                    and prior_slot.get("name")
+                    and prior_slot["name"] != fn["name"]
+                ):
+                    key = ("s", state.get("toolCallSeq", 0))
+                    state["toolCallSeq"] = state.get("toolCallSeq", 0) + 1
+                    id_keys[tc_id] = key
+                else:
+                    key = id_keys[tc_id]
                 state["toolCallLastKey"] = key
             elif tc_id:
                 key = ("s", state.get("toolCallSeq", 0))
@@ -806,6 +856,36 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
                 # call the model did not make.
                 repaired_args = _repair_tool_args(raw_args)
                 if repaired_args is None:
+                    # EXTRA-DATA SPLIT (2026-10-15): when parallel calls were
+                    # merged into one slot by an index/id collision upstream
+                    # (see the accumulator guards), the buffer holds N
+                    # COMPLETE JSON documents concatenated -- "Extra data"
+                    # fails exactly at the first document's end. The ladder
+                    # cannot express that (each document is valid JSON), so
+                    # split instead of drop: the batch survives and MAX_TOKENS
+                    # stays reserved for genuine truncation. All split parts
+                    # carry the slot's name -- the merged-away members' names
+                    # are unrecoverable, but dropping recoverable arguments
+                    # is what error-looped the IDE (2026-10-15 codex report).
+                    split_docs = _split_tool_args_documents(raw_args)
+                    if split_docs:
+                        _TOOL_ARG_STATS["split"] += 1
+                        print(
+                            f"[BSL ROUTER] Tool args SPLIT for {name}: "
+                            f"{len(split_docs)} concatenated documents recovered "
+                            f"(was: {e}). Calls preserved instead of dropped.",
+                            flush=True,
+                        )
+                        for _doc in split_docs:
+                            _doc_args = _inject_tool_metadata(json.loads(_doc), name)
+                            _fc_part_split: Dict[str, Any] = {
+                                "functionCall": {"name": name, "args": _doc_args}
+                            }
+                            _tsig_split = slot.get("sig")
+                            if isinstance(_tsig_split, str) and _tsig_split:
+                                _fc_part_split["thoughtSignature"] = _tsig_split
+                            parts.append(_fc_part_split)
+                        continue
                     _TOOL_ARG_STATS["dropped"] += 1
                     print(
                         f"[BSL ROUTER] Tool args UNRECOVERABLE for {name}: {e}. "

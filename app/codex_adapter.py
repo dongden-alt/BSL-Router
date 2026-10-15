@@ -349,6 +349,12 @@ async def responses_sse_to_openai_sse(raw_iter):
     current_event = None
     current_data_parts = []
     first_delta = True
+    # Per-stream tool-call index ledger (PARALLEL-BATCH INDEX FIX
+    # 2026-10-15): call_id -> stable OpenAI tool_call index, plus the next
+    # free index. Owned here and threaded into every conversion call so
+    # parallel done-events never share index 0 (which collapsed N calls
+    # into one downstream accumulator slot and concatenated their args).
+    tc_state: dict = {"call_index": {}, "next_index": 0}
 
     async for chunk in raw_iter:
         if not chunk:
@@ -372,7 +378,7 @@ async def responses_sse_to_openai_sse(raw_iter):
                         dj = json.loads(d)
                     except json.JSONDecodeError:
                         dj = {}
-                    oai = _codex_event_to_openai_chunk(current_event, dj)
+                    oai = _codex_event_to_openai_chunk(current_event, dj, tc_state)
                     if oai is not None:
                         if first_delta:
                             # Inject role chunk before first content.
@@ -389,7 +395,7 @@ async def responses_sse_to_openai_sse(raw_iter):
             dj = json.loads(d)
         except json.JSONDecodeError:
             dj = {}
-        oai = _codex_event_to_openai_chunk(current_event, dj)
+        oai = _codex_event_to_openai_chunk(current_event, dj, tc_state)
         if oai is not None:
             if first_delta:
                 yield f"data: {json.dumps(_role_chunk(oai), separators=(',', ':'))}\n\n".encode("utf-8")
@@ -404,8 +410,14 @@ def _role_chunk(content_chunk: dict) -> dict:
     return role_d
 
 
-def _codex_event_to_openai_chunk(event_name: str, data: dict) -> dict | None:
-    """Convert a Codex Responses SSE event to an OpenAI chunk dict, or None to ignore."""
+def _codex_event_to_openai_chunk(event_name: str, data: dict, tc_state: dict | None = None) -> dict | None:
+    """Convert a Codex Responses SSE event to an OpenAI chunk dict, or None to ignore.
+
+    ``tc_state`` is the per-stream tool-call index ledger owned by
+    responses_sse_to_openai_sse (``{"call_index": {call_id: i}, "next_index": n}``).
+    When omitted (direct/unit calls) a fresh ledger is used, so the first
+    call still gets index 0 — the pinned single-call contract is unchanged.
+    """
     ts = int(__import__("time").time())
     rid = f"resp-codex-{id(data)}"
 
@@ -471,12 +483,29 @@ def _codex_event_to_openai_chunk(event_name: str, data: dict) -> dict | None:
             args = item.get("arguments", "")
             if not isinstance(args, str):
                 args = json.dumps(args) if args is not None else "{}"
+            # PARALLEL-BATCH INDEX FIX (2026-10-15): every done-event used
+            # to carry index 0, so N parallel calls collapsed into ONE
+            # Gemini accumulator slot and their arguments concatenated --
+            # the "Extra data" drop loop on client=gemini -> provider=codex
+            # (gpt-5.6-sol) traffic. Allocate a per-stream, per-call_id
+            # index instead; the first call still gets 0, preserving the
+            # pinned single-call chunk shape.
+            call_id = item.get("call_id") or item.get("id")
+            if tc_state is None:
+                tc_state = {}
+            _idx_map = tc_state.setdefault("call_index", {})
+            if call_id and call_id in _idx_map:
+                tc_index = _idx_map[call_id]
+            else:
+                tc_index = tc_state.get("next_index", 0)
+                tc_state["next_index"] = tc_index + 1
+                if call_id:
+                    _idx_map[call_id] = tc_index
             tool_call: dict[str, Any] = {
-                "index": 0,
+                "index": tc_index,
                 "type": "function",
                 "function": {"name": item["name"], "arguments": args},
             }
-            call_id = item.get("call_id") or item.get("id")
             if call_id:
                 tool_call["id"] = call_id
             return {
