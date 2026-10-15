@@ -3565,6 +3565,116 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
             )
 
 
+def _apply_models_stale_save_guard(old_config, new_config) -> None:
+    """Merge-guard providers.<id>.models against stale client saves.
+
+    THE BUG THIS FIXES (lost-update model wipe, 2026-10-15)
+    _apply_connections_stale_save_guard protects ONLY
+    providers.<id>.connections (+ blanked api_keys). A dashboard tab whose
+    app.js predates a model row added server-side (or by a live /api/config
+    script -- fetchConfig backfills missing rows but never removes them, so
+    the tab holds a stale list) autosaves the WHOLE config; that POST
+    replaces providers.<id>.models and silently deletes the new rows.
+    Observed: 4 gemini-4-argon rows added to providers.antigravity.models
+    were wiped by exactly this path while all 22 other rows survived.
+
+    UNION-with-opt-out, mirroring the connections guard:
+      * server rows are authoritative for EXISTENCE -- a server row whose
+        id is missing from the body AND not flagged as deleted is APPENDED
+        back (stale-tab lost-update restoration);
+      * a body row whose id is also on the server WINS field updates
+        (enabled/thinking/name edits are legitimate and NOT reverted);
+      * a genuinely-new body row (id not on the server) is kept as-is;
+      * identity is m["id"] ONLY -- the model NAME is never identity. The
+        body list is never reordered and no body row is ever dropped.
+
+    Explicit opt-out: a body carrying ``_deleted_model`` =
+    ``{"provider": "<id>", "model": "<model_id>"}`` (single row) or
+    ``_deleted_models`` = ``{"provider": "<id>", "models": [...]}`` (bulk)
+    signals a deliberate deleteModel -- flagged ids are NOT restored. Both
+    flags are popped here so they never persist into the config snapshot.
+    Fail-open: never raises; guard clauses return on non-dict input.
+    """
+    if not isinstance(new_config, dict):
+        return
+    # Pop the deliberate-delete opt-outs FIRST: whatever else happens below,
+    # the flags themselves must never be persisted.
+    deletion_single = new_config.pop("_deleted_model", None)
+    deletion_bulk = new_config.pop("_deleted_models", None)
+    if not isinstance(old_config, dict):
+        return
+    old_providers = old_config.get("providers") or {}
+    new_providers = new_config.get("providers") or {}
+    if not isinstance(old_providers, dict) or not isinstance(new_providers, dict):
+        return
+
+    flagged = set()
+    if isinstance(deletion_single, dict):
+        pid = str(deletion_single.get("provider") or "")
+        mid = str(deletion_single.get("model") or "").strip()
+        if pid and mid:
+            flagged.add((pid, mid))
+    if isinstance(deletion_bulk, dict):
+        pid = str(deletion_bulk.get("provider") or "")
+        mids = deletion_bulk.get("models")
+        if pid and isinstance(mids, list):
+            for mid in mids:
+                mid = str(mid or "").strip()
+                if mid:
+                    flagged.add((pid, mid))
+
+    for prov_id, old_prov in old_providers.items():
+        if not isinstance(old_prov, dict):
+            continue
+        new_prov = new_providers.get(prov_id)
+        # Only providers present in BOTH configs merge at row level: a
+        # provider missing from the body is whole-provider territory
+        # (_replace_runtime_config's stale-snapshot guard + the
+        # _deleted_provider opt-out), not this guard's job.
+        if not isinstance(new_prov, dict):
+            continue
+        old_models = old_prov.get("models")
+        if not isinstance(old_models, list) or not old_models:
+            continue
+        body_models = new_prov.get("models")
+        if not isinstance(body_models, list):
+            # No models list on the body: no-op. The guard never invents a
+            # models list for the body and never restores rows into one.
+            continue
+
+        body_ids = set()
+        for body_model in body_models:
+            if isinstance(body_model, dict):
+                mid = str(body_model.get("id") or "").strip()
+                if mid:
+                    body_ids.add(mid)
+
+        restored = []
+        restored_ids = set()
+        for old_model in old_models:
+            if not isinstance(old_model, dict):
+                continue
+            mid = str(old_model.get("id") or "").strip()
+            if not mid or mid in body_ids or mid in restored_ids:
+                # Unkeyable (no id), body still carries the id (body wins
+                # field updates), or a duplicate server id already restored.
+                continue
+            if (prov_id, mid) in flagged:
+                continue  # deliberate deleteModel — drop, do not restore
+            restored.append(old_model)
+            restored_ids.add(mid)
+
+        if restored:
+            # Body order first, restored server rows appended — never a
+            # reorder, never a dropped body row.
+            body_models.extend(restored)
+            print(
+                f"[CONFIG-GUARD] provider={prov_id} restored "
+                f"{len(restored)} model(s) (stale client save)",
+                flush=True,
+            )
+
+
 @app.post("/api/config")
 async def update_config(request: Request):
     try:
@@ -3595,6 +3705,15 @@ async def update_config(request: Request):
         # The opt-out flags (_deleted_connection/_deleted_provider) are popped
         # inside _replace_runtime_config, which must still see them to honor
         # genuine deletions in its stale-snapshot guard.
+
+        # Models merge guard (2026-10-15): same lost-update class as the
+        # connections guard, but for providers.<id>.models -- a stale tab's
+        # full-config POST must not replace the server's model list and wipe
+        # rows added server-side after the tab loaded (observed: 4
+        # gemini-4-argon rows wiped this way). The _deleted_model /
+        # _deleted_models deliberate-delete opt-outs are popped inside the
+        # guard itself so they never persist.
+        _apply_models_stale_save_guard(config, new_config)
 
         # Preserve live ErrorPrevention state so frontend auto-saves don't wipe it
         if "error_prevention_state" in config:

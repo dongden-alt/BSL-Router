@@ -95,6 +95,56 @@ def test_tokenizer_unstable_overhead_not_compared():
     assert v2.similarity_tokenizer(a, b) is None
 
 
+def test_tokenizer_decisive_abstains_on_thin_cross_baseline_margin():
+    """The jitter tilt must not decide a sibling pick.
+
+    Both sibling standards carry IDENTICAL deltas and differ only in their own
+    harvest-time jitter (opus 0, sonnet 3).  Under the old per-pair slack the
+    suspect scored 0.0 against the clean sibling (slack=1, diff 4 > 1) but 1.0
+    against the jittery one (slack=4, diff 4 <= 4) -- a full 1.0 margin of pure
+    jitter artifact, far too wide for any decisive-gap guard to catch.  With
+    matched slack both comparisons are identical, so the lane abstains.
+    """
+    names = ["cjk", "emoji", "digits", "digits_x4", "spaces",
+             "newlines", "rare_unicode", "code", "url", "repeat"]
+    sus = v2.analyze_tokenizer({n: 10 for n in names}, [100, 100])
+    opus = v2.analyze_tokenizer({n: 14 for n in names}, [100, 100])      # jitter 0
+    sonnet = v2.analyze_tokenizer({n: 14 for n in names}, [100, 103])    # jitter 3
+
+    # The old per-pair behaviour, pinned so the tilt can never silently return:
+    assert v2.similarity_tokenizer(sus, opus) == 0.0
+    assert v2.similarity_tokenizer(sus, sonnet) == 1.0
+
+    # Matched slack removes it -> identical deltas score identically -> abstain.
+    assert v2.tokenizer_decisive(sus, opus, sonnet) is None
+
+
+def test_tokenizer_decisive_picks_on_clear_margin():
+    sus = v2.analyze_tokenizer(
+        {"cjk": 17, "emoji": 36, "digits": 13, "digits_x4": 63, "spaces": 4,
+         "newlines": -4, "rare_unicode": 54, "code": 26, "url": 16, "repeat": 20},
+        [100, 100])
+    close = v2.analyze_tokenizer(
+        {"cjk": 17, "emoji": 36, "digits": 13, "digits_x4": 63, "spaces": 4,
+         "newlines": -4, "rare_unicode": 54, "code": 26, "url": 16, "repeat": 20},
+        [100, 100])
+    far = v2.analyze_tokenizer(
+        {"cjk": 60, "emoji": 90, "digits": 40, "digits_x4": 150, "spaces": 9,
+         "newlines": 30, "rare_unicode": 120, "code": 70, "url": 45, "repeat": 55},
+        [100, 100])
+    res = v2.tokenizer_decisive(sus, close, far)
+    assert res is not None
+    assert res[0] >= res[1]            # winner-first ordering
+    assert res[0] - res[1] >= v2.TOKENIZER_DECISIVE_GAP
+
+
+def test_tokenizer_decisive_none_when_side_not_comparable():
+    sus = v2.analyze_tokenizer({n: i for i, n in enumerate(v2.TOKENIZER_STRINGS)}, [5, 5])
+    unstable = v2.analyze_tokenizer({n: i for i, n in enumerate(v2.TOKENIZER_STRINGS)}, [5, 40])
+    ok = v2.analyze_tokenizer({n: i for i, n in enumerate(v2.TOKENIZER_STRINGS)}, [5, 5])
+    assert v2.tokenizer_decisive(sus, unstable, ok) is None
+
+
 # -------------------------------------------------------- capability curve
 
 def test_capability_truth_is_computed_and_graded():

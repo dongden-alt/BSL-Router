@@ -519,6 +519,38 @@ the sonnet/fable ~6.2–6.4k band, not canonical opus 5242). No tie occurred, so
 `judge_pick_contradicted` guard reads; the original inversion (judge picking fable over opus on
 style) cannot survive these lanes once the judge tie-break is reachable.
 
+**a6api swap (2026-10-15):** the same decisive-lane harness was run against
+`a6api/claude-opus-5-5` before swapping (21 calls): it ALSO fingerprints as sonnet-5-5-class
+(ranked sonnet 0.8163 > opus 0.7332; tokenizer baseline 337, jitter 0 - a different provider
+overhead profile from mintrouter's ~5.4k, but the same sibling ordering). The user accepted the
+swap anyway: mintrouter's `claude-opus-5-5` row is now disabled and a6api's enabled, applied
+live through the `GET`/`POST /api/config` round-trip (no restart; provider/connection counts
+verified unchanged at 73/92). Bare `claude-opus-5-5` remains enabled under VSLLM-Claude and
+Xpiki as well, so bare-id requests still resolve across three publishers; the namespaced
+`a6api/claude-opus-5-5` pins a6api via the pass-1 exact published-ID match in
+`_resolve_namespaced_model`.
+
+**RETRACTION (2026-10-15):** the mismatch verdicts above are harness artifacts, not evidence about
+the providers. Three defects, found by zero-cost disk-only re-analysis: (1) `similarity_tokenizer`
+derives `slack = 1 + sus.jitter + base.jitter`, and the canonical sonnet standard recorded
+jitter=3 while opus recorded 0 — every suspect therefore gets 4 tokens of free tolerance against
+sonnet and only 1 against opus. Recomputed at matched slack, mintrouter opus vs canonical opus
+goes 0.721 → **0.900** (sonnet 0.923, margin +0.023) and a6api opus 0.515 → **0.805** (sonnet
+0.843, margin +0.038); both fall under the 0.05 decisive threshold → ABSTAIN. (2)
+`pairwise_separability` already reports opus-vs-sonnet distance 0.098 < `SEPARABLE_DISTANCE`
+0.12 — an ALIAS group the code documents as "no black-box probe in this standard can tell them
+apart"; the verdicts were built on a lane the harness declares non-discriminating. (3) The
+tokenizer lane measures the PROVIDER's tokenizer, not the model: all three live mintrouter
+listings converged to identical deltas (digits_x4=69, emoji=30, arabic=20) where the 2026-10-09
+standards still differed. Note also that `meta.anchor_lane` for the canonical opus standard is
+`mintrouter/claude-opus-5-5` — mintrouter is ground truth by construction and matches that
+standard better (0.900) than a6api does (0.805). Full analysis: `.brain/CHANGELOG.md`
+2026-10-15 retraction entry. **FIXED same day:** the slack tilt itself is corrected in
+[standard_v2.py](../app/authenticity/standard_v2.py) — `compute_v2_dims` now ranks every
+candidate at one matched tolerance via `_common_tokenizer_slack`, and a new
+`tokenizer_decisive` guard abstains when two siblings land within `TOKENIZER_DECISIVE_GAP`.
+See `.brain/CHANGELOG.md` 2026-10-15 fix entry.
+
 #### Gemini 4 argon rides the thinkingLevel enum contract (2026-10-15)
 
 `gemini-4-argon` (a6api / tokenforge `gemini-web/*` / aibox entries in `config.yaml`) previously
@@ -1153,3 +1185,19 @@ set logic — no re-harvest, no backfill, no standard file rewritten (Rule 10).
   27 no-lane, measured 2026-10-11.)
 - Live matcher/gate calibration — **PENDING** (threshold lives in `V2_VETO["discriminator"]`;
   router `:6969` restart required to load the rebuilt battery — Rule 1, user-commanded only).
+
+- AntiStop continuation-send retry (502 mid-stream hardening, Part B) — **CODE DONE**
+  (2026-10-15; live with next `:6969` restart — Rule 1, user-commanded only).
+  The post-loop continuation splice re-sends to the SAME upstream; a transient 5xx
+  (or transport/timeout error) on that send previously died fail-open and surfaced
+  a client-visible 502 after partial content had already been delivered. New
+  module-level helper `app/main.py::_open_continuation_with_retry` retries
+  send+raise_for_status up to 3 total attempts (0.5s/1.0s backoff) on 5xx,
+  httpx.TransportError, httpx.TimeoutException, TimeoutError, asyncio.TimeoutError;
+  4xx is NEVER retried (deterministic rejection). Retries only occur before any
+  continuation byte is yielded — zero transcript-duplication risk. Final failure
+  re-raises into the existing per-site fail-open so stats keep the truthful 502.
+  Applied at all 3 splice sites: openai-cont, anthropic-egress-cont, gemini-cont.
+  Verified: 37/37 (new retry + midstream continuation + transport-partial-flag)
+  and 40/40 (combo-wrap sentinel, stream keepalive, thought-buffer) green on BOTH
+  CI legs (.venv311 + .venv312); py_compile clean both legs; pre-push gates PASS.

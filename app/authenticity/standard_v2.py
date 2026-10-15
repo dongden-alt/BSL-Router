@@ -196,8 +196,45 @@ async def run_tokenizer_fingerprint(client, endpoint, api_key, model_id,
         return {}
 
 
-def similarity_tokenizer(sus: dict, base: dict):
-    """0..1 or None (not comparable / untrustworthy usage on either side)."""
+# The cross-baseline jitter tilt (2026-10-15, root cause of the retracted
+# namesake-MISMATCH verdicts).  slack widens with EACH baseline's own jitter, so
+# ranking one suspect against siblings handed the wobblier sibling free
+# tolerance: canonical opus (jitter=0 -> slack=1) scored 0.721 while canonical
+# sonnet (jitter=3 -> slack=4) scored 0.923 for the SAME suspect.  That 0.202
+# margin was pure harvest-time jitter artifact -- far too wide for any
+# decisive-gap guard to catch.  Ranking must therefore compare every candidate
+# at ONE matched tolerance (see _common_tokenizer_slack).
+TOKENIZER_DECISIVE_GAP = 0.05
+
+
+def _tokenizer_slack(sus: dict, base: dict) -> int:
+    """Per-PAIR tolerance: 1 + Js + Jb.  Correct physics for a single
+    comparison; NOT a cross-baseline ranking signal (see above)."""
+    return 1 + int((sus or {}).get("jitter") or 0) + int((base or {}).get("jitter") or 0)
+
+
+def _common_tokenizer_slack(sus: dict, bases) -> int:
+    """Tolerance shared by ALL candidates when ranking one suspect.
+
+    1 + sus.jitter + max(candidate jitters).  Using the max keeps every
+    candidate honest about the wobbliest lane in the field while making the
+    tolerance IDENTICAL across candidates, so the resulting ranking reflects
+    delta distance only.  With a single candidate this equals the per-pair
+    slack, so behaviour is unchanged for one-off comparisons.
+    """
+    js = int((sus or {}).get("jitter") or 0)
+    jb = max((int((b or {}).get("jitter") or 0) for b in (bases or []) if b),
+             default=0)
+    return 1 + js + jb
+
+
+def similarity_tokenizer(sus: dict, base: dict, slack: int | None = None):
+    """0..1 or None (not comparable / untrustworthy usage on either side).
+
+    slack=None -> per-pair tolerance (single comparison).  Pass an explicit
+    slack from _common_tokenizer_slack() when ranking one suspect against
+    several candidates, so a baseline's own jitter cannot tilt the ranking.
+    """
     if not sus or not base:
         return None
     if "unstable_overhead" in (sus.get("flags") or []) or \
@@ -210,7 +247,8 @@ def similarity_tokenizer(sus: dict, base: dict):
     sims = []
     # Hidden-overhead jitter on either side widens the per-string tolerance:
     # a lane whose system prompt wobbles by J tokens makes every delta +-J.
-    slack = 1 + int(sus.get("jitter") or 0) + int(base.get("jitter") or 0)
+    if slack is None:
+        slack = _tokenizer_slack(sus, base)
     for n in shared:
         diff = abs(ds[n] - db[n])
         if diff <= slack:
@@ -219,6 +257,26 @@ def similarity_tokenizer(sus: dict, base: dict):
             scale = max(2.0, 0.15 * max(abs(ds[n]), abs(db[n])))
             sims.append(max(0.0, 1.0 - (diff - slack) / scale))
     return round(sum(sims) / len(sims), 3)
+
+
+def tokenizer_decisive(sus: dict, base_a: dict, base_b: dict):
+    """Choose between two sibling baselines, or abstain.
+
+    BOTH siblings are compared at the SAME matched slack, so neither can win on
+    a jitter accident.  Returns (winner_sim, loser_sim) when the two differ by
+    at least TOKENIZER_DECISIVE_GAP; otherwise None -> the tokenizer lane
+    cannot honestly separate A from B for this suspect (an ALIAS pair) and the
+    caller must fall through to a discriminating lane.  None on either
+    similarity also yields None (not comparable).
+    """
+    common = _common_tokenizer_slack(sus, [base_a, base_b])
+    sa = similarity_tokenizer(sus, base_a, slack=common)
+    sb = similarity_tokenizer(sus, base_b, slack=common)
+    if sa is None or sb is None:
+        return None
+    if abs(sa - sb) < TOKENIZER_DECISIVE_GAP:
+        return None
+    return (sa, sb) if sa >= sb else (sb, sa)
 
 
 # --------------------------------------------------------- capability curve
@@ -960,9 +1018,17 @@ def compute_v2_dims(sus_v2: dict, candidates: dict) -> dict:
     inf_disc = informative_discriminator_items(
         {k: (v.get("discriminator") or {}) for k, v in cand_v2.items()})
     out = {}
+    # Matched slack across ALL candidates: one suspect ranked against N sibling
+    # standards must use the SAME tokenizer tolerance for every candidate, or a
+    # baseline's own harvest-time jitter tilts the ranking (the defect behind
+    # the retracted namesake-MISMATCH verdicts).
+    _sus_tok = sus_v2.get("tokenizer") or {}
+    _tok_slack = _common_tokenizer_slack(
+        _sus_tok, [(b.get("tokenizer") or {}) for b in cand_v2.values()])
     for k, b in cand_v2.items():
         out[k] = {
-            "tokenizer": similarity_tokenizer(sus_v2.get("tokenizer"), b.get("tokenizer")),
+            "tokenizer": similarity_tokenizer(_sus_tok, b.get("tokenizer"),
+                                              slack=_tok_slack),
             "capability_curve": similarity_curve(sus_v2.get("capability_curve"),
                                                  b.get("capability_curve")),
             "knowledge_bank": similarity_bank(sus_v2.get("knowledge_bank"),

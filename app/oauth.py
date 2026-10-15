@@ -878,6 +878,15 @@ OAUTH_PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
         {"id": "gpt-5.5-image", "kind": "image"},
     ],
     "antigravity": [
+        # 2026-10-15: Gemini 4 Argon (Antigravity 2.23.0, picker rollout ~Oct 13,
+        # plan-gated Ultra-first). thinkingLevel enum low/medium/high/max routes via
+        # app/compat/families/gemini.py (commit ae45988). Adding to the catalog keeps
+        # the static list in sync with live config so a cached-tab UI backfill can no
+        # longer drop these rows (the stale-catalog wipe fixed this session).
+        {"id": "gemini-4-argon"},
+        {"id": "gemini-4-argon-low"},
+        {"id": "gemini-4-argon-medium"},
+        {"id": "gemini-4-argon-high"},
         {"id": "gemini-3.6-flash-high"},
         {"id": "gemini-3.6-flash-medium"},
         {"id": "gemini-3.6-flash-low"},

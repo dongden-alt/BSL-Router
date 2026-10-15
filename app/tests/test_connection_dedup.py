@@ -457,3 +457,133 @@ def test_migration_dry_run_prints_report_writes_nothing(tmp_path, capsys):
     # The fixture file is untouched.
     with open(cfg_path, encoding="utf-8") as f:
         assert yaml.safe_load(f) == fixture
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 11. Models stale-save guard (2026-10-15): providers.<id>.models lost-update
+#
+# A stale dashboard tab's full-config autosave POSTs its stale models list
+# and REPLACES the server's — wiping rows added server-side after the tab
+# loaded (observed: 4 gemini-4-argon rows). The guard is UNION-with-opt-out,
+# mirroring _apply_connections_stale_save_guard.
+# ──────────────────────────────────────────────────────────────────────────
+
+def _merge_models(old_models, body_models, flags=None):
+    """Run only the models stale-save guard against two snapshots.
+
+    ``flags`` maps opt-out keys (_deleted_model/_deleted_models) onto the
+    body config, mirroring what the dashboard sends for deliberate deletes.
+    Returns (merged models list, new_config) so tests can assert the flags
+    were popped.
+    """
+    old_cfg = {"providers": {"prov": {"models": copy.deepcopy(old_models)}}}
+    new_cfg = {"providers": {"prov": {"models": copy.deepcopy(body_models)}}}
+    for key, value in (flags or {}).items():
+        new_cfg[key] = value
+    main._apply_models_stale_save_guard(old_cfg, new_cfg)
+    return new_cfg["providers"]["prov"]["models"], new_cfg
+
+
+def test_models_guard_restores_stale_missing_row(capsys):
+    """(a) A server row missing from the body is restored; count == server count."""
+    server = [
+        {"id": "gemini-4-argon-1", "enabled": True, "thinking": "low"},
+        {"id": "gemini-4-argon-2", "enabled": True, "thinking": "low"},
+        {"id": "gpt-5.6-terra", "enabled": True},
+    ]
+    body = [{"id": "gpt-5.6-terra", "enabled": True}]  # tab predates the argon rows
+    result, _ = _merge_models(server, body)
+    assert len(result) == len(server), "stale-tab wipe must be reverted"
+    # Body order first, restored server rows appended — no reorder, no drop.
+    assert [m["id"] for m in result] == [
+        "gpt-5.6-terra", "gemini-4-argon-1", "gemini-4-argon-2",
+    ]
+    assert "restored 2 model(s) (stale client save)" in capsys.readouterr().out
+
+
+def test_models_guard_single_delete_opt_out(capsys):
+    """(b) _deleted_model single-row opt-out: flagged row NOT restored."""
+    server = [{"id": "m1", "enabled": True}, {"id": "m2", "enabled": True}]
+    body = [{"id": "m1", "enabled": True}]  # deliberate m2 delete, not a stale drop
+    result, cfg = _merge_models(
+        server, body, {"_deleted_model": {"provider": "prov", "model": "m2"}},
+    )
+    assert [m["id"] for m in result] == ["m1"]
+    assert "_deleted_model" not in cfg  # popped — must never persist
+    assert capsys.readouterr().out == ""  # nothing restored
+
+    # A flag naming a DIFFERENT provider must not suppress restoration.
+    result2, cfg2 = _merge_models(
+        server, body, {"_deleted_model": {"provider": "other", "model": "m2"}},
+    )
+    assert [m["id"] for m in result2] == ["m1", "m2"]
+    assert "_deleted_model" not in cfg2
+
+
+def test_models_guard_bulk_delete_opt_out(capsys):
+    """(c) _deleted_models bulk opt-out: flagged rows dropped, others restored."""
+    server = [
+        {"id": "m1", "enabled": True},
+        {"id": "m2", "enabled": True},
+        {"id": "m3", "enabled": True},
+        {"id": "m4", "enabled": True},
+    ]
+    body = []  # client deliberately deleted m2/m3; m1/m4 are stale drops
+    result, cfg = _merge_models(
+        server, body,
+        {"_deleted_models": {"provider": "prov", "models": ["m2", "m3"]}},
+    )
+    assert [m["id"] for m in result] == ["m1", "m4"]
+    assert "_deleted_models" not in cfg  # popped — must never persist
+    assert "restored 2 model(s) (stale client save)" in capsys.readouterr().out
+
+
+def test_models_guard_body_wins_field_updates():
+    """(d) A body row sharing the server id wins field updates — no reverts."""
+    server = [{"id": "m1", "enabled": True, "thinking": "low", "name": "Old Name"}]
+    body = [{"id": "m1", "enabled": False, "thinking": "max", "name": "New Name"}]
+    result, _ = _merge_models(server, body)
+    assert len(result) == 1
+    assert result[0]["enabled"] is False  # flip NOT reverted
+    assert result[0]["thinking"] == "max"
+    assert result[0]["name"] == "New Name"
+
+
+def test_models_guard_keeps_genuinely_new_body_row():
+    """(e) A body row whose id is not on the server is kept, order intact."""
+    server = [{"id": "m1", "enabled": True}]
+    body = [
+        {"id": "m-new", "enabled": False},  # genuinely new — added by this client
+        {"id": "m1", "enabled": True},
+    ]
+    result, _ = _merge_models(server, body)
+    assert [m["id"] for m in result] == ["m-new", "m1"]  # never dropped/reordered
+
+
+def test_models_guard_non_dict_and_missing_lists_noop(capsys):
+    """(f) Fail-open: non-dict input never raises; missing models lists are no-ops."""
+    # Non-dict configs / non-dict providers / non-dict provider values.
+    main._apply_models_stale_save_guard(None, None)
+    main._apply_models_stale_save_guard(None, {"providers": {"prov": {"models": []}}})
+    main._apply_models_stale_save_guard(
+        {"providers": {"prov": {"models": []}}}, "not-a-dict",
+    )
+    main._apply_models_stale_save_guard(
+        {"providers": "not-a-dict"}, {"providers": {"prov": {"models": []}}},
+    )
+    main._apply_models_stale_save_guard(
+        {"providers": {"prov": "not-a-dict"}},
+        {"providers": {"prov": "also-not-a-dict"}},
+    )
+    # Server provider has no models list -> nothing to restore, body untouched.
+    old_cfg = {"providers": {"prov": {"connections": [{"name": "x"}]}}}
+    new_cfg = {"providers": {"prov": {"models": [{"id": "m1"}]}}}
+    main._apply_models_stale_save_guard(old_cfg, new_cfg)
+    assert new_cfg["providers"]["prov"]["models"] == [{"id": "m1"}]
+    # Body provider carries no models key -> no-op: the guard never invents a
+    # models list for the body and never restores rows into one.
+    old_cfg2 = {"providers": {"prov": {"models": [{"id": "m1"}, {"id": "m2"}]}}}
+    new_cfg2 = {"providers": {"prov": {"connections": []}}}
+    main._apply_models_stale_save_guard(old_cfg2, new_cfg2)
+    assert "models" not in new_cfg2["providers"]["prov"]
+    assert capsys.readouterr().out == ""
