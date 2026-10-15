@@ -904,13 +904,32 @@ OAUTH_PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
         # Envelope/host/project/auth were all proven correct by the same probes
         # (six ids return 200), so a 404 here means "id not resolvable for this
         # account tier", never a router bug.
-        # --- LIVE now (verified 200 on both connections, 2026-10-15) ---
+        # 2026-10-16 fetchAvailableModels ground truth (user-challenged
+        # research): live-called v1internal:fetchAvailableModels with BOTH
+        # connections' refreshed tokens — Google's authoritative registry for
+        # this account pair, 19 ids. Dispute verdict: ``gemini-2.5-pro`` IS
+        # listed (503 = capacity, gated row stays); ``gemini-pro-agent`` is NOT
+        # listed and 404s on both — the 9Router-era wire id is retired upstream
+        # (its 3.1-pro family 404s too; the tiered "pro" slot now routes to
+        # gemini-3.8-flash-tiered). Five listed LIVE ids were missing here and
+        # are added below; gpt-oss-120b-medium is one of Google's three
+        # "Recommended" agent models. chat_20706/chat_23310 are internal
+        # tab-chat ids (400 with the IDE envelope) and tab_*_preview are
+        # autocomplete models — not chat rows, deliberately excluded.
+        # --- LIVE now (verified 200 on both connections) ---
         {"id": "gemini-3-flash"},
         {"id": "gemini-2.5-flash"},
         {"id": "gemini-2.5-flash-lite"},
         {"id": "claude-sonnet-4-6"},
         {"id": "claude-opus-4-6-thinking"},
         {"id": "gemini-3.1-flash-image", "kind": "image"},
+        # 2026-10-16 additions (fetchAvailableModels-listed, probe-verified 200
+        # on both connections):
+        {"id": "gemini-3.5-flash-lite"},
+        {"id": "gemini-2.5-flash-thinking"},
+        {"id": "gemini-3.1-flash-lite"},
+        {"id": "gemini-3.8-flash-tiered"},
+        {"id": "gpt-oss-120b-medium"},
         # --- plan-gated (Pro + Ultra union — no model missing) ---
         {"id": "gemini-2.5-pro", "tier": "pro-ultra"},
         {"id": "gemini-4-argon", "tier": "pro-ultra"},

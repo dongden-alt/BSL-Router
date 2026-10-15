@@ -108,18 +108,28 @@ const OAUTH_PROVIDER_MODELS = {
     ],
     antigravity: [
         // 2026-10-15 live-probe rebuild — MIRROR of app/oauth.py (edit oauth.py
-        // first). The six rows below returned real 200s on daily-cloudcode-pa with
+        // first). The rows below returned real 200s on daily-cloudcode-pa with
         // freshly refreshed OAuth tokens for BOTH connections (user-confirmed Pro
         // accounts); everything after them is the current-gen PLAN-GATED Pro +
         // Ultra union (user directive 2026-10-15: no model missing) that 404s on
         // the current tier and resolves on Pro/Ultra connections. gemini-pro-agent
         // was dropped (dead legacy alias, migrated in app/main.py).
+        // 2026-10-16 fetchAvailableModels ground truth: Google's live registry
+        // (19 ids, both accounts) confirms gemini-2.5-pro listed (503 capacity
+        // -> gated) and gemini-pro-agent retired (404, not listed). Five listed
+        // LIVE ids added below (gpt-oss-120b-medium is a Recommended agent
+        // model); chat_*/tab_* internal ids excluded.
         { id: 'gemini-3-flash' },
         { id: 'gemini-2.5-flash' },
         { id: 'gemini-2.5-flash-lite' },
         { id: 'claude-sonnet-4-6' },
         { id: 'claude-opus-4-6-thinking' },
         { id: 'gemini-3.1-flash-image', kind: 'image' },
+        { id: 'gemini-3.5-flash-lite' },
+        { id: 'gemini-2.5-flash-thinking' },
+        { id: 'gemini-3.1-flash-lite' },
+        { id: 'gemini-3.8-flash-tiered' },
+        { id: 'gpt-oss-120b-medium' },
         { id: 'gemini-2.5-pro', tier: 'pro-ultra' },
         { id: 'gemini-4-argon', tier: 'pro-ultra' },
         { id: 'gemini-4-argon-low', tier: 'pro-ultra' },
