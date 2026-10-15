@@ -1554,6 +1554,15 @@ _ANTIGRAVITY_INTEGRATION_SLOT_SET = frozenset(ANTIGRAVITY_INTEGRATION_SLOTS)
 # ``gemini-3.6-flash-high`` so the migration destination stays a live slot.
 _ANTIGRAVITY_LEGACY_SLOT_MIGRATIONS = {
     "gemini-3-flash-agent": "gemini-3.6-flash-high",
+    # 2026-10-15 (live probe): ``gemini-pro-agent`` returns 404 NOT_FOUND and was
+    # dropped from the OAuth catalog, so saved mappings would orphan. Retarget to
+    # ``gemini-3.6-flash-high`` like the other retired Flash slots — NOT to
+    # ``gemini-3-flash`` (verified live upstream): migration is single-pass (the
+    # loop reads the original mappings, never its own output), but the validator
+    # afterwards only keeps keys in _ANTIGRAVITY_INTEGRATION_SLOT_SET, and
+    # ``gemini-3-flash`` is an obsolete slot there, so a mapping migrated onto it
+    # would be dropped as an unknown source slot on the same save.
+    "gemini-pro-agent": "gemini-3.6-flash-high",
     # 2026-10-06 (user directive): bare ``gemini-3-flash`` is retired upstream
     # ("unavailable"); retarget to the surviving Flash-high slot. deepseek-v4.1-
     # flash / glm-5.3-flash were offered as fallbacks but are not needed while

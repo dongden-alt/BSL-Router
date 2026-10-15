@@ -878,28 +878,56 @@ OAUTH_PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
         {"id": "gpt-5.5-image", "kind": "image"},
     ],
     "antigravity": [
-        # 2026-10-15: Gemini 4 Argon (Antigravity 2.23.0, picker rollout ~Oct 13,
-        # plan-gated Ultra-first). thinkingLevel enum low/medium/high/max routes via
-        # app/compat/families/gemini.py (commit ae45988). Adding to the catalog keeps
-        # the static list in sync with live config so a cached-tab UI backfill can no
-        # longer drop these rows (the stale-catalog wipe fixed this session).
-        {"id": "gemini-4-argon"},
-        {"id": "gemini-4-argon-low"},
-        {"id": "gemini-4-argon-medium"},
-        {"id": "gemini-4-argon-high"},
-        {"id": "gemini-3.6-flash-high"},
-        {"id": "gemini-3.6-flash-medium"},
-        {"id": "gemini-3.6-flash-low"},
-        {"id": "gemini-3.1-pro-low"},
-        {"id": "gemini-3.1-pro-high"},
-        {"id": "gemini-pro-agent"},
-        {"id": "claude-opus-5-5-high"},
-        {"id": "claude-opus-5-5-medium"},
-        {"id": "claude-opus-5-5-low"},
-        {"id": "claude-sonnet-5-5-high"},
-        {"id": "claude-sonnet-5-5-medium"},
-        {"id": "claude-sonnet-5-5-low"},
+        # 2026-10-15 live-probe rebuild (probe_404i/j/k/l against
+        # daily-cloudcode-pa.googleapis.com with freshly refreshed OAuth tokens
+        # for BOTH antigravity connections — tonluongdong@gmail.com and
+        # blacksandlabs.contact@gmail.com, both user-confirmed Pro accounts —
+        # under the discovered project ``aicode-consumers``). The catalog had
+        # INVERTED from upstream reality: 16 of its 17 rows returned 404
+        # NOT_FOUND while six ids that were NOT listed returned real 200
+        # responses — so every Antigravity OAuth test call failed. Verified
+        # classes across both accounts:
+        #   LIVE 200    gemini-3-flash, gemini-2.5-flash, gemini-2.5-flash-lite,
+        #               gemini-3.1-flash-image, claude-sonnet-4-6,
+        #               claude-opus-4-6-thinking
+        #   STUB 200    gemini-3-pro-*, gemini-3-flash-agent, gemini-3.5-flash*
+        #               (Google answers "no longer available" -> retired upstream)
+        #   NOCAP 503   gemini-2.5-pro (known id, no capacity on this tier)
+        #   DEAD 404    gemini-4-argon*, gemini-3.6-flash-*, gemini-3.1-pro-*,
+        #               gemini-pro-agent, claude-*-5-5-*, gemini-3.7-flash*
+        # USER DIRECTIVE 2026-10-15: carry the Pro + Ultra plan UNION — no model
+        # missing. The 404 rows are NOT removed models: they are the current-gen
+        # PLAN-GATED set (both connections report loadCodeAssist
+        # currentTier=free-tier / allowed=[free-tier, standard-tier], so raw ids
+        # are not resolvable for these tokens yet). Gated rows are tagged
+        # ``tier: "pro-ultra"`` — informational only, no consumer reads the key.
+        # Envelope/host/project/auth were all proven correct by the same probes
+        # (six ids return 200), so a 404 here means "id not resolvable for this
+        # account tier", never a router bug.
+        # --- LIVE now (verified 200 on both connections, 2026-10-15) ---
+        {"id": "gemini-3-flash"},
+        {"id": "gemini-2.5-flash"},
+        {"id": "gemini-2.5-flash-lite"},
+        {"id": "claude-sonnet-4-6"},
+        {"id": "claude-opus-4-6-thinking"},
         {"id": "gemini-3.1-flash-image", "kind": "image"},
+        # --- plan-gated (Pro + Ultra union — no model missing) ---
+        {"id": "gemini-2.5-pro", "tier": "pro-ultra"},
+        {"id": "gemini-4-argon", "tier": "pro-ultra"},
+        {"id": "gemini-4-argon-low", "tier": "pro-ultra"},
+        {"id": "gemini-4-argon-medium", "tier": "pro-ultra"},
+        {"id": "gemini-4-argon-high", "tier": "pro-ultra"},
+        {"id": "gemini-3.6-flash-high", "tier": "pro-ultra"},
+        {"id": "gemini-3.6-flash-medium", "tier": "pro-ultra"},
+        {"id": "gemini-3.6-flash-low", "tier": "pro-ultra"},
+        {"id": "gemini-3.1-pro-low", "tier": "pro-ultra"},
+        {"id": "gemini-3.1-pro-high", "tier": "pro-ultra"},
+        {"id": "claude-opus-5-5-high", "tier": "pro-ultra"},
+        {"id": "claude-opus-5-5-medium", "tier": "pro-ultra"},
+        {"id": "claude-opus-5-5-low", "tier": "pro-ultra"},
+        {"id": "claude-sonnet-5-5-high", "tier": "pro-ultra"},
+        {"id": "claude-sonnet-5-5-medium", "tier": "pro-ultra"},
+        {"id": "claude-sonnet-5-5-low", "tier": "pro-ultra"},
     ],
     "github": [
         {"id": "gpt-6.1-sol"},

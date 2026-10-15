@@ -107,23 +107,35 @@ const OAUTH_PROVIDER_MODELS = {
         { id: 'gpt-5.5-image', kind: 'image' },
     ],
     antigravity: [
-        { id: 'gemini-4-argon' },
-        { id: 'gemini-4-argon-low' },
-        { id: 'gemini-4-argon-medium' },
-        { id: 'gemini-4-argon-high' },
-        { id: 'gemini-3.6-flash-high' },
-        { id: 'gemini-3.6-flash-medium' },
-        { id: 'gemini-3.6-flash-low' },
-        { id: 'gemini-3.1-pro-low' },
-        { id: 'gemini-3.1-pro-high' },
-        { id: 'gemini-pro-agent' },
-        { id: 'claude-opus-5-5-high' },
-        { id: 'claude-opus-5-5-medium' },
-        { id: 'claude-opus-5-5-low' },
-        { id: 'claude-sonnet-5-5-high' },
-        { id: 'claude-sonnet-5-5-medium' },
-        { id: 'claude-sonnet-5-5-low' },
+        // 2026-10-15 live-probe rebuild — MIRROR of app/oauth.py (edit oauth.py
+        // first). The six rows below returned real 200s on daily-cloudcode-pa with
+        // freshly refreshed OAuth tokens for BOTH connections (user-confirmed Pro
+        // accounts); everything after them is the current-gen PLAN-GATED Pro +
+        // Ultra union (user directive 2026-10-15: no model missing) that 404s on
+        // the current tier and resolves on Pro/Ultra connections. gemini-pro-agent
+        // was dropped (dead legacy alias, migrated in app/main.py).
+        { id: 'gemini-3-flash' },
+        { id: 'gemini-2.5-flash' },
+        { id: 'gemini-2.5-flash-lite' },
+        { id: 'claude-sonnet-4-6' },
+        { id: 'claude-opus-4-6-thinking' },
         { id: 'gemini-3.1-flash-image', kind: 'image' },
+        { id: 'gemini-2.5-pro', tier: 'pro-ultra' },
+        { id: 'gemini-4-argon', tier: 'pro-ultra' },
+        { id: 'gemini-4-argon-low', tier: 'pro-ultra' },
+        { id: 'gemini-4-argon-medium', tier: 'pro-ultra' },
+        { id: 'gemini-4-argon-high', tier: 'pro-ultra' },
+        { id: 'gemini-3.6-flash-high', tier: 'pro-ultra' },
+        { id: 'gemini-3.6-flash-medium', tier: 'pro-ultra' },
+        { id: 'gemini-3.6-flash-low', tier: 'pro-ultra' },
+        { id: 'gemini-3.1-pro-low', tier: 'pro-ultra' },
+        { id: 'gemini-3.1-pro-high', tier: 'pro-ultra' },
+        { id: 'claude-opus-5-5-high', tier: 'pro-ultra' },
+        { id: 'claude-opus-5-5-medium', tier: 'pro-ultra' },
+        { id: 'claude-opus-5-5-low', tier: 'pro-ultra' },
+        { id: 'claude-sonnet-5-5-high', tier: 'pro-ultra' },
+        { id: 'claude-sonnet-5-5-medium', tier: 'pro-ultra' },
+        { id: 'claude-sonnet-5-5-low', tier: 'pro-ultra' },
     ],
     github: [
         { id: 'gpt-6.1-sol' },
