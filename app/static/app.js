@@ -119,6 +119,11 @@ const OAUTH_PROVIDER_MODELS = {
         // -> gated) and gemini-pro-agent retired (404, not listed). Five listed
         // LIVE ids added below (gpt-oss-120b-medium is a Recommended agent
         // model); chat_*/tab_* internal ids excluded.
+        // 2026-10-18 precise tier split (mirror of oauth.py - cross-validated
+        // 3-way: Google models doc, agentpedia plan comparison, live registry):
+        // gemini-4-argon* = Ultra-only; claude-*-5-5-* + gemini-3.1-pro-* =
+        // Pro (and Ultra); gemini-2.5-pro + gemini-3.6-flash-* = union tag
+        // (sources conflict, conservative).
         { id: 'gemini-3-flash' },
         { id: 'gemini-2.5-flash' },
         { id: 'gemini-2.5-flash-lite' },
@@ -131,21 +136,21 @@ const OAUTH_PROVIDER_MODELS = {
         { id: 'gemini-3.8-flash-tiered' },
         { id: 'gpt-oss-120b-medium' },
         { id: 'gemini-2.5-pro', tier: 'pro-ultra' },
-        { id: 'gemini-4-argon', tier: 'pro-ultra' },
-        { id: 'gemini-4-argon-low', tier: 'pro-ultra' },
-        { id: 'gemini-4-argon-medium', tier: 'pro-ultra' },
-        { id: 'gemini-4-argon-high', tier: 'pro-ultra' },
+        { id: 'gemini-4-argon', tier: 'ultra' },
+        { id: 'gemini-4-argon-low', tier: 'ultra' },
+        { id: 'gemini-4-argon-medium', tier: 'ultra' },
+        { id: 'gemini-4-argon-high', tier: 'ultra' },
         { id: 'gemini-3.6-flash-high', tier: 'pro-ultra' },
         { id: 'gemini-3.6-flash-medium', tier: 'pro-ultra' },
         { id: 'gemini-3.6-flash-low', tier: 'pro-ultra' },
-        { id: 'gemini-3.1-pro-low', tier: 'pro-ultra' },
-        { id: 'gemini-3.1-pro-high', tier: 'pro-ultra' },
-        { id: 'claude-opus-5-5-high', tier: 'pro-ultra' },
-        { id: 'claude-opus-5-5-medium', tier: 'pro-ultra' },
-        { id: 'claude-opus-5-5-low', tier: 'pro-ultra' },
-        { id: 'claude-sonnet-5-5-high', tier: 'pro-ultra' },
-        { id: 'claude-sonnet-5-5-medium', tier: 'pro-ultra' },
-        { id: 'claude-sonnet-5-5-low', tier: 'pro-ultra' },
+        { id: 'gemini-3.1-pro-low', tier: 'pro' },
+        { id: 'gemini-3.1-pro-high', tier: 'pro' },
+        { id: 'claude-opus-5-5-high', tier: 'pro' },
+        { id: 'claude-opus-5-5-medium', tier: 'pro' },
+        { id: 'claude-opus-5-5-low', tier: 'pro' },
+        { id: 'claude-sonnet-5-5-high', tier: 'pro' },
+        { id: 'claude-sonnet-5-5-medium', tier: 'pro' },
+        { id: 'claude-sonnet-5-5-low', tier: 'pro' },
     ],
     github: [
         { id: 'gpt-6.1-sol' },

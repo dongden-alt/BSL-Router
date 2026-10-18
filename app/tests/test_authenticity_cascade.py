@@ -435,6 +435,37 @@ class TestGateCascade:
         monkeypatch.setattr(probes_mod, "run_boundary_probes", fake_boundary)
         monkeypatch.setattr(probes_mod, "run_stability_probe", fake_stability)
         monkeypatch.setattr(probes_mod, "run_timing_probe", fake_timing)
+        # 2026-10-18 fail-open regression guard: with the v2 canary now
+        # fail-open (standard_v2.py), every deep-mode gate run in this file
+        # executes the REAL v2 lane battery against http://router.test --
+        # each call fails in milliseconds (getaddrinfo) but still pays the
+        # 0.75s _pace sleep, stacking 30+ sleeps against the 10s pytest
+        # timeout (same hazard documented in test_authenticity_standard_v2).
+        # Zero pace here so the genuine fail-open path -- canary 502 ->
+        # lanes proceed -> canary_failed_open gap recorded -- stays under
+        # test, fast.
+        monkeypatch.setattr("app.authenticity.standard_v2._MIN_INTERVAL", 0.0)
+        # 2026-10-18 second fix: pace was only half the story. Transport
+        # failures (getaddrinfo -> code 0) and 502 are _RETRYABLE, so every
+        # failing v2 call re-slept through _RETRY_GAPS=(4.0, 10.0, 25.0) --
+        # 39s of backoff PER CALL, which is what actually blew the 10s
+        # pytest ceiling (run aborted at 29 dots; BSL log shows canary
+        # executed 2x, tok_fp 4x = retries firing, each call failing in
+        # 1-14ms). gaps=_RETRY_GAPS is a def-time default arg, so patching
+        # the module global is useless -- wrap call_with_backoff instead
+        # and force gaps=() : each lane fails once, instantly, and the
+        # fail-open verdict (canary_failed_open + per-lane gaps) is still
+        # built by the REAL code path. Function-scoped: direct
+        # call_with_backoff tests outside _run_gate keep real retries.
+        import app.authenticity.standard_v2 as sv2_mod
+
+        _orig_cwb = sv2_mod.call_with_backoff
+
+        async def _no_gap_cwb(*args, **kwargs):
+            kwargs.pop("gaps", None)
+            return await _orig_cwb(*args, gaps=(), **kwargs)
+
+        monkeypatch.setattr(sv2_mod, "call_with_backoff", _no_gap_cwb)
 
         cfg = {"cache_ttl_seconds": 0, "total_timeout_s": 90,
                "probe_timeout_s": 5, "max_tier": 2, "v2_min_budget_s": 1}

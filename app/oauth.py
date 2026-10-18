@@ -895,12 +895,12 @@ OAUTH_PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
         #   NOCAP 503   gemini-2.5-pro (known id, no capacity on this tier)
         #   DEAD 404    gemini-4-argon*, gemini-3.6-flash-*, gemini-3.1-pro-*,
         #               gemini-pro-agent, claude-*-5-5-*, gemini-3.7-flash*
-        # USER DIRECTIVE 2026-10-15: carry the Pro + Ultra plan UNION — no model
+        # USER DIRECTIVE 2026-10-15: carry the Pro + Ultra plan UNION - no model
         # missing. The 404 rows are NOT removed models: they are the current-gen
         # PLAN-GATED set (both connections report loadCodeAssist
         # currentTier=free-tier / allowed=[free-tier, standard-tier], so raw ids
-        # are not resolvable for these tokens yet). Gated rows are tagged
-        # ``tier: "pro-ultra"`` — informational only, no consumer reads the key.
+        # are not resolvable for these tokens yet). Gated rows are tagged with a
+        # precise ``tier`` key - informational only, no consumer reads the key.
         # Envelope/host/project/auth were all proven correct by the same probes
         # (six ids return 200), so a 404 here means "id not resolvable for this
         # account tier", never a router bug.
@@ -930,23 +930,36 @@ OAUTH_PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
         {"id": "gemini-3.1-flash-lite"},
         {"id": "gemini-3.8-flash-tiered"},
         {"id": "gpt-oss-120b-medium"},
-        # --- plan-gated (Pro + Ultra union — no model missing) ---
+        # --- plan-gated (Pro + Ultra union - no model missing) ---
+        # 2026-10-18 precise tier split, cross-validated 3-way: (1) Google's
+        # models doc (antigravity.google/docs/models): Gemini 4 Argon =
+        # "Ultra and Enterprise only"; Claude Sonnet/Opus 5.5 = "Pro (non-
+        # trial), Ultra and Enterprise"; 4.6 family = free/Plus/Pro (already
+        # LIVE rows above). (2) agentpedia 2026 plan comparison: Pro's full set
+        # = "All 5 (Gemini 3.1 Pro, Gemini 3.1 Pro Low, Flash, Sonnet 4.6,
+        # Opus 4.6)"; Ultra adds NO exclusive models - same weights, quota /
+        # priority only. (3) live fetchAvailableModels registry: tieredModelIds
+        # routes the "pro" slot to gemini-3.8-flash-tiered (an untagged LIVE
+        # row above). gemini-2.5-pro and gemini-3.6-flash-* keep the union tag
+        # - sources conflict (2.5-pro is capacity-503 on both live accounts,
+        # 3.6-flash family undocumented in both docs), so union is the
+        # conservative call.
         {"id": "gemini-2.5-pro", "tier": "pro-ultra"},
-        {"id": "gemini-4-argon", "tier": "pro-ultra"},
-        {"id": "gemini-4-argon-low", "tier": "pro-ultra"},
-        {"id": "gemini-4-argon-medium", "tier": "pro-ultra"},
-        {"id": "gemini-4-argon-high", "tier": "pro-ultra"},
+        {"id": "gemini-4-argon", "tier": "ultra"},
+        {"id": "gemini-4-argon-low", "tier": "ultra"},
+        {"id": "gemini-4-argon-medium", "tier": "ultra"},
+        {"id": "gemini-4-argon-high", "tier": "ultra"},
         {"id": "gemini-3.6-flash-high", "tier": "pro-ultra"},
         {"id": "gemini-3.6-flash-medium", "tier": "pro-ultra"},
         {"id": "gemini-3.6-flash-low", "tier": "pro-ultra"},
-        {"id": "gemini-3.1-pro-low", "tier": "pro-ultra"},
-        {"id": "gemini-3.1-pro-high", "tier": "pro-ultra"},
-        {"id": "claude-opus-5-5-high", "tier": "pro-ultra"},
-        {"id": "claude-opus-5-5-medium", "tier": "pro-ultra"},
-        {"id": "claude-opus-5-5-low", "tier": "pro-ultra"},
-        {"id": "claude-sonnet-5-5-high", "tier": "pro-ultra"},
-        {"id": "claude-sonnet-5-5-medium", "tier": "pro-ultra"},
-        {"id": "claude-sonnet-5-5-low", "tier": "pro-ultra"},
+        {"id": "gemini-3.1-pro-low", "tier": "pro"},
+        {"id": "gemini-3.1-pro-high", "tier": "pro"},
+        {"id": "claude-opus-5-5-high", "tier": "pro"},
+        {"id": "claude-opus-5-5-medium", "tier": "pro"},
+        {"id": "claude-opus-5-5-low", "tier": "pro"},
+        {"id": "claude-sonnet-5-5-high", "tier": "pro"},
+        {"id": "claude-sonnet-5-5-medium", "tier": "pro"},
+        {"id": "claude-sonnet-5-5-low", "tier": "pro"},
     ],
     "github": [
         {"id": "gpt-6.1-sol"},

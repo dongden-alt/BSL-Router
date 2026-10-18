@@ -351,16 +351,35 @@ def test_pairwise_separability_flags_distinct_standards():
     assert v2.pairwise_separability(A, A)["separable"] is False
 
 
-def test_v2_lane_failure_modes_are_failopen():
+def test_v2_lane_failure_modes_are_failopen(monkeypatch):
+    monkeypatch.setattr(v2, "_MIN_INTERVAL", 0.0)  # offline battery: no pace sleeps
     def handler(req):
         return httpx.Response(500, json={})
 
     async def go():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
             return await v2.run_standard_v2(c, "http://x", "k", "m", mode="live",
-                                            rng=random.Random(1))
+                                            rng=random.Random(1), gaps=())
     res = _run(go())
-    assert res == {"version": 2, "mode": "live", "gap": "lane_unreachable"}
+    # 2026-10-19 fail-open: a dead transport must NOT abort at the canary (old
+    # behavior: gap=lane_unreachable with zero lanes attempted). The canary
+    # miss is recorded as diagnostics and every lane still runs; all four fail
+    # individually and say why via lane_gaps. gaps=() keeps this fast -- the
+    # default live gaps=(3.0,) would sleep 3s between retry attempts now that
+    # the lanes actually execute under failure. 2026-10-19 pace: _pace() fires
+    # per CALL (not per retry), so fail-open's full ~36-call battery at the
+    # 0.75s import-time _MIN_INTERVAL stacks 10-27s of sleep against the 10s
+    # pytest timeout. monkeypatch.setattr reaches the constant; setenv cannot
+    # (it is bound at import time).
+    assert res["version"] == 2 and res["mode"] == "live"
+    assert res["gap"] == "canary_failed_open"
+    assert res["canary_gap"] == "http_500"
+    assert res["lane_gaps"] == {
+        "tokenizer": "lane_returned_empty",
+        "capability_curve": "lane_returned_empty",
+        "knowledge_bank": "lane_returned_empty",
+        "discriminator": "lane_returned_empty",
+    }
 
 
 def test_outer_timeout_keeps_finished_lanes_via_sink(monkeypatch):
@@ -408,6 +427,7 @@ def test_outer_timeout_keeps_finished_lanes_via_sink(monkeypatch):
 
 def test_sink_is_optional_and_return_value_unchanged(monkeypatch):
     """Callers that pass no sink (harvest path) get the same dict shape back."""
+    monkeypatch.setattr(v2, "_MIN_INTERVAL", 0.0)  # offline battery: no pace sleeps
     def handler(req):
         return httpx.Response(500, json={})
 
@@ -415,8 +435,17 @@ def test_sink_is_optional_and_return_value_unchanged(monkeypatch):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
             s: dict = {}
             r = await v2.run_standard_v2(c, "http://x", "k", "m", mode="live",
-                                         rng=random.Random(1), sink=s)
+                                         rng=random.Random(1), gaps=(), sink=s)
             return r, s
     r, s = _run(go())
     assert r is s
-    assert r == {"version": 2, "mode": "live", "gap": "lane_unreachable"}
+    # Same fail-open contract as above: sink identity preserved, canary miss
+    # recorded as diagnostics (not an abort), all four lanes attempted and
+    # individually reported. gaps=() + _MIN_INTERVAL=0 keep the failure path
+    # fast: _pace() sleeps per CALL, not per retry, and the live 0.75s
+    # constant over the ~36-call battery would blow the 10s pytest timeout.
+    assert r["version"] == 2 and r["mode"] == "live"
+    assert r["gap"] == "canary_failed_open"
+    assert r["canary_gap"] == "http_500"
+    assert set(r["lane_gaps"]) == {"tokenizer", "capability_curve",
+                                   "knowledge_bank", "discriminator"}

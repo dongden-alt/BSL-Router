@@ -936,11 +936,25 @@ async def run_standard_v2(client, endpoint, api_key, model_id,
             {"id": "v2_canary", "prompt": "Reply with the single word: ok", "max_tokens": 16},
             min(timeout_s, 180), extra={"temperature": 0, "stream": False},
             gaps=gaps)
-    except Exception:
+    except Exception as exc:
         canary = None
-    if canary is None or getattr(canary, "status_code", 0) != 200:
-        out["gap"] = "lane_unreachable"
-        return out
+        _canary_err = f"{type(exc).__name__}"
+    else:
+        if canary is None or getattr(canary, "status_code", 0) != 200:
+            _canary_err = f"http_{getattr(canary, 'status_code', 0)}"
+        else:
+            _canary_err = ""
+    if _canary_err:
+        # 2026-10-19 FAIL-OPEN: the canary is a single non-streaming request; a
+        # transient timeout/refusal on it must NOT abort all four v2 lanes. The
+        # old `gap=lane_unreachable` abort (single point of failure) is what
+        # collapsed sibling separability to the fixed 2-candidate tie cluster:
+        # every live vsllm-o/claude-* run lost the whole v2 profile on one
+        # canary miss. The lanes have their own per-call budgets + retries and
+        # per-lane timeout isolation, so they proceed; failure is recorded as
+        # `canary_gap` for diagnostics only.
+        out["canary_gap"] = _canary_err
+        out["gap"] = "canary_failed_open"
     # Per-lane timeout isolation (2026-10-09). A stall in ONE lane must not
     # discard the others: kimi-k3's tokenizer + capability_curve completed and
     # cached, then the machine slept inside knowledge_bank; on wake the caller's
