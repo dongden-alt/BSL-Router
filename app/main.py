@@ -2711,6 +2711,43 @@ _capture_queue: "asyncio.Queue | None" = None
 # payload instead, so a lagging drain can hold ~128MB resident for 0.5MB agent
 # requests. That ceiling is accepted for an opt-in diagnostic mode only.
 _CAPTURE_QUEUE_MAX = 256
+_CODEX_RESPONSE_TEE_PATH = os.path.join(_os_module.path.dirname(_project_root), ".brain", "logs", "codex_response_tee.jsonl")
+_CODEX_RESPONSE_TEE_CAP_BYTES = 50 * 1024 * 1024
+_CODEX_RESPONSE_TEE_LOCK = _threading.Lock()
+
+
+def _codex_response_tee_enabled() -> bool:
+    return os.environ.get("BSL_CODEX_RESPONSE_TEE") == "1"
+
+
+def _write_codex_response_tee(record: dict) -> None:
+    """Append one capped diagnostic record; never raise to the stream."""
+    try:
+        os.makedirs(os.path.dirname(_CODEX_RESPONSE_TEE_PATH), exist_ok=True)
+        with _CODEX_RESPONSE_TEE_LOCK:
+            _rotate_capped_file(_CODEX_RESPONSE_TEE_PATH, _CODEX_RESPONSE_TEE_CAP_BYTES)
+            with open(_CODEX_RESPONSE_TEE_PATH, "a", encoding="utf-8") as _tee_file:
+                _tee_file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception as _tee_err:
+        print(f"[CodexTee] write failed (non-blocking): {_tee_err}", flush=True)
+
+
+async def _flush_codex_response_tee(client: str, model: str, head: str, total_bytes: int) -> None:
+    if not _codex_response_tee_enabled():
+        return
+    try:
+        await asyncio.to_thread(
+            _write_codex_response_tee,
+            {
+                "ts": datetime.now().isoformat(),
+                "client": client,
+                "model": model,
+                "bytes_head": head,
+                "total_bytes": total_bytes,
+            },
+        )
+    except Exception as _tee_err:
+        print(f"[CodexTee] flush failed (non-blocking): {_tee_err}", flush=True)
 
 
 def _build_capture_record(
@@ -8500,6 +8537,56 @@ def _degenerate_effort_telemetry(d: dict) -> str:
     )
 
 
+def _anthropic_egress_openai_source(provider_name: str, raw_source):
+    """Return OpenAI SSE for the Anthropic normalizer, converting Codex only."""
+    if provider_name == "codex":
+        return codex_adapter.responses_sse_to_openai_sse(raw_source)
+    return raw_source
+
+
+def _gemini_frame_commits_transcript(frame: dict, no_output_notice: str) -> bool:
+    """True for visible text or functionCall parts, never invisible scaffolding."""
+    from app.compat.adapters.gemini import gemini_frame_has_content
+
+    node = frame.get("response", frame) if isinstance(frame, dict) else {}
+    parts = [
+        part
+        for candidate in (node.get("candidates") or [])
+        for part in ((candidate.get("content") or {}).get("parts") or [])
+        if isinstance(part, dict)
+    ]
+    has_visible_text = any(
+        part.get("text") != no_output_notice and (part.get("text") or "").strip()
+        for part in parts
+        if isinstance(part.get("text"), str)
+    )
+    has_function_call = any(isinstance(part.get("functionCall"), dict) for part in parts)
+    return gemini_frame_has_content(frame) and (has_visible_text or has_function_call)
+
+
+async def _tee_codex_response_source(raw_source, client: str, model: str):
+    """Capture decoded converter input while yielding raw bytes unchanged."""
+    enabled = _codex_response_tee_enabled()
+    head_parts = []
+    head_bytes = 0
+    total_bytes = 0
+    try:
+        async for chunk in raw_source:
+            if enabled:
+                text = chunk.decode("utf-8", errors="replace")
+                encoded = text.encode("utf-8")
+                total_bytes += len(encoded)
+                if head_bytes < 64 * 1024:
+                    remaining = 64 * 1024 - head_bytes
+                    piece = encoded[:remaining].decode("utf-8", errors="ignore")
+                    head_parts.append(piece)
+                    head_bytes += len(piece.encode("utf-8"))
+            yield chunk
+    finally:
+        if enabled:
+            await _flush_codex_response_tee(client, model, "".join(head_parts), total_bytes)
+
+
 async def _process_chat_completion(body: dict, client_wants_anthropic: bool = False, client_wants_gemini: bool = False, _retry_state: dict = None, request: Request = None, _stream_guard: bool = True):
     """Entry: never-stop ROOT loop + single-pass nested dispatch (Bug 2 Part A).
 
@@ -11751,7 +11838,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     # request declared tools. Fail-open: any doubt -> False.
                     _req_has_tools = isinstance(upstream_payload, dict) and bool(upstream_payload.get("tools"))
                     normalizer = StreamNormalizer("openai_sse", "anthropic_sse", tools_in_request=_req_has_tools)
-                    async for out in normalizer.convert_openai_to_anthropic(_raw_ok_chain()):
+                    _openai_source = _anthropic_egress_openai_source(provider_name, _raw_ok_chain())
+                    async for out in normalizer.convert_openai_to_anthropic(_openai_source):
                         yield out
                 except (GeneratorExit, asyncio.CancelledError):
                     stats["error"] = stats["error"] or "client_disconnected"
@@ -12230,7 +12318,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         # Codex upstream speaks Responses SSE (event:/data: pairs, no [DONE]).
                         # Convert to OpenAI chat.completion.chunk SSE before the drain loop's
                         # openai_chunk_to_gemini parse, mirroring the OpenAI egress lane (~L13201).
-                        openai_source = codex_adapter.responses_sse_to_openai_sse(_raw_ok())
+                        openai_source = codex_adapter.responses_sse_to_openai_sse(
+                            _tee_codex_response_source(_raw_ok(), "gemini", target_model)
+                        )
                     elif _is_anthropic_fmt:
                         _normalizer = StreamNormalizer(
                             "anthropic_sse", "openai_sse",
@@ -12535,12 +12625,14 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             (t != _BSL_NO_OUTPUT_NOTICE_CONST) and (t or "").strip()
                                             for t in _frame_text_parts
                                         )
-                                        if _gemini_frame_has_content(_frame) and _has_visible_text:
+                                        if _gemini_frame_commits_transcript(
+                                            _frame, _BSL_NO_OUTPUT_NOTICE_CONST
+                                        ):
                                             emitted_model_data = True
                                             _emit.mark_emitted(_payload)
                                         yield _payload
-                            except Exception:
-                                pass
+                            except Exception as _render_err:
+                                print(f"[CodexDrain] render exception swallowed: {type(_render_err).__name__}: {_render_err}", flush=True)
                     finally:
                         if not _drain_task.done():
                             _drain_task.cancel()

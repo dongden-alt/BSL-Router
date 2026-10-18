@@ -378,13 +378,13 @@ async def responses_sse_to_openai_sse(raw_iter):
                         dj = json.loads(d)
                     except json.JSONDecodeError:
                         dj = {}
-                    oai = _codex_event_to_openai_chunk(current_event, dj, tc_state)
-                    if oai is not None:
-                        if first_delta:
-                            # Inject role chunk before first content.
-                            yield f"data: {json.dumps(_role_chunk(oai), separators=(',', ':'))}\n\n".encode("utf-8")
-                            first_delta = False
-                        yield f"data: {json.dumps(oai, separators=(',', ':'))}\n\n".encode("utf-8")
+                    converted = _codex_event_to_openai_chunk(current_event, dj, tc_state)
+                    for oai in (converted if isinstance(converted, list) else [converted]):
+                        if oai is not None:
+                            if first_delta:
+                                yield f"data: {json.dumps(_role_chunk(oai), separators=(',', ':'))}\n\n".encode("utf-8")
+                                first_delta = False
+                            yield f"data: {json.dumps(oai, separators=(',', ':'))}\n\n".encode("utf-8")
                 current_event = None
                 current_data_parts = []
 
@@ -395,11 +395,13 @@ async def responses_sse_to_openai_sse(raw_iter):
             dj = json.loads(d)
         except json.JSONDecodeError:
             dj = {}
-        oai = _codex_event_to_openai_chunk(current_event, dj, tc_state)
-        if oai is not None:
-            if first_delta:
-                yield f"data: {json.dumps(_role_chunk(oai), separators=(',', ':'))}\n\n".encode("utf-8")
-            yield f"data: {json.dumps(oai, separators=(',', ':'))}\n\n".encode("utf-8")
+        converted = _codex_event_to_openai_chunk(current_event, dj, tc_state)
+        for oai in (converted if isinstance(converted, list) else [converted]):
+            if oai is not None:
+                if first_delta:
+                    yield f"data: {json.dumps(_role_chunk(oai), separators=(',', ':'))}\n\n".encode("utf-8")
+                    first_delta = False
+                yield f"data: {json.dumps(oai, separators=(',', ':'))}\n\n".encode("utf-8")
 
 
 def _role_chunk(content_chunk: dict) -> dict:
@@ -410,8 +412,33 @@ def _role_chunk(content_chunk: dict) -> dict:
     return role_d
 
 
+def _error_chunks(rid: str, ts: int, response: dict, message: str) -> list[dict]:
+    """Build a visible error text delta followed by an ``error`` finish."""
+    model = response.get("model", "codex") if isinstance(response, dict) else "codex"
+    base = {
+        "id": rid,
+        "object": "chat.completion.chunk",
+        "created": ts,
+        "model": model,
+    }
+    return [
+        {**base, "choices": [{
+            "index": 0,
+            "delta": {"content": f"[BSL] upstream error: {message}"},
+            "finish_reason": None,
+        }]},
+        {**base, "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "error",
+        }]},
+    ]
+
+
 def _codex_event_to_openai_chunk(event_name: str, data: dict, tc_state: dict | None = None) -> dict | None:
     """Convert a Codex Responses SSE event to an OpenAI chunk dict, or None to ignore.
+
+    Failed/incomplete events use ``error`` as the terminal finish reason.
 
     ``tc_state`` is the per-stream tool-call index ledger owned by
     responses_sse_to_openai_sse (``{"call_index": {call_id: i}, "next_index": n}``).
@@ -441,6 +468,14 @@ def _codex_event_to_openai_chunk(event_name: str, data: dict, tc_state: dict | N
                 "finish_reason": None,
             }],
         }
+
+    elif event_name in ("response.failed", "response.incomplete"):
+        resp_obj = data.get("response", data)
+        if not isinstance(resp_obj, dict):
+            resp_obj = {}
+        details = resp_obj.get("error" if event_name == "response.failed" else "incomplete_details")
+        message = details.get("message" if event_name == "response.failed" else "reason") if isinstance(details, dict) else None
+        return _error_chunks(rid, ts, resp_obj, message or event_name)
 
     elif event_name == "response.completed":
         # Final chunk with finish_reason and optional usage.
@@ -475,9 +510,8 @@ def _codex_event_to_openai_chunk(event_name: str, data: dict, tc_state: dict | N
         return chunk
 
     elif event_name == "response.output_item.done":
-        # Codex function call finished — surface it as an OpenAI tool_calls
-        # delta (bug 2026-10-09, return direction). The terminal
-        # finish_reason "tool_calls" rides the response.completed chunk.
+        # Codex function calls are emitted from response.output_item.done with
+        # the complete item; response.completed supplies the terminal frame.
         item = data.get("item")
         if isinstance(item, dict) and item.get("type") == "function_call" and item.get("name"):
             args = item.get("arguments", "")

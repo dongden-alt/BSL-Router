@@ -363,7 +363,7 @@ Lives in `app/authenticity/`. Adapted from the BazaarLink probe-engine methodolo
 - **Layer weights** (`LAYER_WEIGHTS`) - identity 0.10, knowledge 0.28, reasoning 0.10, style 0.05, lexical 0.20, noncoding 0.12, structural 0.15. Structural (tokenizer/tool/code) is deepest; style is lowest (wrapper-shiftable).
 - **Reality verdicts** (`scoring.py` `compute_reality`) - `real / downgrade / substitution / family_match / unverifiable / error`, plus a `modifications[]` list (prompt injection, output cap, context truncation, thinking strip). Confidence is a 5-level verbal badge, never a raw %.
 
-**Standards lifecycle:** harvested once from a trusted anchor via `POST /api/authenticity/standards/harvest`, stored under `app/authenticity/reference/standards/*.json` (gitignored). New models onboard by JSON snapshot - no code change.
+**Standards lifecycle:** harvested once from a trusted anchor via `POST /api/authenticity/standards/harvest`, stored under `app/authenticity/reference/standards/*.json` (gitignored). New models onboard by JSON snapshot - no code change. **The exact onboarding procedure is the Canonical Standard Harvest Protocol — see the tail section of this doc; follow it mechanically for every new model/family.**
 
 **Probe observability (2026-10-07):** every authenticity probe is recorded via `observability.log_request` (the same in-process pipeline the `/v1` handler uses), tagged `provider="authenticity"` + `client="authenticity:<probe_id>"`. A Run Test therefore surfaces one END row per probe in the admin **Logs** tab (`GET /api/observability/logs`) and **Usage** tab, instead of running as invisible outbound traffic. Fail-open: telemetry never aborts a probe.
 
@@ -1201,3 +1201,127 @@ set logic — no re-harvest, no backfill, no standard file rewritten (Rule 10).
   Verified: 37/37 (new retry + midstream continuation + transport-partial-flag)
   and 40/40 (combo-wrap sentinel, stream keepalive, thought-buffer) green on BOTH
   CI legs (.venv311 + .venv312); py_compile clean both legs; pre-push gates PASS.
+
+## Canonical Standard Harvest Protocol — new model / new family (2026-10-15)
+
+The mechanical procedure for onboarding a canonical (gold-standard) TraitMark. Follow it
+phase-by-phase with minimum adjustment; do not improvise. A full harvest costs
+**~50-70 paid API calls per model** — every phase below exists because a past incident
+burned credit or shipped a false verdict when it was skipped.
+
+| Phase | Cost | Output |
+|---|---|---|
+| 0 — Scope | 0 calls | anchor picked, family registered, siblings censused |
+| 1 — Harvest | ~50-70 calls (first time only) | raw TraitMark JSON |
+| 2 — Certify | 0 calls (disk-only) | standard is *trusted* to accuse others |
+| 3 — Register | 0 calls | catalogs + docs in the same commit |
+
+### Phase 0 — Scope (research; zero API calls)
+
+1. **Anchor selection** — pick from `TRUSTED_ANCHORS` in [scope.py](../app/authenticity/scope.py).
+   Gold = direct vendor API via `aibox` (glm, kimi, deepseek, qwen). Reference = real-weights
+   OAuth wrappers (claude → `mintrouter`, gpt → `codex`, gemini → `antigravity`).
+   Canonical harvests are whitelisted to **codex / antigravity / mintrouter / aibox** only
+   (enforced with HTTP 400 in the harvest endpoint; vsllm explicitly banned, 2026-10-08
+   directive). If the family has **no trusted anchor → DEFER** (hunyuan/mimo precedent);
+   never freeze an untrusted relay's output into a benchmark.
+2. **New-family registration** — only when `detect_family()` returns `None`. Add, in one
+   commit: `SCOPE` patterns, `_FAMILY_VENDOR` display entry, `JUDGE_SUGGESTIONS` mapping
+   (judge MUST be a different family than the suspect), and the `TRUSTED_ANCHORS` row.
+   Until then the family verdict is honestly **UNVERIFIABLE** — never "fake".
+3. **VARIANT_NOTES research** — knowledge cutoff, parameter count, price tier, and any
+   known silent reroute (deepseek v4-pro → v4.1-flash precedent). Record in `VARIANT_NOTES`.
+4. **Sibling census** — list existing same-family standards and predict separability.
+   opus↔sonnet measures 0.098 < `SEPARABLE_DISTANCE` 0.12 → expect an **ALIAS group**
+   ("family confirmed, sub-version ambiguous"), not a pick. Set expectations before spending.
+
+### Phase 1 — Harvest (paid; confirm scope BEFORE the first call)
+
+- **State the per-model call estimate and confirm the smallest scope with the user first.**
+  Full harvest ~50-70 calls; judge-axis backfill ~3; single v2 lane ~20.
+- **Rule 10 is absolute:** never run a full re-harvest to fix ONE missing probe/axis/lane.
+  Judge axis zeroed → `scripts/rejudge_axis.py`. One v2 lane missing →
+  `scripts/backfill_v2_lane.py --lane-name <lane>` (merges in place, skips if present,
+  leaves judge axes and other lanes untouched). A full re-harvest is the LAST resort and
+  requires the user to explicitly say "full re-harvest" in the current message.
+- Entry point: `harvest_model(endpoint, api_key, model_id, *, judge_endpoint, judge_api_key,
+  judge_model, include_noncoding, source_tag, config)` via
+  `POST /api/authenticity/standards/harvest` (background) or `scripts/harvest_reference.py`.
+  It NEVER raises — fail-open per layer, gaps land in `meta.harvest_gaps`. Canonical
+  (empty `source_tag`) sets `meta.tier="canonical"` and `meta.anchor_lane = model_id`.
+- Judge: `suggest_judge(family)` — always a DIFFERENT family; never hardcode.
+
+### Phase 2 — Certify (the gate that was missing; zero-cost, disk-only)
+
+**Executable:** `scripts/certify_standard.py --model <id>` (or `--file <path>`) runs all four
+checks and prints PASS / ALIAS / FAIL per gate. Exit 0 = certified, 1 = a gate failed,
+2 = WARN/ALIAS only. Full JSON report persists to `.brain/scratch/certify_<model>.json`.
+
+A new standard is NOT trusted to accuse anyone until ALL four checks pass:
+
+1. **Quality grade** — `standard_quality(tm)` returns grade `"full"` (judge-graded noncoding
+   + ≥4 layers). No `v2_*:unavailable` gaps in `meta.harvest_gaps` for required lanes.
+2. **Jitter sanity** — tokenizer jitter < `UNSTABLE_JITTER` (25). Watch the 2026-10-15 trap:
+   a jitter=0 vs jitter=3 sibling pair used to hand the wobblier sibling free ranking
+   tolerance (fixed by matched slack via `_common_tokenizer_slack`); verify no sibling pair
+   reintroduces asymmetric tolerance.
+3. **Separability** — `pairwise_separability` vs EVERY same-family sibling ≥
+   `SEPARABLE_DISTANCE` (0.12). Below threshold → record an honest **ALIAS group**;
+   never force a decisive pick on a non-discriminating lane (`tokenizer_decisive` /
+   `TOKENIZER_DECISIVE_GAP` 0.05 abstains by design).
+4. **Self-match** — a suspect probed from the anchor lane MUST match its own standard.
+   A MISMATCH here means harness bug, not provider fraud (the 2026-10-15 retraction).
+
+### Phase 3 — Register & publish (same commit, no browser-tab autosave)
+
+1. `save_standard()` writes atomically; filename from `standard_filename(family, sub_model,
+   source_tag)`. Canonical = empty `source_tag`; provider-tagged snapshots stay private via
+   the `_PRIV` filter and never surface in `list_testable_standards` public output.
+2. **Catalog sync in the SAME commit** (argon lesson): if the model is served through an
+   OAuth provider, update `app/oauth.py` `OAUTH_PROVIDER_MODELS` AND its manual mirror in
+   `app/static/app.js` together. New catalog rows mint `enabled:false` — the user enables
+   manually. Never trust a stale browser tab's autosave to carry model rows.
+3. If the sibling set changed, re-run `scripts/build_discrimination_index.py`.
+4. Docs: dated `.brain/CHANGELOG.md` entry + status label in this file
+   (DONE / CODE DONE / PLANNED / PARTIAL — never DONE on build/typecheck alone).
+5. Router `:6969` restart is **user-commanded only** (Rule 1). New standards go live on
+   restart; until then report "ready, awaiting user-commanded restart".
+
+### Incident → gate mapping (why each gate exists)
+
+| Incident | Gate that now prevents it |
+|---|---|
+| kimi creative=6 → 0 destroyed by a full re-harvest run for ONE missing lane (2026-10-09) | Phase 1 Rule 10: targeted backfill only; full re-harvest needs explicit user words |
+| gemini-4-argon model rows wiped by stale-catalog UI autosave | Phase 3.2: catalog + mirror updated in the same commit, server-side |
+| Jitter-tilt false MISMATCH verdicts on mintrouter/a6api opus (2026-10-15, retracted) | Phase 2.2/2.3/2.4: jitter sanity, separability-vs-alias, self-match before trust |
+| Standards silently scored 0.5-neutral from flat-key reads (2026-10-08) | Phase 2.1: `standard_quality` grade must be `full`, gaps surfaced not assumed |
+
+## Codex Egress Bridge -- Gemini/Anthropic streaming clients on codex upstreams (2026-10-18)
+
+**Status: DONE** (runtime-verified: boot smoke :6977 200 OK; CI legs Py3.11 + Py3.12 3790/3790 green)
+
+Codex-family upstreams speak the OpenAI **Responses API** SSE dialect (typed events such as `response.output_text.delta`), not chat-completion chunks. Two client egress paths assumed the chat dialect and silently dropped the content:
+
+- **Anthropic streaming egress** (`/v1/messages`, stream): `convert_openai_to_anthropic` received raw Codex chunks and emitted nothing.
+- **Gemini drain**: converted Codex frames were not recognized as transcript commits, leaving the drain unterminated/empty.
+
+### Bridge (app/main.py)
+
+- `_anthropic_egress_openai_source` -- wraps the raw upstream source; for codex-format providers it re-chunks the stream through `codex_adapter.responses_sse_to_openai_sse` exactly once, ahead of the Anthropic converter.
+- `_tee_codex_response_source` / `_flush_codex_response_tee` / `_write_codex_response_tee` / `_codex_response_tee_enabled` -- capture-side tee of the raw Responses SSE (env-gated) with capped writers kept off the hot path (log-cap invariant, see repo rules).
+- `_gemini_frame_commits_transcript` -- lets the Gemini drain treat converted Codex frames as transcript commits so the stream terminates with a proper terminal frame.
+- `_CAPTURE_QUEUE_MAX = 256` stays module-level: the lifespan capture queue consumes it at boot; removing it is boot-fatal.
+
+### Error events (app/codex_adapter.py)
+
+- `response.failed` / `response.incomplete` map to parser-safe error chunks (`_error_chunks`) in BOTH `responses_sse_to_openai_sse` and `_codex_event_to_openai_chunk`, including multi-chunk and non-JSON-tolerant variants.
+
+### Tests
+
+- `app/tests/test_codex_adapter_error_events.py` -- failed / incomplete / healthy tool-call / usage SSE events.
+- `app/tests/test_gemini_drain_emission.py` -- function-call transcript commitment; env-gated codex tee.
+- `app/tests/test_anthropic_egress_codex.py` -- end-to-end Codex Responses SSE -> Anthropic SSE conversion.
+
+### Known issue (pre-existing at HEAD 1dfb1cf; Py3.10 dev-venv only; NOT shipped by this change)
+
+`test_builtin_timeout_error_post_content_emits_terminal_error_frame` fails on Py3.10: builtin TimeoutError (OSError family before the 3.11 aliasing) escapes into the AntiStop continuation path and re-dials the same leaf, tripping the dial-count assertion. The client-visible terminal contract (single finishReason frame + single [DONE], no spliced fallback) still holds. CI legs (3.11/3.12) are unaffected. Tracked as separate fix scope.
