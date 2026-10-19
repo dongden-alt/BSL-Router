@@ -279,7 +279,14 @@ def test_clean_standard_has_no_flags():
 
 def test_real_standards_build_index():
     index = dm.build_index()
-    assert index["standards_count"] >= 50
+    # CI FIX (2026-10-19): the public repo's tracked corpus carries 18 canonical
+    # standards (privacy split b129e71 -- provider-tagged files are gitignored
+    # and stay local-only). The old >= 50 floor was calibrated against the local
+    # dev tree (60 files incl. private) and was red in CI from birth (run 72,
+    # both legs, assert 18 >= 50). 15 = the 18-file public corpus with headroom
+    # for legitimate removals; it still catches catastrophic corpus loss.
+    # Canonical-models gates below remain untouched -- they pass on 18.
+    assert index["standards_count"] >= 15
     for lane in dm.LANES:
         assert index["lane_coverage"][lane] >= 0
     assert len(index["pairs"]) == index["standards_count"] * (index["standards_count"] - 1) // 2

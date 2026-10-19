@@ -686,3 +686,8 @@ Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-
 - New regression suites: `app/tests/test_codex_adapter_error_events.py`, `app/tests/test_gemini_drain_emission.py`, `app/tests/test_anthropic_egress_codex.py`.
 - Verified: full suite green on BOTH CI legs (Py3.11 3790/3790, Py3.12 3790/3790) + runtime boot smoke on :6977 (200 OK, isolated config). Known pre-existing failure NOT from this change (reproduced identically at HEAD 1dfb1cf, Py3.10 dev venv only): `test_builtin_timeout_error_post_content_emits_terminal_error_frame` - builtin TimeoutError (OSError family before the 3.11 aliasing) escapes into the AntiStop continuation path and re-dials the same leaf; the client-visible terminal contract (single terminal frame + single [DONE], no splice) still holds.
 - Also ships `scripts/certify_standard.py` (Phase-2 certifier for the Canonical Standard Harvest Protocol in ARCHITECTURE.md; disk-only, zero API calls).
+
+### 2026-10-19 - CI: discrimination-index floor recalibrated to the public standards corpus
+
+- **`test_real_standards_build_index` was red in CI from birth** (run 72, both legs): the local dev tree carries 60 standard files (18 public canonical + provider-tagged files kept local by `.gitignore` since privacy split b129e71), so the old `standards_count >= 50` floor passed locally but asserted `18 >= 50` on a clean CI checkout. Recalibrated to `>= 15` - headroom below the 18-file public corpus while still catching catastrophic corpus loss. Canonical-model gates untouched (they pass on 18).
+- Verified in an isolated worktree at HEAD d30437d: full suite green on BOTH CI legs (Py3.12: 3786 passed / 471.59s; Py3.11: 3786 passed / 486.15s).
