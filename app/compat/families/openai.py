@@ -30,7 +30,12 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from app.compat.families._base import Contract, Provenance, ThinkingContext
+from app.compat.families._base import (
+    Contract,
+    Provenance,
+    ProvenanceRecord,
+    ThinkingContext,
+)
 from app.compat.families._effort import apply_gpt5_reasoning_controls, coerce_effort
 
 SOURCE = "families/openai.py"
@@ -51,6 +56,49 @@ def _apply_gpt5(
     prov: Provenance,
     contract: Contract,
 ) -> Dict[str, Any]:
+    # Codex Responses-wire sanitize (2026-10-19): when codex_adapter has
+    # already converted the egress body to the Responses shape ({input,
+    # model, store, stream, reasoning:{effort}}), the generic OpenAI
+    # controls below would pollute it — chatgpt.com codex/responses 400s
+    # on top-level `reasoning_effort` ("Unsupported parameter") and on
+    # `reasoning.mode="pro"` ("reasoning.mode is not supported with this
+    # model"). Live probes: context="all_turns" + mode="standard" -> 200;
+    # mode="pro" -> 400. The adapter already wrote reasoning.effort, so
+    # the ONLY job here is to remove the forbidden keys and return —
+    # skip every OpenAI control below. effort and context inside
+    # reasoning are left untouched.
+    if "input" in payload and "messages" not in payload:
+        strip_vals: Dict[str, Any] = {}
+        if "reasoning_effort" in payload:
+            strip_vals["reasoning_effort"] = None
+        reasoning = payload.get("reasoning")
+        mode_popped = False
+        if isinstance(reasoning, dict) and reasoning.get("mode") == "pro":
+            reasoning.pop("mode", None)
+            mode_popped = True
+        n_before = len(prov.records)
+        payload = prov.apply(
+            payload, contract, "codex_responses_wire_sanitize", strip_vals
+        )
+        if len(prov.records) > n_before:
+            if mode_popped:
+                # The nested mode pop is not expressible as a top-level
+                # key removal in Provenance.apply; record it on the
+                # rule's fields list as "-reasoning.mode".
+                prov.records[-1].fields.append("-reasoning.mode")
+        else:
+            # Nothing to strip (clean adapter body) — still attribute the
+            # sanitize so the request log names the rule that fired.
+            prov.records.append(
+                ProvenanceRecord(
+                    contract_id=contract.id,
+                    source=contract.source,
+                    rule="codex_responses_wire_sanitize",
+                    fields=["-reasoning.mode"] if mode_popped else [],
+                )
+            )
+        return payload
+
     # Anthropic wire: never emit OpenAI reasoning controls. Reseller
     # gateways that re-expose GPT models on /v1/messages stall empty when
     # these fields arrive (AgentRouter gpt-5.6-sol, 2026-08-20).

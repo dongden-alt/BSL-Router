@@ -238,6 +238,25 @@ Each provider family has its own **family adapter** (14 adapters total):
 
 Infrastructure adapters: `_base.py` (shared base), `_effort.py` (reasoning effort ladder), `_legacy_reference.py`.
 
+#### Codex Responses-wire reasoning sanitize (2026-10-19) — CODE DONE, live on next user-commanded restart
+
+`codex_adapter.openai_to_responses()` converts the egress body to the Responses shape **before**
+`resolve_thinking()` runs, so the `gpt-?[56]` family contract (`app/compat/families/openai.py::_apply_gpt5`)
+previously stamped chat-completions controls — top-level `reasoning_effort` and `reasoning.mode="pro"` —
+onto the already Responses-shaped body. Live probes (`.brain/scratch/codex_live_probe3-6*`) proved
+`chatgpt.com/backend-api/codex/responses` returns **HTTP 400** on both keys ("Unsupported parameter:
+reasoning_effort" / "reasoning.mode is not supported with this model"), which surfaced downstream as the
+codex OAuth **502 tool-call error**. Clean bodies (`reasoning.effort` + `reasoning.context="all_turns"`,
+mode absent or `"standard"`) return 200.
+
+Fix: a `codex_responses_wire_sanitize` guard at the TOP of `_apply_gpt5` — when the payload is
+Responses-shaped (`"input" in payload and "messages" not in payload`) it strips top-level
+`reasoning_effort`, pops `reasoning.mode` only when it equals `"pro"` (effort/context untouched),
+records provenance (including a manual `ProvenanceRecord` fallback so the rule is always attributed),
+and returns immediately, skipping all chat-shaped OpenAI controls. The chat/completions path is
+unchanged (negative-control test). Tests: `app/tests/test_codex_wire_sanitize.py` (3) —
+124/124 targeted green on `.venv311` + `.venv312`.
+
 #### Codex lane: Chat Completions → Responses translation (2026-10-09)
 
 `app/codex_adapter.py::openai_to_responses` is a **separate wire dialect** from the family adapters above: the
