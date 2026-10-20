@@ -10396,6 +10396,36 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         except asyncio.CancelledError:
             raise
         except (httpx.RemoteProtocolError, httpx.TransportError, httpx.TimeoutException, TimeoutError, asyncio.TimeoutError) as _mid_err:
+            # PY3.10 UNIFICATION (2026-10-21): on Python < 3.11 builtin
+            # TimeoutError is NOT asyncio.TimeoutError (it is an OSError
+            # subclass), while on 3.11+ the two are the SAME object. The
+            # _midstream_transport_fallback ENTRY gate keys on out==0, which
+            # stays 0 on a mid-stream death (the usage frame never arrives), and
+            # the Gemini lane deliberately keeps _emit.emitted False for body
+            # frames still buffered pre-commit while the truncation detector does
+            # not tap this lane's OpenAI-format chunks into partial_text. A
+            # post-content builtin TimeoutError therefore computed
+            # _delivered=False on Py3.10 and advanced the combo chain + re-dialed
+            # a leaf AFTER model data was emitted — while on 3.11 the same
+            # exception (aliased to asyncio.TimeoutError) was caught by the
+            # post-content gate and terminated cleanly. Unify both interpreters at
+            # this single classification choke point: when delivered-content
+            # evidence (emitted bytes or terminal out tokens) already exists,
+            # bypass _midstream_transport_fallback entirely — record the 502 and
+            # end the generator so the caller's terminal-frame logic emits ONE
+            # finishReason frame + DONE, with NO combo advance, NO re-dial and NO
+            # AntiStop continuation splice. Pre-content builtin TimeoutError still
+            # falls through to _midstream_transport_fallback unchanged (delivered
+            # =False) and MUST combo-fallback (sibling test ~L640-658 requires it).
+            _post_content = bool(getattr(_emit, "emitted", False)) or stats.get("out", 0) > 0
+            if _post_content:
+                stats["status"] = status_code
+                stats["error"] = f"midstream_transport: {_mid_err}"
+                try:
+                    bench_leaf(config, provider_name, target_model, status_code, stats["error"], stats.get("out", 0))
+                except Exception:
+                    pass
+                return
             _midstream_transport_fallback(
                 stats, _emit, status_code, f"midstream_transport: {_mid_err}",
                 partial_text=getattr(_detector, "partial_text", "") or "",
