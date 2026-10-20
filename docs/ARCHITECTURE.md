@@ -614,6 +614,30 @@ Verified: `.venv311` + `.venv312` — 70 passed (`test_standard_v2_spatial_curve
 `-k "authenticity or standard_v2 or judge or matcher"` selection, both legs. Details:
 `.brain/CHANGELOG.md` 2026-10-19 Phase B entry.
 
+#### Standard v2 lane inventory: `hard_series` — CODE DONE (2026-10-20)
+
+Seventh v2 evidence lane, aimed at the residual sibling-tier ambiguity (Claude Fable/Opus/Sonnet
+class). Two halves, both under one `hard_series` key in the v2 dict:
+
+| Half | Signal | Paid calls | Notes |
+|---|---|---|---|
+| math | 3 tiers of verified hard math (exact-arithmetic mod, constrained counting, sigma/divisor counting); ground truth computed at generation time, exact `ANSWER: <int>` grading | 3 (live) / 6 (harvest, k=2) | judge-free; runs in every mode |
+| judged | 3 expert probes (production architecture / self-contained animation script / deep domain) graded 0-10 by an external judge lane | 3 suspect + 3 judge calls | **harvest-only** — runs only when `run_standard_v2(..., judge=(endpoint, key, model))` is given; the gate's live pass passes nothing and gets the math half only (no `judged` sub-key) |
+
+The judge call is implemented **inside**
+[standard_v2.py](../app/authenticity/standard_v2.py) (`_judge_hard_answer` — the module cannot
+import harvest: harvest already imports standard_v2, so the reverse edge would be circular). It is
+fail-open: judge HTTP/parse errors omit that axis, never raise. `similarity_hard_series` means the
+two halves both sides carry and abstains below 3 shared components. `FEATURE_WEIGHTS` rebalanced to
+fund `hard_series=0.11` (cutoff .15→.11, knowledge_bank .13→.11, capability_curve .11→.10,
+tokenizer .05→.04, discriminator .13→.11, refusal .05→.04; `spatial_curve` pinned at 0.10 by its
+existing test) — sum stays exactly 1.0 — and `hard_series` joined `DECISIVE_LANES`. Backfill:
+`scripts/backfill_v2_lane.py --lane-name hard_series [--judge <model>]` (k=2, judge defaults to
+`codex/gpt-6-astra`). **Status: CODE DONE, offline-verified only; no harvested standard carries the
+lane yet.** Verified offline: 26/26 `test_standard_v2_hard_series.py`, 27/27
+`test_authenticity_standard_v2.py` (lane_gaps pins extended), spatial/discriminator/cascade 66/66,
+`.venv` (Py3.10).
+
 #### Gemini 4 argon rides the thinkingLevel enum contract (2026-10-15)
 
 `gemini-4-argon` (a6api / tokenforge `gemini-web/*` / aibox entries in `config.yaml`) previously

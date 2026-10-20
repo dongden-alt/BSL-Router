@@ -497,14 +497,14 @@ class TestGateCascade:
         assert calls["timing"] == 1
 
     # -- lane_status: a null dimension must never be silent (2026-10-12) --
-    # spatial_curve + token_jsd added 2026-10-19: both carry match evidence
-    # (FEATURE_WEIGHTS members, DECISIVE_LANES members, emitted by
-    # compute_v2_dims), so _V2_LANES includes them and lane_status must
-    # classify them like every other lane.
+    # spatial_curve + token_jsd added 2026-10-19, hard_series 2026-10-20: all
+    # carry match evidence (FEATURE_WEIGHTS members, DECISIVE_LANES members,
+    # emitted by compute_v2_dims), so _V2_LANES includes them and lane_status
+    # must classify them like every other lane.
     _ALL_DIMS = {"noncoding", "knowledge", "logprob", "boundary", "stability",
                  "timing", "refusal", "tokenizer", "capability_curve",
                  "knowledge_bank", "discriminator", "spatial_curve",
-                 "token_jsd"}
+                 "token_jsd", "hard_series"}
 
     def test_lane_status_covers_every_dimension_with_a_reason(self, monkeypatch):
         verdict, _ = self._run_gate(monkeypatch, abstain_after_v5=False)

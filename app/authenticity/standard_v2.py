@@ -34,13 +34,19 @@ Every runner NEVER raises and returns {} / partial data on failure.
 import asyncio
 import datetime
 import hashlib
+import json
+import logging
 import math
 import os
 import random
 import re
 import time
 
+import httpx
+
 from .probes import run_probe
+
+logger = logging.getLogger(__name__)
 
 _RETRY_GAPS = (4.0, 10.0, 25.0)
 _RETRYABLE = (0, 429, 500, 502, 503, 504, 529)
@@ -649,6 +655,421 @@ async def run_spatial_curve(client, endpoint, api_key, model_id,
     return {"tiers": tiers, "k": k} if tiers else {}
 
 
+# --------------------------------------------------------------- hard_series
+# (2026-10-20) Sibling-classification battery.  The existing lanes saturate on
+# sibling tiers that all pass the same difficulty knee; hard_series attacks the
+# Claude Fable/Opus/Sonnet style gap from two sides at once:
+#   math half   3 PROGRAMMATICALLY VERIFIED tiers (ground truth computed at
+#               generation time, never LLM-derived) -> an accuracy curve.
+#   judged half 3 open-ended expert probes (architecture / visual script /
+#               deep domain) graded 0-10 by an external judge model.  The
+#               judged half runs ONLY when a judge is configured; with
+#               judge=None the lane is judge-free and omits the `judged` key.
+# The judge call is implemented LOCALLY (no harvest import: harvest imports
+# this module, so the reverse edge would be circular). Fail-open throughout.
+
+_HARD_ANSWER_RE = re.compile(r"ANSWER:\s*(-?\d+)", re.I)
+_HARD_CONTRACT = ('End your reply with a single line "ANSWER: <integer>".')
+
+
+def _hard_sieve_sigma(n: int) -> list:
+    """sigma[i] = sum of divisors of i, for i in [0, n] (divisor-sum sieve)."""
+    sig = [0] * (n + 1)
+    for d in range(1, n + 1):
+        for m in range(d, n + 1, d):
+            sig[m] += d
+    return sig
+
+
+def _hm_sumsq_mod(rng):
+    """Tier 1: sum_{k=1}^{n} k^2 mod m (closed form verified)."""
+    n = rng.randint(500, 2000)
+    m = rng.choice([997, 1009, 2011, 5003, 7001, 9973])
+    s = n * (n + 1) * (2 * n + 1) // 6
+    return (f"Let S = sum_{{k=1}}^{{{n}}} k^2. Compute S mod {m}. {_HARD_CONTRACT}",
+            s % m)
+
+
+def _hm_sumcube_mod(rng):
+    """Tier 1 variant: sum_{k=1}^{n} k^3 mod m (closed form verified)."""
+    n = rng.randint(500, 2000)
+    m = rng.choice([1009, 2017, 4001, 6007, 9973])
+    s = (n * (n + 1) // 2) ** 2
+    return (f"Let S = sum_{{k=1}}^{{{n}}} k^3. Compute S mod {m}. {_HARD_CONTRACT}",
+            s % m)
+
+
+def _hm_gcd_congruence(rng):
+    """Tier 2: count x in [1,N] with gcd(x,M)==1 and x == r (mod q)."""
+    n = rng.randint(50_000, 200_000)
+    q = rng.choice([7, 11, 13, 17])
+    r = rng.randrange(q)
+    m = rng.choice([6, 10, 12, 15, 30, 105])
+    want = 0
+    for x in range(1, n + 1):
+        if x % q == r and math.gcd(x, m) == 1:
+            want += 1
+    return (f"Count the integers x with 1 <= x <= {n} such that "
+            f"gcd(x, {m}) == 1 and x == {r} (mod {q}). {_HARD_CONTRACT}", want)
+
+
+def _hm_divisor_union(rng):
+    """Tier 2 variant: count x in [1,N] divisible by a or b (brute-force)."""
+    n = rng.randint(50_000, 200_000)
+    a = rng.choice([3, 5, 7, 11])
+    b = rng.choice([4, 6, 8, 9, 13])
+    want = sum(1 for x in range(1, n + 1) if x % a == 0 or x % b == 0)
+    return (f"Count the integers x with 1 <= x <= {n} such that x is divisible "
+            f"by {a} or by {b} (or both). {_HARD_CONTRACT}", want)
+
+
+def _hm_sigma_divisible(rng):
+    """Tier 3: count n in [1,N] with sigma(n) divisible by p (sieve-verified)."""
+    n = rng.randint(20_000, 100_000)
+    p = rng.choice([3, 5, 7, 11])
+    sig = _hard_sieve_sigma(n)
+    want = sum(1 for i in range(1, n + 1) if sig[i] % p == 0)
+    return (f"Let sigma(n) denote the sum of all positive divisors of n. Count "
+            f"the integers n with 1 <= n <= {n} such that sigma(n) is divisible "
+            f"by {p}. {_HARD_CONTRACT}", want)
+
+
+def _hm_tau_exact(rng):
+    """Tier 3 variant: count n in [1,N] with exactly k divisors (sieve)."""
+    n = rng.randint(20_000, 100_000)
+    k = rng.choice([4, 6, 8])
+    tau = [0] * (n + 1)
+    for d in range(1, n + 1):
+        for m in range(d, n + 1, d):
+            tau[m] += 1
+    want = sum(1 for i in range(1, n + 1) if tau[i] == k)
+    return (f"Count the integers n with 1 <= n <= {n} that have exactly {k} "
+            f"positive divisors. {_HARD_CONTRACT}", want)
+
+
+# (tier, name, variants). The runner picks one variant per instance.
+HARD_MATH_TIERS = [
+    (1, "tier1_exact_arith", [_hm_sumsq_mod, _hm_sumcube_mod]),
+    (2, "tier2_constrained_count", [_hm_gcd_congruence, _hm_divisor_union]),
+    (3, "tier3_number_theory", [_hm_sigma_divisible, _hm_tau_exact]),
+]
+
+HARD_JUDGED_PROBES = {
+    "hard_architecture": [
+        "Design the production architecture for a collaborative code editor that "
+        "supports 50,000 concurrent users editing the same documents. Cover "
+        "conflict resolution, presence, persistence, and failure modes. Be "
+        "concrete about data structures and trade-offs.",
+        "Design the production architecture for a global time-series ingestion "
+        "service handling 2 million writes/second with 30-day retention and "
+        "sub-second query latency. Cover partitioning, compaction, replication, "
+        "and backpressure. Be concrete.",
+        "Design the production architecture for a multi-region payment ledger "
+        "that must stay exactly-once and linearizable under network partitions. "
+        "Cover consensus, idempotency keys, and reconciliation. Be concrete.",
+    ],
+    "hard_visual": [
+        "Write a self-contained p5.js sketch that renders a rotating 4D "
+        "tesseract projected to 2D. Include the 4D rotation matrices, the "
+        "perspective projection, and the edge list. Complete, runnable code only.",
+        "Write a self-contained three.js scene that animates 20,000 particles "
+        "along a Lorenz attractor, with correct integration, per-frame buffer "
+        "updates, and camera controls. Complete, runnable code only.",
+        "Write a self-contained HTML5 canvas animation of a double pendulum with "
+        "RK4 integration, correct Lagrangian equations, and a motion trail. "
+        "Complete, runnable code only.",
+    ],
+    "hard_domain": [
+        "Explain precisely how a forged RSA signature can be made to pass a "
+        "CRC32 integrity check, why textbook RSA without padding enables it, and "
+        "which concrete countermeasure blocks it. Be specific about the math.",
+        "Explain the congestion-control failure mode on a TCP path with a 400ms "
+        "RTT and a 200 Mbit/s bottleneck, including bufferbloat, cwnd growth, "
+        "and what modern algorithm changes it. Be quantitative.",
+        "Compare B-tree and LSM-tree write amplification under a 90% write "
+        "workload: derive the amplification factors, explain compaction "
+        "behaviour, and state which workload shape flips the answer.",
+    ],
+}
+
+_JUDGE_RUBRIC = (
+    "You are a strict technical grader. Grade the answer below on a 0-10 scale "
+    "for technical correctness, specificity and completeness. 0 = empty or "
+    "wrong, 5 = plausible but vague, 10 = expert-level and fully correct. "
+    "Return ONLY a JSON object of the form "
+    '{"score": <integer 0-10>, "why": "<one sentence>"}.')
+
+
+def parse_hard_answer(text: str) -> int | None:
+    """Last `ANSWER: <integer>` line wins; None when absent/unparseable."""
+    if not text:
+        return None
+    hits = _HARD_ANSWER_RE.findall(text)
+    if not hits:
+        return None
+    try:
+        return int(hits[-1])
+    except (TypeError, ValueError):
+        return None
+
+
+def grade_hard_math(expected: int, text: str) -> bool:
+    """Exact integer match of the parsed ANSWER line; non-parse counts wrong."""
+    got = parse_hard_answer(text)
+    return got is not None and got == expected
+
+
+def _extract_judge_score(content: str):
+    """Strict JSON extraction for one judge reply -> (score, why) or None.
+
+    Accepts the bare ``{"score": n, "why": "..."}`` shape and the one-level
+    nested form ``{"axis": {"score": n, ...}}``. Prose around the object is
+    tolerated; an unparseable reply yields None (the axis is then omitted).
+    """
+    if not content:
+        return None
+    text = content.strip()
+    start = text.find("{")
+    while start >= 0:
+        try:
+            obj, _end = json.JSONDecoder().raw_decode(text, start)
+        except ValueError:
+            start = text.find("{", start + 1)
+            continue
+        if isinstance(obj, dict):
+            node = obj
+            if not isinstance(node.get("score"), (int, float)) or \
+                    isinstance(node.get("score"), bool):
+                node = next((v for v in obj.values()
+                             if isinstance(v, dict) and "score" in v), None)
+            if isinstance(node, dict):
+                try:
+                    score = int(node.get("score"))
+                except (TypeError, ValueError):
+                    node = None
+                if node is not None:
+                    return max(0, min(10, score)), str(node.get("why", ""))[:400]
+        start = text.find("{", start + 1)
+    return None
+
+
+async def _judge_hard_answer(judge: tuple, task: str, answer: str,
+                             timeout_s: int, client=None) -> dict | None:
+    """Grade one open-ended answer with the judge lane. NEVER raises.
+
+    judge = (endpoint, api_key, model). Returns {"score": int, "why": str} or
+    None on any failure (the caller omits that axis -- fail-open).
+    ``client``: optional httpx.AsyncClient to reuse (the lane's client); a
+    private client is created and closed otherwise.
+    """
+    if not judge or len(judge) != 3:
+        return None
+    endpoint, api_key, judge_model = judge
+    if not (endpoint and api_key and judge_model):
+        return None
+    prompt = (f"{_JUDGE_RUBRIC}\n\nTASK:\n{task}\n\nANSWER TO GRADE:\n{answer}\n\n"
+              "Return ONLY the JSON object.")
+    base = str(endpoint).rstrip("/")
+    url = (f"{base}/v1/chat/completions" if not base.endswith("/v1")
+           else f"{base}/chat/completions")
+    payload = {"model": judge_model,
+               "messages": [{"role": "user", "content": prompt}],
+               "max_tokens": 300, "temperature": 0, "stream": False}
+    headers = {"Authorization": f"Bearer {api_key}",
+               "Content-Type": "application/json"}
+    try:
+        if client is not None:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code != 200:
+                logger.warning("hard_series judge: %s HTTP %s | body=%r",
+                               judge_model, resp.status_code,
+                               (resp.text or "")[:200])
+                return None
+            data = resp.json()
+            content = (((data.get("choices") or [{}])[0] or {})
+                       .get("message", {}) or {}).get("content", "") or ""
+        else:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as _c:
+                resp = await _c.post(url, json=payload, headers=headers)
+                if resp.status_code != 200:
+                    logger.warning("hard_series judge: %s HTTP %s | body=%r",
+                                   judge_model, resp.status_code,
+                                   (resp.text or "")[:200])
+                    return None
+                data = resp.json()
+                content = (((data.get("choices") or [{}])[0] or {})
+                           .get("message", {}) or {}).get("content", "") or ""
+        got = _extract_judge_score(content)
+        if got is None:
+            return None
+        return {"score": got[0], "why": got[1]}
+    except Exception as exc:  # fail-open: the judge never blocks the lane
+        logger.warning("hard_series judge failed (fail-open): %s: %s",
+                       type(exc).__name__, exc)
+        return None
+
+
+async def run_hard_series(client, endpoint, api_key, model_id,
+                          timeout_s: int = 120, *, k: int = 1,
+                          rng: random.Random | None = None,
+                          concurrency: int = 4, gaps=None,
+                          judge: tuple | None = None) -> dict:
+    """Hard sibling-classification battery. NEVER raises; {} on total failure.
+
+    math half:   k instances per tier (harvest k=2, live k=1), exact-integer
+                 graded against computed ground truth.
+    judged half: one instance per axis, ONLY when `judge` is configured.
+    judge = (endpoint, api_key, judge_model) or None.
+    """
+    rng = rng or random.Random()
+    if gaps is None:
+        gaps = _RETRY_GAPS
+    gaps = tuple(gaps)
+    # A partial tuple (harvest without judge creds) is treated as no judge:
+    # the judged half must not run and `judged` must not appear.
+    if judge and not all(judge):
+        judge = None
+    sem = asyncio.Semaphore(concurrency)
+    answers: dict = {}
+    legacy: dict = {}
+
+    math_jobs = []
+    for tier, tname, variants in HARD_MATH_TIERS:
+        for i in range(max(1, k)):
+            fn = rng.choice(variants)
+            prompt, expected = fn(rng)
+            math_jobs.append((tier, tname, i, prompt, expected))
+
+    async def one_math(tier, tname, i, prompt, expected):
+        key = f"hm_t{tier}_{i}"
+        async with sem:
+            try:
+                r = await call_with_backoff(
+                    client, endpoint, api_key, model_id,
+                    {"id": key, "prompt": prompt, "max_tokens": 2048},
+                    timeout_s, extra={"temperature": 0}, gaps=gaps)
+            except Exception:
+                return tier, key, None, None
+            if getattr(r, "status_code", 0) != 200:
+                return tier, key, None, None
+            text = r.content or ""
+            if not text.strip():
+                return tier, key, None, None
+            return tier, key, text, grade_hard_math(expected, text)
+
+    judged_axes = list(HARD_JUDGED_PROBES) if judge else []
+
+    async def one_judged(axis):
+        key = f"hj_{axis}_0"
+        task = rng.choice(HARD_JUDGED_PROBES[axis])
+        async with sem:
+            try:
+                r = await call_with_backoff(
+                    client, endpoint, api_key, model_id,
+                    {"id": key, "prompt": task, "max_tokens": 3000},
+                    timeout_s, extra={"temperature": 0}, gaps=gaps)
+            except Exception:
+                return axis, key, None, None
+            if getattr(r, "status_code", 0) != 200:
+                return axis, key, None, None
+            text = r.content or ""
+            if not text.strip():
+                return axis, key, None, None
+        # Reuse the lane's client (absolute judge URL): no second connection
+        # pool, and transport-level test mocks apply to the judge call too.
+        graded = await _judge_hard_answer(judge, task, text, timeout_s,
+                                          client=client)
+        return axis, key, text, graded
+
+    try:
+        res = await asyncio.gather(*[one_math(*j) for j in math_jobs],
+                                   *[one_judged(a) for a in judged_axes])
+    except Exception:
+        return {}
+
+    tally: dict = {}
+    judged: dict = {}
+    for item in res:
+        if item[0] in HARD_JUDGED_PROBES:  # judged result
+            axis, key, text, graded = item
+            if text:
+                answers[key] = text
+            if graded:
+                judged[axis] = graded
+                legacy[f"hard_judged_{axis.replace('hard_', '')}"] = graded["score"]
+            continue
+        tier, key, text, correct = item
+        if text:
+            answers[key] = text
+        t = tally.setdefault(tier, [0, 0])
+        t[1] += 1
+        if correct:
+            t[0] += 1
+
+    math_block = {"accuracy_by_tier": [], "tiers": []}
+    for tier in sorted(tally):
+        c, tot = tally[tier]
+        acc = round(c / tot, 4) if tot else 0.0
+        math_block["tiers"].append({"tier": tier, "correct": c, "total": tot})
+        math_block["accuracy_by_tier"].append(acc)
+        legacy[f"hard_math_t{tier}"] = acc
+
+    if not answers:
+        return {}
+    out = {"answers": answers, "math": math_block,
+           "legacy_features": legacy, "k": k}
+    if judge:
+        out["judged"] = judged
+    return out
+
+
+def similarity_hard_series(a: dict, b: dict, min_shared: int = 3):
+    """1 - mean distance over the components both sides carry; None if thin.
+
+    math half:  1 - mean(|per-tier accuracy difference|) over shared tiers.
+    judged half: 1 - mean(|score difference| / 10) over shared axes.
+    Result: mean of the halves both sides carry. None when either side is
+    missing/empty or fewer than `min_shared` components are shared.
+    """
+    a = a or {}
+    b = b or {}
+    if not a or not b:
+        return None
+
+    def _tier_acc(node):
+        out = {}
+        for t in ((node.get("math") or {}).get("tiers") or []):
+            try:
+                tier = int(t.get("tier"))
+                total = max(1, int(t.get("total") or 1))
+                out[tier] = float(t.get("correct") or 0) / total
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    ta, tb = _tier_acc(a), _tier_acc(b)
+    shared_tiers = sorted(set(ta) & set(tb))
+    ja = {k: v.get("score") for k, v in ((a.get("judged") or {}).items())
+          if isinstance(v, dict) and isinstance(v.get("score"), (int, float))}
+    jb = {k: v.get("score") for k, v in ((b.get("judged") or {}).items())
+          if isinstance(v, dict) and isinstance(v.get("score"), (int, float))}
+    shared_axes = sorted(set(ja) & set(jb))
+
+    if len(shared_tiers) + len(shared_axes) < min_shared:
+        return None
+
+    halves = []
+    if shared_tiers:
+        halves.append(1.0 - sum(abs(ta[t] - tb[t]) for t in shared_tiers)
+                      / len(shared_tiers))
+    if shared_axes:
+        halves.append(1.0 - sum(abs(float(ja[x]) - float(jb[x])) / 10.0
+                                for x in shared_axes) / len(shared_axes))
+    if not halves:
+        return None
+    return round(sum(halves) / len(halves), 3)
+
+
 # ------------------------------------------------------------ knowledge bank
 
 _Y = "(4-digit year; answer UNKNOWN if you do not recognise it)"
@@ -1110,9 +1531,14 @@ async def run_standard_v2(client, endpoint, api_key, model_id,
                           rng: random.Random | None = None,
                           concurrency: int = 4,
                           gaps=None,
-                          sink: dict | None = None) -> dict:
-    """Run all three lanes.  mode='harvest' = full depth (k=3 / k=2, whole
+                          sink: dict | None = None,
+                          judge: tuple | None = None) -> dict:
+    """Run all v2 lanes.  mode='harvest' = full depth (k=3 / k=2, whole
     bank); mode='live' = cheap suspect pass (k=1, random 36-item subset).
+
+    ``judge`` = (endpoint, api_key, judge_model) or None. Only the hard_series
+    judged half consumes it; with None the lane stays judge-free and omits the
+    ``judged`` sub-key entirely (live/gate path).
 
     ``sink`` (optional): caller-owned dict that is filled IN PLACE as each lane
     finishes. The per-lane isolation below protects lanes from each other, but
@@ -1122,6 +1548,10 @@ async def run_standard_v2(client, endpoint, api_key, model_id,
     the caller keeps whatever completed before its own deadline fired.
     """
     live = mode == "live"
+    # A partial tuple (harvest called without judge creds) must behave exactly
+    # like judge=None: judge-free math half, no `judged` sub-key.
+    if judge and not all(judge):
+        judge = None
     if rng is None and not live:
         # Harvest: model-seeded so the SAME prompts are generated on every run
         # (lets the spend-guard disk cache resume a killed/failed harvest at zero
@@ -1231,6 +1661,17 @@ async def run_standard_v2(client, endpoint, api_key, model_id,
                                   timeout_s, k=_sp_k, rng=rng,
                                   concurrency=concurrency, gaps=gaps),
                 jobs=len(SPATIAL_TIERS) * _sp_k)
+    # hard_series (2026-10-20): verified hard-math tiers + (harvest only)
+    # judge-graded expert probes. The judged half needs an external judge lane;
+    # judge=None -> judge-free math half only, no `judged` sub-key.
+    _hs_k = 1 if live else 2
+    await _lane("hard_series",
+                run_hard_series(client, endpoint, api_key, model_id,
+                                timeout_s, k=_hs_k, rng=rng,
+                                concurrency=concurrency, gaps=gaps,
+                                judge=judge),
+                jobs=len(HARD_MATH_TIERS) * _hs_k
+                     + (len(HARD_JUDGED_PROBES) if judge else 0))
     if _lane_gaps:
         out["lane_gaps"] = _lane_gaps
     return out
@@ -1278,6 +1719,10 @@ def compute_v2_dims(sus_v2: dict, candidates: dict) -> dict:
             # information (full first-token distribution, not just argmax).
             "token_jsd": similarity_token_jsd(sus_lp.get("logprob_profile"),
                                               b_lp.get("logprob_profile")),
+            # hard_series mixes the math accuracy curve with the judged axes;
+            # needs 3 shared components total (see similarity_hard_series).
+            "hard_series": similarity_hard_series(sus_v2.get("hard_series"),
+                                                  b.get("hard_series")),
         }
     return out
 
@@ -1306,6 +1751,8 @@ def pairwise_separability(a_std: dict, b_std: dict) -> dict:
                                           min_shared=3),
         "token_jsd": similarity_token_jsd(_logprob_profile_of(a_std),
                                           _logprob_profile_of(b_std)),
+        "hard_series": similarity_hard_series(va.get("hard_series"),
+                                              vb.get("hard_series")),
     }
     got = [v for v in sims.values() if v is not None]
     if not got:

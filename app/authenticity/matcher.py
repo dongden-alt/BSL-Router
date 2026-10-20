@@ -362,7 +362,8 @@ def match_submodel(
             dims["timing"] = None  # either side missing/empty
 
         for _d2 in ("tokenizer", "capability_curve", "knowledge_bank",
-                    "discriminator", "spatial_curve", "token_jsd"):
+                    "discriminator", "spatial_curve", "token_jsd",
+                    "hard_series"):
             dims[_d2] = (v2_dims.get(model_id) or {}).get(_d2)
 
         scores[model_id] = score  # legacy 2-dim base (cutoff+capability), audit only

@@ -24,7 +24,12 @@ LANES = {
     "knowledge_bank": sv.run_knowledge_bank,
     "discriminator": sv.run_discriminator,
     "spatial_curve": sv.run_spatial_curve,
+    "hard_series": sv.run_hard_series,
 }
+
+# Judge lane used by hard_series' judged half. A judge from a DIFFERENT family
+# than the suspects (claude siblings) keeps the grading independent.
+DEFAULT_JUDGE_MODEL = "codex/gpt-6-astra"
 
 
 def _v2_block(d: dict) -> dict:
@@ -33,7 +38,8 @@ def _v2_block(d: dict) -> dict:
     return ts.setdefault("v2", {})
 
 
-async def _run(file, lane, lane_name, key, replace=False):
+async def _run(file, lane, lane_name, key, replace=False,
+               judge_model=DEFAULT_JUDGE_MODEL):
     path = STANDARDS_DIR / file
     d = json.loads(path.read_text(encoding="utf-8"))
     v2 = _v2_block(d)
@@ -44,8 +50,13 @@ async def _run(file, lane, lane_name, key, replace=False):
     fn = LANES[lane_name]
     client = _make_client()
     kwargs = dict(timeout_s=180, concurrency=2)
-    if lane_name in ("capability_curve", "knowledge_bank", "spatial_curve"):
+    if lane_name in ("capability_curve", "knowledge_bank", "spatial_curve",
+                     "hard_series"):
         kwargs["k"] = 3 if lane_name == "knowledge_bank" else 2
+    if lane_name == "hard_series":
+        # The judged half needs an external judge lane; the backfiller routes
+        # it through the same local router the suspect probes use.
+        kwargs["judge"] = (ROUTER_EP, key, judge_model)
     res = await fn(client, ROUTER_EP, key, lane, **kwargs)
     if not res:
         print(f"FAIL {file}: {lane_name} returned empty (lane timeout/down); file untouched")
@@ -88,9 +99,13 @@ def main():
     ap.add_argument("--replace", action="store_true",
                     help="re-run the lane even if present: disjoint keyspaces "
                          "rotate wholesale, overlapping keyspaces merge per-key")
+    ap.add_argument("--judge", default=DEFAULT_JUDGE_MODEL,
+                    help=f"judge model for the hard_series judged half "
+                         f"(default {DEFAULT_JUDGE_MODEL})")
     a = ap.parse_args()
     key = (Path(__file__).resolve().parent.parent / ".bsl_key").read_text(encoding="utf-8").strip()
-    return asyncio.run(_run(a.file, a.lane, a.lane_name, key, replace=a.replace))
+    return asyncio.run(_run(a.file, a.lane, a.lane_name, key, replace=a.replace,
+                            judge_model=a.judge))
 
 
 if __name__ == "__main__":

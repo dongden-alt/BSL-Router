@@ -609,12 +609,16 @@ async def harvest_model(
             v2_profile = {}
             if cfg.get("v2", True):
                 try:
+                    # hard_series judged half (2026-10-20): the harvest path is
+                    # the only caller with judge creds; the gate's live pass
+                    # passes judge=None and stays judge-free (math half only).
                     v2_profile = await asyncio.wait_for(
                         run_standard_v2(client, endpoint, api_key, model_id,
                                         int(cfg.get("v2_probe_timeout_s", 180)),
                                         mode="harvest",
                                         concurrency=int(cfg.get("v2_concurrency", 4)),
-                                        gaps=tuple(cfg.get("backoff_gaps", ()))),
+                                        gaps=tuple(cfg.get("backoff_gaps", ())),
+                                        judge=(judge_endpoint, judge_key, judge_model)),
                         timeout=float(cfg.get("v2_total_timeout_s", 1500)))
                 except Exception as exc:
                     gaps.append(f"v2_capture_error:{type(exc).__name__}:{str(exc)[:100]}")
