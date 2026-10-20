@@ -19,26 +19,27 @@ logger = logging.getLogger(__name__)
 # candidate are excluded and the remaining weights re-normalize (coverage-
 # aware scoring — a missing axis is neutral, not a penalty).
 FEATURE_WEIGHTS = {
-    # Rebalanced 2026-10-10 (zero-call canonical sweep, 18 standards, 7 families):
-    # the discriminator axis was highly separable but silenced at 0.03 (eff 0.037),
-    # so sibling pairs tied inside the <0.05 abstain gap (opus-5/5-5 -> abstain).
-    # Raised to 0.15; funded by demoting axes that provably do NOT separate
-    # siblings (every sibling passes the same capability probe and shares a family
-    # writing style, so noncoding/capability/cutoff tie). Sweep: 13/18 -> 17/18
-    # clean self-picks, zero family regressions (gpt 2/4 -> 4/4 as a bonus).
-    "cutoff": 0.16,
-    "capability": 0.06,        # v1 3-question probe: every model passes -> demoted
-    "noncoding": 0.07,
-    "knowledge": 0.09,
-    "boundary": 0.05,
+    # Rebalanced 2026-10-19 (spatial_curve lane added to break the residual
+    # 2-candidate tie clusters; supersedes the 2026-10-10 zero-call canonical
+    # sweep rebalance). spatial_curve takes 0.10, funded by demoting
+    # saturated/tying axes: cutoff .16->.15, capability .06->.05,
+    # noncoding .07->.06, knowledge .09->.08, boundary .05->.04,
+    # knowledge_bank .15->.13, capability_curve .12->.11,
+    # discriminator .15->.13. Sum stays exactly 1.0.
+    "cutoff": 0.15,
+    "capability": 0.05,        # v1 3-question probe: every model passes -> demoted
+    "noncoding": 0.06,
+    "knowledge": 0.08,
+    "boundary": 0.04,
     "stability": 0.02,
     "logprob": 0.03,
     "refusal": 0.05,   # family corroborator — low weight, never decisive
     # Standard v2 (judge-free, fresh-instance / truth-free; see standard_v2.py)
-    "knowledge_bank": 0.15,
-    "capability_curve": 0.12,
+    "knowledge_bank": 0.13,
+    "capability_curve": 0.11,
     "tokenizer": 0.05,
-    "discriminator": 0.15,     # shared-probe answer agreement; sub-version discriminator
+    "discriminator": 0.13,     # shared-probe answer agreement; sub-version discriminator
+    "spatial_curve": 0.10,     # geometric/spatial tiers; 2-candidate tie breaker
 }
 
 _RANK_PROMPT = """You are a forensic model-identification judge. A suspect model produced the behavioral profile below. Compare it against each candidate frozen standard and decide which candidate the suspect most likely is.
@@ -191,7 +192,8 @@ def coverage_adjust(dimensions: dict) -> dict:
 # Judge-free, truth-free lanes that actually split sibling versions (see the
 # 2026-10-10 canonical sweep). Style axes (sentence length, header depth) are
 # deliberately NOT here: they are within-family noise.
-DECISIVE_LANES = ("knowledge_bank", "capability_curve", "tokenizer", "discriminator")
+DECISIVE_LANES = ("knowledge_bank", "capability_curve", "tokenizer", "discriminator",
+                  "spatial_curve", "token_jsd")
 CONTRADICTION_MARGIN = 0.02
 
 

@@ -124,6 +124,13 @@ const OAUTH_PROVIDER_MODELS = {
         // gemini-4-argon* = Ultra-only; claude-*-5-5-* + gemini-3.1-pro-* =
         // Pro (and Ultra); gemini-2.5-pro + gemini-3.6-flash-* = union tag
         // (sources conflict, conservative).
+        // 2026-10-19 re-verified live (mirror of oauth.py): registry identical
+        // to 2026-10-16 (19 ids, 0 dropped/added); all 2.5 rows still listed
+        // rec=True and probe 200 + LIVE content (2.5-pro: 503 NOCAP, gated).
+        // Google serves the 3.5 Flash Lite backend under the legacy
+        // gemini-2.5-flash* wire ids (aliases - kept, clients still send
+        // them). 3.5-flash-low / -extra-low are STUB-RETIRED upstream and
+        // stay excluded.
         { id: 'gemini-3-flash' },
         { id: 'gemini-2.5-flash' },
         { id: 'gemini-2.5-flash-lite' },

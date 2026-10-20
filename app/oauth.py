@@ -916,6 +916,21 @@ OAUTH_PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
         # "Recommended" agent models. chat_20706/chat_23310 are internal
         # tab-chat ids (400 with the IDE envelope) and tab_*_preview are
         # autocomplete models — not chat rows, deliberately excluded.
+        # 2026-10-19 re-verification after user challenge ("gemini-2.5-* was
+        # removed long ago"): fresh fetchAvailableModels with a freshly
+        # refreshed token - registry IDENTICAL to 2026-10-16 (19 ids, 0
+        # dropped, 0 added); all four 2.5 rows still listed rec=True; a
+        # real-content probe (max_tokens=64) returned 200 + content for
+        # 2.5-flash / -flash-lite / -flash-thinking and 503 NOCAP for
+        # 2.5-pro (known id, zero capacity on this tier - not removed).
+        # KEY FINDING: displayName of all three 2.5-flash* wire ids is
+        # "Gemini 3.5 Flash Lite" - Google now serves the 3.5 Flash Lite
+        # backend under the legacy 2.5 wire ids (alias rows). Kept because
+        # clients still send the legacy ids and Google still lists them;
+        # tieredModelIds.flashLite routes to canonical gemini-3.5-flash-lite.
+        # gemini-3.5-flash-low / -extra-low remain STUB-RETIRED upstream
+        # ("no longer available, switch to Gemini 3.7 Flash") and stay
+        # excluded. Evidence: .brain/scratch/research_25_reverify_out.txt.
         # --- LIVE now (verified 200 on both connections) ---
         {"id": "gemini-3-flash"},
         {"id": "gemini-2.5-flash"},

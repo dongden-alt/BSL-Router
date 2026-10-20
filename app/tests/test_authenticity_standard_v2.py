@@ -363,11 +363,12 @@ def test_v2_lane_failure_modes_are_failopen(monkeypatch):
     res = _run(go())
     # 2026-10-19 fail-open: a dead transport must NOT abort at the canary (old
     # behavior: gap=lane_unreachable with zero lanes attempted). The canary
-    # miss is recorded as diagnostics and every lane still runs; all four fail
-    # individually and say why via lane_gaps. gaps=() keeps this fast -- the
+    # miss is recorded as diagnostics and every lane still runs; all five fail
+    # individually and say why via lane_gaps (spatial_curve joined the lane set
+    # 2026-10-19). gaps=() keeps this fast -- the
     # default live gaps=(3.0,) would sleep 3s between retry attempts now that
     # the lanes actually execute under failure. 2026-10-19 pace: _pace() fires
-    # per CALL (not per retry), so fail-open's full ~36-call battery at the
+    # per CALL (not per retry), so fail-open's full call battery at the
     # 0.75s import-time _MIN_INTERVAL stacks 10-27s of sleep against the 10s
     # pytest timeout. monkeypatch.setattr reaches the constant; setenv cannot
     # (it is bound at import time).
@@ -379,6 +380,7 @@ def test_v2_lane_failure_modes_are_failopen(monkeypatch):
         "capability_curve": "lane_returned_empty",
         "knowledge_bank": "lane_returned_empty",
         "discriminator": "lane_returned_empty",
+        "spatial_curve": "lane_returned_empty",
     }
 
 
@@ -440,12 +442,13 @@ def test_sink_is_optional_and_return_value_unchanged(monkeypatch):
     r, s = _run(go())
     assert r is s
     # Same fail-open contract as above: sink identity preserved, canary miss
-    # recorded as diagnostics (not an abort), all four lanes attempted and
+    # recorded as diagnostics (not an abort), all five lanes attempted and
     # individually reported. gaps=() + _MIN_INTERVAL=0 keep the failure path
     # fast: _pace() sleeps per CALL, not per retry, and the live 0.75s
-    # constant over the ~36-call battery would blow the 10s pytest timeout.
+    # constant over the full call battery would blow the 10s pytest timeout.
     assert r["version"] == 2 and r["mode"] == "live"
     assert r["gap"] == "canary_failed_open"
     assert r["canary_gap"] == "http_500"
     assert set(r["lane_gaps"]) == {"tokenizer", "capability_curve",
-                                   "knowledge_bank", "discriminator"}
+                                   "knowledge_bank", "discriminator",
+                                   "spatial_curve"}

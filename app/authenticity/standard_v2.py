@@ -429,11 +429,17 @@ async def run_capability_curve(client, endpoint, api_key, model_id,
     return {"tiers": tiers, "k": k} if tiers else {}
 
 
-def similarity_curve(sus: dict, base: dict):
-    """1 - mean per-tier distance, tolerance widened by binomial noise."""
+def similarity_curve(sus: dict, base: dict, min_shared: int = 4):
+    """1 - mean per-tier distance, tolerance widened by binomial noise.
+
+    min_shared: minimum shared tier count for a reading at all
+    (2026-10-19). capability_curve keeps the historical default of 4;
+    the 3-tier spatial_curve lane passes 3 -- without the parameter the
+    spatial lane could never produce a similarity and the separability
+    tie-break was permanently inert."""
     ts, tb = (sus or {}).get("tiers") or {}, (base or {}).get("tiers") or {}
     shared = [n for n in ts if n in tb]
-    if len(shared) < 4:
+    if len(shared) < min_shared:
         return None
     dist = []
     for n in shared:
@@ -444,6 +450,203 @@ def similarity_curve(sus: dict, base: dict):
         tol = max(0.25, 2.0 * math.sqrt((sa * sa + sb * sb) / 2.0))
         dist.append(min(1.0, abs(pa - pb) / tol))
     return round(1.0 - sum(dist) / len(dist), 3)
+
+
+# ------------------------------------------------------------ spatial curve
+# (2026-10-19) Judge-free geometric/spatial reasoning lane. Sibling standards
+# that tie inside SEPARABLE_DISTANCE on every existing axis often still differ
+# on constructive-geometry ability; like capability_curve the ground truth is
+# PROGRAMMATICALLY COMPUTED at generation time (never LLM-derived) and the
+# payload shape ({"tiers": {name: {"acc","n"}}, "k"}) is identical, so
+# similarity_curve is REUSED unchanged.
+
+def _sp_point_in_box(rng):
+    """EASY: point-in-axis-aligned-box, yes/no."""
+    lo = [rng.randint(-30, 0) for _ in range(3)]
+    hi = [lo[i] + rng.randint(1, 25) for i in range(3)]
+    inside = rng.random() < 0.5
+    if inside:
+        p = [rng.randint(lo[i], hi[i]) for i in range(3)]
+    else:
+        p = [rng.randint(-60, 60) for _ in range(3)]
+        if all(lo[i] <= p[i] <= hi[i] for i in range(3)):
+            ax = rng.randrange(3)
+            p[ax] = hi[ax] + rng.randint(1, 10)
+    ans = all(lo[i] <= p[i] <= hi[i] for i in range(3))
+    q = (f"An axis-aligned box has corner mins {lo} and corner maxes {hi}. "
+         f"Is the point {p} inside the box (inclusive)? Answer yes or no.")
+    return q, ("yes" if ans else "no")
+
+
+def _sp_ray_occlusion(rng):
+    """MID: does a ray from the origin hit a rotated+translated unit cube
+    before a given depth t1? Exact geometric computation (tightened slab
+    transform); yes/no."""
+    t1 = round(rng.uniform(1.5, 6.0), 2)
+    direction = None
+    while direction is None:
+        d = [rng.uniform(-1.0, 1.0) for _ in range(3)]
+        n = math.sqrt(sum(x * x for x in d))
+        if n > 0.2:
+            direction = [x / n for x in d]
+    hit = rng.random() < 0.5
+    # y-axis rotation by theta, then translation to the cube center C.
+    th = round(rng.uniform(0.05, 1.2), 3)
+    c, s = math.cos(th), math.sin(th)
+    # For a cube with center C=(cx,cy,cz), the inverse-transformed origin is
+    #   O' = R(-th) @ (-C), direction D' = R(-th) @ D,
+    # and the slab test on x,z in [-0.5, 0.5] gives the exact hit interval.
+    # Choose C on a line whose perpendicular distance to the ray is < or >
+    # sqrt(2)/2 (the circumscribed radius of the unit cube cross-section) so
+    # the answer is robust to floating-point noise at the margins.
+    t_star = rng.uniform(2.0, 8.0)
+    delta = rng.uniform(0.18, 0.45) * (-1.0 if hit else 1.0)
+    dist = math.sqrt(2.0) / 2.0 + delta
+    px, py, pz = direction
+    ex = [-py, px, 0.0]
+    ne = math.sqrt(ex[0] ** 2 + ex[1] ** 2)
+    if ne < 1e-6:
+        ex = [1.0, 0.0, 0.0]
+        ne = 1.0
+    ex = [v / ne for v in ex]
+    if ex[0] * (-pz) - ex[1] * 0.0 - 0.0 < 0:  # orient e away from nothing in particular; sign irrelevant
+        pass
+    center = [t_star * direction[i] + dist * ex[i] for i in range(3)]
+    # Exact slab test (robust: answers sit >=0.18 away from the decision
+    # boundary in perpendicular space; t1 is additionally clamped well inside
+    # the near/far interval below for hits, and well outside for misses).
+    oprime = [-(c * center[0] + s * center[2]), -center[1],
+              -(-s * center[0] + c * center[2])]
+    dprime = [c * direction[0] + s * direction[2], direction[1],
+              -s * direction[0] + c * direction[2]]
+    tn, tf = -math.inf, math.inf
+    for i in range(3):
+        di = dprime[i]
+        oi = oprime[i]
+        if abs(di) < 1e-9:
+            if not (-0.5 <= oi <= 0.5):
+                tn, tf = 1.0, 0.0
+                break
+            continue
+        a, b = (-0.5 - oi) / di, (0.5 - oi) / di
+        lo, hi = (a, b) if a <= b else (b, a)
+        tn, tf = max(tn, lo), min(tf, hi)
+    raw_hit = tn <= tf and tf >= 0.0
+    # The question is "hit at distance LESS than t1", i.e. yes iff tn < t1.
+    # Place t1 clearly on the intended side of the near-face depth tn
+    # (margin 0.4 >> prompt-rounding noise ~0.014): "yes" needs t1 ABOVE tn,
+    # "no" needs t1 BELOW tn. (2026-10-19 fix: both raw_hit branches
+    # previously had t1 on the wrong side, inverting 17/30 graded answers.)
+    if raw_hit and hit:
+        t1 = round(tn + rng.uniform(0.4, 1.0), 2)
+        ans = "yes"
+    elif raw_hit and not hit:
+        # Cube IS on the ray; ask about a depth short of its near face --
+        # the ray hits, but NOT before t1, so the answer is "no".
+        t1 = round(max(0.05, tn - rng.uniform(0.4, 1.0)), 2)
+        ans = "no"
+    else:
+        # Ray misses the cube entirely: any t1 answers "no". This is the
+        # geometric miss case (perpendicular offset > sqrt(2)/2).
+        ans = "no"
+        if hit:
+            # requested-hit placement came out missing due to numeric margin;
+            # shift the cube onto the ray so intent and geometry agree.
+            center = [t_star * direction[i] + 0.3 * ex[i] for i in range(3)]
+            oprime = [-(c * center[0] + s * center[2]), -center[1],
+                      -(-s * center[0] + c * center[2])]
+            tn, tf = -math.inf, math.inf
+            for i in range(3):
+                di, oi = dprime[i], oprime[i]
+                if abs(di) < 1e-9:
+                    continue
+                a, b = (-0.5 - oi) / di, (0.5 - oi) / di
+                lo2, hi2 = (a, b) if a <= b else (b, a)
+                tn, tf = max(tn, lo2), min(tf, hi2)
+            t1 = round(tn + rng.uniform(0.4, 1.0), 2)
+            ans = "yes"
+    d = [round(v, 3) for v in direction]
+    center = [round(v, 3) for v in center]
+    q = (f"A ray starts at the origin (0,0,0) with unit direction {d}. "
+         f"A unit cube (side length 1) is centered at {center} and rotated "
+         f"{round(math.degrees(th), 1)} degrees about the y-axis through its center. "
+         f"Does the ray hit the cube at a distance less than t={t1} along the ray? "
+         f"Answer yes or no.")
+    return q, ans
+
+
+def _sp_box_volume(rng):
+    """HARD: numeric union or difference volume of two axis-aligned boxes."""
+    alo = [rng.randint(-10, 5) for _ in range(3)]
+    ahi = [alo[i] + rng.randint(2, 10) for i in range(3)]
+    blo = [rng.randint(-10, 5) for _ in range(3)]
+    bhi = [blo[i] + rng.randint(2, 10) for i in range(3)]
+    va = (ahi[0] - alo[0]) * (ahi[1] - alo[1]) * (ahi[2] - alo[2])
+    vb = (bhi[0] - blo[0]) * (bhi[1] - blo[1]) * (bhi[2] - blo[2])
+    inter = 1
+    for i in range(3):
+        inter *= max(0, min(ahi[i], bhi[i]) - max(alo[i], blo[i]))
+    if rng.random() < 0.5:
+        return (f"Box A has corner mins {alo} and maxes {ahi}. "
+                f"Box B has corner mins {blo} and maxes {bhi}. "
+                f"Compute the integer volume of the UNION of A and B."), str(va + vb - inter)
+    if alo != blo or ahi != bhi:
+        pass  # difference A\\B: the non-overlapping part of A
+    return (f"Box A has corner mins {alo} and maxes {ahi}. "
+            f"Box B has corner mins {blo} and maxes {bhi}. "
+            f"Compute the integer volume of the DIFFERENCE A minus B "
+            f"(the part of A not overlapped by B)."), str(va - inter)
+
+
+SPATIAL_TIERS = [
+    ("point_in_box", _sp_point_in_box),
+    ("ray_occlusion", _sp_ray_occlusion),
+    ("box_volume", _sp_box_volume),
+]
+
+
+async def run_spatial_curve(client, endpoint, api_key, model_id,
+                            timeout_s: int = 120, k: int = 2,
+                            rng: random.Random | None = None,
+                            concurrency: int = 4,
+                            gaps=_RETRY_GAPS) -> dict:
+    """k fresh spatial-reasoning prompts per tier.  NEVER raises; returns
+    {"tiers": {name: {"acc","n"}}, "k": k} -- the capability_curve payload
+    shape, so similarity_curve is reused unchanged.  {} on failure."""
+    rng = rng or random.Random()
+    sem = asyncio.Semaphore(concurrency)
+    jobs = []
+    for name, fn in SPATIAL_TIERS:
+        for _ in range(k):
+            prompt, expected = build_capability_prompt(fn, rng)
+            jobs.append((name, prompt, expected))
+
+    async def one(name, prompt, expected):
+        async with sem:
+            try:
+                r = await call_with_backoff(
+                    client, endpoint, api_key, model_id,
+                    {"id": f"sp_{name}", "prompt": prompt, "max_tokens": 4096},
+                    timeout_s, extra={"temperature": 0}, gaps=gaps)
+            except Exception:
+                return name, None
+            if getattr(r, "status_code", 0) != 200 or not (r.content or "").strip():
+                return name, None
+            return name, grade_capability(expected, r.content)
+
+    try:
+        res = await asyncio.gather(*[one(*j) for j in jobs])
+    except Exception:
+        return {}
+    tally = {}
+    for name, g in res:
+        if g is None:
+            continue
+        t = tally.setdefault(name, [0, 0])
+        t[0] += g[0]
+        t[1] += g[1]
+    tiers = {n: {"acc": round(c / t, 4), "n": t} for n, (c, t) in tally.items() if t}
+    return {"tiers": tiers, "k": k} if tiers else {}
 
 
 # ------------------------------------------------------------ knowledge bank
@@ -1019,6 +1222,15 @@ async def run_standard_v2(client, endpoint, api_key, model_id,
                 run_discriminator(client, endpoint, api_key, model_id,
                                   timeout_s, k=1 if live else 2,
                                   concurrency=concurrency, gaps=gaps))
+    # spatial_curve (2026-10-19): geometric/spatial tiers, same payload shape
+    # as capability_curve so similarity_curve is reused unchanged. Harvest
+    # deepens to k=2 (mirrors run_discriminator); live stays cheap at k=1.
+    _sp_k = 1 if live else 2
+    await _lane("spatial_curve",
+                run_spatial_curve(client, endpoint, api_key, model_id,
+                                  timeout_s, k=_sp_k, rng=rng,
+                                  concurrency=concurrency, gaps=gaps),
+                jobs=len(SPATIAL_TIERS) * _sp_k)
     if _lane_gaps:
         out["lane_gaps"] = _lane_gaps
     return out
@@ -1039,7 +1251,14 @@ def compute_v2_dims(sus_v2: dict, candidates: dict) -> dict:
     _sus_tok = sus_v2.get("tokenizer") or {}
     _tok_slack = _common_tokenizer_slack(
         _sus_tok, [(b.get("tokenizer") or {}) for b in cand_v2.values()])
+    sus_lp = {"logprob_profile": _logprob_profile_of(sus_v2)}
+    _tok_slack = _common_tokenizer_slack(
+        _sus_tok, [(b.get("tokenizer") or {}) for b in cand_v2.values()])
     for k, b in cand_v2.items():
+        # logprob_profile lives on the standard's structural block (TraitMark
+        # shape) with a legacy flat fallback -- exactly the two sites the V5
+        # logprob dim in matcher.py already reads.
+        b_lp = _logprob_profile_of(b)
         out[k] = {
             "tokenizer": similarity_tokenizer(_sus_tok, b.get("tokenizer"),
                                               slack=_tok_slack),
@@ -1049,6 +1268,16 @@ def compute_v2_dims(sus_v2: dict, candidates: dict) -> dict:
                                               b.get("knowledge_bank"), inf),
             "discriminator": similarity_discriminator(sus_v2.get("discriminator"),
                                                       b.get("discriminator"), inf_disc),
+            # spatial_curve reuses similarity_curve (identical payload
+            # shape) but has only 3 tiers -> min_shared=3.
+            "spatial_curve": similarity_curve(sus_v2.get("spatial_curve"),
+                                              b.get("spatial_curve"),
+                                              min_shared=3),
+            # token_jsd reads the logprob_profile captured by the SAME probes
+            # the V5 logprob dim uses -- no extra paid calls, strictly more
+            # information (full first-token distribution, not just argmax).
+            "token_jsd": similarity_token_jsd(sus_lp.get("logprob_profile"),
+                                              b_lp.get("logprob_profile")),
         }
     return out
 
@@ -1072,9 +1301,145 @@ def pairwise_separability(a_std: dict, b_std: dict) -> dict:
                                           vb.get("knowledge_bank")),
         "discriminator": similarity_discriminator(va.get("discriminator"),
                                                   vb.get("discriminator")),
+        "spatial_curve": similarity_curve(va.get("spatial_curve"),
+                                          vb.get("spatial_curve"),
+                                          min_shared=3),
+        "token_jsd": similarity_token_jsd(_logprob_profile_of(a_std),
+                                          _logprob_profile_of(b_std)),
     }
     got = [v for v in sims.values() if v is not None]
     if not got:
         return {"distance": None, "separable": None, "sims": sims}
     dist = round(1.0 - sum(got) / len(got), 3)
     return {"distance": dist, "separable": dist >= SEPARABLE_DISTANCE, "sims": sims}
+
+
+# ------------------------------------------------------------------ token_jsd
+# (2026-10-19) Distribution-level logprob lane. The V5 `logprob` dim compares
+# ONLY the chosen first token's logprob (a scalar per probe) and is therefore
+# blind whenever the argmax agrees but the tail differs -- precisely the
+# sibling-version case that produced the 2-candidate alias clusters. token_jsd
+# instead compares the whole top_logprobs vector with Jensen-Shannon divergence.
+#
+# COST: ZERO extra API calls. harvest.py already stores
+# logprob_profile[probe_id] = {"logprob": float, "top": {token: logprob}} for
+# every lp_tok_* probe, and the suspect side carries the same shape. This lane
+# only re-reads data that was previously discarded.
+#
+# JSD is used with log base 2 so the divergence lands in [0, 1] and
+# `1 - mean(jsd)` is directly comparable to the other v2 similarities.
+
+_JSD_EPS = 1e-12
+# Probes whose top_logprobs payload is missing/unusable on either side are
+# skipped; below this many shared probes there is no reading at all (same
+# discipline as similarity_curve's min_shared and the knowledge needle scope).
+_JSD_MIN_SHARED = 3
+
+
+def _logprob_profile_of(std: dict) -> dict:
+    """Pull logprob_profile out of a standard OR a v2 block OR a suspect dict.
+
+    Handles every shape seen in the wild: TraitMark nesting
+    (structural.tokenizer_signature.logprob_profile), the sibling
+    structural.logprob_profile, and the flat legacy/suspect form. Returns {}
+    when absent so callers never need a None check.
+    """
+    if not isinstance(std, dict):
+        return {}
+    lp = std.get("logprob_profile")
+    if isinstance(lp, dict) and lp:
+        return lp
+    _s = std.get("structural")
+    if isinstance(_s, dict):
+        lp = _s.get("logprob_profile")
+        if isinstance(lp, dict) and lp:
+            return lp
+        _ts = _s.get("tokenizer_signature")
+        if isinstance(_ts, dict):
+            lp = _ts.get("logprob_profile")
+            if isinstance(lp, dict) and lp:
+                return lp
+            # v2 lanes live under tokenizer_signature.v2
+            _v2 = _ts.get("v2")
+            if isinstance(_v2, dict):
+                lp = _v2.get("logprob_profile") or _v2.get("token_jsd")
+                if isinstance(lp, dict):
+                    return lp.get("profiles") if isinstance(lp.get("profiles"), dict) else lp
+    return {}
+
+
+def _top_dist(node) -> dict | None:
+    """Normalize one probe entry into a probability vector {token: p}.
+
+    Accepts {"logprob":x, "top":{tok:lp}} (harvest shape) or a bare
+    {tok: lp} map. Returns None when there is no usable top_logprobs payload
+    -- a scalar-only entry cannot support a distribution comparison.
+    """
+    if not isinstance(node, dict):
+        return None
+    top = node.get("top") if isinstance(node.get("top"), dict) else None
+    if top is None:
+        # bare {token: logprob} map, but reject the harvest wrapper keys
+        top = {k: v for k, v in node.items()
+               if k not in ("logprob", "top", "token", "profiles")}
+        if not top:
+            return None
+    dist = {}
+    for tok, lp in top.items():
+        try:
+            dist[str(tok)] = math.exp(float(lp))
+        except (TypeError, ValueError):
+            continue
+    total = sum(dist.values())
+    if total <= _JSD_EPS:
+        return None
+    return {t: p / total for t, p in dist.items()}
+
+
+def _jsd_pair(p: dict, q: dict) -> float:
+    """Jensen-Shannon divergence (log base 2) of two probability dicts -> [0,1].
+
+    Missing tokens on one side are treated as zero mass, which is the correct
+    reading: a token absent from the reported top-k genuinely carries less
+    probability there. Both inputs must be normalized.
+    """
+    keys = set(p) | set(q)
+    if not keys:
+        return 0.0
+    jsd = 0.0
+    for k in keys:
+        pk, qk = p.get(k, 0.0), q.get(k, 0.0)
+        m = 0.5 * (pk + qk)
+        if pk > _JSD_EPS:
+            jsd += 0.5 * pk * math.log(pk / m, 2)
+        if qk > _JSD_EPS:
+            jsd += 0.5 * qk * math.log(qk / m, 2)
+    # Numerically JSD can land a hair outside [0,1] from float error.
+    return max(0.0, min(1.0, jsd))
+
+
+def similarity_token_jsd(sus_profile: dict, base_profile: dict,
+                         min_shared: int = _JSD_MIN_SHARED):
+    """1 - mean per-probe JSD over shared lp probes. None = not comparable.
+
+    Mirrors the V5 logprob dim's sharing rule (a probe counts only when BOTH
+    sides carry usable data) but scores the distribution instead of the argmax.
+    """
+    sus_profile = sus_profile or {}
+    base_profile = base_profile or {}
+    if not sus_profile or not base_profile:
+        return None
+    dists = []
+    for pid in sus_profile:
+        b = base_profile.get(pid)
+        if not isinstance(b, dict):
+            continue
+        ps = _top_dist(sus_profile.get(pid))
+        pb = _top_dist(b)
+        if ps is None or pb is None:
+            continue
+        dists.append(_jsd_pair(ps, pb))
+    if len(dists) < min_shared:
+        return None
+    return round(1.0 - sum(dists) / len(dists), 3)
+

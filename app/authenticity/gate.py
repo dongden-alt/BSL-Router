@@ -33,7 +33,8 @@ _MODULE_DIR = Path(__file__).parent
 _REFERENCE_DIR = _MODULE_DIR / "reference"
 _BASELINE_DIR = _REFERENCE_DIR / "baselines"
 # v2 lanes that carry match evidence (the "version"/"mode"/"gap" keys do not).
-_V2_LANES = ("tokenizer", "capability_curve", "knowledge_bank", "discriminator")
+_V2_LANES = ("tokenizer", "capability_curve", "knowledge_bank", "discriminator",
+             "spatial_curve", "token_jsd")
 # Every match dimension that only the deep battery can produce.
 _DEEP_DIMS = ("noncoding", "knowledge", "logprob", "boundary", "refusal",
               "stability", "timing") + _V2_LANES
@@ -678,6 +679,7 @@ async def authenticity_check(
         #   no_live_data[:reason]    -> lane ran but returned nothing usable
         # Skip reasons are RECORDED at the skip site (_lane_skip), not inferred.
         from .standard_v2 import v2_of as _v2_of
+        from .standard_v2 import _logprob_profile_of
         _pool_for_status = _load_match_baselines(model_id) or {}
 
         def _baseline_has(getter) -> bool:
@@ -712,6 +714,17 @@ async def authenticity_check(
                             lambda b: (b.get("refusal") or {}).get("delta_signature"))),
         }
         for _ln in _V2_LANES:
+            if _ln == "token_jsd":
+                # Derived lane: no v2 payload of its own. Its data source is
+                # the logprob_profile block on BOTH sides (harvest shape), so
+                # a null here means "no usable top_logprobs", not "lane empty".
+                _lane_sources[_ln] = (
+                    lambda: bool(_logprob_profile_of(
+                        getattr(features, "logprob_profile", None) or {})),
+                    lambda: _baseline_has(
+                        lambda b: bool(_logprob_profile_of(b))),
+                )
+                continue
             _lane_sources[_ln] = (
                 (lambda k: (lambda: bool(_v2_live.get(k))))(_ln),
                 (lambda k: (lambda: _baseline_has(
@@ -722,6 +735,10 @@ async def authenticity_check(
         _live_reason = {"noncoding": _nc_gap}
         _v2_lane_gaps = (_v2_live.get("lane_gaps") or {}) if isinstance(_v2_live, dict) else {}
         for _ln in _V2_LANES:
+            if _ln == "token_jsd":
+                _live_reason[_ln] = ("no_top_logprobs_payload"
+                                     if _v2_live else "")
+                continue
             _live_reason[_ln] = (_v2_gap or _v2_lane_gaps.get(_ln)
                                  or ("lane_empty_or_timeout" if _v2_live else ""))
 

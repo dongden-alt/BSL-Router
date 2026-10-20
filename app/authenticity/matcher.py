@@ -15,7 +15,7 @@ from .standard_v2 import compute_v2_dims, pairwise_separability, v2_of
 # a COMPARED dimension far below these on the would-be winner forces abstain).
 # Conservative until calibrated against live self-match distributions.
 V2_VETO = {"knowledge_bank": 0.45, "capability_curve": 0.40, "tokenizer": 0.50,
-           "discriminator": 0.45}
+           "discriminator": 0.45, "token_jsd": 0.45}
 
 # Discriminator veto near-miss instrumentation (2026-10-10): every time the
 # would-be winner's compared discriminator sim lands under the V2_VETO floor,
@@ -361,7 +361,8 @@ def match_submodel(
         else:
             dims["timing"] = None  # either side missing/empty
 
-        for _d2 in ("tokenizer", "capability_curve", "knowledge_bank", "discriminator"):
+        for _d2 in ("tokenizer", "capability_curve", "knowledge_bank",
+                    "discriminator", "spatial_curve", "token_jsd"):
             dims[_d2] = (v2_dims.get(model_id) or {}).get(_d2)
 
         scores[model_id] = score  # legacy 2-dim base (cutoff+capability), audit only
@@ -546,9 +547,9 @@ def match_submodel(
 
     return MatchResult(
         matched_model=best_model if not abstain else "",
-        match_score=best_score,
+        match_score=round(best_score, 3),
         runner_up=runner_up,
-        runner_up_score=runner_up_score,
+        runner_up_score=round(runner_up_score, 3),
         abstain=abstain,
         dimensions=best_dims,
         best_model=best_model,

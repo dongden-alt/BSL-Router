@@ -238,7 +238,7 @@ Each provider family has its own **family adapter** (14 adapters total):
 
 Infrastructure adapters: `_base.py` (shared base), `_effort.py` (reasoning effort ladder), `_legacy_reference.py`.
 
-#### Codex Responses-wire reasoning sanitize (2026-10-19) — CODE DONE, live on next user-commanded restart
+#### Codex Responses-wire reasoning sanitize (2026-10-19) — DONE (runtime-verified), live on next user-commanded restart
 
 `codex_adapter.openai_to_responses()` converts the egress body to the Responses shape **before**
 `resolve_thinking()` runs, so the `gpt-?[56]` family contract (`app/compat/families/openai.py::_apply_gpt5`)
@@ -256,6 +256,12 @@ records provenance (including a manual `ProvenanceRecord` fallback so the rule i
 and returns immediately, skipping all chat-shaped OpenAI controls. The chat/completions path is
 unchanged (negative-control test). Tests: `app/tests/test_codex_wire_sanitize.py` (3) —
 124/124 targeted green on `.venv311` + `.venv312`.
+
+Runtime E2E (2026-10-19): sandbox router on `:6979` (isolated `BSL_CONFIG_PATH`, production `:6969`
+untouched) served the original failing shape — tool-carrying `/v1/chat/completions` on
+`codex/gpt-5.6-sol` — as **HTTP 200 in 4.1s** with `finish=tool_calls` (`get_weather {"city":"Tokyo"}`),
+provenance `resolved_by:gpt-5:codex_responses_wire_sanitize[]` live in the router log.
+Digest: `.brain/scratch/codex_e2e_verify.txt`.
 
 #### Codex lane: Chat Completions → Responses translation (2026-10-09)
 
@@ -573,6 +579,40 @@ standard better (0.900) than a6api does (0.805). Full analysis: `.brain/CHANGELO
 candidate at one matched tolerance via `_common_tokenizer_slack`, and a new
 `tokenizer_decisive` guard abstains when two siblings land within `TOKENIZER_DECISIVE_GAP`.
 See `.brain/CHANGELOG.md` 2026-10-15 fix entry.
+
+#### Standard v2 lane inventory: `spatial_curve` (Phase A) + `token_jsd` (Phase B) — CODE DONE (2026-10-19)
+
+Two additional v2 evidence lanes now feed `compute_v2_dims` and the matcher, aimed squarely at the
+2-candidate tie-cluster / high-vs-low-tier ambiguity that made the verifier abstain on most
+same-family sibling pairs. Both are **offline-verified only** — no harvested standard carries the
+new axes yet, so both lanes report `lane_returned_empty` on live runs until a targeted backfill
+lands (see *Backfill discipline* below). **Status: CODE DONE, awaiting per-model lane backfill;
+never full-re-harvest to fill one lane** (KI `ki-bslrouter-targeted-backfill-never-full-reharvest`).
+
+| Lane | Signal source | Extra paid calls | Implementation |
+|---|---|---|---|
+| `spatial_curve` (Phase A) | 3-D ray-occlusion curve over the model's own reasoning/answer geometry | none (reuses the harvested probe set) | `_sp_ray_occlusion` (ray parameter `t1` now on the correct side of near-face depth `tn`) + `similarity_curve(..., min_shared=3)` |
+| `token_jsd` (Phase B) | Jensen–Shannon divergence over harvested **logprob profiles** (distribution shape, not argmax) | none — reuses existing `logprob_profile` data | `_logprob_profile_of` → `_top_dist` → `_jsd_pair` → `similarity_token_jsd` |
+
+Wiring — **all five sites must carry a lane, or it is silently dead**: `compute_v2_dims` and
+`pairwise_separability` in [standard_v2.py](../app/authenticity/standard_v2.py); the `_d2`
+collection loop + `V2_VETO` soft veto in [matcher.py](../app/authenticity/matcher.py);
+`DECISIVE_LANES` + `FEATURE_WEIGHTS` in [judge_rank.py](../app/authenticity/judge_rank.py);
+`_V2_LANES` + `lane_status` in [gate.py](../app/authenticity/gate.py). The rebalanced weights sum
+to `1.0000000000000002` in IEEE754, which is why `match_submodel` rounds `match_score` /
+`runner_up_score` to 3 decimals at the `MatchResult` boundary (matching the long-standing rounding
+of `ranked[].score` and every dim). Rounding is presentation-only — abstain decisions are made from
+the pre-round scores.
+
+*Backfill discipline:* one missing lane → `scripts/backfill_v2_lane.py --lane-name <lane>`, which
+merges into the existing standard and leaves judge axes + other lanes untouched. Full re-harvest is
+the last resort and needs an explicit user command (~50-70 paid calls; it has destroyed good judge
+axes twice).
+
+Verified: `.venv311` + `.venv312` — 70 passed (`test_standard_v2_spatial_curve.py` +
+`test_authenticity_cascade.py` + `test_authenticity_standard_v2.py`) and 282 passed on the wider
+`-k "authenticity or standard_v2 or judge or matcher"` selection, both legs. Details:
+`.brain/CHANGELOG.md` 2026-10-19 Phase B entry.
 
 #### Gemini 4 argon rides the thinkingLevel enum contract (2026-10-15)
 

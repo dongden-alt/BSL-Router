@@ -23,6 +23,7 @@ LANES = {
     "capability_curve": sv.run_capability_curve,
     "knowledge_bank": sv.run_knowledge_bank,
     "discriminator": sv.run_discriminator,
+    "spatial_curve": sv.run_spatial_curve,
 }
 
 
@@ -43,7 +44,7 @@ async def _run(file, lane, lane_name, key, replace=False):
     fn = LANES[lane_name]
     client = _make_client()
     kwargs = dict(timeout_s=180, concurrency=2)
-    if lane_name in ("capability_curve", "knowledge_bank"):
+    if lane_name in ("capability_curve", "knowledge_bank", "spatial_curve"):
         kwargs["k"] = 3 if lane_name == "knowledge_bank" else 2
     res = await fn(client, ROUTER_EP, key, lane, **kwargs)
     if not res:

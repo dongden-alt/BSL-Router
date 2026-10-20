@@ -15,11 +15,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.authenticity import harvest as H  # noqa: E402
 
 STD = Path(__file__).resolve().parent.parent / "app" / "authenticity" / "reference" / "standards"
-JUDGE = "mintrouter/claude-opus-5-5"
+JUDGE = "codex/gpt-6-astra"  # user-selected 2026-10-20 (20 prior standards; fastest lane probe). Override: --judge
 ROUTER = "http://127.0.0.1:6969"
 
 
-async def rejudge(path: Path, lane: str, axis: str, key: str):
+async def rejudge(path: Path, lane: str, axis: str, key: str, judge: str = JUDGE):
     s = json.loads(path.read_text(encoding="utf-8"))
     node = (s.get("noncoding", {}).get(axis) or {})
     if (node.get("score") or 0) > 0:
@@ -45,13 +45,14 @@ async def rejudge(path: Path, lane: str, axis: str, key: str):
     if not outs:
         print(f"ERR no {axis} outputs re-harvested from {lane}")
         return 1
-    scores = await H.judge_scores(ROUTER, key, JUDGE, outs)
+    scores = await H.judge_scores(ROUTER, key, judge, outs)
     sc = scores.get(axis) or {}
     score = int(sc.get("score", 0) or 0)
     if score <= 0:
         print(f"ERR judge still zeroed {axis}; why={sc.get('why')}")
         return 1
     s["noncoding"][axis] = {"score": score, "why": str(sc.get("why", ""))[:400]}
+    s.setdefault("meta", {})["judged_by"] = judge
     fd, tmp = tempfile.mkstemp(dir=str(STD), prefix=".tmp_", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(s, f, ensure_ascii=False, indent=2)
@@ -65,9 +66,10 @@ def main():
     ap.add_argument("--file", required=True)
     ap.add_argument("--lane", default="")
     ap.add_argument("--axis", required=True, choices=["creative", "eq", "humor", "design"])
+    ap.add_argument("--judge", default=JUDGE, help="judge lane (default: codex/gpt-6-astra)")
     a = ap.parse_args()
     key = (Path(__file__).resolve().parent.parent / ".bsl_key").read_text(encoding="utf-8").strip()
-    return asyncio.run(rejudge(STD / a.file, a.lane, a.axis, key))
+    return asyncio.run(rejudge(STD / a.file, a.lane, a.axis, key, a.judge))
 
 
 if __name__ == "__main__":

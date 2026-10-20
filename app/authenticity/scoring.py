@@ -20,6 +20,15 @@ import datetime
 from dataclasses import dataclass, field
 
 
+def _display_id(model_id: str) -> str:
+    """Official short model id for user-facing text: strips the provider
+    prefix only ('vsllm-o/kimi-k3' -> 'kimi-k3', 'glm-5.3-api' stays
+    'glm-5.3-api'). Distinct from canonical_submodel(), which also folds
+    '.'/'_' for equality tests -- display keeps the vendor's own slug."""
+    s = (model_id or "").strip()
+    return s.split("/")[-1] if "/" in s else s
+
+
 # ── Confidence badge levels (5-point, no percentages) ─────────────────────
 CONFIDENCE_LEVELS = ["very_low", "low", "medium", "high", "very_high"]
 
@@ -95,7 +104,7 @@ class RealityVerdict:
         icon = icons.get(self.verdict, "❓")
         mods = f" · {len(self.modifications)} modification(s)" if self.modifications else ""
         return (f"{icon} {self.verdict.upper().replace('_', ' ')} — "
-                f"{self.identified_as or self.family or self.claimed or 'unknown'} "
+                f"{self.identified_as or self.family or _display_id(self.claimed) or 'unknown'} "
                 f"(confidence: {self.confidence_level.replace('_', ' ')}){mods}")
 
     def to_dict(self) -> dict:
@@ -186,7 +195,7 @@ def _build_conclusions(v) -> None:
                            f"(<0.55 = different family) — the decisive discriminator.")
                 auth_conf = max(auth_conf, min(0.95, 0.6 + (1.0 - nc_dim) * 0.35))
             auth_rationale = (
-                f"The model claims to be '{v.claimed or v.family}' but its behavioral "
+                f"The model claims to be '{_display_id(v.claimed) or v.family}' but its behavioral "
                 f"fingerprint matches '{v.identified_as}' instead. Self-claims are zeroed; "
                 f"only style/behavior signals are trusted. It is NOT the claimed model."
                 + nc_note
@@ -200,7 +209,7 @@ def _build_conclusions(v) -> None:
             auth_rationale = (
                 f"The family is real but the served model matched "
                 f"'{v.submodel_match or v.identified_as}' - a cheaper/older sub-version than "
-                f"the claimed '{v.claimed}'. Not the advertised model."
+                f"the claimed '{_display_id(v.claimed)}'. Not the advertised model."
             )
             auth_ev = {"submodel_match": v.submodel_match, "claimed": v.claimed,
                        "alias_group": (v.evidence.get("match_dimensions", {}) or {}).get("_alias_group") or [],
@@ -266,7 +275,7 @@ def _build_conclusions(v) -> None:
         "best_guess": _low_conf, "evidence_gap": _gap,
         "statement": f"The served model is {authenticity}" + (
             "" if authenticity == "REAL"
-            else f" - not a genuine '{v.claimed or v.model_id}'"
+            else f" - not a genuine '{_display_id(v.claimed) or _display_id(v.model_id)}'"
             if authenticity == "FAKE"
             else " - real/fake could not be confirmed at model level."),
         "rationale": auth_rationale, "evidence": auth_ev,
