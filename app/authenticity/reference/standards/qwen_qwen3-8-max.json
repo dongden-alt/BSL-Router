@@ -657,6 +657,83 @@
               "f=0|w=romeo and juliet two young lovers"
             ]
           }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 1.0,
+              "n": 3
+            },
+            "box_volume": {
+              "acc": 1.0,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "To compute $S = \\sum_{k=1}^{1445} k^2 \\pmod{9973}$, we use the formula for the sum of the first $n$ squares:\n$$ S_n = \\frac{n(n+1)(2n+1)}{6} $$\n\nFor $n = 1445$:\n$$ S_{1445} = \\frac{1445 \\times 1446 \\times 2891}{6} $$\n$$ S_{1445} = 1006776295 $$\n\nNow, we compute $S_{1445} \\pmod{9973}$:\n$$ 1006776295 \\pmod{9973} = 1945 $$\n\nANSWER: 1945",
+            "hm_t1_1": "To compute $S = \\sum_{k=1}^{1954} k^2 \\pmod{2011}$, we use the formula for the sum of the first $n$ squares:\n$$ S_n = \\frac{n(n+1)(2n+1)}{6} $$\n\nFor $n = 1954$:\n$$ S_{1954} = \\frac{1954 \\times 1955 \\times 3909}{6} $$\n$$ S_{1954} = 2488651555 $$\n\nNow, we compute $S_{1954} \\pmod{2011}$:\n$$ 2488651555 \\pmod{2011} = 214 $$\n\nANSWER: 214",
+            "hm_t2_0": "To count the integers $x$ with $1 \\le x \\le 126056$ that are divisible by 7 or 13, we use the Principle of Inclusion-Exclusion.\n\nLet $N = 126056$.\n- The number of integers divisible by 7 is $\\lfloor 126056 / 7 \\rfloor = 18008$.\n- The number of integers divisible by 13 is $\\lfloor 126056 / 13 \\rfloor = 9696$.\n- The number of integers divisible by both 7 and 13 (i.e., divisible by $7 \\times 13 = 91$) is $\\lfloor 126056 / 91 \\rfloor = 1385$.\n\nBy the Principle of Inclusion-Exclusion, the total number of such integers is:\n$18008 + 9696 - 1385 = 26319$.\n\nANSWER: 26319",
+            "hm_t2_1": "11}$, we can break the problem into periodic patterns using the Chinese Remainder Theorem.\n\n**Step 1: Analyze the conditions**\nThe condition $\\gcd(x, 12) = 12$. Since $12 = 2^2$, $x$ must not be divisible by $2$ or $ulo 12, the integers coprime to 1uent to $1, 5, 7,$ or $11$. There are $\\phi(12) = 4$ such residues.\n\nThe second condition is $x \\equiv 6 \\pmod{11}$.\n\n**Step 2: Combine the conditions**\nBecause $\\gcd(12, 11) = 1$, the Chinese Remainder Theorem guarantees that for each of the 4 valid residues modulo 12, there is exactly one unique residue modulo $12 \\times 11 = 132$ that also satisfies $x \\equiv 6 \\pmod{11}$. \nThus, the valid integers $x$ occur exactly 4 times in every block of 132 consecutive integers.\n\n**Step 3: Count the full periods**\nWe find how many full periods of 132 fit into our upper bound of  x \\le 497 \\times 132 = 6: Check the remaining integers**\nWe must now check the remaining integers from $65605$ to $65630$ (a total of $65630 - 65604 = 26$ integers).\nSince $65604$ is a multiple of $132$, it is also a multiple of $11$. Therefore, the condition $x \\equiv 6 \\pmod{11}$ for the remaining numbers is equivalent to finding $k \\in \\{1, 2, \\dots, 26\\}$ such that $k \\equiv 6 \\pmod{11}$.\nThe only values of $k$ in this range are $k = 6$ and $k = 17$.\nThis gives two candidate values for $x$:\n- $x_1 = 65604 + 6 = 65610$\n- $x_2 = 65604 + 17 = 65621$\n\nNow we test these candidates against the first condition, $\\gcd(x, 12) = 1$:\n- For $x_1 = 65610$: It is an even number (ends in 0), so it is divisible by 2. Thus, $\\gcd(65610, 12) \\neq 1$.\n- For $x_2 = 65621$: It is odd (ends in 1), and the sum of its digits is $6+5+6+2+1 = 20$, which is not divisible by 3. Thus, $\\gcd(65621, 12) = 1$.\n\nThere is exactly $1$ valid solution in the remaining range.\n\n**Step 5: Total count**\nAdding the solutions from the full periods and the remaining range",
+            "hm_t3_0": "To find the number of integers $x$ with $1 \\le x \\le 65630$ such that $\\gcd(x, 12) = 1$ and $x \\equiv 6 \\pmod{$ means that $x$ is coprime to $1 \\times 33$. \nMod2 are exactly those congr65630:\n$$ \\lfloor 65630 / 132 \\rfloor = 497 $$\nThis gives $497$ full periods, covering the range $1 \\le5604$.\nThe number of solutions in this range is:\n$$ 497 \\times 4 = 1988 $$\n\n**Step 4 gives:\n$$ 1988 + 1 = 1989 $$\n\nANSWER: 1989",
+            "hm_t3_1": "To count the integers $n$ with $1 \\le n \\le 68095$ such that $\\sigma(n)$ is divisible by 7, we can compute the sum of divisors $\\sigma(n)$ for all $n$ in this range using an efficient sieve-like algorithm.\n\nThe sum of divisors function $\\sigma(n)$ is defined as the sum of all positive integer divisors of $n$. Instead of finding the divisors for each $n$ individually, we can iterate through each possible divisor $d$ from $1$ to $68095$, and add $d$ to a running total for every multiple of $d$. This process runs in $O(N \\log N)$ time, making it highly efficient for $N = 68095$.\n\nAfter populating the $\\sigma$ array for all $n \\in [1, 68095]$, we count the number of values where $\\sigma(n) \\equiv 0 \\pmod 7$.\n\nExecuting this computation yields exactly 24387 integers that satisfy the condition.\n\nANSWER: 24387",
+            "hj_hard_architecture_0": "### 1. Capacity Planning & Topology\nTo sustain 2,000,000 writes/second with 30-day retention, the system requires a distributed, shared-nothing architecture. \n*   **Data Volume**: Assuming an average payload of 64 bytes per data point, 30 days of retention yields ~5.18 trillion data points (~330 TB compressed). With a replication factor of 3, raw storage requirement is ~1 PB.\n*   **Node Sizing**:\n    *   **Ingestion Gateways**: 40 nodes. Each handles 50,000 writes/sec.\n    *   **Message Broker (Redpanda/Kafka)**: 12 nodes. Each handles ~166,000 writes/sec.\n    *   **Storage Nodes (TSDB)**: 60 nodes. Each handles ~100,000 writes/sec (inclusive of replication traffic).\n\n### 2. Ingestion & Backpressure\nThe ingestion layer must absorb traffic spikes without cascading failures into the storage layer.\n*   **Protocol**: Clients use gRPC streaming with mandatory client-side batching (batch size: 1,000 points or 100ms flush interval).\n*   **Backpressure Mechanism**: \n    *   Storage nodes continuously expose a `WriteQueueDepth` metric. \n    *   Ingestion Gateways monitor this metric. If the queue depth exceeds 80% of the node's capacity, Gateways immediately reject new writes with HTTP 429 / gRPC `RESOURCE_EXHAUSTED`.\n    *   Clients are required to implement exponential backoff and jitter.\n    *   If the message broker's disk usage exceeds 75%, it triggers native backpressure to the Gateways, halting ingestion at the edge.\n\n### 3. Partitioning\nPartitioning must balance write distribution (avoiding hotspots) with read efficiency (time-range scans).\n*   **Logical Partitioning**: Data is partitioned using `hash(tenant_id, metric_id) % 1024`. This ensures high-cardinality metrics are evenly distributed across the cluster.\n*   **Physical Sharding**: The 1,024 logical partitions are mapped to the 60 storage nodes. Each node owns ~17 logical partitions.\n*   **Data Layout**: Within a partition, data is physically sorted by `(timestamp, metric_id)`. This layout optimizes sequential I/O for time-range queries while maintaining write locality.\n\n### 4. Replication\nReplication is split into two planes to maximize write throughput while ensuring metadata consistency.\n*   **Data Plane (Asynchronous Quorum)**: Raw time-series data uses quorum-based replication to minimize write latency. Write Quorum (W) = 2, Read Quorum (R) = 1, Replication Factor (RF) = 3. This allows writes to succeed as soon as 2 replicas acknowledge, avoiding the latency penalty of synchronous consensus for every write.\n*   **Control Plane (Synchronous Raft)**: Partition ownership, topology changes, and index metadata are managed via a 3-node Raft cluster. This ensures strong consistency for routing queries to the correct storage nodes.\n\n### 5. Compaction\nThe storage engine is a Log-Structured Merge-Tree (LSM), optimized for write-heavy workloads.\n*   **Strategy**: Time-Tiered Compaction. Because time-series data is immutable and naturally ordered by time, SSTables are grouped into 1-hour time windows. Background threads merge overlapping SSTables only within the same time window.\n*   **Retention (30-Day TTL)**: A dedicated reaper process drops entire SSTable files where `max_timestamp < now() - 30 days`. Because data is time-partitioned, expired data is deleted at the file level without requiring expensive tombstone processing.\n*   **I/O Throttling**: Compaction IOPS are strictly capped at 30% of the total disk IOPS to prevent background merges from starving foreground write operations.\n\n### 6. Query Path (Sub-Second Latency)\nTo achieve sub-second p99 latency, the read path minimizes disk I/O and leverages memory.\n*   **Indexing**: An in-memory inverted index maps label predicates (e.g., `region=us-east`) to `metric_id`s. \n*   **Execution**:\n    1.  The query coordinator resolves the target `metric_id`s via the inverted index.\n    2.  It performs a scatter-gather operation, sending sub-queries only to the specific storage nodes holding the relevant partitions.\n    3.  Storage nodes use Bloom filters (10 bits per key) and binary search to locate the exact time-range blocks in the SSTables.\n*   **Caching**: 20% of the storage node's RAM is allocated to an LRU block cache. Frequently queried recent data (last 24 hours) is served directly from memory, typically yielding query latencies under 50ms.",
+            "hj_hard_domain_0": "rgba(255,255,255,1.0)');\nStop(0.2, 'rgba(255,255,255,0.8)');\n        gradient.addColorStop255, = gradient;\n        ctx.fillRect(0, 0, 64, 64);\n        const texture = new THREE.CanvasTexture(canvas);\n\n        const material = new THREE.PointsMaterial({\n            size: 1.2,\n            map: texture,\n            vertexColors: true,\n            transparent: true,\n            opacity: 0.85,\n            sizeAttenuation: true,\n\n\n        // --- Integration Loop (RK4) ---\n        function integrate() {\n            for (let for (let i = 0; i < N; i++) {\n                    const idx = i * 3;\n                    let = x2 * y2 - beta * z2;\n\n                    // k3\n                    const x3 = x + dtHalf * k2x;\n                    const y3 = y + dtHalf * k2y;\n = sigma * (y3 - x3);\n                    const k3y3;\n                    const k3z = x3 * y3 - beta + dt * k3x;\n                    const y4 = y + dt * k3y;\n                    constx = sigma * (y4 - x4);\n                    const k4y = x4 * (rho - z4) - y4;\n                    const k4z = x4 * y4 - beta * z4;\n\n                    // Update positions\n                    x += dtSixth * (k1x + 2 * k2x + 2 * k3x + k4x);\n                    y += dtSixth * (k1y + 2 * k2y + 2 * k3y + k4y);\n                    z += dtSixth * (k1z + 2 * k2z + 2 * k3z + k4z);\n\n - 5.0) / 40.0;\n                    if.2 + 0.8 * t;               // R\n                    colors[idx + 1] = 0.1 + 0.7 * (1.0 - Math.abs(t - 0.5) * 2.0); // G\n                    colors[idx + 2] = 1.0 - 0.8 * t;               // B\n geometry.attributes.position.needsUpdate = true;\n            geometry.attributes.color.ne",
+            "hj_hard_visual_0": "```html\n<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>Lorenz Attractor - 20k Particles</title>\n    <style>\n        body { margin: 0; overflow: hidden; background: #000; }\n        canvas { display: block; }\n    </style>\n</head>\n<body>"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              1.0,
+              0.5,
+              0.5
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 1,
+                "total": 2
+              }
+            ]
+          },
+          "legacy_features": {
+            "hard_judged_architecture": 5,
+            "hard_math_t1": 1.0,
+            "hard_math_t2": 0.5,
+            "hard_math_t3": 0.5,
+            "hard_judged_domain": 0,
+            "hard_judged_visual": 1
+          },
+          "k": 2,
+          "judged": {
+            "hard_architecture": {
+              "score": 5,
+              "why": "The design covers all requested components with concrete numbers, but lacks a global regional topology and failure model, mislabels uncompressed capacity as compressed, conflates quorum acknowledgments with asynchronous replication while W=2/R=1 permits stale reads, leaves hot-series partitioning and broker durability semantics unresolved, and asserts sub-second queries without workload bounds, re"
+            },
+            "hard_domain": {
+              "score": 0,
+              "why": "The answer contains unrelated, malformed JavaScript and does not address TCP congestion control, the 10 MB bandwidth-delay product, bufferbloat, cwnd growth, or modern algorithms such as BBR."
+            },
+            "hard_visual": {
+              "score": 1,
+              "why": "The answer contains only an incomplete HTML shell and no three.js scene, particles, Lorenz integration, per-frame buffer updates, animation loop, or camera controls."
+            }
+          }
         }
       }
     },

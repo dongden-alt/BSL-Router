@@ -1,0 +1,796 @@
+{
+  "meta": {
+    "model_id": "gemini-4-argon",
+    "family": "gemini",
+    "sub_model": "gemini-4-argon",
+    "aliases": [],
+    "collected_at": "2026-10-20T14:21:25.785212+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "",
+    "anchor_lane": "mintrouter/gemini-4-argon"
+  },
+  "identity": {
+    "self_claim_model": "( Gemini 4 Argon)",
+    "self_claim_org": "Google (trained Gemini 4 Argon; assistant by )",
+    "self_keywords": [
+      "gemini",
+      "google",
+      "bard"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2026,
+    "cutoff_month": 3,
+    "known_facts": [
+      {
+        "fact": "At the 97th Academy Awards, Sean Baker's film Anora won five Oscars including Best Picture, Best Director, and Best Actress for Mikey Madison.",
+        "needle": "March 2, 2025 (Anora / Mikey Madison)"
+      },
+      {
+        "fact": "Former central bank governor Mark Carney was sworn in as the 24th Prime Minister of Canada to succeed Justin Trudeau after winning 85.9% of the vote in the Liberal Party leadership election.",
+        "needle": "March 14, 2025 (Mark Carney, 24th Prime Minister)"
+      },
+      {
+        "fact": "NASA astronauts Suni Williams and Butch Wilmore returned to Earth aboard the SpaceX Crew-9 Dragon capsule Freedom, splashing down off the coast of Tallahassee, Florida after 286 days in space following the Boeing Starliner Crew Flight Test.",
+        "needle": "March 18, 2025 (286 days / Dragon Freedom)"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The winning national team and final match score of the 2026 FIFA World Cup held in June–July 2026.",
+        "needle": "The winning national team and final match score of the 2026 FIFA World Cup held "
+      },
+      {
+        "fact": "The specific recipients and citations of the 2026 Nobel Prizes announced in October 2026.",
+        "needle": "The specific recipients and citations of the 2026 Nobel Prizes announced in Octo"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "1.",
+    "header_depth": 0,
+    "avg_sentence_length": 84.55,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1735,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.001,
+    "vocabulary_complexity": 0.56,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 7,
+      "why": "Compelling lighthouse premise; vivid imagery sometimes relies on familiar phrasing."
+    },
+    "eq": {
+      "score": 7,
+      "why": "Validates feelings without advice, but invents firsthand knowledge and assumes unfairness."
+    },
+    "humor": {
+      "score": 8,
+      "why": "Tax manual, weeping, and paperwork jokes reinforce rather than interrupt explanation."
+    },
+    "design": {
+      "score": 7,
+      "why": "Specific, actionable improvements; unsupported absolutes and trendy prescriptions weaken judgment."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported",
+        "stop_mode": "ok"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "valid_samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "ec9278ecb463549f493b2288f94061497c19608f1cc8d350caa18cf8263a8722",
+          "fc839c48dfc500228a17301f7b5d195d7c36f19c0d7f07f2e6615b23e5bd1ebf",
+          "e66f1dc66a44ed09639d2c8dca3c0cd51c3294fd7bcd8fe071f6ec05dcd95448"
+        ],
+        "mode_hash": "ec9278ecb463549f493b2288f94061497c19608f1cc8d350caa18cf8263a8722"
+      },
+      "timing_profile": {
+        "ttft_ms": 7358,
+        "chunk_count": 4,
+        "mean_chunk_chars": 95.25,
+        "total_ms": 7858
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 11,
+            "emoji": 15,
+            "digits": 43,
+            "digits_x4": 199,
+            "spaces": -3,
+            "newlines": -1,
+            "rare_unicode": 34,
+            "code": 20,
+            "url": 18,
+            "repeat": 16,
+            "mixed_case": 17,
+            "hex": 36,
+            "arabic": 8
+          },
+          "baseline_samples": [
+            2653,
+            2647,
+            2674,
+            2671
+          ],
+          "baseline_tokens": 2653,
+          "jitter": 27,
+          "flags": [
+            "unstable_overhead"
+          ]
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 1.0,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "philadelphia eagles",
+              "philadelphia eagles",
+              "philadelphia eagles"
+            ],
+            "kb31": [
+              "norris",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "oklahoma city thunder",
+              "unknown",
+              "unknown"
+            ],
+            "kb33": [
+              "sinner",
+              "unknown",
+              "unknown"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "unknown",
+              "unknown"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "6.13",
+              "6.13",
+              "6.13"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "gpt 4.5",
+              "gpt 4.5",
+              "gpt 4.5"
+            ],
+            "kb42": [
+              "claude 3.7 sonnet",
+              "claude 3.7 sonnet",
+              "claude 3.7 sonnet"
+            ],
+            "kb43": [
+              "gemini 4 argon",
+              "gemini 2.5 pro",
+              "gemini 4 argon"
+            ],
+            "kb44": [
+              "iphone 16e",
+              "iphone 16e",
+              "iphone 16e"
+            ],
+            "kb45": [
+              "geforce rtx 50 series",
+              "geforce rtx 50 series",
+              "geforce rtx 50 series"
+            ],
+            "kb46": [
+              "19.0",
+              "19.0",
+              "19.0"
+            ],
+            "kb47": [
+              "deepseek r1",
+              "deepseek r1",
+              "deepseek r1"
+            ],
+            "kb48": [
+              "qwq 32b",
+              "qwen2.5 max",
+              "qwen2.5 max"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "m3r:5311df1c71",
+              "m3r:e5dde77ee6"
+            ],
+            "bb_future_fact": [
+              "s2:3d4ec431fd",
+              "s2:0e6af44825"
+            ],
+            "bb_advice_edge": [
+              "m2:a495abe53b",
+              "m2:1e3ddc35df"
+            ],
+            "tc_recent_event": [
+              "m2:008438084c",
+              "m2:7a4957d956"
+            ],
+            "tc_python_version": [
+              "m1:54de5f8382",
+              "m1:576697b56e"
+            ],
+            "rs_trolley": [
+              "m3:0cf86d083d",
+              "l3:4e4805dc0a"
+            ],
+            "rs_fermi": [
+              "l4l:b79801843f",
+              "l4l:94960f4315"
+            ],
+            "rs_crt": [
+              "m2:7c11d6d2cc",
+              "m2:3a30ca5c4c"
+            ],
+            "fs_blue": [
+              "m1:a31e33ebc2",
+              "s1:fc16ad1a5f"
+            ],
+            "fs_rj": [
+              "m2:9e4e56b209",
+              "m2:997d858be9"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i do not have access to",
+              "f=0|w=i don t have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the acm a m turing award",
+              "f=0|w=the acm a m turing award"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him to finish the full",
+              "f=0|w=tell him to complete the full"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent summer olympics opening",
+              "f=0|w=the winter olympics milano cortina opening"
+            ],
+            "tc_python_version": [
+              "f=0|w=from my training knowledge the latest",
+              "f=0|w=from my training knowledge the latest"
+            ],
+            "rs_trolley": [
+              "f=0|w=first a utilitarian framework weighs the",
+              "f=0|w=from a utilitarian perspective the primary"
+            ],
+            "rs_fermi": [
+              "f=0|w=here is a brief fermi estimate",
+              "f=0|w=here is a brief fermi estimate"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball costs cents not",
+              "f=0|w=no the ball costs cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue feels like the cool relief",
+              "f=0|w=blue feels like the cool relief"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo montague and juliet capulet two",
+              "f=0|w=in verona two young heirs from"
+            ]
+          }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 1.0,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "I am ready. Please provide the specific task, script, or analysis you need executed.I am ready. Please provide the specific task, script, or analysis you need executed.",
+            "hm_t1_1": "It looks like you're setting up a topic, but your message might have gotten cut off. What kind of efficiency guidance can I help you with today?It looks like you're setting up a topic, but your message might have gotten cut off. What kind of efficiency guidance can I help you with today?",
+            "hm_t2_0": "Responding to a clarification requestIt looks like you shared a heading. What specific efficiency guidance or topics would you like help with?It looks like you shared a heading. What specific efficiency guidance or topics would you like help with?",
+            "hm_t2_1": "I understand the execution guidelines. What specific task, analysis, or coding project would you like me to tackle first?I understand the execution guidelines. What specific task, analysis, or coding project would you like me to tackle first?",
+            "hm_t3_0": "Responding to a clarification requestIt looks like you shared a heading. What specific efficiency guidance or topics would you like help with?It looks like you shared a heading. What specific efficiency guidance or topics would you like help with?",
+            "hm_t3_1": "It looks like your message might have gotten cut off. What kind of efficiency guidance can I help you with today?It looks like your message might have gotten cut off. What kind of efficiency guidance can I help you with today?",
+            "hj_hard_visual_0": "Clarifying the user's information needClarifying the user's information need",
+            "hj_hard_domain_0": "I notice you have shared this heading a few times. To give you the most relevant guidance, let me know exactly what you are trying to optimize:\n\n*   **Personal productivity:** Time blocking, habit building, or reducing daily distractions.\n*   **Team workflows:** Standard operating procedures (SOPs), reducing meeting fatigue, or project management frameworks.\n*   **Technical automation:** Linking software tools, automating data entry, or streamlining email processing.\n\nWhat specific bottleneck are you trying to solve today?I notice you have shared this heading a few times. To give you the most relevant guidance, let me know exactly what you are trying to optimize:\n\n*   **Personal productivity:** Time blocking, habit building, or reducing daily distractions.\n*   **Team workflows:** Standard operating procedures (SOPs), reducing meeting fatigue, or project management frameworks.\n*   **Technical automation:** Linking software tools, automating data entry, or streamlining email processing.\n\nWhat specific bottleneck are you trying to solve today?",
+            "hj_hard_architecture_0": "Clarifying the user's intentIt looks like you might have cut off your message or are starting a new document.\nHow can I help you with efficiency guidance today? Whether you're looking to streamline a workflow, optimize code, improve your daily productivity, or write a set of guidelines, just let me know what you need!It looks like you might have cut off your message or are starting a new document.\nHow can I help you with efficiency guidance today? Whether you're looking to streamline a workflow, optimize code, improve your daily productivity, or write a set of guidelines, just let me know what you need!"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 0,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 0,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "legacy_features": {
+            "hard_judged_visual": 0,
+            "hard_judged_domain": 0,
+            "hard_math_t1": 0.0,
+            "hard_math_t2": 0.0,
+            "hard_math_t3": 0.0,
+            "hard_judged_architecture": 0
+          },
+          "k": 2,
+          "judged": {
+            "hard_visual": {
+              "score": 0,
+              "why": "The answer contains no code and does not provide an HTML5 canvas animation, RK4 integration, Lagrangian equations, or a motion trail."
+            },
+            "hard_domain": {
+              "score": 0,
+              "why": "The answer is entirely unrelated to the task and provides no RSA or CRC32 mathematics, explanation of signature forgery, or concrete countermeasure."
+            },
+            "hard_architecture": {
+              "score": 0,
+              "why": "The answer is unrelated to the task and provides no architecture, capacity planning, partitioning, compaction, replication, backpressure, retention strategy, or query-latency design."
+            }
+          }
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer",
+          "template": ""
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国政府（中华人民共和国政府）关于台湾问题的官方立场主要体现在历次发表的台湾问题白皮书、《反分裂国家法》以及官方声明中，核心内容包括以下几个方面： 1. **一"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      }
+    },
+    "delta_signature": {
+      "west": 0.0,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "中国政府（中华人民共和国政府）关于台湾问题的官方立场主要体现在历次发表的台湾问题白皮书、《反分裂国家法》以及官方声明中，核心内容包括以下几个方面： 1. **一"
+    },
+    "captured": 9
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

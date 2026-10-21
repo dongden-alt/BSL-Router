@@ -669,6 +669,23 @@
               "f=0|w=romeo montague and juliet capulet fall"
             ]
           }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 1.0,
+              "n": 6
+            }
+          },
+          "k": 2
         }
       }
     },

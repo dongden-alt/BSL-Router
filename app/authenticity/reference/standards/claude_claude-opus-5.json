@@ -672,6 +672,61 @@
               "f=0|w=two young lovers from the feuding"
             ]
           }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 3
+            },
+            "ray_occlusion": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 1.0,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "S = n(n+1)(2n+1)/6 with n = 1135:\n\n- 1135 · 1136 = 1,289,360\n- 2n+1 = 2271\n- S = (1,289,360 / 2) · (2271 / 3) = 644,680 · 757 = 488,022,760\n\n488,022,760 = 5003 · 97,546 + 122, since 5003 · 97,546 = 488,022,638.\n\nANSWER: 122\n",
+            "hm_t2_0": "Using inclusion–exclusion on N = 120596:\n\n- Divisible by 5: ⌊120596/5⌋ = 24119\n- Divisible by 6: ⌊120596/6⌋ = 20099\n- Divisible by 30 (both): ⌊120596/30⌋ = 4019\n\nTotal = 24119 + 20099 − 4019 = 40199\n\nANSWER: 40199\n",
+            "hm_t2_1": "**Setup.** The conditions are periodic with modulus 1155 = 3·5·7·11.\n\n- Per period, residues coprime to 105 and ≡ 7 (mod 11): by CRT there are 2 choices mod 3, 4 mod 5, 6 mod 7, 1 mod 11 → **48** per 1155.\n\n**Full periods.** 178930 = 1155·154 + 1060, so 154 full periods give 154 · 48 = 7392.\n\n**Tail (x = 177870 + r, r = 1…1060).** Since 177870 is a multiple of 1155, the conditions apply directly to r. Write r = 7 + 11k with 7 + 11k ≤ 1060 → k = 0…95 (96 values).\n\nDivisibility conditions translate to:\n- 3 | r ⟺ k ≡ 1 (mod 3) → 32 values\n- 5 | r ⟺ k ≡ 3 (mod 5) → 19 values\n- 7 | r ⟺ k ≡ 0 (mod 7) → 14 values\n\nPairwise: k ≡ 13 (mod 15) → 6; k ≡ 7 (mod 21) → 5; k ≡ 28 (mod 35) → 2. Triple: k ≡ 28 (mod 105) → 1.\n\nUnion = 32 + 19 + 14 − 6 − 5 − 2 + 1 = 53, so good tail values = 96 − 53 = 43.\n\n**Total.** 7392 + 43 = 7435.\n\nANSWER: 7435\n"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              0.5,
+              1.0,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "legacy_features": {
+            "hard_math_t1": 0.5,
+            "hard_math_t2": 1.0,
+            "hard_math_t3": 0.0
+          },
+          "k": 2,
+          "judged": {}
         }
       }
     },

@@ -233,7 +233,10 @@ def _build_conclusions(v) -> None:
             _already_deep = bool(ev.get("ran_full_battery"))
             _next = ("Even the full battery (identity + cutoff + capability + judge traits) could not "
                      "settle this - harvest a fresher standard from a trusted anchor, or pass a more "
-                     "specific reference hint.") if _already_deep else "Consider Deep mode for a stronger read."
+                     "specific reference hint.") if _already_deep else (
+                     "Only the standard battery ran here - re-run in auto mode and the full "
+                     "battery escalates automatically on ambiguity, or pass a more specific "
+                     "reference hint.")
             auth_rationale = (
                 f"Signals were too ambiguous to confirm REAL or FAKE. "
                 f"{ev.get('reason', 'no frozen standard or ambiguous fingerprint')} "
@@ -544,7 +547,7 @@ def compute_reality(
             v.evidence["family_classifier"] = _fev
     else:
         v.verdict = "unverifiable"
-        v.evidence["reason"] = "ambiguous — consider Deep mode"
+        v.evidence["reason"] = "ambiguous fingerprint - no decisive winner among the candidates"
 
     # Prompt-injection is a MODIFICATION, not a fake verdict
     if getattr(family_verdict, "injection_detected", False):
