@@ -137,6 +137,86 @@ def test_unknown_error_gets_default_cooldown():
     assert action["duration_seconds"] == 30
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Anti-downgrade guard (2026-10-21): an immediate sub-threshold cooldown must
+# never SHORTEN an active escalated ban nor touch a permanent 'disabled' state.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_immediate_cooldown_does_not_shorten_active_softban():
+    """Strike 3 (sub-threshold) must NOT overwrite the strike-2 ladder softban."""
+    cfg = _aep_config(consecutive_threshold=2, softban_duration_minutes=7,
+                      dead_leaf_cooldown_seconds=90)
+    mgr = ErrorPreventionManager(cfg)
+
+    mgr.record_error("prov", "model", 500, "internal server error")   # strike 1 -> 90s
+    a2 = mgr.record_error("prov", "model", 500, "internal server error")  # strike 2 -> ladder 420s
+    assert a2 is not None and a2.get("duration_minutes") == 7
+
+    a3 = mgr.record_error("prov", "model", 500, "internal server error")  # strike 3 -> guarded
+    assert a3 is None, "immediate cooldown must not fire over an active softban"
+    banned, state, remaining = mgr.is_banned("prov", "model")
+    assert banned is True and state == "softban"
+    assert remaining > 400, f"420s softban truncated to {remaining}s"
+
+
+def test_immediate_cooldown_does_not_shorten_active_longban():
+    """Strike 5 (sub-threshold) must NOT overwrite the strike-4 ladder longban."""
+    cfg = _aep_config(consecutive_threshold=2, softban_duration_minutes=7,
+                      longban_duration_minutes=77, dead_leaf_cooldown_seconds=90)
+    mgr = ErrorPreventionManager(cfg)
+
+    for _ in range(3):
+        mgr.record_error("prov", "model", 500, "internal server error")
+    a4 = mgr.record_error("prov", "model", 500, "internal server error")  # strike 4 -> longban 4620s
+    assert a4 is not None and a4.get("action") == "longban" and a4.get("duration_minutes") == 77
+
+    a5 = mgr.record_error("prov", "model", 500, "internal server error")  # strike 5 -> guarded
+    assert a5 is None, "immediate cooldown must not fire over an active longban"
+    banned, state, remaining = mgr.is_banned("prov", "model")
+    assert banned is True and state == "longban"
+    assert remaining > 4000, f"4620s longban truncated to {remaining}s"
+
+
+def test_immediate_cooldown_extends_when_longer():
+    """A LONGER immediate cooldown still applies: 90s softban + 120s 404 -> ban moves OUT.
+
+    The state key embeds the error_type, so the extension must be observed on ONE
+    key: the not_found key first takes a 90s immediate softban, then the same key
+    takes a 120s not_found cooldown. The guard must let the longer one through.
+    """
+    cfg = _aep_config(consecutive_threshold=5, softban_duration_minutes=7,
+                      dead_leaf_cooldown_seconds=90, not_found_cooldown_seconds=90)
+    mgr = ErrorPreventionManager(cfg)
+
+    a1 = mgr.record_error("prov", "model", 404, "model not found")  # 90s softban on not_found key
+    assert a1 is not None and a1.get("duration_seconds") == 90
+
+    mgr.settings["not_found_cooldown_seconds"] = 120
+    a2 = mgr.record_error("prov", "model", 404, "model not found")  # 120s > remaining 90s
+    assert a2 is not None and a2.get("duration_seconds") == 120
+    banned, state, remaining = mgr.is_banned("prov", "model")
+    assert banned is True and state == "softban"
+    assert remaining > 110, f"ban should extend to ~120s, got {remaining}s"
+
+
+def test_disabled_leaf_not_downgraded():
+    """A permanent 'disabled' ban_state is never weakened by an immediate cooldown."""
+    cfg = _aep_config(consecutive_threshold=5, dead_leaf_cooldown_seconds=90)
+    mgr = ErrorPreventionManager(cfg)
+
+    key = mgr.get_state_key("prov", "model", "server_error")
+    mgr.state[key] = {
+        "streak": 0, "last_error_time": time.time(),
+        "ban_state": "disabled", "ban_until": None,
+        "ban_escalation_count": 3, "error_type": "server_error",
+        "provider": "prov", "model": "model",
+    }
+
+    action = mgr.record_error("prov", "model", 500, "internal server error")
+    assert action is None, "disabled state must not be downgraded to a cooldown"
+    assert mgr.state[key]["ban_state"] == "disabled"
+
+
 @pytest.mark.parametrize("status_code", [400, 422, 499])
 def test_excluded_status_codes_never_ban(status_code):
     """Test 1c: payload errors (400/422) and client aborts (499) never bench a leaf."""

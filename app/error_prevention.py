@@ -314,34 +314,12 @@ class ErrorPreventionManager:
         entry['streak'] += 1
         entry['last_error_time'] = now
 
-        # ── Immediate softban for rate_limit (9Router parity) ────────
+        # ── Immediate-cooldown durations per error type (9Router parity) ─────
         # Rate-limit / quota errors should not wait for N consecutive failures.
         # Every 429/1302/速率限制 triggers an immediate short cooldown so the
         # combo fallback path skips this model on the next request, just like
         # 9Router's modelLock mechanism (~69s).
-        if error_type == 'rate_limit':
-            entry['ban_state'] = 'softban'
-            entry['ban_until'] = now + self.rate_limit_cooldown_seconds
-            entry['ban_escalation_count'] = max(entry.get('ban_escalation_count', 0), 1)
-            entry['streak'] = 0  # Reset after applying cooldown
-            print(
-                f"[ErrorPrevention] IMMEDIATE rate-limit softban: "
-                f"{provider}/{model} for {self.rate_limit_cooldown_seconds}s "
-                f"(pattern matched in '{error_type}')",
-                flush=True,
-            )
-            return {
-                'action': 'softban',
-                'model': model,
-                'provider': provider,
-                'error_type': error_type,
-                'duration_minutes': None,  # seconds-based, not minutes
-                'duration_seconds': self.rate_limit_cooldown_seconds,
-                'notify': False,
-                'ephemeral': True,   # Part 2b: route to sidecar, not config.yaml
-            }
-
-        # ── Immediate softban for auth (401/403) ─────────────────────
+        #
         # Auth / IP-whitelist / no-access errors are DETERMINISTIC: the same
         # provider will reject every retry within the session, so waiting for N
         # consecutive strikes just produces a wall of identical errors (observed
@@ -350,37 +328,11 @@ class ErrorPreventionManager:
         # is deliberately SHORT (not a longban) so a transiently-broken upstream
         # node — e.g. one un-whitelisted egress IP in an aggregator pool that
         # later recovers — is skipped briefly, not killed permanently.
-        if error_type == 'auth':
-            _auth_cooldown = int(self.settings.get('auth_cooldown_seconds', self.rate_limit_cooldown_seconds))
-            entry['ban_state'] = 'softban'
-            entry['ban_until'] = now + _auth_cooldown
-            entry['ban_escalation_count'] = max(entry.get('ban_escalation_count', 0), 1)
-            entry['streak'] = 0  # Reset after applying cooldown
-            print(
-                f"[ErrorPrevention] IMMEDIATE auth softban: "
-                f"{provider}/{model} for {_auth_cooldown}s "
-                f"(status={status_code})",
-                flush=True,
-            )
-            return {
-                'action': 'softban',
-                'model': model,
-                'provider': provider,
-                'error_type': error_type,
-                'duration_minutes': None,  # seconds-based, not minutes
-                'duration_seconds': _auth_cooldown,
-                'notify': False,
-                'ephemeral': True,   # Part 2b: route to sidecar, not config.yaml
-            }
-
-        # ── Immediate cooldown for ALL leaf-health errors (9router zero-strike parity) ──
+        #
         # C1: 9router (module 12557 e()) locks a leaf on the FIRST error of any
         # class — every return path is shouldFallback:true. C2: an unmatched
-        # error still gets a 30s default lock (9router wf=30000). BSL now mirrors
-        # both so a dead leaf is benched on strike 1, not strike 3. In a combo
-        # chain the per-leaf streak resets each request, so without this these
-        # classes often NEVER reached the 3-strike threshold and were re-selected
-        # on every request (the dead-leaf retry loop this PR eliminates).
+        # error still gets a 30s default lock (9router wf=30000). BSL mirrors
+        # both so a dead leaf is benched on strike 1, not strike 3.
         #
         # EXCLUSIONS (BSL is deliberately MORE correct than 9router, which DOES
         # lock 400s):
@@ -389,40 +341,82 @@ class ErrorPreventionManager:
         #             these without cascading.
         #   499     — client disconnect. The USER aborted, not the leaf; banning a
         #             healthy leaf for a user cancel would poison the chain.
-        if status_code not in (400, 422, 499):
-            _cooldown_by_type = {
-                'timeout':       self.settings.get('dead_leaf_cooldown_seconds', 90),
-                'server_error':  self.settings.get('dead_leaf_cooldown_seconds', 90),
-                'gateway_error': self.settings.get('dead_leaf_cooldown_seconds', 90),
-                'not_found':     self.settings.get('not_found_cooldown_seconds', 120),
-                'model_error':   self.settings.get('not_found_cooldown_seconds', 120),
-                'unknown':       self.settings.get('default_cooldown_seconds', 30),   # C2: 9router wf
-            }
-            if error_type in _cooldown_by_type:
-                _cooldown = int(_cooldown_by_type[error_type])
-                entry['ban_state'] = 'softban'
-                entry['ban_until'] = now + _cooldown
-                # Vestigial for flat cooldowns (timeout/unknown never read the
-                # escalation ladder) — kept consistent with rate_limit/auth above.
-                entry['ban_escalation_count'] = max(entry.get('ban_escalation_count', 0), 1)
-                entry['streak'] = 0
-                print(
-                    f"[ErrorPrevention] IMMEDIATE {error_type} softban: "
-                    f"{provider}/{model} for {_cooldown}s (status={status_code})",
-                    flush=True,
-                )
-                return {
-                    'action': 'softban',
-                    'model': model,
-                    'provider': provider,
-                    'error_type': error_type,
-                    'duration_minutes': None,
-                    'duration_seconds': _cooldown,
-                    'notify': False,
-                    'ephemeral': True,   # Part 2b: route to sidecar, not config.yaml
-                }
+        _auth_cooldown = int(self.settings.get('auth_cooldown_seconds', self.rate_limit_cooldown_seconds))
+        _cooldown_by_type = {
+            'rate_limit':    self.rate_limit_cooldown_seconds,
+            'auth':          _auth_cooldown,
+            'timeout':       self.settings.get('dead_leaf_cooldown_seconds', 90),
+            'server_error':  self.settings.get('dead_leaf_cooldown_seconds', 90),
+            'gateway_error': self.settings.get('dead_leaf_cooldown_seconds', 90),
+            'not_found':     self.settings.get('not_found_cooldown_seconds', 120),
+            'model_error':   self.settings.get('not_found_cooldown_seconds', 120),
+            'unknown':       self.settings.get('default_cooldown_seconds', 30),   # C2: 9router wf
+        }
 
-        # Check if threshold reached
+        # ── Zero-strike immediate cooldown (composes with escalation ladder) ──
+        # While the streak is BELOW the user-configured threshold, apply the
+        # per-type short cooldown and return — the streak keeps accumulating
+        # across requests (do NOT reset it here; that was the 2026-10-21 defect
+        # that made softban/longban/consecutive_threshold unreachable for every
+        # classified error type). Do NOT force ban_escalation_count to 1 either:
+        # leaving it at 0 lets the ladder's escalation==0 softban branch fire
+        # when the streak crosses the threshold.
+        # Non-billing 400/422/499 already returned above; the `_is_billing_error`
+        # disjunct preserves the deliberate billing-marker 400 exception (an
+        # upstream account-health 400 must still bench the leaf as `auth`).
+        if (
+            (status_code not in (400, 422, 499) or _is_billing_error)
+            and error_type in _cooldown_by_type
+            and entry['streak'] < self.threshold
+        ):
+            _cooldown = int(_cooldown_by_type[error_type])
+            # ── Anti-downgrade guard (2026-10-21 downgrade proof) ──────────
+            # Concurrent in-flight requests selected this leaf BEFORE the
+            # ladder ban landed; their late failures re-enter this branch with
+            # a rebuilt sub-threshold streak and must NEVER truncate an active
+            # escalated ban. Proven by .brain/scratch/ban_param_scenario_proof.py:
+            # strike 3 overwrote an active 420s softban with 90s, strike 5
+            # overwrote an active 4620s longban with 90s — a user setting
+            # softban_duration_minutes=7 observed 90-second bans.
+            # Placement is load-bearing: this guard sits AFTER the streak
+            # increment above so the streak keeps accumulating toward the
+            # ladder even when we return None (otherwise strike 4 never
+            # reaches the longban rung).
+            #   a) never weaken a permanent disable;
+            #   b) never shorten an active softban/longban (EXTENDING is still
+            #      allowed — e.g. a 90s softban hit by a 120s not_found
+            #      cooldown correctly moves the ban OUT to 120s).
+            if entry.get('ban_state') == 'disabled':
+                return None
+            _new_until = now + _cooldown
+            if (
+                entry.get('ban_state') in ('softban', 'longban')
+                and (entry.get('ban_until') or 0) > _new_until
+            ):
+                return None
+            entry['ban_state'] = 'softban'
+            entry['ban_until'] = _new_until
+            print(
+                f"[ErrorPrevention] IMMEDIATE {error_type} softban: "
+                f"{provider}/{model} for {_cooldown}s (status={status_code}, "
+                f"streak={entry['streak']}/{self.threshold})",
+                flush=True,
+            )
+            return {
+                'action': 'softban',
+                'model': model,
+                'provider': provider,
+                'error_type': error_type,
+                'duration_minutes': None,
+                'duration_seconds': _cooldown,
+                'notify': False,
+                'ephemeral': True,   # Part 2b: route to sidecar, not config.yaml
+            }
+
+        # Check if threshold reached — escalation ladder using the user-configured
+        # softban_duration_minutes / longban_duration_minutes / disable_after_longban.
+        # Reachable for EVERY error type now that immediate cooldowns no longer
+        # reset the streak or early-return unconditionally.
         if entry['streak'] >= self.threshold:
             escalation = entry['ban_escalation_count']
             
