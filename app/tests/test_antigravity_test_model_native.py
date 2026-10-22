@@ -128,7 +128,7 @@ def test_probe_never_dials_v1beta_or_chat_completions():
 def test_probe_sends_ide_envelope_and_auth():
     asyncio.run(_probe_and_close(_sse_handler, "gemini-3.6-flash-high", "tok-123"))
     h = _RECORD["headers"]
-    assert h.get("user-agent") == "antigravity/ide/2.1.1 windows/amd64", h.get("user-agent")
+    assert h.get("user-agent") == "antigravity/hub/2.24.0 windows/amd64", h.get("user-agent")
     assert h.get("authorization") == "Bearer tok-123", h.get("authorization")
     envelope = json.loads(_RECORD["body"])
     for key in ("model", "project", "requestId", "userAgent", "requestType"):

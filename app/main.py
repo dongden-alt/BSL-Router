@@ -32,6 +32,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 from starlette.background import BackgroundTask
 import asyncio
+import codecs
 import copy
 import re
 import unicodedata
@@ -1531,10 +1532,6 @@ def load_config():
 # auto-purge them on the next validation pass.
 # 2026-10-06: the Claude Sonnet 4.6, Claude Opus 4.6 (Thinking) and GPT-OSS
 # 120B (Medium) slots were retired per the refreshed Antigravity IDE menu.
-# The two Claude slots migrate (saved configs retarget to the new 5.5 High
-# slots via _ANTIGRAVITY_LEGACY_SLOT_MIGRATIONS); GPT-OSS has no successor
-# slot and lives in _ANTIGRAVITY_OBSOLETE_SLOTS so saved configs auto-purge
-# it on the next validation pass.
 ANTIGRAVITY_INTEGRATION_SLOTS = (
     "gemini-3.6-flash-high",
     "gemini-3.6-flash-medium",
@@ -8570,10 +8567,16 @@ async def _tee_codex_response_source(raw_source, client: str, model: str):
     head_parts = []
     head_bytes = 0
     total_bytes = 0
+    # Split-multibyte fix (2026-10-21): decode incrementally. A per-chunk
+    # ``chunk.decode("utf-8", errors="replace")`` turned any multi-byte
+    # character straddling a chunk boundary into U+FFFD, so the captured tee
+    # head - the forensic artifact used to diagnose Codex stream bugs - did
+    # not match what the converter actually received.
+    _tee_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
     try:
         async for chunk in raw_source:
             if enabled:
-                text = chunk.decode("utf-8", errors="replace")
+                text = _tee_dec.decode(chunk)
                 encoded = text.encode("utf-8")
                 total_bytes += len(encoded)
                 if head_bytes < 64 * 1024:
@@ -10988,6 +10991,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         _tool_guard = AnthropicStreamToolGuard(tools_in_request=True)
                     except Exception:
                         _tool_guard = None
+                # Split-multibyte fix (2026-10-21): this drain parses usage frames
+                # out of raw byte chunks. A one-shot `chunk.decode("utf-8")` raised
+                # when a multi-byte character straddled a chunk boundary, and the
+                # `except Exception: pass` below swallowed it - the chunk AND its
+                # usage frame vanished, leaving stats["out"] at 0 so the
+                # zero-token guard could fire on a perfectly healthy stream. The
+                # incremental decoder carries the partial sequence to the next
+                # chunk, so nothing is ever dropped.
+                _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
                 try:
                     async for chunk in _pump(resp.aiter_raw(), _emit, _attempt, "openai"):
                         _detector.feed(chunk)
@@ -10998,7 +11010,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
 
                         # Extract usage from chunk
                         try:
-                            text_chunk = chunk.decode("utf-8")
+                            text_chunk = _utf8_dec.decode(chunk)
                             if stats["ttft"] == 0.0:
                                 _is_openai_content = (
                                     _openai_chunk_carries_output(text_chunk)
@@ -11620,6 +11632,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 await _ae_q.put(_SENTINEL)
 
                         _drain_task = asyncio.ensure_future(_drain_ae_source())
+                        # Split-multibyte fix (2026-10-21): SSE chunks are raw byte
+                        # blocks, so a multi-byte character can straddle a chunk
+                        # boundary. A one-shot `chunk.decode("utf-8")` raises on the
+                        # split and the enclosing `except` discards the ENTIRE
+                        # chunk, silently dropping frames. The incremental decoder
+                        # buffers the incomplete tail and emits it with the next
+                        # chunk - zero loss, zero exception. Same pattern as
+                        # stream_normalizer.py:117/637/853.
+                        _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
                         _last_upstream_data = time.monotonic()
                         try:
                             while True:
@@ -11662,7 +11683,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     stats["status"] = 499
                                     break
                                 try:
-                                    text_chunk = chunk.decode("utf-8")
+                                    text_chunk = _utf8_dec.decode(chunk)
                                     if stats["ttft"] == 0.0:
                                         _is_openai_content = _openai_chunk_carries_output(text_chunk)
                                         _is_gemini_content = (
@@ -12284,6 +12305,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
 
                     async def _raw_ok():
                         buffer = ""
+                        # Split-multibyte fix (2026-10-21): same guard as the other
+                        # drain loops. A strict decode that hits a chunk boundary
+                        # raises, `except Exception: pass` at the bottom of the
+                        # loop swallows it, and the whole chunk - usage frame
+                        # included - is discarded. Carry the partial sequence
+                        # instead so stats["out"] is never starved.
+                        _raw_utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
                         async for chunk in _transport_guarded(_pump(resp.aiter_raw(), _emit, 0, "gemini"), stats, _emit):
                             _detector.feed(chunk)
                             if await _client_disconnected():
@@ -12291,7 +12319,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 stats["status"] = 499
                                 break
                             try:
-                                _c = chunk.decode("utf-8")
+                                _c = _raw_utf8_dec.decode(chunk)
                                 if stats["ttft"] == 0.0:
                                     _is_openai_content = (
                                         ('"content":"' in _c and '"content":""' not in _c) or
@@ -12453,6 +12481,21 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     # terminal / zero-token / combo-fallback handling below runs and
                     # the response closes cleanly. See GEMINI_EGRESS_MAX_IDLE for
                     # the ceiling rationale vs the BODY_STALL doctrine.
+                    # Split-multibyte fix (2026-10-21) - the turn-2 codex halt.
+                    # Evidence: "[CodexDrain] render exception swallowed:
+                    # UnicodeDecodeError: 0xe2 in position 2862: unexpected end of
+                    # data" immediately followed by "0x80 in position 0: invalid
+                    # start byte" - a 3-byte U+2014 em dash split across two
+                    # chunks. `ochunk.decode("utf-8")` raised, the except at the
+                    # render site swallowed it, and BOTH chunks were dropped: the
+                    # text deltas, the tool-call frames and the usage frame went
+                    # with them. The stream then finished 200 with zero renderable
+                    # output, the zero-output gate benched the leaf, and the
+                    # never-stop retry re-requested the same long multi-byte-heavy
+                    # synthesis - so every retry failed identically and the IDE
+                    # hung. The incremental decoder holds the incomplete tail and
+                    # emits it when the continuation byte arrives.
+                    _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
                     _last_upstream_data = time.monotonic()
                     try:
                         while True:
@@ -12498,7 +12541,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             # gaps can run as long as it keeps producing bytes.
                             _last_upstream_data = time.monotonic()
                             try:
-                                obuffer += ochunk.decode("utf-8")
+                                obuffer += _utf8_dec.decode(ochunk)
                                 olines = obuffer.split("\n")
                                 obuffer = olines.pop()
                                 for line in olines:
@@ -13209,6 +13252,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 await _a2o_q.put(_SENTINEL)
 
                         _drain_task = asyncio.ensure_future(_drain_a2o_source())
+                        # Split-multibyte fix (2026-10-21): see the CodexDrain
+                        # comment at the GeminiEgress drain - a one-shot
+                        # `chunk.decode("utf-8")` discards the whole chunk when a
+                        # multi-byte character straddles the boundary.
+                        _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
                         _last_upstream_data = time.monotonic()
                         try:
                             while True:
@@ -13253,7 +13301,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     stats["status"] = 499
                                     break
                                 try:
-                                    text_chunk = chunk.decode("utf-8")
+                                    text_chunk = _utf8_dec.decode(chunk)
                                     if stats["ttft"] == 0.0:
                                         # OpenAI format: content/reasoning_content/text fields
                                         # Gemini/Antigravity format: candidates/parts/role fields

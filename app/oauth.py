@@ -878,103 +878,46 @@ OAUTH_PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
         {"id": "gpt-5.5-image", "kind": "image"},
     ],
     "antigravity": [
-        # 2026-10-15 live-probe rebuild (probe_404i/j/k/l against
-        # daily-cloudcode-pa.googleapis.com with freshly refreshed OAuth tokens
-        # for BOTH antigravity connections — tonluongdong@gmail.com and
-        # blacksandlabs.contact@gmail.com, both user-confirmed Pro accounts —
-        # under the discovered project ``aicode-consumers``). The catalog had
-        # INVERTED from upstream reality: 16 of its 17 rows returned 404
-        # NOT_FOUND while six ids that were NOT listed returned real 200
-        # responses — so every Antigravity OAuth test call failed. Verified
-        # classes across both accounts:
-        #   LIVE 200    gemini-3-flash, gemini-2.5-flash, gemini-2.5-flash-lite,
-        #               gemini-3.1-flash-image, claude-sonnet-4-6,
-        #               claude-opus-4-6-thinking
-        #   STUB 200    gemini-3-pro-*, gemini-3-flash-agent, gemini-3.5-flash*
-        #               (Google answers "no longer available" -> retired upstream)
-        #   NOCAP 503   gemini-2.5-pro (known id, no capacity on this tier)
-        #   DEAD 404    gemini-4-argon*, gemini-3.6-flash-*, gemini-3.1-pro-*,
-        #               gemini-pro-agent, claude-*-5-5-*, gemini-3.7-flash*
-        # USER DIRECTIVE 2026-10-15: carry the Pro + Ultra plan UNION - no model
-        # missing. The 404 rows are NOT removed models: they are the current-gen
-        # PLAN-GATED set (both connections report loadCodeAssist
-        # currentTier=free-tier / allowed=[free-tier, standard-tier], so raw ids
-        # are not resolvable for these tokens yet). Gated rows are tagged with a
-        # precise ``tier`` key - informational only, no consumer reads the key.
-        # Envelope/host/project/auth were all proven correct by the same probes
-        # (six ids return 200), so a 404 here means "id not resolvable for this
-        # account tier", never a router bug.
-        # 2026-10-16 fetchAvailableModels ground truth (user-challenged
-        # research): live-called v1internal:fetchAvailableModels with BOTH
-        # connections' refreshed tokens — Google's authoritative registry for
-        # this account pair, 19 ids. Dispute verdict: ``gemini-2.5-pro`` IS
-        # listed (503 = capacity, gated row stays); ``gemini-pro-agent`` is NOT
-        # listed and 404s on both — the 9Router-era wire id is retired upstream
-        # (its 3.1-pro family 404s too; the tiered "pro" slot now routes to
-        # gemini-3.8-flash-tiered). Five listed LIVE ids were missing here and
-        # are added below; gpt-oss-120b-medium is one of Google's three
-        # "Recommended" agent models. chat_20706/chat_23310 are internal
-        # tab-chat ids (400 with the IDE envelope) and tab_*_preview are
-        # autocomplete models — not chat rows, deliberately excluded.
-        # 2026-10-19 re-verification after user challenge ("gemini-2.5-* was
-        # removed long ago"): fresh fetchAvailableModels with a freshly
-        # refreshed token - registry IDENTICAL to 2026-10-16 (19 ids, 0
-        # dropped, 0 added); all four 2.5 rows still listed rec=True; a
-        # real-content probe (max_tokens=64) returned 200 + content for
-        # 2.5-flash / -flash-lite / -flash-thinking and 503 NOCAP for
-        # 2.5-pro (known id, zero capacity on this tier - not removed).
-        # KEY FINDING: displayName of all three 2.5-flash* wire ids is
-        # "Gemini 3.5 Flash Lite" - Google now serves the 3.5 Flash Lite
-        # backend under the legacy 2.5 wire ids (alias rows). Kept because
-        # clients still send the legacy ids and Google still lists them;
-        # tieredModelIds.flashLite routes to canonical gemini-3.5-flash-lite.
-        # gemini-3.5-flash-low / -extra-low remain STUB-RETIRED upstream
-        # ("no longer available, switch to Gemini 3.7 Flash") and stay
-        # excluded. Evidence: .brain/scratch/research_25_reverify_out.txt.
-        # --- LIVE now (verified 200 on both connections) ---
-        {"id": "gemini-3-flash"},
-        {"id": "gemini-2.5-flash"},
-        {"id": "gemini-2.5-flash-lite"},
+        # 2026-10-22 full rebuild from 9Router's latest model catalog (user's
+        # screenshot). The loadCodeAssist UA was reverted to 9Router's
+        # ``google-api-nodejs-client/9.15.1`` which returns standard-tier
+        # (the ``hub/2.24.0`` UA returned free-tier — wrong). With the
+        # correct UA the account's subscription tier is respected and the
+        # plan-gated models resolve for Ultra accounts.
+        # --- Gemini 4 Argon ---
+        {"id": "gemini-4-argon-high"},
+        # --- Gemini 3.8 Flash ---
+        {"id": "gemini-3.8-flash-high"},
+        {"id": "gemini-3.8-flash-medium"},
+        {"id": "gemini-3.8-flash-low"},
+        {"id": "gemini-3.8-flash"},
+        # --- Gemini 3.7 Flash ---
+        {"id": "gemini-3.7-flash-high"},
+        {"id": "gemini-3.7-flash-medium"},
+        {"id": "gemini-3.7-flash-low"},
+        # --- Gemini 3.6 Flash ---
+        {"id": "gemini-3.6-flash-high"},
+        {"id": "gemini-3.6-flash-medium"},
+        {"id": "gemini-3.6-flash-low"},
+        # --- Gemini 3.1 Pro ---
+        {"id": "gemini-3.1-pro-high"},
+        {"id": "gemini-pro-agent"},
+        {"id": "gemini-3.1-pro-low"},
+        # --- Claude Sonnet 5.5 ---
+        {"id": "claude-sonnet-5-5-high"},
+        {"id": "claude-sonnet-5-5-medium"},
+        {"id": "claude-sonnet-5-5-low"},
+        {"id": "claude-sonnet-5-5"},
+        # --- Claude Opus 5.5 ---
+        {"id": "claude-opus-5-5-high"},
+        {"id": "claude-opus-5-5-medium"},
+        {"id": "claude-opus-5-5-low"},
+        {"id": "claude-opus-5-5"},
+        # --- Claude 4.6 ---
         {"id": "claude-sonnet-4-6"},
         {"id": "claude-opus-4-6-thinking"},
-        {"id": "gemini-3.1-flash-image", "kind": "image"},
-        # 2026-10-16 additions (fetchAvailableModels-listed, probe-verified 200
-        # on both connections):
-        {"id": "gemini-3.5-flash-lite"},
-        {"id": "gemini-2.5-flash-thinking"},
-        {"id": "gemini-3.1-flash-lite"},
-        {"id": "gemini-3.8-flash-tiered"},
+        # --- GPT ---
         {"id": "gpt-oss-120b-medium"},
-        # --- plan-gated (Pro + Ultra union - no model missing) ---
-        # 2026-10-18 precise tier split, cross-validated 3-way: (1) Google's
-        # models doc (antigravity.google/docs/models): Gemini 4 Argon =
-        # "Ultra and Enterprise only"; Claude Sonnet/Opus 5.5 = "Pro (non-
-        # trial), Ultra and Enterprise"; 4.6 family = free/Plus/Pro (already
-        # LIVE rows above). (2) agentpedia 2026 plan comparison: Pro's full set
-        # = "All 5 (Gemini 3.1 Pro, Gemini 3.1 Pro Low, Flash, Sonnet 4.6,
-        # Opus 4.6)"; Ultra adds NO exclusive models - same weights, quota /
-        # priority only. (3) live fetchAvailableModels registry: tieredModelIds
-        # routes the "pro" slot to gemini-3.8-flash-tiered (an untagged LIVE
-        # row above). gemini-2.5-pro and gemini-3.6-flash-* keep the union tag
-        # - sources conflict (2.5-pro is capacity-503 on both live accounts,
-        # 3.6-flash family undocumented in both docs), so union is the
-        # conservative call.
-        {"id": "gemini-2.5-pro", "tier": "pro-ultra"},
-        {"id": "gemini-4-argon", "tier": "ultra"},
-        {"id": "gemini-4-argon-low", "tier": "ultra"},
-        {"id": "gemini-4-argon-medium", "tier": "ultra"},
-        {"id": "gemini-4-argon-high", "tier": "ultra"},
-        {"id": "gemini-3.6-flash-high", "tier": "pro-ultra"},
-        {"id": "gemini-3.6-flash-medium", "tier": "pro-ultra"},
-        {"id": "gemini-3.6-flash-low", "tier": "pro-ultra"},
-        {"id": "gemini-3.1-pro-low", "tier": "pro"},
-        {"id": "gemini-3.1-pro-high", "tier": "pro"},
-        {"id": "claude-opus-5-5-high", "tier": "pro"},
-        {"id": "claude-opus-5-5-medium", "tier": "pro"},
-        {"id": "claude-opus-5-5-low", "tier": "pro"},
-        {"id": "claude-sonnet-5-5-high", "tier": "pro"},
-        {"id": "claude-sonnet-5-5-medium", "tier": "pro"},
-        {"id": "claude-sonnet-5-5-low", "tier": "pro"},
     ],
     "github": [
         {"id": "gpt-6.1-sol"},
@@ -1637,6 +1580,302 @@ async def kiro_import_refresh_token(request: Request):
         raise HTTPException(status_code=400, detail="Invalid token format. Token should start with aorAAAAAG...")
     raw = await _kiro_refresh_token(refresh_token)
     return {"success": True, "connection": await _save_kiro_tokens(raw, "imported", "Imported")}
+
+
+# ── Codex OAuth JSON import (2026-10-22) ─────────────────────────────────────
+# Imports an existing Codex CLI auth.json (or a flat account export) as a Codex
+# OAuth connection. Native auth.json shape: {"OPENAI_API_KEY": ..., "tokens":
+# {"id_token","access_token","refresh_token","account_id"}, "last_refresh": ...}.
+# Flat exports use {"access_token","refresh_token","id_token"} (+ camelCase
+# aliases accessToken/refreshToken/idToken/chatgptAccountId). An optional
+# {"auth": {...}} wrapper is unwrapped first.
+_CODEX_IMPORT_MAX_BODY = 256 * 1024
+_CODEX_IMPORT_MAX_DEPTH = 12
+_CODEX_IMPORT_MAX_ITEMS = 2000
+_CODEX_IMPORT_MAX_KEY_LEN = 128
+_CODEX_IMPORT_MAX_VALUE_LEN = 64 * 1024
+
+
+async def _codex_import_json_body(request: Request) -> dict[str, Any]:
+    """Read, cap, decode, and parse a Codex import without trusting headers."""
+    raw_length = request.headers.get("content-length")
+    if raw_length:
+        try:
+            if int(raw_length) > _CODEX_IMPORT_MAX_BODY:
+                raise HTTPException(status_code=413, detail="Codex import payload too large (256KB max)")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header") from None
+
+    chunks: list[bytes] = []
+    size = 0
+    try:
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > _CODEX_IMPORT_MAX_BODY:
+                raise HTTPException(status_code=413, detail="Codex import payload too large (256KB max)")
+            chunks.append(chunk)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read Codex import payload") from None
+
+    def _object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    try:
+        body = json.loads(b"".join(chunks).decode("utf-8"), object_pairs_hook=_object_pairs)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, RecursionError):
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON with unique object keys") from None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    return body
+
+
+def _codex_import_validate_tree(value: Any, depth: int = 0) -> int:
+    """Bound a parsed import tree and reject non-finite numbers."""
+    if depth > _CODEX_IMPORT_MAX_DEPTH:
+        raise HTTPException(status_code=400, detail="Codex import JSON is too deeply nested")
+    if value is None or isinstance(value, bool) or isinstance(value, int):
+        return 1
+    if isinstance(value, float):
+        if not (value == value and abs(value) != float("inf")):
+            raise HTTPException(status_code=400, detail="Codex import JSON contains non-finite numbers")
+        return 1
+    if isinstance(value, str):
+        if len(value) > _CODEX_IMPORT_MAX_VALUE_LEN:
+            raise HTTPException(status_code=400, detail="Codex import JSON contains an oversized string value")
+        return 1
+    if isinstance(value, dict):
+        count = 1
+        for key, item in value.items():
+            if not isinstance(key, str) or len(key) > _CODEX_IMPORT_MAX_KEY_LEN:
+                raise HTTPException(status_code=400, detail="Codex import JSON contains an invalid key")
+            count += _codex_import_validate_tree(item, depth + 1)
+            if count > _CODEX_IMPORT_MAX_ITEMS:
+                raise HTTPException(status_code=400, detail="Codex import JSON is too large")
+        return count
+    if isinstance(value, list):
+        count = 1
+        for item in value:
+            count += _codex_import_validate_tree(item, depth + 1)
+            if count > _CODEX_IMPORT_MAX_ITEMS:
+                raise HTTPException(status_code=400, detail="Codex import JSON is too large")
+        return count
+    raise HTTPException(status_code=400, detail="Codex import JSON contains an unsupported value type")
+
+
+def _codex_import_normalize(body: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
+    """Strictly normalize Codex CLI/account exports into tokens and metadata."""
+    auth = body.get("auth")
+    if auth is not None and not isinstance(auth, dict):
+        raise HTTPException(status_code=400, detail="Codex import 'auth' wrapper must be an object")
+
+    containers: list[tuple[str, dict[str, Any]]] = [("root", body)]
+    if isinstance(auth, dict):
+        containers.append(("auth", auth))
+    sources: list[tuple[str, dict[str, Any]]] = []
+    for label, container in containers:
+        sources.append((label, container))
+        block = container.get("tokens")
+        if block is not None and not isinstance(block, dict):
+            raise HTTPException(status_code=400, detail="Codex import 'tokens' must be an object")
+        if isinstance(block, dict):
+            sources.append((f"{label}.tokens", block))
+
+    def _strings(
+        field: str,
+        aliases: tuple[str, ...],
+        *,
+        required: bool = False,
+        header_token: bool = False,
+    ) -> str | None:
+        values: list[str] = []
+        for _label, source in sources:
+            for alias in aliases:
+                if alias not in source:
+                    continue
+                value = source[alias]
+                if not isinstance(value, str) or not value.strip():
+                    raise HTTPException(status_code=400, detail=f"Codex import '{field}' must be a non-empty string")
+                if header_token:
+                    # Ordinary surrounding spaces are harmless and may be trimmed,
+                    # but controls/non-ASCII must never be normalized into a header.
+                    if any(ord(char) < 32 or ord(char) > 126 for char in value):
+                        raise HTTPException(status_code=400, detail=f"Codex import '{field}' contains invalid characters")
+                    normalized = value.strip(" ")
+                    if not normalized or any(ord(char) <= 32 for char in normalized):
+                        raise HTTPException(status_code=400, detail=f"Codex import '{field}' contains invalid characters")
+                    values.append(normalized)
+                else:
+                    values.append(value.strip())
+        if len(set(values)) > 1:
+            raise HTTPException(status_code=400, detail=f"Codex import contains conflicting '{field}' values")
+        if not values and required:
+            raise HTTPException(status_code=400, detail="Codex import JSON has no OAuth access token (tokens.access_token). API-key-only exports cannot be imported as OAuth connections.")
+        return values[0] if values else None
+
+    access_token = _strings("access token", ("access_token", "accessToken"), required=True, header_token=True)
+    refresh_token = _strings("refresh token", ("refresh_token", "refreshToken"), header_token=True)
+    id_token = _strings("ID token", ("id_token", "idToken"), header_token=True)
+    account_id = _strings("account ID", ("account_id", "accountId", "chatgptAccountId"))
+
+    assert access_token is not None
+    access_claims = decode_jwt_payload(access_token)
+    id_claims = decode_jwt_payload(id_token) if id_token else {}
+
+    def _claim_string(claims: dict[str, Any], field: str, aliases: tuple[str, ...]) -> str | None:
+        auth_claims = claims.get("https://api.openai.com/auth")
+        if auth_claims is not None and not isinstance(auth_claims, dict):
+            raise HTTPException(status_code=400, detail="Codex token contains invalid account metadata")
+        claim_sources = [auth_claims or {}, claims]
+        values: list[str] = []
+        for source in claim_sources:
+            for alias in aliases:
+                if alias not in source:
+                    continue
+                value = source[alias]
+                if not isinstance(value, str) or not value.strip():
+                    raise HTTPException(status_code=400, detail=f"Codex token '{field}' claim must be a non-empty string")
+                values.append(value.strip())
+        if len(set(values)) > 1:
+            raise HTTPException(status_code=400, detail=f"Codex token contains conflicting '{field}' claims")
+        return values[0] if values else None
+
+    if not account_id:
+        account_id = _claim_string(id_claims, "account ID", ("chatgpt_account_id", "account_id"))
+    if not account_id:
+        account_id = _claim_string(access_claims, "account ID", ("chatgpt_account_id", "account_id"))
+    if not account_id:
+        raise HTTPException(status_code=400, detail="Codex import JSON has no ChatGPT account ID")
+    if any(ord(char) < 32 or ord(char) > 126 for char in account_id):
+        raise HTTPException(status_code=400, detail="Codex import account ID contains invalid characters")
+
+    email = _strings("email", ("email",))
+    if not email:
+        email = _claim_string(id_claims, "email", ("email", "preferred_username"))
+    if not email:
+        email = _claim_string(access_claims, "email", ("email", "preferred_username"))
+    plan_type = _strings("plan type", ("plan_type", "planType", "chatgptPlanType"))
+    if not plan_type:
+        plan_type = _claim_string(id_claims, "plan type", ("chatgpt_plan_type", "plan_type"))
+    if not plan_type:
+        plan_type = _claim_string(access_claims, "plan type", ("chatgpt_plan_type", "plan_type"))
+
+    def _timestamp(value: Any, field: str) -> datetime:
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise HTTPException(status_code=400, detail=f"Codex import '{field}' has an invalid expiry")
+        try:
+            if isinstance(value, str):
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    raise ValueError
+                return parsed.astimezone(timezone.utc)
+            if value != value or abs(value) == float("inf"):
+                raise ValueError
+            seconds = float(value) / 1000 if abs(float(value)) > 10_000_000_000 else float(value)
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (ValueError, TypeError, OverflowError, OSError):
+            raise HTTPException(status_code=400, detail=f"Codex import '{field}' has an invalid expiry") from None
+
+    explicit: list[datetime] = []
+    for _label, source in sources:
+        for alias in ("expires_at", "expiresAt", "expired"):
+            if alias in source:
+                explicit.append(_timestamp(source[alias], alias))
+    if explicit and any(value != explicit[0] for value in explicit[1:]):
+        raise HTTPException(status_code=400, detail="Codex import contains conflicting expiry values")
+
+    expires_at: datetime | None = explicit[0] if explicit else None
+    if expires_at is None:
+        durations: list[float] = []
+        for _label, source in sources:
+            for alias in ("expires_in", "expiresIn"):
+                if alias not in source:
+                    continue
+                value = source[alias]
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise HTTPException(status_code=400, detail=f"Codex import '{alias}' has an invalid expiry")
+                try:
+                    duration = float(value)
+                    if duration != duration or abs(duration) == float("inf"):
+                        raise ValueError
+                except (ValueError, TypeError, OverflowError):
+                    raise HTTPException(status_code=400, detail=f"Codex import '{alias}' has an invalid expiry") from None
+                durations.append(duration)
+        if durations and any(value != durations[0] for value in durations[1:]):
+            raise HTTPException(status_code=400, detail="Codex import contains conflicting expiry values")
+        if durations:
+            try:
+                expires_at = datetime.now(timezone.utc) + timedelta(seconds=durations[0])
+            except (ValueError, OverflowError):
+                raise HTTPException(status_code=400, detail="Codex import expiry is out of range") from None
+
+    if expires_at is None:
+        # The access token describes the credential being used, so its exp wins
+        # over an ID-token exp. ID-token expiry is only a final fallback.
+        for claims in (access_claims, id_claims):
+            if "exp" in claims:
+                expires_at = _timestamp(claims["exp"], "exp")
+                break
+
+    if expires_at is not None and expires_at <= datetime.now(timezone.utc) and not refresh_token:
+        raise HTTPException(status_code=400, detail="Codex access token is expired and no refresh token was provided")
+
+    tokens: dict[str, str] = {"access_token": access_token}
+    if refresh_token:
+        tokens["refresh_token"] = refresh_token
+    if expires_at:
+        tokens["expires_at"] = expires_at.isoformat()
+    extras: dict[str, Any] = {"account_id": account_id, "email": email, "plan_type": plan_type}
+    return tokens, extras
+
+
+@oauth_router.post("/codex/import-json")
+async def codex_import_json(request: Request):
+    """Import an existing Codex account from an auth.json / account export.
+
+    Offline path: validates and normalizes the payload, maps via the standard
+    Codex mapper, and persists through _save_connection (which applies the
+    existing email-identity duplicate-collapse policy). No upstream network
+    call is made for ordinary imports. The response is the standard sanitized
+    connection summary and never includes raw credentials.
+    """
+    provider, entry = _provider_or_404("codex")
+    body = await _codex_import_json_body(request)
+    _codex_import_validate_tree(body)
+    tokens, extras = _codex_import_normalize(body)
+    mapped = entry["mapTokens"](tokens)
+    provider_data = {
+        key: value for key, value in dict(mapped.get("providerSpecificData") or {}).items()
+        if key not in {"id_token", "idToken", "access_token", "accessToken", "refresh_token", "refreshToken"}
+    }
+    if isinstance(extras.get("account_id"), str):
+        provider_data["chatgptAccountId"] = extras["account_id"]
+    if isinstance(extras.get("plan_type"), str):
+        provider_data.setdefault("chatgptPlanType", extras["plan_type"])
+    access_token = mapped.get("accessToken")
+    if not isinstance(access_token, str) or not access_token:
+        raise HTTPException(status_code=400, detail="Codex import JSON has no usable access token")
+    refresh_token = mapped.get("refreshToken")
+    email = mapped.get("email") or extras.get("email")
+    email = email if isinstance(email, str) and email else None
+    display_name = email or (f"Codex {extras['account_id']}" if isinstance(extras.get("account_id"), str) else None)
+    connection = _save_connection(
+        provider,
+        entry["flowType"],
+        access_token,
+        refresh_token if isinstance(refresh_token, str) else None,
+        _expires_at(tokens),
+        email,
+        display_name,
+        provider_data,
+    )
+    return {"success": True, "connection": connection}
 
 
 @oauth_router.post("/{provider}/import")

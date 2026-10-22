@@ -218,10 +218,10 @@ class TestPlanShape(unittest.TestCase):
 
     def test_gemini_reference_models(self):
         refs = [e["pinned_model"] for e in rfd.PLAN if e["family"] == "gemini"]
-        self.assertEqual(refs, ["antigravity/gemini-3.6-flash-high",
-                                "antigravity/gemini-3.1-pro-low",
-                                "antigravity/gemini-3.7-flash",
-                                "antigravity/gemini-3.8-flash"])
+        self.assertEqual(refs, ["antigravity/gemini-4-argon-high",
+                                "antigravity/gemini-4-argon-medium",
+                                "antigravity/gemini-4-argon-low",
+                                "antigravity/gemini-2.5-pro"])
         for r in refs:
             self.assertTrue(r.startswith("antigravity/"))
 

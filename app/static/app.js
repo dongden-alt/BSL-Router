@@ -107,57 +107,43 @@ const OAUTH_PROVIDER_MODELS = {
         { id: 'gpt-5.5-image', kind: 'image' },
     ],
     antigravity: [
-        // 2026-10-15 live-probe rebuild — MIRROR of app/oauth.py (edit oauth.py
-        // first). The rows below returned real 200s on daily-cloudcode-pa with
-        // freshly refreshed OAuth tokens for BOTH connections (user-confirmed Pro
-        // accounts); everything after them is the current-gen PLAN-GATED Pro +
-        // Ultra union (user directive 2026-10-15: no model missing) that 404s on
-        // the current tier and resolves on Pro/Ultra connections. gemini-pro-agent
-        // was dropped (dead legacy alias, migrated in app/main.py).
-        // 2026-10-16 fetchAvailableModels ground truth: Google's live registry
-        // (19 ids, both accounts) confirms gemini-2.5-pro listed (503 capacity
-        // -> gated) and gemini-pro-agent retired (404, not listed). Five listed
-        // LIVE ids added below (gpt-oss-120b-medium is a Recommended agent
-        // model); chat_*/tab_* internal ids excluded.
-        // 2026-10-18 precise tier split (mirror of oauth.py - cross-validated
-        // 3-way: Google models doc, agentpedia plan comparison, live registry):
-        // gemini-4-argon* = Ultra-only; claude-*-5-5-* + gemini-3.1-pro-* =
-        // Pro (and Ultra); gemini-2.5-pro + gemini-3.6-flash-* = union tag
-        // (sources conflict, conservative).
-        // 2026-10-19 re-verified live (mirror of oauth.py): registry identical
-        // to 2026-10-16 (19 ids, 0 dropped/added); all 2.5 rows still listed
-        // rec=True and probe 200 + LIVE content (2.5-pro: 503 NOCAP, gated).
-        // Google serves the 3.5 Flash Lite backend under the legacy
-        // gemini-2.5-flash* wire ids (aliases - kept, clients still send
-        // them). 3.5-flash-low / -extra-low are STUB-RETIRED upstream and
-        // stay excluded.
-        { id: 'gemini-3-flash' },
-        { id: 'gemini-2.5-flash' },
-        { id: 'gemini-2.5-flash-lite' },
+        // 2026-10-22 full rebuild from 9Router's latest model catalog — MIRROR
+        // of app/oauth.py (edit oauth.py first). loadCodeAssist UA reverted to
+        // google-api-nodejs-client/9.15.1 (hub/2.24.0 returned wrong tier).
+        // Gemini 4 Argon
+        { id: 'gemini-4-argon-high' },
+        // Gemini 3.8 Flash
+        { id: 'gemini-3.8-flash-high' },
+        { id: 'gemini-3.8-flash-medium' },
+        { id: 'gemini-3.8-flash-low' },
+        { id: 'gemini-3.8-flash' },
+        // Gemini 3.7 Flash
+        { id: 'gemini-3.7-flash-high' },
+        { id: 'gemini-3.7-flash-medium' },
+        { id: 'gemini-3.7-flash-low' },
+        // Gemini 3.6 Flash
+        { id: 'gemini-3.6-flash-high' },
+        { id: 'gemini-3.6-flash-medium' },
+        { id: 'gemini-3.6-flash-low' },
+        // Gemini 3.1 Pro
+        { id: 'gemini-3.1-pro-high' },
+        { id: 'gemini-pro-agent' },
+        { id: 'gemini-3.1-pro-low' },
+        // Claude Sonnet 5.5
+        { id: 'claude-sonnet-5-5-high' },
+        { id: 'claude-sonnet-5-5-medium' },
+        { id: 'claude-sonnet-5-5-low' },
+        { id: 'claude-sonnet-5-5' },
+        // Claude Opus 5.5
+        { id: 'claude-opus-5-5-high' },
+        { id: 'claude-opus-5-5-medium' },
+        { id: 'claude-opus-5-5-low' },
+        { id: 'claude-opus-5-5' },
+        // Claude 4.6
         { id: 'claude-sonnet-4-6' },
         { id: 'claude-opus-4-6-thinking' },
-        { id: 'gemini-3.1-flash-image', kind: 'image' },
-        { id: 'gemini-3.5-flash-lite' },
-        { id: 'gemini-2.5-flash-thinking' },
-        { id: 'gemini-3.1-flash-lite' },
-        { id: 'gemini-3.8-flash-tiered' },
+        // GPT
         { id: 'gpt-oss-120b-medium' },
-        { id: 'gemini-2.5-pro', tier: 'pro-ultra' },
-        { id: 'gemini-4-argon', tier: 'ultra' },
-        { id: 'gemini-4-argon-low', tier: 'ultra' },
-        { id: 'gemini-4-argon-medium', tier: 'ultra' },
-        { id: 'gemini-4-argon-high', tier: 'ultra' },
-        { id: 'gemini-3.6-flash-high', tier: 'pro-ultra' },
-        { id: 'gemini-3.6-flash-medium', tier: 'pro-ultra' },
-        { id: 'gemini-3.6-flash-low', tier: 'pro-ultra' },
-        { id: 'gemini-3.1-pro-low', tier: 'pro' },
-        { id: 'gemini-3.1-pro-high', tier: 'pro' },
-        { id: 'claude-opus-5-5-high', tier: 'pro' },
-        { id: 'claude-opus-5-5-medium', tier: 'pro' },
-        { id: 'claude-opus-5-5-low', tier: 'pro' },
-        { id: 'claude-sonnet-5-5-high', tier: 'pro' },
-        { id: 'claude-sonnet-5-5-medium', tier: 'pro' },
-        { id: 'claude-sonnet-5-5-low', tier: 'pro' },
     ],
     github: [
         { id: 'gpt-6.1-sol' },
@@ -1312,7 +1298,7 @@ function renderProviderDetail() {
                 <button class="btn btn-primary" onclick="openOAuthTokenModal()" style="font-size:14px; padding: 10px 24px;">
                     ${connCount > 0 ? '+ Add Another Token' : `Connect with ${displayName}`}
                 </button>
-                ${connCount > 0 ? '' : ''}
+                ${isCodexImportProvider(activeProviderId) ? `<button class="btn btn-outline" id="codex-import-json-btn" type="button" onclick="openCodexJsonImport()" style="font-size:14px; padding: 10px 20px;">Import JSON</button>` : ''}
             </div>
         </div>
     </div>
@@ -2388,9 +2374,13 @@ function showOAuthModal({ title, body, onClose }) {
     document.body.appendChild(overlay);
 
     let closed = false;
+    const onEscape = event => {
+        if (event.key === 'Escape' && overlay.isConnected) close();
+    };
     const close = () => {
         if (closed) return;
         closed = true;
+        document.removeEventListener('keydown', onEscape);
         overlay.remove();
         if (typeof onClose === 'function') onClose();
     };
@@ -2399,6 +2389,7 @@ function showOAuthModal({ title, body, onClose }) {
     overlay.addEventListener('click', event => {
         if (event.target === overlay) close();
     });
+    document.addEventListener('keydown', onEscape);
 
     return { overlay, content, close };
 }
@@ -2548,6 +2539,150 @@ async function startFixedPortLoopbackFlow(providerId) {
             modal.content.firstElementChild.textContent = error.message || `Could not start ${name} OAuth.`;
         }
     }
+}
+
+// ── Codex OAuth JSON import (2026-10-22) ────────────────────────────────────
+// Secondary action next to "Connect with [OC]" / "+ Add Another Token".
+// Accepts a Codex CLI auth.json (or flat account export) via file picker or
+// paste. Validation is local (size + JSON parse) for fast feedback; the
+// backend POST /api/oauth/codex/import-json remains authoritative.
+const CODEX_IMPORT_MAX_BYTES = 256 * 1024;
+
+function isCodexImportProvider(providerId) {
+    return providerId === 'codex' || providerId === 'openai_codex';
+}
+
+function openCodexJsonImport() {
+    let cancelled = false;
+    let busy = false;
+    let requestController = null;
+    let textArea = null;
+    let fileInput = null;
+    let rawPayload = null;
+    let parsedPayload = null;
+    const clearCredentialInputs = () => {
+        if (textArea) textArea.value = '';
+        if (fileInput) fileInput.value = '';
+        rawPayload = null;
+        parsedPayload = null;
+    };
+    const modal = showOAuthModal({
+        title: 'Import Codex JSON',
+        body: `
+            <form id="codex-import-form" style="display:flex;flex-direction:column;gap:14px;">
+                <p style="margin:0;font-size:13px;line-height:1.5;color:var(--text-muted);">
+                    Upload or paste an existing Codex account export (<code>auth.json</code>).
+                    Browser sign-in stays available from the provider page.
+                </p>
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                    <label for="codex-import-file" style="font-size:12px;font-weight:600;color:var(--text-main);">JSON file</label>
+                    <input id="codex-import-file" class="input" type="file" accept="application/json,.json" aria-describedby="codex-import-file-hint">
+                    <span id="codex-import-file-hint" style="font-size:11px;color:var(--text-muted);">Max 256 KB. Contents stay in this browser tab until you submit.</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                    <label for="codex-import-text" style="font-size:12px;font-weight:600;color:var(--text-main);">Or paste JSON</label>
+                    <textarea id="codex-import-text" class="input" rows="6" autocomplete="off" spellcheck="false"
+                        aria-describedby="codex-import-message"
+                        placeholder='{"tokens":{"access_token":"…","refresh_token":"…","account_id":"…"}}'></textarea>
+                </div>
+                <div id="codex-import-message" role="status" aria-live="polite" style="display:none;font-size:12px;line-height:1.4;"></div>
+                <div style="display:flex;justify-content:flex-end;gap:10px;">
+                    <button id="codex-import-cancel" class="btn btn-outline" type="button">Cancel</button>
+                    <button id="codex-import-submit" class="btn btn-primary" type="submit">Import</button>
+                </div>
+            </form>`,
+        onClose: () => {
+            cancelled = true;
+            requestController?.abort();
+            clearCredentialInputs();
+            textArea = null;
+            fileInput = null;
+        }
+    });
+
+    const form = modal.content.querySelector('#codex-import-form');
+    fileInput = modal.content.querySelector('#codex-import-file');
+    textArea = modal.content.querySelector('#codex-import-text');
+    const message = modal.content.querySelector('#codex-import-message');
+    const submitBtn = modal.content.querySelector('#codex-import-submit');
+    const cancelBtn = modal.content.querySelector('#codex-import-cancel');
+
+    cancelBtn.addEventListener('click', modal.close);
+    textArea.focus();
+
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        // This guard must precede file.text(): a second submit can otherwise read
+        // the same credential file concurrently before the button is disabled.
+        if (busy || cancelled) return;
+        busy = true;
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Importing…';
+        setOAuthModalMessage(message, '', false);
+        message.style.display = 'none';
+
+        try {
+            const file = fileInput.files && fileInput.files[0];
+            const pasted = textArea.value.trim();
+            if (file && pasted) throw new Error('Choose a JSON file or paste JSON, not both.');
+            if (file && file.size > CODEX_IMPORT_MAX_BYTES) {
+                throw new Error('That file is larger than 256 KB. Choose a Codex auth.json export.');
+            }
+            rawPayload = (file ? await file.text() : pasted).trim();
+            if (cancelled) return;
+            if (!rawPayload) throw new Error('Choose a JSON file or paste the Codex account JSON first.');
+            if (new TextEncoder().encode(rawPayload).byteLength > CODEX_IMPORT_MAX_BYTES) {
+                throw new Error('That payload is larger than 256 KB.');
+            }
+            try {
+                parsedPayload = JSON.parse(rawPayload);
+            } catch {
+                throw new Error('That is not valid JSON. Check the file or paste the full export.');
+            }
+            if (!parsedPayload || typeof parsedPayload !== 'object' || Array.isArray(parsedPayload)) {
+                throw new Error('Codex import JSON must be an object (auth.json or account export).');
+            }
+        } catch (error) {
+            rawPayload = null;
+            parsedPayload = null;
+            if (!cancelled) {
+                setOAuthModalMessage(message, error.message || 'Could not read the Codex JSON.', true);
+                busy = false;
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Import';
+            }
+            return;
+        }
+
+        cancelBtn.disabled = false;
+        requestController = new AbortController();
+        try {
+            const result = await oauthResponseData(
+                await fetch('/api/oauth/codex/import-json', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: rawPayload,
+                    signal: requestController.signal,
+                }),
+                'Codex JSON import failed'
+            );
+            if (cancelled) return;
+            if (!result.success || !result.connection) throw new Error(oauthErrorMessage(result, 'Codex JSON import failed.'));
+            clearCredentialInputs();
+            await completeOAuthConnection('codex', result.connection, modal);
+        } catch (error) {
+            if (!cancelled && modal.overlay.isConnected) {
+                setOAuthModalMessage(message, error.message || 'Codex JSON import failed.', true);
+                busy = false;
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Import';
+            }
+        } finally {
+            requestController = null;
+            rawPayload = null;
+            parsedPayload = null;
+        }
+    });
 }
 
 async function startCodexLoopback() {

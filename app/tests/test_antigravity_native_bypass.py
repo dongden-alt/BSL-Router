@@ -342,7 +342,7 @@ def test_native_success_targets_cloud_code_rpc_and_parses_usage(monkeypatch):
     assert req["headers"]["Content-Type"] == "application/json"
     assert (
         req["headers"]["User-Agent"]
-        == "antigravity/ide/2.1.1 windows/amd64"
+        == "antigravity/hub/2.24.0 windows/amd64"
     )
 
     envelope = json.loads(req["content"])

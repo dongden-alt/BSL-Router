@@ -5,7 +5,7 @@ through the BSL Router for the approved source hierarchy:
 
   GPT     gold = codex/* ONLY (sol / terra / luna / gpt-5.5 / gpt-6-astra)
           edge-fallback = mintrouter/gpt-6.1-sol (ONLY if a codex call errors)
-  Gemini  reference = antigravity/* (3.6-flash-high / 3.1-pro-low / 3.7 / 3.8)
+  Gemini  reference = antigravity/* (4-argon-high / 4-argon-medium / 4-argon-low / 2.5-pro)
   Kimi    gold = aibox/kimi/kimi-k3 (Moonshot), double = aibox/kimi-k3 (Alibaba),
           depth = chat2api/workbuddy-web/kimi-k3
   GLM     gold = aibox/ZHIPU/GLM-5.3, double = mintrouter/glm-5.3 (NOTE: that lane is
@@ -120,11 +120,11 @@ PLAN = [
     # GPT — edge fallback, only if a codex call errors
     {"family": "gpt", "tier": "edge-fallback", "pinned_model": "mintrouter/gpt-6.1-sol",
      "conditional": True, "fallback_for": "gold"},
-    # Gemini — reference = antigravity/* (frozen standards)
-    {"family": "gemini", "tier": "reference", "pinned_model": "antigravity/gemini-3.6-flash-high"},
-    {"family": "gemini", "tier": "reference", "pinned_model": "antigravity/gemini-3.1-pro-low"},
-    {"family": "gemini", "tier": "reference", "pinned_model": "antigravity/gemini-3.7-flash"},
-    {"family": "gemini", "tier": "reference", "pinned_model": "antigravity/gemini-3.8-flash"},
+    # Gemini — reference = antigravity/* (frozen standards; pruned 2026-10-21, live IDs)
+    {"family": "gemini", "tier": "reference", "pinned_model": "antigravity/gemini-4-argon-high"},
+    {"family": "gemini", "tier": "reference", "pinned_model": "antigravity/gemini-4-argon-medium"},
+    {"family": "gemini", "tier": "reference", "pinned_model": "antigravity/gemini-4-argon-low"},
+    {"family": "gemini", "tier": "reference", "pinned_model": "antigravity/gemini-2.5-pro"},
     # Kimi — gold + double + depth
     {"family": "kimi", "tier": "gold", "pinned_model": "aibox/kimi/kimi-k3"},
     {"family": "kimi", "tier": "double", "pinned_model": "aibox/kimi-k3"},

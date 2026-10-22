@@ -24,6 +24,11 @@ if str(_ROOT) not in sys.path:
 
 from app.main import app  # noqa: E402
 
+# The TestClient probes below boot the full app lifespan (config load + dedup),
+# which can exceed the global 10s timeout under full-suite load. pytest.ini
+# documents the per-test `timeout` marker for exactly this case.
+pytestmark = pytest.mark.timeout(60)
+
 
 def test_auto_detect_ui_wiring_present():
     """Source parity: showKiroModeSelector must fire the auto-import probe and

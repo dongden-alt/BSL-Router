@@ -20,6 +20,11 @@ if str(_ROOT) not in sys.path:
 
 from app.main import app  # noqa: E402
 
+# Full-suite runs boot many TestClient lifespans back-to-back; the global 10s
+# pytest-timeout default aborts this app's startup under load (2026-10-20
+# full-suite run, Py3.11). Mirror the sibling kiro suite's per-file marker.
+pytestmark = pytest.mark.timeout(60)
+
 
 def test_import_ide_zero_network_path(monkeypatch):
     """POST /api/oauth/kiro/import-ide must call the offline cache reader and save.

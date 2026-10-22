@@ -49,16 +49,33 @@ def test_get_artifacts_defensive_getattr():
     assert 'getattr(obs, "error_reports", [])' in src
 
 
-def test_antigravity_slots_include_gemini_36():
-    for slot in (
-        "gemini-3.6-flash-high",
-        "gemini-3.6-flash-medium",
-        "gemini-3.6-flash-low",
-    ):
-        assert slot in main.ANTIGRAVITY_INTEGRATION_SLOTS
-    # Order: 3.6 entries prepend before 3.1
-    slots = main.ANTIGRAVITY_INTEGRATION_SLOTS
-    assert slots.index("gemini-3.6-flash-high") < slots.index("gemini-3.1-pro-low")
+def test_antigravity_slots_are_live_models():
+    """2026-10-21 prune: slots must all be live upstream ids; dead ids purged."""
+    expected = (
+        "gemini-3.8-flash-tiered",
+        "gemini-4-argon-low",
+        "gemini-4-argon-medium",
+        "gemini-4-argon-high",
+        "gemini-2.5-pro",
+    )
+    assert main.ANTIGRAVITY_INTEGRATION_SLOTS == expected
+    # The 12 verified-dead ids (404 NOT_FOUND under the corrected UA) must never
+    # be slots again and must be in the obsolete purge set.
+    dead = (
+        "gemini-4-argon",
+        "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+        "gemini-3.1-pro-low", "gemini-3.1-pro-high",
+        "claude-opus-5-5-high", "claude-opus-5-5-medium", "claude-opus-5-5-low",
+        "claude-sonnet-5-5-high", "claude-sonnet-5-5-medium", "claude-sonnet-5-5-low",
+    )
+    for slot in dead:
+        assert slot not in main.ANTIGRAVITY_INTEGRATION_SLOTS
+        assert slot in main._ANTIGRAVITY_OBSOLETE_SLOTS
+    # Every legacy migration must target a LIVE slot (never another dead id).
+    for src, dst in main._ANTIGRAVITY_LEGACY_SLOT_MIGRATIONS.items():
+        assert dst in main.ANTIGRAVITY_INTEGRATION_SLOTS, (
+            f"migration {src} -> {dst} targets a non-slot (dead) id"
+        )
 
 
 # ── Behavioral: combo chain advances on recoverable 400 ──────────────────────

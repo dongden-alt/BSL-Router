@@ -19,30 +19,18 @@ import app.main as main
 
 
 EXPECTED_AG_SLOTS = (
-    "gemini-3.6-flash-high",
-    "gemini-3.6-flash-medium",
-    "gemini-3.6-flash-low",
-    "gemini-3.1-pro-low",
-    "gemini-3.1-pro-high",
-    "claude-opus-5-5-low",
-    "claude-opus-5-5-medium",
-    "claude-opus-5-5-high",
-    "claude-sonnet-5-5-low",
-    "claude-sonnet-5-5-medium",
-    "claude-sonnet-5-5-high",
+    "gemini-3.8-flash-tiered",
+    "gemini-4-argon-low",
+    "gemini-4-argon-medium",
+    "gemini-4-argon-high",
+    "gemini-2.5-pro",
 )
 EXPECTED_AG_LABELS = (
-    "Gemini 3.6 Flash (High)",
-    "Gemini 3.6 Flash (Medium)",
-    "Gemini 3.6 Flash (Low)",
-    "Gemini 3.1 Pro (Low)",
-    "Gemini 3.1 Pro (High)",
-    "Claude Opus 5.5 (Low)",
-    "Claude Opus 5.5 (Medium)",
-    "Claude Opus 5.5 (High)",
-    "Claude Sonnet 5.5 (Low)",
-    "Claude Sonnet 5.5 (Medium)",
-    "Claude Sonnet 5.5 (High)",
+    "Gemini 3.8 Flash (Tiered)",
+    "Gemini 4 Argon (Low)",
+    "Gemini 4 Argon (Medium)",
+    "Gemini 4 Argon (High)",
+    "Gemini 2.5 Pro",
 )
 REMOVED_AG_SLOTS = (
     "gemini-3-flash-agent",
@@ -56,6 +44,19 @@ REMOVED_AG_SLOTS = (
     "claude-sonnet-4-6",
     "claude-opus-4-6-thinking",
     "gpt-oss-120b-medium",
+    # 2026-10-21 live-probe prune: the entire 2.1.1-era slot menu below 404s
+    # upstream even under the corrected hub/2.24.0 UA, so it was removed.
+    "gemini-3.6-flash-high",
+    "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-low",
+    "gemini-3.1-pro-low",
+    "gemini-3.1-pro-high",
+    "claude-opus-5-5-low",
+    "claude-opus-5-5-medium",
+    "claude-opus-5-5-high",
+    "claude-sonnet-5-5-low",
+    "claude-sonnet-5-5-medium",
+    "claude-sonnet-5-5-high",
 )
 
 
@@ -167,8 +168,8 @@ def test_exact_antigravity_211_slot_contract_is_ordered_and_exclusive():
 
 def test_dedicated_mapping_validation_accepts_combo_and_provider_and_drops_obsolete_slots():
     config = _config(mappings={
-        "gemini-3.6-flash-low": "coder-1",
-        "gemini-3.1-pro-low": "fake/fake-model",
+        "gemini-3.8-flash-tiered": "coder-1",
+        "gemini-2.5-pro": "fake/fake-model",
         "gemini-default": "coder-1",
     })
 
@@ -177,8 +178,8 @@ def test_dedicated_mapping_validation_accepts_combo_and_provider_and_drops_obsol
     assert validated["antigravity_integration"] == {
         "enabled": True,
         "mappings": {
-            "gemini-3.6-flash-low": "coder-1",
-            "gemini-3.1-pro-low": "fake/fake-model",
+            "gemini-3.8-flash-tiered": "coder-1",
+            "gemini-2.5-pro": "fake/fake-model",
         },
     }
 
@@ -189,14 +190,14 @@ def test_dedicated_mapping_validation_migrates_known_high_alias_and_current_key_
     }))
     preferred = main._validate_antigravity_integration_config(_config(mappings={
         "gemini-3-flash-agent": "fake/fake-model",
-        "gemini-3.6-flash-high": "coder-1",
+        "gemini-3.8-flash-tiered": "coder-1",
     }))
 
     assert migrated["antigravity_integration"]["mappings"] == {
-        "gemini-3.6-flash-high": "fake/fake-model",
+        "gemini-3.8-flash-tiered": "fake/fake-model",
     }
     assert preferred["antigravity_integration"]["mappings"] == {
-        "gemini-3.6-flash-high": "coder-1",
+        "gemini-3.8-flash-tiered": "coder-1",
     }
 
 
@@ -212,7 +213,7 @@ def test_dedicated_mapping_validation_drops_unknown_slots_and_dead_targets(capsy
 
     # Dead mapping target: silently dropped with a console warning.
     validated = main._validate_antigravity_integration_config(_config(mappings={
-        "gemini-3.6-flash-low": "missing/provider",
+        "gemini-3.8-flash-tiered": "missing/provider",
     }))
     assert validated["antigravity_integration"]["mappings"] == {}
     captured = capsys.readouterr()
@@ -236,7 +237,7 @@ def test_start_stop_persist_direct_integration_state_without_mitm(monkeypatch):
 
 def test_config_post_persists_validated_dedicated_mappings(monkeypatch):
     saved = []
-    candidate = _config(mappings={"gemini-3.6-flash-low": "coder-1"})
+    candidate = _config(mappings={"gemini-3.8-flash-tiered": "coder-1"})
     cs.replace_config(_config())
     monkeypatch.setattr(main, "_persist_config_snapshot", lambda cfg: saved.append(cfg))
 
@@ -245,7 +246,7 @@ def test_config_post_persists_validated_dedicated_mappings(monkeypatch):
     assert response.status_code == 200
     assert saved[-1]["antigravity_integration"] == {
         "enabled": True,
-        "mappings": {"gemini-3.6-flash-low": "coder-1"},
+        "mappings": {"gemini-3.8-flash-tiered": "coder-1"},
     }
 
 
@@ -624,11 +625,10 @@ def test_direct_integration_ui_renders_exact_antigravity_211_menu_without_remove
     assert 'data-ag-slot-count="${AG_SLOTS.length}"' in tab
     assert "/api/antigravity-integration/start" in tab
     assert not set(REMOVED_AG_SLOTS).intersection(key for key, _ in rendered_slots)
-    assert "Gemini 3 Flash Agent" not in tab
-    assert "Extra Low" not in tab
-    assert "Pro Request" not in tab
-    assert "Gemini Default" not in tab
-    assert "Flash (Command)" not in tab
+    assert "Gemini 3.6 Flash" not in tab
+    assert "Gemini 3.1 Pro" not in tab
+    assert "Claude Opus 5.5" not in tab
+    assert "Claude Sonnet 5.5" not in tab
     assert "GitHub Copilot" not in tab
     assert "Kiro" not in tab
     assert "toggleIdeDns" not in tab
