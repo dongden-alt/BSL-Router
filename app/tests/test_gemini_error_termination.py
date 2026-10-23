@@ -78,13 +78,21 @@ class _GeminiParserState:
             self._feed_line(line.strip())
 
     def _feed_line(self, line: str) -> None:
+        if line == ": [DONE]":
+            self.done_count += 1
+            return
         if not line.startswith("data:"):
             return  # SSE comment / event prefix — Gemini ignores
         payload = line[len("data:"):].strip()
         if not payload:
             return
         if payload == "[DONE]":
+            # BUGFIX (2026-10-24): Antigravity's Go `language_server.exe` calls
+            # `protojson.Unmarshal` on EVERY non-empty `data: ` line. Feeding
+            # `data: [DONE]` fails at 1:1 with `proto: syntax error (line 1:1):
+            # unexpected token [` and aborts the turn.
             self.done_count += 1
+            self.saw_top_level_error = True
             return
         try:
             obj = json.loads(payload)
@@ -141,6 +149,24 @@ def test_terminal_frame_satisfies_parser_rule():
     st.feed_bytes(gemini_sse_data(frame) + GEMINI_SSE_DONE)
     assert st.terminates_cleanly() is True
     assert st.done_count == 1
+
+
+def test_data_done_poisons_antigravity_proto_parser():
+    """2026-10-24 regression: `data: [DONE]` triggers `protojson.Unmarshal`
+    `proto: syntax error (line 1:1): unexpected token [` in Antigravity's Go
+    `language_server.exe`, whereas `: [DONE]` (SSE comment) is skipped cleanly."""
+    frame = terminal_error_frame(200, "ok", "gemini-3-pro")
+    poisoned = _GeminiParserState()
+    poisoned.feed_bytes(gemini_sse_data(frame) + b"data: [DONE]\n\n")
+    assert poisoned.saw_top_level_error is True
+    assert poisoned.terminates_cleanly() is False
+
+    clean = _GeminiParserState()
+    clean.feed_bytes(gemini_sse_data(frame) + GEMINI_SSE_DONE)
+    assert GEMINI_SSE_DONE == b": [DONE]\n\n"
+    assert clean.saw_top_level_error is False
+    assert clean.terminates_cleanly() is True
+    assert clean.done_count == 1
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -162,7 +162,7 @@ def test_antigravity_stream_returns_headers_and_heartbeat_before_upstream_comple
         finish_payload = json.loads(finish[6:])
         assert "response" in finish_payload
         assert finish_payload["response"]["candidates"][0]["finishReason"] == "STOP"
-        assert await anext(iterator) == b"data: [DONE]\n\n"
+        assert await anext(iterator) == b": [DONE]\n\n"
 
     asyncio.run(scenario())
 
@@ -199,7 +199,7 @@ def test_antigravity_stream_upstream_error_is_valid_gemini_sse_then_done(monkeyp
         assert candidate["finishReason"] == "STOP", "no finishReason: client cannot end the stream"
         assert "503" in candidate["content"]["parts"][0]["text"], "error must stay visible to the user"
         assert "upstream unavailable" in candidate["content"]["parts"][0]["text"], "error message must stay visible"
-        assert await anext(iterator) == b"data: [DONE]\n\n"
+        assert await anext(iterator) == b": [DONE]\n\n"
 
     asyncio.run(scenario())
 
@@ -252,7 +252,7 @@ def test_antigravity_stream_emits_keepalive_during_upstream_thinking_gap(monkeyp
         finish_payload = json.loads(finish[6:])
         assert "response" in finish_payload
         assert finish_payload["response"]["candidates"][0]["finishReason"] == "STOP"
-        assert await _next_data_frame(iterator) == b"data: [DONE]\n\n"
+        assert await _next_data_frame(iterator) == b": [DONE]\n\n"
 
     asyncio.run(scenario())
 

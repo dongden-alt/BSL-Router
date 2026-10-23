@@ -153,8 +153,9 @@ async def stream_deadline(
     if protocol == "gemini":
         # Imported lazily: antifreeze must not hard-depend on the adapter layer.
         try:
-            from app.compat.adapters.gemini import sse_data as _g_sse, terminal_error_frame as _g_term
+            from app.compat.adapters.gemini import sse_data as _g_sse, terminal_error_frame as _g_term, SSE_DONE as _g_done
             error_frame = _g_sse(_g_term(504, f"stream force-stopped after {deadline_s}s"))
+            done_frame = _g_done
         except Exception:
             pass  # Fail-open: keep the OpenAI frames rather than break the stream.
 

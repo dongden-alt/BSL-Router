@@ -91,8 +91,18 @@ _FINISH_MAP = {
     "function_call": "FUNCTION_CALL",
 }
 
-# Terminal SSE sentinel (§5). Antigravity SSE is plain `data:` lines, NO `event:` prefix.
-SSE_DONE = b"data: [DONE]\n\n"
+# Terminal SSE sentinel (§5).
+# BUGFIX (2026-10-24): Antigravity IDE's Go `language_server.exe`
+# (`codeassistclient.responseStream.scanner`) skips SSE lines where
+# `!strings.HasPrefix(line, "data: ")` (e.g. `: heartbeat`, `: keepalive`) and
+# calls `protojson.Unmarshal` on EVERY non-empty `data: ` line. Emitting the
+# OpenAI sentinel `b"data: [DONE]\n\n"` feeds `[DONE]` to `protojson.Unmarshal`,
+# which fails at line 1:1 with `proto: syntax error (line 1:1): unexpected token [`
+# and aborts the turn (`Error Unknown: Agent execution terminated due to error.`).
+# Using an SSE comment sentinel `: [DONE]\n\n` causes the Go scanner to skip it
+# cleanly while still flushing the final ASGI chunk and preserving `[DONE]`
+# visibility for diagnostics.
+SSE_DONE = b": [DONE]\n\n"
 
 
 def terminal_error_frame(code: int, message: str, model: str = "") -> Dict[str, Any]:

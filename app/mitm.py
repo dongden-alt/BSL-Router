@@ -162,6 +162,9 @@ def _gemini_frame_shape(chunk: bytes) -> dict:
     result = {"bytes": len(chunk), "sse_events": 0, "done": False, "frames": []}
     text = chunk.decode("utf-8", errors="replace")
     for line in text.splitlines():
+        if line.strip() == ": [DONE]":
+            result["done"] = True
+            continue
         if not line.startswith("data:"):
             continue
         result["sse_events"] += 1

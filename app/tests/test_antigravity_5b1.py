@@ -316,7 +316,7 @@ def test_t4_stream_content_chunk_to_gemini_part():
     assert frame.startswith(b"data: ")
     assert frame.endswith(b"\n\n")
     assert b"event:" not in frame
-    assert SSE_DONE == b"data: [DONE]\n\n"
+    assert SSE_DONE == b": [DONE]\n\n"
 
 
 def test_t4_empty_mid_stream_delta_emits_nothing():

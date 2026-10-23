@@ -490,7 +490,7 @@ def test_mitm_alias_malformed_body_never_falls_back_to_native(monkeypatch):
     body_text = response.body.decode("utf-8", errors="replace")
     assert "finishReason" in body_text
     assert "STOP" in body_text
-    assert body_text.rstrip().endswith("data: [DONE]")
+    assert body_text.rstrip().endswith(": [DONE]")
     assert native_called["count"] == 0
 
 

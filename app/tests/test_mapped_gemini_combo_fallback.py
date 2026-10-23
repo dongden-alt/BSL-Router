@@ -199,7 +199,7 @@ def test_transport_timeout_advances_combo_and_preserves_attribution(monkeypatch)
 
     assert client.models == ["dead-model", "healthy-model"]
     assert b"fallback-ok" in output
-    assert output.rstrip().endswith(b"data: [DONE]")
+    assert output.rstrip().endswith(b": [DONE]")
     # One start log per request since 3a15ac8 dedupes retry re-entries.
     assert len(starts) == 1
     assert starts[0]["combo"] == "GLM-5.2"
@@ -227,7 +227,7 @@ def test_hung_connection_hits_deadline_and_advances_combo(monkeypatch):
     assert client.models == ["dead-model"]
     # Terminal error frame, not a spliced fallback.
     assert b"fallback-ok" not in output
-    assert output.rstrip().endswith(b"data: [DONE]")
+    assert output.rstrip().endswith(b": [DONE]")
 
 
 def test_pre_content_stream_stall_combo_fallback_for_gemini(monkeypatch):
@@ -247,7 +247,7 @@ def test_pre_content_stream_stall_combo_fallback_for_gemini(monkeypatch):
     assert client.models == ["dead-model", "healthy-model"]
     # Fallback content is streamed.
     assert b"fallback-ok" in output
-    assert output.rstrip().endswith(b"data: [DONE]")
+    assert output.rstrip().endswith(b": [DONE]")
 
 
 def test_pre_content_stream_stall_combo_fallback_when_breaker_disabled(monkeypatch):
@@ -262,7 +262,7 @@ def test_pre_content_stream_stall_combo_fallback_when_breaker_disabled(monkeypat
 
     assert client.models == ["dead-model", "healthy-model"]
     assert b"fallback-ok" in output
-    assert output.rstrip().endswith(b"data: [DONE]")
+    assert output.rstrip().endswith(b": [DONE]")
 
 
 def test_stream_stall_after_real_data_does_not_splice_fallback(monkeypatch):
@@ -300,7 +300,7 @@ def test_stream_stall_after_real_data_does_not_splice_fallback(monkeypatch):
     # 9ROUTER PARITY: no synthetic error frame is manufactured from silence.
     assert b"PROXY_ERROR" not in output
     # The stream is still properly terminated, so the IDE never hangs.
-    assert output.rstrip().endswith(b"data: [DONE]")
+    assert output.rstrip().endswith(b": [DONE]")
 
 
 
@@ -343,8 +343,8 @@ def test_last_combo_entry_error_is_valid_gemini_sse(monkeypatch):
         + repr(_bare_err)
     )
 
-    assert data_frames[-1].rstrip() == b"data: [DONE]"
-    assert output.count(b"data: [DONE]") == 1
+    assert chunks[-1].rstrip() == b": [DONE]"
+    assert output.count(b": [DONE]") == 1
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -466,8 +466,8 @@ def test_all_leaves_429_terminates_with_one_terminal_contract(monkeypatch):
     _bare_err = [f for f in data_frames if f.startswith(b'data: {"error":')]
     assert not _bare_err, f"bare top-level error frame present (poison): {_bare_err}"
     # 4. Exactly one [DONE], and it is the final frame.
-    assert output.count(b"data: [DONE]") == 1, "duplicate [DONE] sentinel"
-    assert data_frames[-1].rstrip() == b"data: [DONE]"
+    assert output.count(b": [DONE]") == 1, "duplicate [DONE] sentinel"
+    assert chunks[-1].rstrip() == b": [DONE]"
     # 5. No fallback content spliced (there was none to splice).
     assert b"fallback-ok" not in output
 
@@ -655,7 +655,7 @@ def test_builtin_timeout_error_pre_content_triggers_combo_fallback(monkeypatch):
         f"builtin TimeoutError combo fallback: expected both models, got {ok_client.models}"
     # Fallback content arrived from the second leaf.
     assert b"fallback-ok" in output
-    assert output.rstrip().endswith(b"data: [DONE]")
+    assert output.rstrip().endswith(b": [DONE]")
 
 
 def test_builtin_timeout_error_post_content_emits_terminal_error_frame(monkeypatch):
@@ -788,8 +788,8 @@ def test_builtin_timeout_error_post_content_emits_terminal_error_frame(monkeypat
     _bare_err = [f for f in data_frames if f.startswith(b'data: {"error":')]
     assert not _bare_err, f"bare top-level error frame (poison): {_bare_err}"
     # Cleanly terminated.
-    assert output.rstrip().endswith(b"data: [DONE]")
-    assert output.count(b"data: [DONE]") == 1
+    assert output.rstrip().endswith(b": [DONE]")
+    assert output.count(b": [DONE]") == 1
     # Fallback content must NOT appear — the IDE was already parsing.
     assert b"fallback-ok" not in output
 
@@ -816,8 +816,8 @@ def test_midstream_peer_close_pre_content_advances_combo(monkeypatch):
     assert client.models == ["dead-model", "healthy-model"], \
         f"midstream RemoteProtocolError (pre-content) must advance combo; models={client.models}"
     assert b"fallback-ok" in output
-    assert output.rstrip().endswith(b"data: [DONE]")
-    assert output.count(b"data: [DONE]") == 1
+    assert output.rstrip().endswith(b": [DONE]")
+    assert output.count(b": [DONE]") == 1
     assert b'data: {"error":' not in output
 
 
@@ -837,8 +837,8 @@ def test_midstream_peer_close_post_content_emits_terminal_not_combo(monkeypatch)
     _terminal = [f for f in data_frames if b'"finishReason"' in f]
     assert len(_terminal) == 1
     assert not [f for f in data_frames if f.startswith(b'data: {"error":')]
-    assert output.rstrip().endswith(b"data: [DONE]")
-    assert output.count(b"data: [DONE]") == 1
+    assert output.rstrip().endswith(b": [DONE]")
+    assert output.count(b": [DONE]") == 1
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -885,7 +885,7 @@ def test_gemini_builtin_timeout_triggers_fallback(monkeypatch):
     assert client.models == ["dead-model", "healthy-model"], \
         f"builtin TimeoutError must advance Gemini combo; models={client.models}"
     assert b"fallback-ok" in output
-    assert output.rstrip().endswith(b"data: [DONE]")
+    assert output.rstrip().endswith(b": [DONE]")
     assert len(starts) == 1
     assert starts[0]["combo"] == "GLM-5.2"
     assert retry_states, "combo retry_state must be recorded"
@@ -923,7 +923,7 @@ def test_gemini_transport_502_triggers_fallback(monkeypatch):
     assert client.models == ["dead-model", "healthy-model"], \
         f"ConnectError transport 502 must advance Gemini combo; models={client.models}"
     assert b"fallback-ok" in output
-    assert output.rstrip().endswith(b"data: [DONE]")
+    assert output.rstrip().endswith(b": [DONE]")
     assert len(starts) == 1
     assert starts[0]["combo"] == "GLM-5.2"
     assert retry_states, "combo retry_state must be recorded"

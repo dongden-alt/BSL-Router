@@ -390,7 +390,7 @@ def test_pre_content_idle_never_bare_done_200():
         SSE_DONE,
     ]
     assert b"finishReason" in exhausted_tail[0]
-    assert exhausted_tail[1] == b"data: [DONE]\n\n"
+    assert exhausted_tail[1] == b": [DONE]\n\n"
 
 
 def test_keepalive_ticks_below_cap_yield_comments():

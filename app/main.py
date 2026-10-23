@@ -11660,8 +11660,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 and _fel_family_enabled(config, detect_family(target_model, provider_name))
             )
             if not _can_recover:
-                async for _ch in source:
-                    yield _ch
+                try:
+                    async for _ch in source:
+                        yield _ch
+                finally:
+                    _aclose = getattr(source, "aclose", None)
+                    if _aclose is not None:
+                        try:
+                            await _aclose()
+                        except Exception:
+                            pass
                 return
 
             from app.middleware.fel_wiring import FelStreamObserver as _PeekObs
@@ -11670,106 +11678,132 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             _passthrough = False
             _triggered_class = ""
             _peek_text = ""
+            _source_closed = False
             try:
-                async for _ch in source:
-                    if _passthrough:
-                        yield _ch
-                        continue
-                    _buffered.append(_ch)
-                    try:
-                        _peek_obs.observe(
-                            _ch if isinstance(_ch, bytes) else str(_ch).encode("utf-8", "ignore")
-                        )
-                    except Exception:
-                        _passthrough = True
-                        for _b in _buffered:
-                            yield _b
-                        _buffered.clear()
-                        continue
-                    if _peek_obs._had_tools:
-                        _passthrough = True
-                        for _b in _buffered:
-                            yield _b
-                        _buffered.clear()
-                        continue
+                try:
+                    async for _ch in source:
+                        if _passthrough:
+                            yield _ch
+                            continue
+                        if (
+                            isinstance(_ch, (bytes, bytearray))
+                            and _ch.lstrip().startswith(b":")
+                            and b"[DONE]" not in _ch
+                        ):
+                            yield _ch
+                            continue
+                        _buffered.append(_ch)
+                        try:
+                            _peek_obs.observe(
+                                _ch if isinstance(_ch, bytes) else str(_ch).encode("utf-8", "ignore")
+                            )
+                        except Exception:
+                            _passthrough = True
+                            for _b in _buffered:
+                                yield _b
+                            _buffered.clear()
+                            continue
+                        if _peek_obs._had_tools:
+                            _passthrough = True
+                            for _b in _buffered:
+                                yield _b
+                            _buffered.clear()
+                            continue
+                        _peek_text = "".join(_peek_obs._text_chunks)
+                        if len(_peek_text) >= 40:
+                            _rc = classify_refusal(_peek_text, had_tool_calls=False)
+                            if _rc in ("refusal", "tos_lecture"):
+                                _triggered_class = _rc
+                                break
+                        if len(_peek_text) >= 220:
+                            _passthrough = True
+                            for _b in _buffered:
+                                yield _b
+                            _buffered.clear()
+                except Exception:
+                    for _b in _buffered:
+                        yield _b
+                    return
+
+                if not _triggered_class and _buffered and not _passthrough:
                     _peek_text = "".join(_peek_obs._text_chunks)
-                    if len(_peek_text) >= 40:
+                    if _peek_text and not _peek_obs._had_tools:
                         _rc = classify_refusal(_peek_text, had_tool_calls=False)
                         if _rc in ("refusal", "tos_lecture"):
                             _triggered_class = _rc
-                            break
-                    if len(_peek_text) >= 220:
-                        _passthrough = True
-                        for _b in _buffered:
-                            yield _b
-                        _buffered.clear()
-            except Exception:
+
+                if _triggered_class:
+                    try:
+                        _aclose = getattr(source, "aclose", None)
+                        if _aclose is not None:
+                            await _aclose()
+                        _source_closed = True
+                    except Exception:
+                        pass
+                    try:
+                        request.state.bsl_fel_recovered = True
+                        _rec_profile = ""
+                        if _fel.profile_header:
+                            _rec_profile = request.headers.get(_fel.profile_header, "") or ""
+                        fel_event("refusal", model=target_model, provider=provider_name, details={
+                            "classification": _triggered_class,
+                            "stream": True,
+                            "chars": len(_peek_text),
+                        })
+                        fel_event("recovery", model=target_model, provider=provider_name, details={
+                            "from_class": _triggered_class,
+                            "attempt": 1,
+                            "stream": True,
+                        })
+                        if request_id:
+                            obs.note_fel_context(
+                                request_id,
+                                fel=detect_family(target_model, provider_name),
+                                refusal_class="recovered",
+                            )
+                        _rec_body = build_recovery_body({
+                            **body,
+                            "messages": list(body["messages"]) + [
+                                {"role": "assistant", "content": _peek_text},
+                            ],
+                        }, _fel, _rec_profile)
+                        _rec_body["stream"] = True
+                        _rec_retry_state = None if not _retry_state else {
+                            **_retry_state,
+                            "idx": _retry_state.get("idx", 0),
+                        }
+                        _rec_resp = await _process_chat_completion(
+                            _rec_body,
+                            client_wants_anthropic,
+                            client_wants_gemini,
+                            _retry_state=_rec_retry_state,
+                            request=request,
+                        )
+                        if hasattr(_rec_resp, "body_iterator"):
+                            try:
+                                async for _rc_chunk in _rec_resp.body_iterator:
+                                    yield _rc_chunk
+                            finally:
+                                _rec_aclose = getattr(_rec_resp.body_iterator, "aclose", None)
+                                if _rec_aclose is not None:
+                                    try:
+                                        await _rec_aclose()
+                                    except Exception:
+                                        pass
+                            return
+                    except Exception as _srec_err:
+                        print(f"[FEL] stream refusal recovery failed (fail-open): {_srec_err}", flush=True)
+
                 for _b in _buffered:
                     yield _b
-                return
-
-            if not _triggered_class and _buffered and not _passthrough:
-                _peek_text = "".join(_peek_obs._text_chunks)
-                if _peek_text and not _peek_obs._had_tools:
-                    _rc = classify_refusal(_peek_text, had_tool_calls=False)
-                    if _rc in ("refusal", "tos_lecture"):
-                        _triggered_class = _rc
-
-            if _triggered_class:
-                try:
+            finally:
+                if not _source_closed:
                     _aclose = getattr(source, "aclose", None)
                     if _aclose is not None:
-                        await _aclose()
-                except Exception:
-                    pass
-                try:
-                    request.state.bsl_fel_recovered = True
-                    _rec_profile = ""
-                    if _fel.profile_header:
-                        _rec_profile = request.headers.get(_fel.profile_header, "") or ""
-                    fel_event("refusal", model=target_model, provider=provider_name, details={
-                        "classification": _triggered_class,
-                        "stream": True,
-                        "chars": len(_peek_text),
-                    })
-                    fel_event("recovery", model=target_model, provider=provider_name, details={
-                        "from_class": _triggered_class,
-                        "attempt": 1,
-                        "stream": True,
-                    })
-                    if request_id:
-                        obs.note_fel_context(
-                            request_id,
-                            fel=detect_family(target_model, provider_name),
-                            refusal_class="recovered",
-                        )
-                    _rec_body = build_recovery_body({
-                        **body,
-                        "messages": list(body["messages"]) + [
-                            {"role": "assistant", "content": _peek_text},
-                        ],
-                    }, _fel, _rec_profile)
-                    _rec_body["stream"] = True
-                    _rec_retry_state = None if not _retry_state else {
-                        **_retry_state,
-                        "idx": _retry_state.get("idx", 0),
-                    }
-                    _rec_resp = await _process_chat_completion(
-                        _rec_body,
-                        client_wants_anthropic,
-                        client_wants_gemini,
-                        _retry_state=_rec_retry_state,
-                        request=request,
-                    )
-                    if hasattr(_rec_resp, "body_iterator"):
-                        async for _rc_chunk in _rec_resp.body_iterator:
-                            yield _rc_chunk
-                        return
-                except Exception as _srec_err:
-                    print(f"[FEL] stream refusal recovery failed (fail-open): {_srec_err}", flush=True)
-
-            for _b in _buffered:
-                yield _b
+                        try:
+                            await _aclose()
+                        except Exception:
+                            pass
 
         async def _client_disconnected() -> bool:
             # Null-safe client-abort probe. Returns False when no Request is

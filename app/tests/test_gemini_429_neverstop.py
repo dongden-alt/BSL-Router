@@ -193,7 +193,7 @@ def test_final_entry_429_streamstart_wraps_instead_of_force_stop(monkeypatch):
     assert b"TPM limit exceeded" not in output, (
         "the terminal-429 force-stop frame must not reach the client"
     )
-    assert output.rstrip().endswith(b"data: [DONE]"), (
+    assert output.rstrip().endswith(b": [DONE]"), (
         "stream must end with the valid Gemini terminal sentinel"
     )
 
