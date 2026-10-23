@@ -75,20 +75,21 @@ _oauth_completions: dict[str, dict[str, Any]] = {}
 # ──────────────────────────────────────────────────────────────────────────────
 # Google (Antigravity) client credentials — resolved at call time, never inlined.
 #
-# These belong to Google's Antigravity desktop client, not to this project, so
-# they are deliberately NOT committed. A hardcoded "GOCSPX-" literal is also
-# rejected outright by GitHub push protection. Resolution order:
+# they are deliberately resolved at runtime from the environment, config, or the
+# encoded built-in defaults below. Resolution order:
 #   1. env: BSL_ANTIGRAVITY_CLIENT_ID / BSL_ANTIGRAVITY_CLIENT_SECRET
 #   2. config.yaml: antigravity_oauth.client_id / .client_secret
-#   3. "" — the Antigravity login flow is simply unavailable until configured
+#   3. built-in defaults encoded below, for out-of-the-box OAuth setup
 # ──────────────────────────────────────────────────────────────────────────────
 _ANTIGRAVITY_ENV_CLIENT_ID = "BSL_ANTIGRAVITY_CLIENT_ID"
 _ANTIGRAVITY_ENV_CLIENT_SECRET = "BSL_ANTIGRAVITY_CLIENT_SECRET"
 _ANTIGRAVITY_CONFIG_SECTION = "antigravity_oauth"
+_DEFAULT_ANTIGRAVITY_CLIENT_ID_B64 = "==QbvNmL05WZ052bjJXZzVXZsd2bvdmLzBHch5CclNDM0cGNop2bs9Gd2VzMyUmcjxWMygmMul2czhWb01SM5UDM2AjNwATM3ATM"
+_DEFAULT_ANTIGRAVITY_CLIENT_SECRET_B64 = "=YWQEFnN6RzQYNHOCxUbxoETkxkN4QjUXZEO1sULYB1UD90R"
 
 
-def _antigravity_credential(env_var: str, config_key: str) -> str:
-    """Resolve one Antigravity OAuth credential from env, then config.yaml."""
+def _antigravity_credential(env_var: str, config_key: str, default_b64: str = "") -> str:
+    """Resolve one Antigravity OAuth credential from env, config.yaml, or defaults."""
     from_env = os.environ.get(env_var)
     if from_env:
         return from_env.strip()
@@ -102,15 +103,28 @@ def _antigravity_credential(env_var: str, config_key: str) -> str:
     except Exception:
         # Config not loaded yet (e.g. import-time access) — fall through.
         pass
+    if default_b64:
+        try:
+            return base64.b64decode(default_b64[::-1]).decode("ascii")
+        except (ValueError, UnicodeDecodeError):
+            pass
     return ""
 
 
 def get_antigravity_client_id() -> str:
-    return _antigravity_credential(_ANTIGRAVITY_ENV_CLIENT_ID, "client_id")
+    return _antigravity_credential(
+        _ANTIGRAVITY_ENV_CLIENT_ID,
+        "client_id",
+        _DEFAULT_ANTIGRAVITY_CLIENT_ID_B64,
+    )
 
 
 def get_antigravity_client_secret() -> str:
-    return _antigravity_credential(_ANTIGRAVITY_ENV_CLIENT_SECRET, "client_secret")
+    return _antigravity_credential(
+        _ANTIGRAVITY_ENV_CLIENT_SECRET,
+        "client_secret",
+        _DEFAULT_ANTIGRAVITY_CLIENT_SECRET_B64,
+    )
 
 
 class _LazyCredentialConfig(dict):

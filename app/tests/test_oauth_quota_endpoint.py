@@ -9,6 +9,7 @@ real async endpoint and assert the merged shape: {remaining_pct, metric, source:
 """
 import asyncio
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,14 +20,19 @@ def _import_mod():
 
 
 @pytest.fixture
-def quota_state():
-    """Isolate the two module-level globals the endpoint reads."""
+def quota_state(monkeypatch):
+    """Isolate the module-level globals the endpoint reads and block quota HTTP calls."""
     mod = _import_mod()
     mod._OAUTH_QUOTA.clear()
+    mod._OAUTH_PROBE_CACHE.clear()
     mod._QUOTA_CACHE["providers"] = {}
     mod._QUOTA_CACHE["ts"] = 0  # force recompute (TTL-based cache is "stale")
+    response = MagicMock(status_code=503)
+    response.json.return_value = {}
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: response)
     yield mod
     mod._OAUTH_QUOTA.clear()
+    mod._OAUTH_PROBE_CACHE.clear()
     mod._QUOTA_CACHE["providers"] = {}
     mod._QUOTA_CACHE["ts"] = 0
 
@@ -61,7 +67,7 @@ def test_oauth_merge_full(monkeypatch, quota_state):
 
 
 def test_oauth_partial_registry(monkeypatch, quota_state):
-    """Only one of two OAuth connections has traffic -> only that row merged, other stays null."""
+    """Only one of two OAuth connections has traffic; the other gets local windows."""
     mod = quota_state
     cfg = _oauth_cfg([
         {"name": "c0", "access_token": "tok0"},
@@ -72,18 +78,20 @@ def test_oauth_partial_registry(monkeypatch, quota_state):
     resp = asyncio.run(mod.get_quota_status_endpoint(provider="claude"))
     row = json.loads(resp.body)["providers"]["claude"]
     assert row[0]["source"] == "oauth_live" and row[0]["remaining_pct"] == 50.0
-    assert row[1] is None  # cold connection, no registry hit
+    assert row[1]["source"] == "oauth_window"
+    assert row[1]["remaining_pct"] == 100.0
 
 
 def test_oauth_cold_start_null(monkeypatch, quota_state):
-    """OAuth connection but empty registry -> null row (frontend shows '∤ no data')."""
+    """OAuth connection with no registry hit gets the local sliding-window fallback."""
     mod = quota_state
     cfg = _oauth_cfg([{"name": "c0", "access_token": "tok0"}])
     monkeypatch.setattr(mod, "cs_get_config", lambda: cfg)
     # _OAUTH_QUOTA intentionally empty for claude
     resp = asyncio.run(mod.get_quota_status_endpoint(provider="claude"))
     row = json.loads(resp.body)["providers"]["claude"]
-    assert row == [None]
+    assert row[0]["source"] == "oauth_window"
+    assert row[0]["remaining_pct"] == 100.0
 
 
 def test_oauth_index_guard_out_of_range(monkeypatch, quota_state):
@@ -94,7 +102,8 @@ def test_oauth_index_guard_out_of_range(monkeypatch, quota_state):
     mod._OAUTH_QUOTA["claude"] = {5: {"remaining_pct": 99.0, "metric": "tokens", "updated_at": 1.0}}
     resp = asyncio.run(mod.get_quota_status_endpoint(provider="claude"))
     row = json.loads(resp.body)["providers"]["claude"]
-    assert row == [None]  # stale/ghost index ignored, no IndexError, no misalignment
+    assert row[0]["source"] == "oauth_window"
+    assert row[0]["remaining_pct"] == 100.0
 
 
 def test_oauth_all_providers_path(monkeypatch, quota_state):

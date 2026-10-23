@@ -114,6 +114,7 @@ from app.middleware.tool_arg_repair import repair_tool_calls_argument_strings
 from app.middleware.glm_parallel_guard import apply_glm_parallel_guard
 from app.middleware.gemini_last_role import ensure_gemini_last_role
 from app.middleware.anthropic_tools import (
+    AnthropicStreamLifecycleTracker,
     AnthropicStreamToolGuard,
     anthropic_tool_repair_enabled,
     repair_anthropic_response_tool_uses,
@@ -11992,6 +11993,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     _codex_pre_buf = []
                     _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
                     buffer = ""
+                    _anth_lifecycle = (
+                        AnthropicStreamLifecycleTracker()
+                        if (client_wants_anthropic and _is_anthropic_fmt)
+                        else None
+                    )
                     try:
                         async for chunk in _pump(resp.aiter_raw(), _emit, _attempt, "openai"):
                             _detector.feed(chunk)
@@ -12039,6 +12045,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                         data_str = line[5:].lstrip()
                                         try:
                                             data_json = json.loads(data_str)
+                                            if _anth_lifecycle is not None and isinstance(data_json, dict):
+                                                _anth_lifecycle.observe_event(data_json)
                                             if provider_name == "codex" and _codex_event_carries_output(data_json):
                                                 _codex_chunk_has_output = True
                                                 if stats["ttft"] == 0.0:
@@ -12124,6 +12132,19 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         )
                         # Not re-raised: fallback declined (content already sent, or
                         # chain exhausted). Fall through to the terminal frame below.
+                    if buffer.strip().startswith("data:"):
+                        try:
+                            _tail_json = json.loads(buffer.strip()[5:].lstrip())
+                            if isinstance(_tail_json, dict):
+                                if _anth_lifecycle is not None:
+                                    _anth_lifecycle.observe_event(_tail_json)
+                                _mark_stream_completed_if_terminal(stats, _tail_json)
+                                _tail_u = _usage_from_sse_data(_tail_json)
+                                if _tail_u:
+                                    _merge_usage_into_stats(stats, _tail_u)
+                                    record_cache_warmth(provider_name, _active_conn_index, _tail_u, tools_config=config.get("tools", {}))
+                        except Exception:
+                            pass
                     if _codex_retry_overload:
                         try:
                             await resp.aclose()
@@ -12149,30 +12170,6 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         for _tg_out in _tool_guard.flush():
                             _emit.mark_emitted(_tg_out)
                             yield _tg_out
-                    except Exception:
-                        pass
-                # ── Degenerate-output guard: post-stream detection (Lane 1) ──
-                # 200 stream that ended with the rubble signature (input at/
-                # above the floor, output at/below the ceiling). The rubble is
-                # already delivered to the client — no retry is possible — so
-                # this is telemetry only: dedicated console event + flagged
-                # END row. Fail-open, never mutates the stream.
-                if (
-                    not stats.get("error")
-                    and stats.get("status") == 200
-                    and _is_degenerate_output(stats.get("in", 0), stats.get("out", 0))
-                ):
-                    stats["degenerate"] = True
-                    try:
-                        obs.note_degenerate_output(
-                            provider_name,
-                            target_model,
-                            stats.get("in", 0),
-                            stats.get("out", 0),
-                            request_id=request_id,
-                            effort=(thinking_info or {}).get("effort"),
-                            action="telemetry",
-                        )
                     except Exception:
                         pass
                 if should_splice_continuation(
@@ -12244,6 +12241,37 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     provider_name=provider_name, target_model=target_model,
                     delivered_chars=getattr(_detector, "tool_call_chars", 0),
                 )
+                if _anth_lifecycle is not None and stats.get("status") == 200 and not stats.get("error"):
+                    try:
+                        for _anth_tail in _anth_lifecycle.synthesize_missing_tail(output_tokens=stats.get("out", 0)):
+                            _emit.mark_emitted(_anth_tail)
+                            yield _anth_tail
+                            stats["stream_completed"] = True
+                    except Exception:
+                        pass
+                # ── Degenerate-output guard: post-stream detection (Lane 1) ──
+                # Runs AFTER _backfill_missing_usage so streams that omitted a
+                # terminal usage frame (e.g. agentrouter/gpt-6.1-sol) are not
+                # falsely flagged as out==0 degenerate rubble when real content
+                # was delivered and backfilled.
+                if (
+                    not stats.get("error")
+                    and stats.get("status") == 200
+                    and _is_degenerate_output(stats.get("in", 0), stats.get("out", 0))
+                ):
+                    stats["degenerate"] = True
+                    try:
+                        obs.note_degenerate_output(
+                            provider_name,
+                            target_model,
+                            stats.get("in", 0),
+                            stats.get("out", 0),
+                            request_id=request_id,
+                            effort=(thinking_info or {}).get("effort"),
+                            action="telemetry",
+                        )
+                    except Exception:
+                        pass
                 if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft"):
                     _zero_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                     if active_chain and _zero_next_idx < len(active_chain):
@@ -14918,7 +14946,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             )
             return StreamingResponse(_ka_body, media_type="text/event-stream")
         _afz_sid = next_stream_id()
-        _ka_body = _wrap_client_stream(raw_upstream_guarded(), _afz_sid, deadline_s=0)
+        _ka_body = _wrap_client_stream(
+            raw_upstream_guarded(),
+            _afz_sid,
+            protocol="anthropic" if client_wants_anthropic else "openai",
+            deadline_s=0,
+        )
         if _sse_ka_on:
             # Lane 3: pre-TTFT keepalive. fmt keyed off the CLIENT: the
             # Anthropic->Anthropic passthrough (client_wants_anthropic, upstream
@@ -18476,6 +18509,10 @@ def _merge_oauth_windows(provider_id, conn_index, active=None):
     if live and live.get("updated_at", 0) >= result.get("updated_at", 0):
         result.update(live)
         result["source"] = "oauth_live"
+        if live.get("remaining_pct") is not None and not result.get("five_hour"):
+            result["five_hour"] = _make_window_obj(
+                "5h", float(live["remaining_pct"]), reset_val=live.get("window_reset")
+            )
     local = _compute_local_oauth_windows(provider_id, conn_index)
     for key in ("five_hour", "weekly"):
         if not result.get(key):
@@ -18506,8 +18543,13 @@ def _merge_oauth_windows(provider_id, conn_index, active=None):
             "google": {"label": "Google", "five_hour": dict(result["five_hour"]), "weekly": dict(result["weekly"])},
             "claude": {"label": "Claude", "five_hour": dict(result["five_hour"]), "weekly": dict(result["weekly"])},
         }
+    metric = (
+        live.get("metric")
+        if result.get("source") == "oauth_live" and live.get("metric")
+        else "5h/7d"
+    )
     result.update(remaining_pct=round(min(result["five_hour"]["remaining_pct"], result["weekly"]["remaining_pct"]), 1),
-                  metric="5h/7d", source=result.get("source", "oauth_window"),
+                  metric=metric, source=result.get("source", "oauth_window"),
                   updated_at=result.get("updated_at", time.time()))
     return result
 

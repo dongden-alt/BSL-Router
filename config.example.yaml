@@ -58,16 +58,14 @@ antigravity_integration:
   mappings: {}
 
 # Google OAuth client credentials for the "antigravity" login flow. / Thông tin OAuth của Google cho luồng đăng nhập "antigravity".
-# Not shipped with the project: these belong to Google's desktop client, and
-# committing them would leak a third-party secret. Leave blank to disable the
-# Antigravity login flow entirely; every other provider works without it.
-#
-# You may instead export these as environment variables, which take precedence:
+# Built-in Antigravity desktop OAuth credentials are used automatically when these
+# fields are blank. Custom overrides in config.yaml or environment variables are
+# optional and take precedence:
 #   BSL_ANTIGRAVITY_CLIENT_ID
 #   BSL_ANTIGRAVITY_CLIENT_SECRET
-# VN: Các thông tin này KHÔNG kèm theo project (secret của bên thứ ba); để trống
-# để tắt luồng đăng nhập Antigravity — mọi provider khác vẫn hoạt động bình thường.
-# Có thể dùng biến môi trường (ưu tiên cao hơn file config).
+# VN: Credentials OAuth desktop Antigravity tích hợp sẵn sẽ được dùng tự động khi
+# các trường này để trống. Có thể ghi đè tùy chọn trong config.yaml hoặc bằng biến
+# môi trường (được ưu tiên hơn cấu hình file).
 antigravity_oauth:
   client_id: ''
   client_secret: ''

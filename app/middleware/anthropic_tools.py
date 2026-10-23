@@ -597,3 +597,86 @@ def anthropic_tool_repair_enabled(config: Optional[Dict[str, Any]]) -> bool:
         return bool(tools_cfg.get("anthropic_tool_repair", True))
     except Exception:
         return True
+
+
+# ── Stream lifecycle tracker (missing terminal frames at EOF) ───────────────
+
+
+class AnthropicStreamLifecycleTracker:
+    """Track Anthropic Messages SSE framing on the Anthropic->Anthropic
+    streaming passthrough so upstream relays (e.g. agentrouter/gpt-6.1-sol)
+    that close the HTTP stream at EOF after ``content_block_delta`` without
+    emitting the final ``content_block_stop``, ``message_delta``, and
+    ``message_stop`` receive valid closing frames instead of triggering
+    Claude Code's mid-stream cut-off retry loop / ``StreamTruncated``.
+
+    Healthy streams that already emit all closing frames produce ``[]``
+    from ``synthesize_missing_tail()`` (zero bytes added).
+    """
+
+    def __init__(self) -> None:
+        self.saw_message_start: bool = False
+        self.opened_blocks: set = set()
+        self.closed_blocks: set = set()
+        self.saw_tool_use: bool = False
+        self.saw_message_delta: bool = False
+        self.saw_message_stop: bool = False
+        self.saw_error: bool = False
+
+    def observe_event(self, ev: Dict[str, Any]) -> None:
+        if not isinstance(ev, dict):
+            return
+        etype = ev.get("type")
+        if etype == "message_start":
+            self.saw_message_start = True
+        elif etype == "content_block_start":
+            idx = ev.get("index")
+            if isinstance(idx, int) and not isinstance(idx, bool):
+                self.opened_blocks.add(idx)
+            blk = ev.get("content_block")
+            if isinstance(blk, dict) and blk.get("type") == "tool_use":
+                self.saw_tool_use = True
+        elif etype == "content_block_stop":
+            idx = ev.get("index")
+            if isinstance(idx, int) and not isinstance(idx, bool):
+                self.closed_blocks.add(idx)
+        elif etype == "message_delta":
+            self.saw_message_delta = True
+        elif etype == "message_stop":
+            self.saw_message_stop = True
+        elif etype in ("error", "response.failed"):
+            self.saw_error = True
+
+    def synthesize_missing_tail(self, output_tokens: int = 0) -> List[bytes]:
+        """Return any missing closing SSE frames at clean upstream EOF."""
+        try:
+            if self.saw_error:
+                return []
+            if not (self.saw_message_start or self.opened_blocks):
+                return []
+            frames: List[bytes] = []
+            for idx in sorted(self.opened_blocks - self.closed_blocks):
+                stop_ev = {"type": "content_block_stop", "index": idx}
+                frames.append(
+                    f"event: content_block_stop\ndata: {json.dumps(stop_ev)}\n\n".encode("utf-8")
+                )
+                self.closed_blocks.add(idx)
+            if not self.saw_message_delta and not self.saw_message_stop:
+                stop_reason = "tool_use" if self.saw_tool_use else "end_turn"
+                md_ev = {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+                    "usage": {"output_tokens": max(0, int(output_tokens or 0))},
+                }
+                frames.append(
+                    f"event: message_delta\ndata: {json.dumps(md_ev)}\n\n".encode("utf-8")
+                )
+                self.saw_message_delta = True
+            if not self.saw_message_stop:
+                frames.append(
+                    b'event: message_stop\ndata: {"type": "message_stop"}\n\n'
+                )
+                self.saw_message_stop = True
+            return frames
+        except Exception:
+            return []

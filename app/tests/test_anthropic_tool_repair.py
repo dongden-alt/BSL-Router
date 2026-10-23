@@ -11,6 +11,7 @@ import inspect
 import json
 
 from app.middleware.anthropic_tools import (
+    AnthropicStreamLifecycleTracker,
     AnthropicStreamToolGuard,
     anthropic_tool_repair_enabled,
     repair_anthropic_response_tool_uses,
@@ -247,3 +248,247 @@ class TestMainIntegration:
         src = self._main_src()
         assert "STREAM-BUFFER SHAPE FIX" in src
         assert "openai_response_to_anthropic(_sbx_openai" in src
+
+    def test_stream_lifecycle_tail_synthesis_wired(self):
+        src = self._main_src()
+        assert "AnthropicStreamLifecycleTracker()" in src
+        assert "_anth_lifecycle.observe_event(" in src
+        assert "_anth_lifecycle.synthesize_missing_tail(" in src
+
+
+# ── AnthropicStreamLifecycleTracker (missing terminal frames at EOF) ─────────
+
+
+class TestAnthropicStreamLifecycleTracker:
+    def test_healthy_stream_emits_nothing(self):
+        t = AnthropicStreamLifecycleTracker()
+        t.observe_event({"type": "message_start", "message": {"id": "m1"}})
+        t.observe_event({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})
+        t.observe_event({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hello"}})
+        t.observe_event({"type": "content_block_stop", "index": 0})
+        t.observe_event({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 5}})
+        t.observe_event({"type": "message_stop"})
+        assert t.synthesize_missing_tail(output_tokens=5) == []
+
+    def test_agentrouter_gpt_6_1_sol_thinking_plus_unclosed_text(self):
+        """Exact agentrouter/gpt-6.1-sol stream shape: index 0 thinking closed,
+        index 1 text opened + delta emitted, then EOF without content_block_stop(1),
+        message_delta, or message_stop."""
+        t = AnthropicStreamLifecycleTracker()
+        t.observe_event({"type": "message_start", "message": {"id": "m1", "usage": {"input_tokens": 41483, "output_tokens": 0}}})
+        t.observe_event({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}})
+        t.observe_event({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "plan"}})
+        t.observe_event({"type": "content_block_stop", "index": 0})
+        t.observe_event({"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}})
+        t.observe_event({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "Answer text"}})
+
+        tail = t.synthesize_missing_tail(output_tokens=96)
+        assert len(tail) == 3
+        ev0 = json.loads(tail[0].decode("utf-8").split("data: ", 1)[1])
+        ev1 = json.loads(tail[1].decode("utf-8").split("data: ", 1)[1])
+        ev2 = json.loads(tail[2].decode("utf-8").split("data: ", 1)[1])
+        assert ev0 == {"type": "content_block_stop", "index": 1}
+        assert ev1 == {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": 96},
+        }
+        assert ev2 == {"type": "message_stop"}
+        # Idempotent if called again
+        assert t.synthesize_missing_tail(output_tokens=96) == []
+
+    def test_agentrouter_single_text_block_unclosed(self):
+        t = AnthropicStreamLifecycleTracker()
+        t.observe_event({"type": "message_start", "message": {"id": "m1"}})
+        t.observe_event({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})
+        t.observe_event({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hi"}})
+
+        tail = t.synthesize_missing_tail(output_tokens=8)
+        assert len(tail) == 3
+        ev0 = json.loads(tail[0].decode("utf-8").split("data: ", 1)[1])
+        ev1 = json.loads(tail[1].decode("utf-8").split("data: ", 1)[1])
+        ev2 = json.loads(tail[2].decode("utf-8").split("data: ", 1)[1])
+        assert ev0 == {"type": "content_block_stop", "index": 0}
+        assert ev1["delta"]["stop_reason"] == "end_turn"
+        assert ev1["usage"]["output_tokens"] == 8
+        assert ev2 == {"type": "message_stop"}
+
+    def test_tool_use_block_unclosed_sets_tool_use_stop_reason(self):
+        t = AnthropicStreamLifecycleTracker()
+        t.observe_event({"type": "message_start", "message": {"id": "m1"}})
+        t.observe_event({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {}},
+        })
+        tail = t.synthesize_missing_tail(output_tokens=25)
+        assert len(tail) == 3
+        ev1 = json.loads(tail[1].decode("utf-8").split("data: ", 1)[1])
+        assert ev1["delta"]["stop_reason"] == "tool_use"
+        assert ev1["usage"]["output_tokens"] == 25
+
+    def test_error_stream_emits_nothing(self):
+        t = AnthropicStreamLifecycleTracker()
+        t.observe_event({"type": "message_start", "message": {"id": "m1"}})
+        t.observe_event({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})
+        t.observe_event({"type": "error", "error": {"message": "boom"}})
+        assert t.synthesize_missing_tail(output_tokens=10) == []
+
+    def test_empty_stream_emits_nothing(self):
+        t = AnthropicStreamLifecycleTracker()
+        assert t.synthesize_missing_tail(output_tokens=0) == []
+
+
+def test_anthropic_passthrough_synthesizes_missing_tail_and_avoids_false_degenerate(monkeypatch):
+    """Call-path regression for agentrouter/gpt-6.1-sol on Anthropic->Anthropic
+    streaming passthrough:
+      1. Upstream emits message_start (input_tokens=45000, output_tokens=0),
+         thinking block 0 (closed), text block 1 (>1000 chars, left OPEN at EOF
+         without content_block_stop(1), message_delta, or message_stop).
+      2. Client stream receives synthesized content_block_stop(1),
+         message_delta(stop_reason='end_turn', usage.output_tokens>0), and
+         message_stop.
+      3. Backfilled out_tokens > 200 runs BEFORE _is_degenerate_output, so
+         stats['degenerate'] is False despite in_tokens=45000 and upstream
+         omitting usage.output_tokens."""
+    import asyncio
+    import httpx
+    from starlette.requests import Request
+    import app.config_state as cs
+    import app.main as main
+
+    long_answer = "Detailed architectural verification output. " * 30  # ~1320 chars -> >300 tokens
+    upstream_chunks = [
+        _sse(
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_ar_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "gpt-6.1-sol",
+                    "content": [],
+                    "stop_reason": None,
+                    "usage": {"input_tokens": 45000, "output_tokens": 0},
+                },
+            },
+            "message_start",
+        ),
+        _sse(
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+            "content_block_start",
+        ),
+        _sse(
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Analyzing..."}},
+            "content_block_delta",
+        ),
+        _sse({"type": "content_block_stop", "index": 0}, "content_block_stop"),
+        _sse(
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+            "content_block_start",
+        ),
+        _sse(
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": long_answer}},
+            "content_block_delta",
+        ),
+        # Deliberately NO content_block_stop(1), NO message_delta, NO message_stop!
+    ]
+
+    class _RawStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for c in upstream_chunks:
+                yield c
+
+        async def aclose(self):
+            pass
+
+    class _FakeClient:
+        def build_request(self, method, url, **kwargs):
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, request, stream=False):
+            return httpx.Response(200, request=request, stream=_RawStream())
+
+    log_calls = []
+    monkeypatch.setattr(main.obs, "log_request", lambda *a, **kw: log_calls.append(kw))
+    monkeypatch.setattr(main.obs, "log_request_start", lambda **kw: "req-ar-eof")
+    monkeypatch.setattr(main, "_capture_queue", None)
+    cs.replace_config({
+        "providers": {
+            "agentrouter": {
+                "format": "anthropic",
+                "connections": [{"enabled": True, "api_key": "test", "base_url": "https://fake.invalid"}],
+                "models": [{"id": "gpt-6.1-sol", "enabled": True}],
+            }
+        },
+        "aliases": {},
+        "combos": [],
+        "tools": {},
+        "settings": {"combo_infinite_retry": False},
+    })
+    monkeypatch.setattr(main, "_get_client_for_proxy", lambda _proxy: _FakeClient())
+
+    req_body = {
+        "model": "agentrouter/gpt-6.1-sol",
+        "max_tokens": 4096,
+        "stream": True,
+        "messages": [{"role": "user", "content": "Review the architecture."}],
+    }
+    encoded = json.dumps(req_body).encode("utf-8")
+    delivered = False
+
+    async def _receive():
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": encoded, "more_body": False}
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    req = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/messages",
+            "headers": [(b"content-type", b"application/json")],
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+        },
+        _receive,
+    )
+
+    collected = []
+
+    async def _run():
+        resp = await main.anthropic_messages(req)
+        async for chunk in resp.body_iterator:
+            collected.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+
+    asyncio.run(_run())
+    full_sse = b"".join(collected).decode("utf-8", errors="replace")
+
+    events = []
+    for line in full_sse.splitlines():
+        if line.startswith("data:"):
+            try:
+                events.append(json.loads(line[5:].lstrip()))
+            except Exception:
+                pass
+
+    stop_indices = [e.get("index") for e in events if e.get("type") == "content_block_stop"]
+    assert stop_indices == [0, 1], f"Expected content_block_stop for [0, 1], got {stop_indices}"
+
+    msg_deltas = [e for e in events if e.get("type") == "message_delta"]
+    assert len(msg_deltas) == 1
+    assert msg_deltas[0]["delta"]["stop_reason"] == "end_turn"
+    assert msg_deltas[0]["usage"]["output_tokens"] > 200
+
+    msg_stops = [e for e in events if e.get("type") == "message_stop"]
+    assert len(msg_stops) == 1
+
+    end_logs = [c for c in log_calls if c.get("event", "end") == "end"]
+    assert end_logs, f"Expected END log_request call, got {log_calls}"
+    end_log = end_logs[-1]
+    assert end_log.get("out_tokens", 0) > 200
+    assert not end_log.get("degenerate", False), f"Stream with backfilled out_tokens>200 must not be flagged degenerate: {end_log}"
+

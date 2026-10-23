@@ -48,6 +48,21 @@ def test_antigravity_auth_url_matches_google_oauth_parameters(oauth_module, monk
     assert query["scope"] == [" ".join(oauth_module.OAUTH_PROVIDERS["antigravity"]["config"]["scopes"])]
 
 
+def test_antigravity_auth_works_out_of_the_box_without_env_or_config(oauth_module, monkeypatch):
+    monkeypatch.delenv("BSL_ANTIGRAVITY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("BSL_ANTIGRAVITY_CLIENT_SECRET", raising=False)
+    monkeypatch.setattr(
+        "app.config_state.get_config",
+        lambda: {"antigravity_oauth": {"client_id": "", "client_secret": ""}},
+    )
+
+    data = asyncio.run(oauth_module.authorize("antigravity", "http://localhost:6969/callback"))
+    query = parse_qs(urlsplit(data["authUrl"]).query)
+
+    assert query["client_id"][0]
+    assert oauth_module.get_antigravity_client_secret()
+
+
 def test_antigravity_post_exchange_uses_exact_9router_user_agent(oauth_module):
     get_response = httpx.Response(200, json={"email": "user@example.com"})
     load_response = httpx.Response(200, json={"cloudaicompanionProject": {"id": "project-1"}})

@@ -9,10 +9,14 @@ replace_config() ENCRYPTS values before storing.
 """
 from __future__ import annotations
 
+import os
+import shutil
+
 import yaml
 
 _config: dict = {}
 _decrypted_cache: dict | None = None
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def get_config() -> dict:
@@ -74,33 +78,37 @@ def init_config(path: str | None = None) -> None:
     to sit in that directory.
     """
     global _config
-    import os
 
-    if path is None:
-        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    use_default_path = path is None
+    if use_default_path:
         path = os.environ.get(
             "BSL_CONFIG_PATH",
-            os.path.join(_repo_root, "config.yaml"),
+            os.path.join(_PROJECT_ROOT, "config.yaml"),
         )
 
     if not os.path.exists(path):
-        example = "config.example.yaml"
-        hint = (
-            f"Configuration file not found: {path}\n\n"
-            "BSL Router needs a config.yaml to start. It is not included in the\n"
-            "repository because it holds live API credentials.\n\n"
-            "To create one:\n"
-            f"    copy {example} {path}        (Windows)\n"
-            f"    cp {example} {path}          (macOS/Linux)\n\n"
-            f"Then edit {path} and add your provider credentials.\n"
-            "See docs/ARCHITECTURE.md for the full configuration reference."
-        )
-        if not os.path.exists(example):
-            hint += (
-                f"\n\nWARNING: {example} is also missing. Your checkout may be "
-                "incomplete - try re-cloning the repository."
+        example_path = os.path.join(_PROJECT_ROOT, "config.example.yaml")
+        if use_default_path and os.path.exists(example_path):
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            shutil.copyfile(example_path, path)
+        else:
+            example = "config.example.yaml"
+            hint = (
+                f"Configuration file not found: {path}\n\n"
+                "BSL Router needs a config.yaml to start. It is not included in the\n"
+                "repository because it holds live API credentials.\n\n"
+                "To create one:\n"
+                f"    copy {example} {path}        (Windows)\n"
+                f"    cp {example} {path}          (macOS/Linux)\n\n"
+                f"Then edit {path} and add your provider credentials.\n"
+                "See docs/ARCHITECTURE.md for the full configuration reference."
             )
-        raise FileNotFoundError(hint)
+            if not os.path.exists(example_path):
+                hint += (
+                    f"\n\nWARNING: {example} is also missing. Your checkout may be "
+                    "incomplete - try re-cloning the repository."
+                )
+            raise FileNotFoundError(hint)
 
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
