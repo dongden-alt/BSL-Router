@@ -1576,6 +1576,7 @@ _ANTIGRAVITY_OBSOLETE_SLOTS = frozenset({
     'gemini-3.6-flash-high',
     'gemini-3.6-flash-medium',
     'gemini-3.6-flash-low',
+    'gemini-4-argon',
     'gemini-3.1-pro-low',
     'gemini-3.1-pro-high',
     'claude-opus-5-5-low',

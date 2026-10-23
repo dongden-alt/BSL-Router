@@ -1,4 +1,21 @@
-## [Unreleased] - 2026-10-23
+# Changelog
+
+All notable changes to BSL Router are documented in this file.
+
+Mọi thay đổi đáng chú ý của BSL Router được ghi lại trong file này.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+**🌐 [English](#110---2026-10-23)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+
+---
+
+## [1.1.0] - 2026-10-23
+
+> **Major Release (`v1.1.0`) — 90 files changed, +14,975 insertions:** Unified App Integration (`Antigravity IDE/Desktop` + `Claude Code Desktop/CLI`), Faithful Execution Layer (FEL) Full Overhaul (`~223x` faster sensitivity engine + 100% streaming & native `gemini-4-argon` coverage), OAuth Multi-Account Per-Session Anti-Ban + Dual `5h`/`7d` Quota Bars + Subscription Tier Badges + Codex JSON Import, 1-Button Unified `Smart Prompt Caching` + 2026 Model-Family Wildcards, Multi-Token Per-Leaf Combo Priority + Recursive Nested Combos, True Token/Cache Accounting + False-Positive `499` Fix, Native Google Cloud Code Pool Isolation, and Model Authenticity Testing V2/V3 (`spatial_curve`, `token_jsd`, `hard_series`) + 17-Defect Audit Hardening.
+
+### 🇬🇧 English — Added & Fixed
 
 - **Faithful Execution Layer (FEL) Full Overhaul — 9 Bug Fixes, 4 Upgrades & Native `gemini-4-argon` Cloud Code Envelope Support (`app/middleware/faithful_execution.py`, `app/middleware/fel_wiring.py`, `app/middleware/response_guard.py`, `app/observability.py`, `app/main.py`, `app/static/index.html`, `app/static/app.js`, `app/tests/test_fel_overhaul.py`)**:
   - **100% Streaming Observability, Native `gemini-4-argon` Passthrough & Post-Log SQLite `refusal_class` Backfill:** Wrapped all 6 streaming return paths (`anthropic_egress`, `gemini_egress`, `anthropic_to_openai_egress_stream_guarded`, `kiro`, `codex`, and `raw_upstream_guarded`) plus native Antigravity IDE passthrough (`_forward_antigravity_native`) with `_wrap_egress_stream()` (`_fel_observe_stream` + `_guard_observe_stream`), wired `_apply_fel_to_antigravity_native_body()` and Google Cloud Code envelope (`{"model": "...", "request": {"contents": [...], "systemInstruction": {"parts": [...]}}}`) support in `fel_wiring.py` (`extract_last_user_text`, `set_last_user_text`, `reframe_context_wide`, `apply_fel_directives`) so native `gemini-4-argon` IDE calls receive full FEL coverage alongside routed calls, extended `FelStreamObserver` and `ResponseGuardObserver` to parse Gemini `candidates[].content.parts[]` (including Cloud Code `response.candidates[]`) and OpenAI Responses API `response.output_text.delta` SSE frames, and updated `obs.note_fel_context()` (`_RECENT_REQUEST_ROW_IDS`) to backfill `refusal_class` and `fel` onto committed SQLite `usage_events` rows when stream finalization completes after `obs.log_request()`.
@@ -43,17 +60,27 @@
 
 ### Fixed
 
+- **Model Authenticity Testing V2 Lanes (`spatial_curve`, `token_jsd`, `hard_series`) (`app/authenticity/standard_v2.py`, `app/authenticity/gate.py`, `app/authenticity/harvest.py`)**: Added V2 authenticity verification lanes `spatial_curve` (2D/3D spatial reasoning decay curve), `token_jsd` (Jensen-Shannon divergence over token logprobs), and `hard_series` (verified hard-math tiers + judge-graded expert probes `visual_svg`, `spatial_3d`, `sys_design`).
 - **Error Prevention ban parameters ignored + anti-downgrade guard (softban/longban/consecutive_threshold now honored)** - User report: "the soft ban & hard ban function doesnt work correctly. when active, i change the parameters (soft ban/long ban time, consecutive error,...) but it doesnt change according to." Root cause (two coupled defects in `ErrorPreventionManager.record_error`): (1) the zero-strike immediate-cooldown branch fired for EVERY classified error type before the streak could reach the user-configured `consecutive_threshold`, making the softban -> longban -> disabled escalation ladder unreachable and the user's softban/longban durations dead knobs; (2) concurrent in-flight requests that had selected a leaf before a ladder ban landed re-entered the immediate-cooldown branch late and OVERWROTE the active escalated ban with a ~90s cooldown (proven: strike 3 overwrote an active 420s softban with 90s, strike 5 overwrote an active 4620s longban with 90s - a user setting softban_duration_minutes=7 observed 90-second bans). Fix: the immediate cooldown now only fires while `streak < threshold` and the streak accumulates across errors; an anti-downgrade guard placed after the streak increment but before ban mutation returns `None` for a permanent `disabled` state and for any active `softban`/`longban` whose `ban_until` exceeds the new cooldown (a strictly longer new cooldown still extends the ban). Escalation ladder, 400/422/499 exclusion, billing-marker exception, persistence/sidecar split, and `_cooldown_by_type` mapping unchanged. 4 new regression tests in `app/tests/test_dead_leaf_self_heal.py`. Full suite 3833/3833 on Python 3.11 and 3.12; focused ban suites 29/29 on both; scenario proof exits 0 on both.
-# Changelog
 
-All notable changes to BSL Router are documented in this file.
+### 🇻🇳 Tiếng Việt — Tính Năng Mới & Sửa Lỗi Trong `v1.1.0`
 
-Mọi thay đổi đáng chú ý của BSL Router được ghi lại trong file này.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-**🌐 [English](#108---2026-09-24)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+- **Tab Tích Hợp Ứng Dụng Hợp Nhất (`Antigravity` + `Claude Code`) & Runtime Patcher Trực Tiếp (`app/antigravity_patcher.py`, `app/main.py`, `app/static/app.js`)**:
+  - **Tích hợp trực tiếp Antigravity (App / IDE) (Loại bỏ proxy trung gian `:50999`, Thanh công cụ Option A & Tự động duy trì khi khởi động):** Patch trực tiếp `settings.json` của Antigravity IDE (`jetski.cloudCodeUrl: http://127.0.0.1:6969`) và `resources/app.asar` của Antigravity Desktop, bơm danh mục custom model vào `/v1internal:fetchAvailableModels` và `/GetAvailableModels`, định tuyến `MODEL_PLACEHOLDER_M<idx>` qua chuỗi fallback của BSL Router mà không mở sớm stream HTTP 200.
+  - **Tích hợp trực tiếp Claude Code (Desktop / CLI):** Tự động tạo alias an toàn `claude-bsl-<N>` và các slot tầng (`claude-bsl-tier-opus/sonnet/haiku/default`), trả về danh mục model độc quyền trên `/v1/models` khi bật `replace_builtin: true` (loại bỏ 53+ model thô khỏi menu chọn model của Claude Desktop), và đồng bộ nguyên tử vào cả `~/.claude/settings.json` lẫn `%LOCALAPPDATA%\Claude-3p\configLibrary\<appliedId>.json` (`inferenceModels`).
+- **Đại Tu Toàn Diện Faithful Execution Layer (FEL) & Hỗ Trợ `gemini-4-argon` Native (`app/middleware/faithful_execution.py`, `app/middleware/fel_wiring.py`, `app/main.py`)**:
+  - Bọc toàn bộ 6 luồng streaming egress cộng với luồng passthrough native của Antigravity IDE (`_forward_antigravity_native`) bằng `_wrap_egress_stream()`, hỗ trợ phong bì Google Cloud Code (`request.contents` / `request.systemInstruction`) cho `gemini-4-argon`, và backfill `refusal_class` + `fel` vào SQLite `usage_events` qua `_RECENT_REQUEST_ROW_IDS`.
+  - Tăng tốc quét từ nhạy cảm **~223 lần** (`3.804,2 ms -> 17,06 ms` cho 20 khối 14 KB) nhờ bộ nhớ đệm regex theo từ bắt đầu (`_COMPILED_SENSITIVITY_CACHE`) và đường tắt ASCII.
+  - Giữ nguyên `cache_control` của Anthropic khi nối directive FEL, hỗ trợ làm mềm từ chối đầu stream (`_fel_stream_with_recovery`), bổ sung bộ nhận diện từ chối tiếng Trung (ZH) và tiếng Việt (VI), kèm thanh Telemetry FEL 7 ngày và hộp thử nghiệm Dry-Run (`POST /admin/fel/preview`) ngay trên giao diện Tools.
+- **Chống Khóa Tài Khoản OAuth Theo Phiên (Per-Session Anti-Ban), Thanh Quota Kép `5h`/`7d`, Huy Hiệu Hạng Thuê Bao & Nhập JSON Codex (`app/oauth_antiban.py`, `app/oauth.py`, `app/main.py`, `app/static/app.js`)**:
+  - Khi bật `Round Robin` trên provider OAuth, router xoay tài khoản bắt đầu **theo từng phiên hội thoại mới** (`_SESSION_RR_CURSOR`) nhưng ghim toàn bộ các lượt trong cùng một phiên vào 1 tài khoản duy nhất (`AffinityStore`), vừa triệt tiêu nguy cơ bị khóa tài khoản do trộn token giữa cuộc hội thoại vừa giữ ấm bộ nhớ đệm KV prompt cache.
+  - Hiển thị thanh tiến trình quota **`5h` và `7d`**, thời gian hồi phục (`↻`), và huy hiệu hạng tài khoản (`Free`, `Plus`, `Pro`, `Ultra`, `Pro x5/x20/x50`, `Max 5x/20x`, `SuperGrok`, `Power`, v.v.) cho toàn bộ 9 provider OAuth, cùng tính năng **Import JSON** an toàn cho Codex (`POST /api/oauth/codex/import-json`).
+- **Bộ Nhớ Đệm Thông Minh 1 Nút Bấm (`Smart Prompt Caching`), Wildcard Họ Model 2026, Xoay Đa Token Trong Combo & Chuẩn Hóa Thống Kê Token/Cache**:
+  - Hợp nhất 4 công tắc cache thành 1 nút duy nhất **`Smart Prompt Caching (All Model Families)`** tự động chèn 3 tầng điểm ngắt `cache_control` và `prompt_cache_key` trên các họ model 2026 (`K3*`, `M3.1`/`M3*`, `V4*`/`V4.1+`, `Gemini 4*`/`Argon`, `GPT-5.6/6.1`).
+  - Xoay hết toàn bộ token/cookie khả dụng trên cùng một `provider/model` trước khi chuyển sang model kế tiếp trong Combo; hỗ trợ Combo lồng nhau đệ quy.
+  - Loại bỏ request nội bộ của `authenticity` và `pytest` khỏi bảng Usage, chuẩn hóa đếm token/cache hit không tính trùng, và sửa dứt điểm lỗi báo giả `499 client_disconnected` sau khi stream đã hoàn tất (`200 OK`).
+- **Cách Ly Pool Google Cloud Code Native & Sửa 17 Lỗi Kiểm Định Độ Xác Thực Model (Authenticity V2/V3)**:
+  - Tách biệt hoàn toàn pool kết nối HTTP/2 của Antigravity IDE native (`_ANTIGRAVITY_EGRESS_CLIENT`) khỏi pool OAuth của router (`_ROUTER_ANTIGRAVITY_EGRESS_CLIENT`) kèm cơ chế tự xoay IP (`rotate_google_ip_cache()`); bổ sung 3 làn kiểm định V2 (`spatial_curve`, `token_jsd`, `hard_series`) và khắc phục 17 lỗi kiểm toán trong mô-đun Authenticity.
 
 ---
 
@@ -416,6 +443,10 @@ Post-tag wave (folded into the release): Kiro binary event-stream egress, multi-
 ---
 
 # 🇻🇳 Tiếng Việt
+
+---
+
+> Xem phần tóm tắt song ngữ đầy đủ của bản phát hành lớn **[1.1.0] - 2026-10-23** ở đầu file ([🇻🇳 Tiếng Việt — Tính Năng Mới & Sửa Lỗi Trong v1.1.0](#-tiếng-việt--tính-năng-mới--sửa-lỗi-trong-v110)).
 
 ---
 

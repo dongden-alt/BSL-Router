@@ -754,24 +754,27 @@ The routing pipeline consists of 36 middleware modules. Here's the full inventor
 
 ## Faithful Execution Layer (FEL)
 
-The Faithful Execution Layer counters four recurring agent failure modes on the model fleet: **false refusals** on legitimate professional work, **skipped steps**, **dropped tool calls**, and **premature stops**. It operates exclusively through positive-framing capability/completion contracts appended to the system-prompt tail — never obedience-forcing or jailbreak-style language (enforced by import-time forbidden-vocabulary self-check in `app/middleware/faithful_execution.py`).
+The Faithful Execution Layer counters four recurring agent failure modes on the model fleet: **false refusals** on legitimate professional work, **skipped steps**, **dropped tool calls**, and **premature stops**. It operates through positive-framing capability/completion contracts appended to the system-prompt tail and starter-word indexed semantic reframing — never obedience-forcing or jailbreak-style language (enforced by import-time forbidden-vocabulary self-check in `app/middleware/faithful_execution.py`).
 
 ### Pipeline stages (wired in `app/main.py` via `app/middleware/fel_wiring.py`)
 
 | Stage | Where | What happens |
 |---|---|---|
-| Pre-flight (clarity) | Before dispatch | Vocabulary-map rewrite + engagement-context prepend on the last user message; ambiguity flagged log-only |
-| Egress (directives) | Payload final per wire shape | Directive block merged into the system tail (openai-chat system message / responses `instructions` / gemini `systemInstruction` / anthropic `system`) |
-| Recovery | First completed non-stream response | Strict classifier (`classify_refusal` — ≥2 distinct markers, <600 chars, no tool calls) sees a refusal → ONE router-injected clarification turn re-dispatch; recursion impossible via request.state guard |
-| Hard wall (FEL-5) | Inside `classify_refusal`, before the length gate | A refusal-shaped text (≥2 distinct markers) citing `_RECOVERY_BLOCK_MARKERS` (CSAM/weapons-class subject matter) → terminal **`blocked`** verdict, preserved verbatim — recovery never re-dispatches it. Bypasses the <600-char length gate (live evidence 2026-09-07: verbose wall refusals — Kimi 1337ch / Qwen 2248ch — must stay visible to analytics), but never the ≥2-marker refusal-shape gate, so benign technical mentions of block-listed subjects can never classify `blocked` |
-| Stream final | Buffered-stream assembly | Classifies assembled visible text, log-only — no mid-stream recovery |
+| Pre-flight (clarity + semantic reframe) | Before dispatch (routed + native Antigravity IDE `_forward_antigravity_native`) | Vocabulary-map rewrite + starter-word indexed sensitivity map (`_COMPILED_SENSITIVITY_CACHE` + ASCII fast-path in `_fold_diacritics`, `<0.9 ms` per 14 KB block) + single-pass engagement/attestation prepend on the last user turn or full history (`context_scope == "full"`, including Anthropic `tool_result` and Gemini `contents` / Cloud Code `request.contents` blocks) |
+| Egress (cache-aligned directives) | Payload final per wire shape | Directive block merged into the system tail (`openai` system message / `responses` `instructions` / `gemini` `systemInstruction` / Cloud Code `request.systemInstruction` / `anthropic` `system`). On Anthropic wire, `merge_directives()` shifts `cache_control: {"type": "ephemeral"}` onto the appended directive tail block so FEL directives remain inside the cached prefix |
+| Non-stream recovery | First completed non-stream response | Strict classifier (`classify_refusal` — ≥2 distinct markers across EN/VI/ZH, <600 chars, no tool calls) sees a soft refusal → ONE router-injected clarification turn re-dispatch; recursion impossible via `request.state` guard |
+| Early-stream recovery (`_fel_stream_with_recovery`) | Opening text chunks of streaming response | Peeks at the initial `40–220` chars of visible text before forwarding; if `classify_refusal` detects a soft refusal (`refusal` / `tos_lecture`) with no tool calls, aborts the refused stream and re-dispatches once with the recovery turn; tool calls and hard walls pass through immediately |
+| Hard wall (FEL-5) | Inside `classify_refusal`, before the length gate | A refusal-shaped text (≥2 distinct markers) citing `_RECOVERY_BLOCK_MARKERS` (CSAM/weapons/CBRN/self-harm subject matter in EN/VI/ZH) → terminal **`blocked`** verdict, preserved verbatim — recovery never re-dispatches it. Bypasses the <600-char length gate so verbose wall refusals remain visible to analytics |
+| All-path stream observation (`_wrap_egress_stream`) | All 6 streaming return paths + native Antigravity IDE passthrough | Wraps `anthropic_egress`, `gemini_egress`, `anthropic_to_openai_egress_stream_guarded`, `kiro`, `codex`, `raw_upstream_guarded`, and `_forward_antigravity_native` with `FelStreamObserver` + `ResponseGuardObserver` (parsing OpenAI, Anthropic, Gemini `candidates[].content.parts[]` / `response.candidates[]`, and OpenAI Responses API `response.output_text.delta`). `obs.note_fel_context()` backfills `refusal_class` and `fel` onto committed SQLite `usage_events` rows via `_RECENT_REQUEST_ROW_IDS` |
 
 ### Gates & config
 
 - Master switch: `tools.fel.enabled` (default **OFF** — disabled/malformed config costs one dict lookup, zero mutation).
 - Per-target opt-out: `tools.fel_profiles` (`{provider-or-model: "off"}`) or request header `x-bsl-fel: off`.
-- **Per-family toggles (FEL-3)**: `tools.fel.families` — `{cn, gpt, claude, gemini}`, default all-on; unchecked families skip clarity, directives, recovery, and stream classification (`_fel_family_enabled` gate in `app/main.py`, family resolved by `detect_family` from model-id prefix, falling back to provider-name substring).
-- **Research modes (FEL-5)**: `tools.fel.research` — `{content, coding}`, both default OFF. Each enabled lane adds ONE research-context directive to the egress merge (content: politics/conflict/sexuality research framing; coding: own-systems security research framing). Hard walls are never softened — a wall refusal in a research lane still classifies `blocked`.
+- **Per-family toggles (FEL-3)**: `tools.fel.families` — `{cn, gpt, claude, gemini}`, default all-on; unchecked families skip clarity, directives, recovery, and stream classification (`_fel_family_enabled` gate in `app/main.py`, family resolved by `detect_family` stripping 2026 vendor prefixes/brackets like `z-ai/glm-5.3-free`, `[opencode]deepseek-v4-pro`, `gemini-4-argon`, `argon-*`, and resolving combo chains via `_resolve_preflight_fel_family`).
+- **Semantic reframing (`tools.fel.reframe`)**: `enabled`, `attestation`, `context_scope` (`"last_turn"` | `"full"`), and bilingual `sensitivity_map` (`en` / `vi`).
+- **Research modes (FEL-5)**: `tools.fel.research` — `{content, coding}`, both default OFF. Hard walls are never softened.
+- **Dry-run preview & live telemetry**: `POST /admin/fel/preview` runs a zero-side-effect dry-run simulation of clarity, reframing, family resolution, and directive output directly from the Tools tab alongside a live 7-day telemetry bar (`GET /api/observability/usage/summary?timeframe=7D`).
 - Everything is fail-open: any exception leaves the payload untouched.
 
 ### Response surface
@@ -785,38 +788,39 @@ The Faithful Execution Layer counters four recurring agent failure modes on the 
 
 ### Refusal analytics (FEL-3)
 
-Stage signals ride `request.state` → `obs.note_fel_context()` → `log_request()` attaches them to the SQLite usage row. Two columns on `usage_events` (guarded ALTER migration, NULL for non-FEL traffic):
+Stage signals ride `request.state` → `obs.note_fel_context()` → `log_request()` (or post-log SQLite UPDATE via `_RECENT_REQUEST_ROW_IDS` when stream finalization finishes after `log_request()`). Two columns on `usage_events`:
 
 - `fel` — family tag (`cn` / `gpt` / `claude` / `gemini` / `other`) when FEL engaged
 - `refusal_class` — final verdict: `refusal` / `tos_lecture` / `filter_block` / `blocked` / `recovered` / `clean` / `unknown`
 
-`GET /api/observability/usage/summary` returns a `fel` block: `applied` (rows with a family tag), `refusals` (counts by class), `recovered`, `by_family` (`{requests, refusals, recovered}`), and `by_model` (top 8 models by hard-refusal count). The Usage tab renders a **FEL SOFTENING** card (applied / refusals / recovered / filter-block + per-family chips + top refusal models) only when FEL data exists; an empty store yields zeros, never errors.
+`GET /api/observability/usage/summary` returns a `fel` block: `applied` (rows with a family tag), `refusals` (counts by class), `recovered`, `by_family` (`{requests, refusals, recovered}`), and `by_model` (top 8 models by hard-refusal count).
 
 ---
 
-## Admin Dashboard Architecture
+## Admin Dashboard Architecture & Unified App Integration
 
 The admin dashboard is a single-page app (`app/static/`) with 10 tabs:
 
 | Tab | HTML ID | Purpose |
 |---|---|---|
-| **Endpoint** | `endpoint` | Local endpoints, Cloudflare Tunnel, Tailscale, API keys, Antigravity integration |
-| **Providers** | `providers` | Provider CRUD, connection verification, model management |
-| **Combos** | `combos` | Combo alias definition and fallback chain editor |
+| **Endpoint & App Integration** | `endpoint` | Local endpoints, Cloudflare Tunnel, Tailscale, API keys, and Unified App Integration (**Antigravity IDE/Desktop** + **Claude Code Desktop/CLI**) |
+| **Providers** | `providers` | Provider CRUD, connection verification, Move Up/Down connection ordering, OAuth Per-Session Round-Robin, `Force Refresh`, Codex `Import JSON`, dual `5h`/`7d` quota bars, and Subscription Tier badges |
+| **Combos** | `combos` | Combo alias definition, recursive nested combos, and per-leaf multi-token fallback chain editor |
 | **BSL Models** | `bsl-models` | Matrix editor for all 5 Blacksand models, auto-select, read-only cross-references |
 | **MITM** | `mitm` | MITM proxy control, hosts file management, watchdog status |
-| **Tools** | `tools` | Document Intelligence, Vision Bridge, Token Budget, Prompt Caching |
-| **Usage** | `usage` | Per-model usage table with filtering, cost tracking, and a live in-flight request strip |
+| **Tools** | `tools` | Document Intelligence, Vision Bridge, Token Budget, 1-Button `Smart Prompt Caching (All Model Families)`, and FEL (with Semantic Reframing, 7D Telemetry Bar, and Dry-Run Preview Sandbox) |
+| **Usage** | `usage` | Per-model usage table with filtering, true upstream/downstream token & cache accounting, FEL analytics, and a live in-flight request strip |
 | **Logs** | `logs` | Live request/response log streaming |
 | **Settings** | `settings` | Admin password, shutdown, logout |
-| **Authenticity** | `authenticity` | Model Authenticity Test (suspect/judge pickers, verdict report), Frozen Standards admin panel |
+| **Authenticity** | `authenticity` | Model Authenticity Test (`TraitMark V2/V3`: `discriminator`, `spatial_curve`, `token_jsd`, `hard_series`), Frozen Standards admin panel |
 
-### Antigravity Integration (Endpoint Tab)
-Direct-inference overlay for Antigravity IDE 2.1.1:
-- Maps Antigravity's model slots to BSL Router providers/combos
-- No MITM proxy, CA cert, or hosts file needed
-- Unmapped slots use native Google Cloud Code
-- Diagnostics panel shows real-time integration status
+### Unified App Integration (`Antigravity` + `Claude Code`)
+- **Antigravity (App / IDE) Direct Integration (`app/antigravity_patcher.py`)**:
+  - Patches Antigravity IDE `settings.json` (`jetski.cloudCodeUrl: http://127.0.0.1:6969`) and Antigravity Desktop `resources/app.asar` (`dist/main.js` + `dist/languageServer.js`) directly, retiring the legacy `:50999` middle proxy so custom combo models execute native BSL fallback without premature HTTP 200 stream lock-in.
+  - Uses **Option A Toolbar** (`Start Integration` / `Stop Integration` master toggle + conditional `Restart Antigravity to Apply` button + 2-second `_staged_asar_watcher` lifespan task).
+  - Isolates Native Antigravity IDE inference (`_ANTIGRAVITY_EGRESS_CLIENT`) from router `antigravity` OAuth inference (`_ROUTER_ANTIGRAVITY_EGRESS_CLIENT`) with 3-attempt stale-socket retry + `rotate_google_ip_cache()`.
+- **Claude Code (Desktop / CLI) Direct Integration**:
+  - Mints safe `claude-bsl-<N>` and dedicated tier-slot aliases (`claude-bsl-tier-opus`, `claude-bsl-tier-sonnet`, `claude-bsl-tier-haiku`, `claude-bsl-tier-default`), returns an exclusive catalog on `/v1/models` gateway discovery when `replace_builtin: true`, and atomically syncs both `~/.claude/settings.json` and `%LOCALAPPDATA%\Claude-3p\configLibrary\<appliedId>.json` (`inferenceModels`).
 
 ---
 
@@ -1002,6 +1006,12 @@ See [config.example.yaml](../config.example.yaml) for a complete working templat
 | `POST /api/authenticity/test` | Submit an authenticity gate job (auto = normal → escalate to deep on ambiguous). Returns **202 Accepted** immediately; verdict arrives via the status endpoint |
 | `GET /api/authenticity/test/status/{model_id}` | Poll job step feed + terminal verdict (`status`: idle/running/done/error/cancelled) |
 | `POST /api/authenticity/test/cancel/{model_id}` | Cancel a running job: sets the cancel flag, writes terminal `cancelled` status, and cancels the background task |
+| `GET /api/quota/status` | Live dual `5h`/`7d` OAuth & API-key quota bars and subscription tier badges (`?provider=<id>&force=1`) |
+| `POST /api/oauth/{provider_id}/force-refresh` | Force immediate upstream OAuth token + quota probe refresh |
+| `POST /api/oauth/codex/import-json` | Hardened 256 KiB Codex `auth.json` credential import |
+| `POST /api/app-integration/antigravity/patch` | Apply/restore/restart-and-apply Antigravity IDE/Desktop direct patch |
+| `POST /api/app-integration/claude-code/sync` | Atomically sync Claude Code CLI & Desktop (`settings.json` + `inferenceModels`) |
+| `POST /admin/fel/preview` | Zero-side-effect dry-run simulation of FEL clarity, semantic reframing, family resolution, and directive output |
 
 ---
 
@@ -1015,6 +1025,18 @@ See [config.example.yaml](../config.example.yaml) for a complete working templat
 | **cryptography** | Fernet encryption for API keys |
 | **PyYAML** | Config file parsing |
 | **pydantic** | Request/response data validation |
+
+---
+
+## Roadmap: `v1.2.0` Native Desktop Tray & 1-Click Portable Bundle (Option A — `Status: PLANNED`)
+
+> **Architectural Decision (2026-10-23):** To close the "zero-dependency 1-click desktop installer + system tray" gap without incurring Electron's `~240 MB` disk and `350–500 MB` 24/7 idle Chromium+Node RAM tax (critical on workstations already running Antigravity IDE and Claude Desktop), `v1.2.0` locks in **Option A: Native System Tray + OS WebView2 Window + Standalone Portable Python Bundle**.
+
+- **Zero-Idle-Browser-RAM System Tray (`pystray` + Windows Edge WebView2 / `pywebview`):**
+  - Runs the FastAPI `:6969` server in the background with a native system tray icon (~`45 MB` total RAM, `0 MB` browser memory while the dashboard window is closed).
+  - Tray menu provides 1-click **Start / Stop / Restart Server**, **Live `5h` / `7d` OAuth Quota Quick-View**, **Open Native Dashboard Window** (rendered via the OS-built-in Edge WebView2 runtime with `0 MB` browser download), and **Launch at Windows Login**.
+- **True 1-Click Portable `.exe` / Installer (`uv` standalone Python / `PyInstaller` bundle):**
+  - Packages the embedded Python runtime + dependencies + tray launcher into a single self-contained `~35 MB` bundle so users never need to install Python, create `.venv`, or keep a PowerShell/CMD terminal window open.
 
 ---
 ---
@@ -1118,23 +1140,32 @@ Thử lần lượt provider. Chain deadline ngăn timeout cascading.
 | Stream Guard | Bắt chunk SSE lỗi |
 | Thinking Fallback | Fallback tham số reasoning |
 
-### 🧰 Tools & Intelligence
+### 🧰 Tools & Intelligence (Bản Cập Nhật `v1.1.0`)
 - **Document Intelligence**: parse PDF/DOCX/XLSX/PPTX + tóm tắt
 - **Vision Bridge**: polyfill vision cho model không hỗ trợ
 - **Token Budget**: trần max_tokens cứng
-- **Prompt Caching**: 4 chiến lược (Anthropic, Kimi, OpenAI, static-first)
+- **Smart Prompt Caching (1 Nút Bấm Hợp Nhất — Tất Cả Họ Model 2026)**: Gộp 4 công tắc cache rời rạc thành 1 công tắc tổng duy nhất (`tools.caching_enabled`), tự động chèn 3 tầng điểm ngắt `cache_control: {"type": "ephemeral"}` (`tools[-1]`, `system[-1]`, và lịch sử hội thoại nhiều lượt tối đa 4 điểm ngắt) cho các làn Anthropic/Claude/GLM/MiniMax, tự động định tuyến và giữ `prompt_cache_key` xuyên suốt cho OpenAI (`gpt-5.6-*`, `gpt-6.1-*`), Codex `/responses` (`store: False`), và Kimi (`kimi-k3*`/`k3*`), kết hợp sắp xếp Static-First cho DeepSeek (`v4*`/`v4.1+`), Gemini (`4*`/`Argon`), và Qwen.
+- **Faithful Execution Layer (FEL — Đại Tu Toàn Diện & Hỗ Trợ `gemini-4-argon` Native)**:
+  - Chống từ chối giả (false refusals), bỏ bước, rớt tool call và dừng sớm thông qua hợp đồng hoàn thành tích cực nối vào đuôi system prompt (giữ nguyên `cache_control` của Anthropic) và bộ viết lại từ nhạy cảm theo từ bắt đầu (`_COMPILED_SENSITIVITY_CACHE` + đường tắt ASCII, nhanh hơn **~223 lần** — `<0,9 ms` mỗi khối 14 KB).
+  - Bọc toàn bộ 6 luồng streaming egress cộng với luồng passthrough native của Antigravity IDE (`_forward_antigravity_native` với phong bì Google Cloud Code `request.contents` / `request.systemInstruction` cho `gemini-4-argon`) bằng `_wrap_egress_stream()`.
+  - Phục hồi từ chối mềm ngay đầu stream (`_fel_stream_with_recovery`, đệm 40–220 ký tự đầu tiên across EN/VI/ZH), giữ nguyên tường chặn cứng (`blocked`), backfill `refusal_class` và `fel` vào SQLite `usage_events` qua `_RECENT_REQUEST_ROW_IDS`, kèm Hộp thử nghiệm Dry-Run (`POST /admin/fel/preview`) và Thanh Telemetry 7 ngày trên tab Tools.
 
-### 🔐 Quản Lý Thông Tin Đăng Nhập
-API key mã hóa Fernet, OAuth tự refresh, key scanner.
+### 🔐 Quản Lý Đa Tài Khoản OAuth, Chống Khóa Theo Phiên & Huy Hiệu Hạng Thuê Bao
+- **Chống khóa tài khoản OAuth theo phiên (Per-Session Sticky Round-Robin)**: Khi bật `Round Robin` trên provider OAuth, `oauth_antiban.apply_affinity()` xoay tài khoản bắt đầu **theo từng phiên hội thoại mới** (`_SESSION_RR_CURSOR`) nhưng ghim toàn bộ các lượt trong cùng một phiên vào 1 tài khoản duy nhất (`AffinityStore`) — vừa chống bị khóa do trộn danh tính giữa phiên, vừa giữ ấm bộ nhớ đệm KV prompt cache.
+- **Tự động xoay hết đa Token/Cookie trên từng Model trong Combo**: `_mark_conn_failed_for_retry()` thử hết mọi kết nối khả dụng (cả OAuth và API-key/cookie/token pool) trên `provider/model` hiện tại trước khi chuyển sang model kế tiếp trong Combo; hỗ trợ Combo lồng nhau đệ quy (`_expand_nested_combo`) và tự cắt bỏ lá đã xóa khỏi `config.yaml`.
+- **Thanh Quota Kép `5h`/`7d`, Huy Hiệu Hạng Thuê Bao & Nhập JSON Codex**: Hiển thị thanh tiến trình quota **`5h` và `7d`**, bộ đếm ngược hồi phục (`↻`), nút `Force Refresh`, tính năng **Import JSON** cho Codex (`POST /api/oauth/codex/import-json`), và huy hiệu hạng thuê bao (`Free`, `Plus`, `Pro`, `Ultra`, `Pro x5/x20/x50`, `Max 5x/20x`, `SuperGrok`, `Power`, v.v.) cho cả 9 provider OAuth.
 
-### 🛡️ Bộ Quét Bảo Mật
-Kiểm tra: exfil URL, key injection, URL spoofing, credential leakage, local network exfil, insecure transport, token tampering, duplicate keys.
+### 🖥️ Tích Hợp Ứng Dụng Hợp Nhất (`Antigravity IDE/Desktop` + `Claude Code Desktop/CLI`)
+- **Antigravity (App / IDE) Trực Tiếp (`app/antigravity_patcher.py`)**: Patch trực tiếp `settings.json` (`jetski.cloudCodeUrl: http://127.0.0.1:6969`) và `resources/app.asar` (loại bỏ hoàn toàn proxy trung gian `:50999`), dùng Thanh công cụ Option A (`Start Integration` / `Stop Integration` + nút `Restart Antigravity to Apply`), và tách biệt hoàn toàn pool HTTP/2 native (`_ANTIGRAVITY_EGRESS_CLIENT`) khỏi pool OAuth của router (`_ROUTER_ANTIGRAVITY_EGRESS_CLIENT`) kèm cơ chế tự xoay IP (`rotate_google_ip_cache()`).
+- **Claude Code (Desktop / CLI) Trực Tiếp**: Sinh alias `claude-bsl-<N>` và slot tầng `claude-bsl-tier-{opus,sonnet,haiku,default}`, lọc độc quyền `/v1/models` khi bật `replace_builtin: true`, và đồng bộ nguyên tử vào `~/.claude/settings.json` cùng `%LOCALAPPDATA%\Claude-3p\configLibrary\<appliedId>.json` (`inferenceModels`).
 
-### 🕵️ MITM Proxy (Tùy chọn)
-Chặn traffic cho app có URL cố định. Watchdog tự restart. Tree-kill + verify+retry.
+### 🔬 Kiểm Định Độ Xác Thực Model (Model Authenticity Testing — TraitMark V2/V3)
+- Đối chiếu chữ ký hành vi, đường cong năng lực, kim tri thức (knowledge needles), và 4 làn V2/V3 chuyên sâu (`discriminator`, `spatial_curve`, `token_jsd`, `hard_series` gồm toán nâng cao kiểm chứng + giám khảo chấm `visual_svg`/`spatial_3d`/`sys_design`) để phát hiện ngay các trường hợp nhà cung cấp lén tráo model rẻ hơn, lượng tử hóa nặng, hoặc giả danh model frontier.
 
-### 📊 Quan Sát & Ghi Log
-JSONL logging, usage stats, error tracking, live log streaming, và registry request đang chạy (`GET /api/observability/usage/inflight`) hiển thị dải pulse trên tab Usage.
+### 📊 Quan Sát, Chuẩn Hóa Đếm Token/Cache & Loại Bỏ Lỗi Giả `499`
+- Loại bỏ các cuộc gọi giám khảo nội bộ (`provider="authenticity"`) và `pytest` khỏi SQLite `usage_events`.
+- Chuẩn hóa `_extract_usage_tokens()` trên mọi giao thức (OpenAI, Anthropic, Hybrid, Codex `/responses`, DeepSeek, Gemini) không tính trùng token cache và tự backfill độc lập `in`/`out` khi relay thiếu frame usage cuối.
+- Nâng cấp các ngắt kết nối sau khi đã nhận `[DONE]` / `message_stop` / `finish_reason` / `out > 0` từ `499` thành `200 OK`.
 
 ### 🔍 Scouts (Tùy chọn)
 Vision (phân tích ảnh), Docs Parser (trích text), Canvas (UI/canvas).
@@ -1209,6 +1240,13 @@ Xem [config.example.yaml](../config.example.yaml) để có template hoàn chỉ
 | `GET/POST /api/bsl-matrix/*` | Ma trận Blacksand |
 | `GET/POST /api/antigravity/*` | Antigravity integration |
 | `POST /api/auth/login` | Đăng nhập quản trị |
+| `GET /api/quota/status` | Thanh quota kép `5h`/`7d` & huy hiệu hạng thuê bao OAuth (`?provider=<id>&force=1`) |
+| `POST /api/oauth/{provider_id}/force-refresh` | Làm mới token & probe quota OAuth ngay lập tức |
+| `POST /api/oauth/codex/import-json` | Nhập thông tin đăng nhập Codex `auth.json` (giới hạn an toàn 256 KiB) |
+| `POST /api/app-integration/antigravity/patch` | Bật/tắt/khởi động lại để áp dụng patch trực tiếp Antigravity IDE/Desktop |
+| `POST /api/app-integration/claude-code/sync` | Đồng bộ nguyên tử Claude Code CLI & Desktop (`settings.json` + `inferenceModels`) |
+| `POST /admin/fel/preview` | Chạy thử nghiệm Dry-Run (không tác dụng phụ) cho FEL trên tab Tools |
+| `GET/POST /api/authenticity/*` | Kiểm định độ xác thực model (`TraitMark V2/V3`) & quản lý chuẩn đóng băng |
 
 ---
 
@@ -1223,90 +1261,29 @@ Xem [config.example.yaml](../config.example.yaml) để có template hoàn chỉ
 | **PyYAML** | Đọc file config |
 | **pydantic** | Kiểm tra dữ liệu |
 
-## Authenticity Standard v3 — `discriminator` lane (2026-10-09, CODE DONE; rebuilt 2026-10-10)
+---
 
-Fourth v2-dimension added to `app/authenticity/standard_v2.py`, stored under
-`structural.tokenizer_signature.v2.discriminator` with shape
-`{"answers": {probe_id: [bucket * k]}, "legacy_features": {probe_id: [schema_features * k]}, "k": k}`.
-`answers` holds `feature_bucket` whole-answer digests (PRIMARY compared field);
-`legacy_features` holds the old `schema_features` strings for offline comparison only.
+## Lộ Trình `v1.2.0`: Khay Hệ Thống Gốc (System Tray) & Gói Cài Đặt Độc Lập 1-Click (Option A — `Trạng thái: PLANNED`)
 
-**Why (status: DONE, offline-verified; live re-scoring of existing standards PENDING):**
-tokenizer / capability_curve / knowledge_bank all saturate at the frontier, so
-`pairwise_separability` under-reported distance and violated transitivity
-(terra->astra 0.046 < terra->sol 0.075). The discriminator measures
-behavioural response habits across a 10-probe / 4-family battery
-(behavioral boundary / temporal-cutoff / reasoning style / style self-consistency).
+> **Quyết Định Kiến Trúc (2026-10-23):** Để lấp đầy khoảng trống về trải nghiệm cài đặt `.exe` 1-click không cần cài Python mà **không** mắc phải bẫy ngốn `~240 MB` dung lượng đĩa và `350–500 MB` RAM chạy ngầm 24/7 của Electron (trên máy trạm vốn đã chạy sẵn 2 ứng dụng Electron là Antigravity IDE và Claude Desktop), phiên bản `v1.2.0` chốt kiến trúc **Option A: Khay Hệ Thống Gốc (System Tray) + Cửa Sổ OS WebView2 + Gói Python Độc Lập**.
 
-**2026-10-10 battery rebuild:** the original 10 `sch_*` probes were audited 0/10
-stable+separable (over-constrained "JSON only" formats collapsed siblings onto one
-output; the `schema_features` prose prefix-branch kept only the first 6 words, which
-share safety-trained openers). The battery now constrains the QUESTION, never the
-output format, and `feature_bucket` (sha1-10 digest over the whole normalized answer,
-prefixed by a human-inspectable shape code) replaces prefix features as the compared
-field. `schema_features` is kept byte-identical and stored side-by-side as
-`legacy_features` for offline comparison.
+- **Khay Hệ Thống 0 MB RAM Trình Duyệt Khi Đóng Cửa Sổ (`pystray` + Windows Edge WebView2 / `pywebview`):**
+  - Chạy ngầm máy chủ FastAPI `:6969` dưới biểu tượng khay hệ thống (System Tray) với tổng RAM chỉ `~45 MB` (`0 MB` RAM trình duyệt khi đóng cửa sổ điều khiển).
+  - Menu chuột phải trên Tray hỗ trợ **Bật / Tắt / Khởi động lại Server**, **Xem nhanh hạn mức OAuth `5h` / `7d`**, **Mở Cửa Sổ Dashboard Gốc** (sử dụng Edge WebView2 có sẵn của Windows, không cần tải thêm trình duyệt), và **Tự khởi động cùng Windows**.
+- **Bộ Cài Đặt `.exe` Độc Lập 1-Click (`uv` standalone Python / `PyInstaller` bundle):**
+  - Đóng gói sẵn nhân Python nhúng + thư viện + trình khởi chạy Tray trong một gói gọn nhẹ `~35 MB`, giúp người dùng chạy ngay lập tức mà không cần cài Python, không cần tạo `.venv` và không cần giữ cửa sổ dòng lệnh mở.
 
-**Scoring:** `similarity_discriminator` = fraction of shared probes whose per-run
-bucket lists overlap exactly (`None` when <5 shared). `pairwise_separability` folds it
-into the mean alongside the other three; absent lanes are excluded, so standards
-harvested before v3 remain fully scoreable — no migration required.
+## Authenticity Standard v2 & v3 — `discriminator`, `spatial_curve`, `token_jsd`, `hard_series` (2026-10-23, DONE)
 
-**2026-10-11 informative-filter correction:** `informative_discriminator_items` selects
-which probes are allowed to contribute to the score, so that probes on which every model
-answers identically (pure noise floor) cannot dilute the few probes that actually diverge.
-The previous implementation took a **33-way `set.intersection`** over the candidate pool's
-probe IDs, plus a single-anchor disjointness check. On the live 33-model pool that
-intersection collapsed to the **empty set** (one model missing one probe zeroes the whole
-intersection), so the scorer silently fell through to `all_probes` — every probe counted as
-informative, and the constant-answer majority pinned similarity near 1.0 for unrelated
-models. Replaced with a **union-based, pairwise-disjoint criterion**: a probe is eligible if
-it appears in ≥2 candidates, and it is informative if it separates **any** pair of models
-(not one fixed anchor). Measured on live standards: informative probes **0 → 18**
-(`bb_*`, `tc_*`, `rs_*`, `fs_blue`, `sch_*`); sibling `disc` similarity now spreads
-0.125–0.875 with self-match 1.0, instead of a saturated constant. The fix is pure in-memory
-set logic — no re-harvest, no backfill, no standard file rewritten (Rule 10).
+Four v2/v3 verification lanes in `app/authenticity/standard_v2.py` (stored under `structural.tokenizer_signature.v2`):
+- **`discriminator`**: 10-probe / 4-family behavioral habit battery (`feature_bucket` whole-answer digests) with union-based pairwise-disjoint informative-probe filtering.
+- **`spatial_curve`**: 2D/3D spatial reasoning decay curve across progressive geometric complexity tiers.
+- **`token_jsd`**: Jensen-Shannon divergence over token logprob distributions (unwrapped via `_logprob_profile_of` before `v2_of()` strips raw logprobs; gracefully abstains for Anthropic Messages API models that do not expose logprobs).
+- **`hard_series`**: Verified hard-math tiers combined with judge-graded expert probes (`visual_svg`, `spatial_3d`, `sys_design`).
 
 **Status labels:**
-- Lane implementation + wiring + tests — **DONE** (23/23 discriminator, 22/22 standard_v2).
-- Informative-probe filter (union-based pairwise-disjoint) — **DONE** (verified against all 60
-  live standard files; regression tests in `app/tests/test_authenticity_discriminator.py`).
-- Matcher veto near-miss instrumentation — **DONE** (`.brain/scratch/disc_veto_nearmiss.jsonl`,
-  capped ~1MB, never raises).
-- Backfill `--replace` flag — **DONE** (disjoint keyspace rotates wholesale; overlapping
-  merges per-key, new values win; failure leaves the file untouched).
-- Existing references + canonicals re-scored with the new battery — **DONE (32/33)**
-  (2026-10-11 wave 1: 3 lanes — glm-5-3-flash, qwen3.8-max, qwen3.8-max-0902;
-  2026-10-11 wave 2: 29/30 old-battery lanes rotated via targeted
-  `backfill_v2_lane.py --lane-name discriminator --replace`, ~20 calls each, k=2;
-  NO full re-harvest per Rule 10. Sole holdout: `deepseek-v4.1-flash` — anchor
-  lane `aibox/deepseek-v4.1-flash` returned HTTP 503 on every probe
-  (`model_not_found`: no available channel in the distributor's default group) and
-  the alternate `a6api` lane also 503s (`smart_route_no_active_candidates`), i.e.
-  an upstream-wide flash outage; the file was left untouched (fail-closed) and its
-  OLD_SCH keyspace shares 0 probes with the new battery → similarity returns None
-  → the lane abstains, never penalized. Retry once the aibox channel recovers.
-  27 provider snapshots have no discriminator lane and abstain by design,
-  excluded from the mean. Census: 60 standard files = 32 NEW_10 + 1 OLD_SCH +
-  27 no-lane, measured 2026-10-11.)
-- Live matcher/gate calibration — **PENDING** (threshold lives in `V2_VETO["discriminator"]`;
-  router `:6969` restart required to load the rebuilt battery — Rule 1, user-commanded only).
-
-- AntiStop continuation-send retry (502 mid-stream hardening, Part B) — **CODE DONE**
-  (2026-10-15; live with next `:6969` restart — Rule 1, user-commanded only).
-  The post-loop continuation splice re-sends to the SAME upstream; a transient 5xx
-  (or transport/timeout error) on that send previously died fail-open and surfaced
-  a client-visible 502 after partial content had already been delivered. New
-  module-level helper `app/main.py::_open_continuation_with_retry` retries
-  send+raise_for_status up to 3 total attempts (0.5s/1.0s backoff) on 5xx,
-  httpx.TransportError, httpx.TimeoutException, TimeoutError, asyncio.TimeoutError;
-  4xx is NEVER retried (deterministic rejection). Retries only occur before any
-  continuation byte is yielded — zero transcript-duplication risk. Final failure
-  re-raises into the existing per-site fail-open so stats keep the truthful 502.
-  Applied at all 3 splice sites: openai-cont, anthropic-egress-cont, gemini-cont.
-  Verified: 37/37 (new retry + midstream continuation + transport-partial-flag)
-  and 40/40 (combo-wrap sentinel, stream keepalive, thought-buffer) green on BOTH
-  CI legs (.venv311 + .venv312); py_compile clean both legs; pre-push gates PASS.
+- Lane implementation + wiring + 17-defect audit hardening (`cache.py`, `gate.py`, `knowledge_needles.py`, `matcher.py`, `standard_v2.py`, `judge_rank.py`, `scoring.py`, `classifier.py`, `fingerprint.py`, `scope.py`, `harvest.py`, `diffmatrix.py`, `traitmark.py`) — **DONE** (482/482 authenticity & egress tests pass; live on `:6969`).
+- AntiStop continuation-send retry (502 mid-stream hardening, Part B) & Py3.10 post-content builtin `TimeoutError` guard (`ef5b840`) — **DONE** (`app/main.py::_open_continuation_with_retry` retries up to 3 attempts on 5xx/transport/timeout errors before any continuation byte is yielded, and post-content stream guards catch builtin `TimeoutError` on Python 3.10–3.12).
 
 ## Canonical Standard Harvest Protocol — new model / new family (2026-10-15)
 
@@ -1427,7 +1404,4 @@ Codex-family upstreams speak the OpenAI **Responses API** SSE dialect (typed eve
 - `app/tests/test_codex_adapter_error_events.py` -- failed / incomplete / healthy tool-call / usage SSE events.
 - `app/tests/test_gemini_drain_emission.py` -- function-call transcript commitment; env-gated codex tee.
 - `app/tests/test_anthropic_egress_codex.py` -- end-to-end Codex Responses SSE -> Anthropic SSE conversion.
-
-### Known issue (pre-existing at HEAD 1dfb1cf; Py3.10 dev-venv only; NOT shipped by this change)
-
-`test_builtin_timeout_error_post_content_emits_terminal_error_frame` fails on Py3.10: builtin TimeoutError (OSError family before the 3.11 aliasing) escapes into the AntiStop continuation path and re-dials the same leaf, tripping the dial-count assertion. The client-visible terminal contract (single finishReason frame + single [DONE], no spliced fallback) still holds. CI legs (3.11/3.12) are unaffected. Tracked as separate fix scope.
+- **Py3.10 Post-Content Builtin `TimeoutError` Guard (FIXED in `ef5b840`, 2026-10-21):** Post-content stream guards in `app/main.py` now catch builtin `TimeoutError` alongside `asyncio.TimeoutError`, ensuring `test_builtin_timeout_error_post_content_emits_terminal_error_frame` passes across Python 3.10, 3.11, and 3.12.

@@ -1,58 +1,121 @@
-# BSL Router
+# ⚡ BSL Router `v1.1.0`
 
-> **The AI router that thinks.** Not just a proxy — a 5-tier intelligence engine that classifies, routes, translates, and orchestrates across 12+ AI providers with mechanical quality gates.
+### Stop Routing Blind. Stop Getting Banned. Stop Paying Frontier Prices for Fake Relays.
+### *Ngừng Định Tuyến Mù. Ngừng Bị Khóa Tài Khoản. Ngừng Trả Giá Đắt Cho Model Bị Tráo.*
+
+> **🇬🇧 The only 100% local, self-hosted AI Command Center engineered for power builders.** Plug **Claude Code (Desktop & CLI)**, **Antigravity IDE**, **Cursor**, and any OpenAI/Anthropic/Gemini app into one intelligent `:6969` endpoint — featuring **5-Tier Blacksand Routing**, **Per-Session Anti-Ban OAuth Rotation**, **1-Button Smart Prompt Caching**, **Faithful Execution Layer (FEL)**, and a built-in **Model Authenticity Lab (`TraitMark V2/V3`)** that catches fake or downgraded relay models red-handed.
 >
-> **AI router biết suy nghĩ.** Không chỉ là proxy — một engine trí tuệ 5 tầng tự động phân loại, định tuyến, dịch giao thức, và điều phối trên 12+ provider với cổng chất lượng cơ học.
+> **🇻🇳 Trung tâm chỉ huy AI 100% local duy nhất được thiết kế cho dân thực chiến.** Kết nối **Claude Code (Desktop & CLI)**, **Antigravity IDE**, **Cursor**, và mọi ứng dụng OpenAI/Anthropic/Gemini vào một cổng `:6969` duy nhất — tích hợp **Định Tuyến Thông Minh 5 Tầng Blacksand**, **Xoay Tài Khoản OAuth Chống Ban Theo Phiên**, **Smart Prompt Caching 1 Nút Bấm**, **Faithful Execution Layer (FEL)**, và **Phòng Thí Nghiệm Kiểm Định Model Thật/Giả (`TraitMark V2/V3`)**.
 
-[![Version: 1.0.7](https://img.shields.io/badge/Version-1.0.7-00d9a3.svg)](https://github.com/dongden-alt/BSL-Router/releases/tag/v1.0.7)
+[![Version: 1.1.0](https://img.shields.io/badge/Version-1.1.0-00d9a3.svg)](https://github.com/dongden-alt/BSL-Router/releases/tag/v1.1.0)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776ab.svg)](https://www.python.org/downloads/)
+[![Tests: 3830+ Passed](https://img.shields.io/badge/Tests-3830%2B_Passed-brightgreen.svg)](#-verification--engineering-discipline)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.129+-009688.svg)](https://fastapi.tiangolo.com/)
-[![Tests: 3100+](https://img.shields.io/badge/Tests-3100+-brightgreen.svg)](#-verification)
 
-**🇬🇧 [English](#-the-problem)** · **🇻🇳 [Tiếng Việt](#-vấn-đề)**
-
----
-
-## Why BSL Router Exists
-
-Every AI team hits the same wall:
-
-| Pain | What happens |
-|---|---|
-| **Protocol lock-in** | Your client speaks OpenAI, your best model is on Anthropic. You're stuck. |
-| **Provider downtime** | One provider goes down → your entire workflow freezes. |
-| **Key sprawl** | 12 API keys, 3 OAuth tokens, 5 rate limits. Manual rotation is a nightmare. |
-| **No intelligence** | Other routers just forward requests. No classification, no quality gates, no orchestration. |
-| **Agentic complexity** | Coding agents need different models for planning, coding, review — but you're manually swapping configs. |
-| **Stream freezes** | Provider stalls mid-stream → IDE hangs → you kill the process → lost work. |
-
-## What BSL Router Does Differently
-
-BSL Router isn't another "AI gateway." It's an **intelligence layer** that sits between your client and your providers:
-
-```
-                         ┌──────────────────────────────────────────────┐
-                         │              BSL Router Engine               │
-                         │                                              │
-   ┌──────────┐          │  ┌─────────┐  ┌──────────┐  ┌─────────────┐  │          ┌──────────┐
-   │  Your    │  request │  │Classify │→ │ Blacksand│→ │  Translate  │  │  stream  │ OpenAI   │
-   │  AI App  │─────────▶│  │ + Route │  │  Matrix  │  │  + Recover  │──┼─────────▶│ Anthropic│
-   │  (any)   │◀─────────│  │         │  │  (5-tier)│  │             │  │          │ Google   │
-   └──────────┘ response │  └─────────┘  └──────────┘  └─────────────┘  │          │ DeepSeek │
-                         │     ↑                         ↑               │          │ GLM      │
-                         │  Quality Gate          Failover Engine        │          │ + 8 more │
-                         │  (mechanical)         (infinite retry)        │          └──────────┘
-                         └──────────────────────────────────────────────┘
-```
-
-**Think of it as an AI traffic controller that actually understands what your request needs — and fights to deliver it.**
+**🇬🇧 [English](#-get-running-in-60-seconds)** · **⚔️ [BSL vs 9Router / CLIProxyAPI / OmniRouter](#-head-to-head-bsl-router-vs-9router-cliproxyapi-omnirouter--litellm)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt--bản-tiếng-việt-đầy-đủ)**
 
 ---
 
-## 🧠 Blacksand: The 5-Tier Routing Engine
+## ⚡ Get Running in 60 Seconds
 
-This is what no other router has. Instead of blindly forwarding to whatever model you named, BSL Router classifies your request and routes it through a **5-tier intelligence matrix**:
+```bash
+git clone https://github.com/dongden-alt/BSL-Router.git
+cd BSL-Router
+python -m venv .venv
+
+# Windows: .venv\Scripts\activate   |   macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+cp config.example.yaml config.yaml
+
+# Launch the Dual-Stack Server (:6969)
+python -m app.dualstack_serve --port 6969
+```
+
+👉 **Open `http://localhost:6969`** to access the **10-Tab Admin Command Center**, connect your OAuth accounts or API keys, click **Start Integration** for **Antigravity IDE** or **Sync to Claude Code**, and start shipping.
+
+---
+
+## 🔥 Why Builders Switch to BSL Router (Pain Points Other Routers Can't Solve)
+
+Tools like **9Router**, **CLIProxyAPI**, **OmniRouter**, and **LiteLLM** were built as *pass-through pipes*: they take a request, translate the JSON wrapper, and forward it. When you run real 100k+ token agentic coding workflows every day, **a dumb pipe breaks down in 6 ways — and BSL Router solves every single one:**
+
+| # | The Real-World Pain Point | Why 9Router / CLIProxyAPI / OmniRouter Fail | How **BSL Router `v1.1.0`** Solves It Permanently |
+|---|---|---|---|
+| **1** | **"Is my relay silently serving a quantized or downgraded model?"** | Zero verification. If a cheap relay renames `Sonnet` or `Flash` as `Claude Opus 5` or `DeepSeek V4-Pro`, dumb routers forward it blindly while you pay top dollar for degraded code. | **🔬 Built-In Model Authenticity Lab (`TraitMark V2/V3`):** Fingerprints any endpoint against frozen gold standards across tokenizer jitter, capability curves, knowledge needles, and 4 forensic V2/V3 lanes (`discriminator`, `spatial_curve`, `token_jsd`, `hard_series` hard-math + expert SVG/3D/architecture judges). Exposes impostors and silent downgrades in minutes. |
+| **2** | **"Turning on OAuth Round-Robin got my accounts banned and wiped my prompt cache!"** | Naive per-request round-robin sprays consecutive turns of the *same* coding session across 5 different OAuth accounts — triggering upstream anti-fraud flags and destroying KV prompt cache locality (forcing 100k+ uncached token re-prefills every turn). | **🛡️ Per-Session Sticky OAuth Anti-Ban + Exhaustive Per-Leaf Rotation:** Rotates the starting account **per new conversation/session** while pinning all turns inside an active session to **1 account**. If a token hits a rate limit, BSL rotates through **every healthy token/cookie on that model first** before falling back to the next model in your combo. |
+| **3** | **"I have no idea which OAuth account is out of 5h/7d quota or which plan tier it's on."** | CLIProxyAPI has no web UI; other routers show generic green/red dots or fail mid-stream when an exhausted account is picked. | **📊 Live Dual `5h` + `7d` Quota Bars & Subscription Tier Badges:** Real-time `5h` and weekly `7d` progress bars, recovery countdowns (`↻ 2h 14m`), `Force Refresh`, hardened **Codex JSON Import**, and color-coded **Subscription Tier Badges** (`Free`, `Plus`, `Pro`, `Ultra`, `Pro x5/x20/x50`, `Max 5x/20x`, `SuperGrok`, `Power`, `Vivace`) across all 9 OAuth providers — plus automatic pre-selection of accounts with remaining quota. |
+| **4** | **"My agent refuses legitimate security/reverse-engineering tasks or stops halfway with TODOs."** | Other routers pass prompts raw. Over-sensitive upstream filters block legitimate security audits, binary analysis, or automation scripts — or the model lazily leaves placeholders. | **⚡ Faithful Execution Layer (FEL) `v1.1.0` Overhaul:** Pre-flight starter-word indexed semantic reframing (`<0.9ms` per 14 KB — `~223x` faster), cache-aligned positive completion contracts, early-stream soft-refusal recovery (`_fel_stream_with_recovery` across EN/VI/ZH), full coverage across all 6 streaming paths + native **`gemini-4-argon`**, and an interactive **Dry-Run Preview Sandbox** in the UI. |
+| **5** | **"Integrating custom models into Antigravity IDE or Claude Code Desktop is fragile and freezes."** | External `:50999` shims (`ag-model`) open HTTP `200` streams prematurely (breaking fallback on upstream errors), while raw `/v1/models` endpoints dump 50+ messy provider models into Claude Desktop's picker. | **🖥️ 1-Click Native App Integration (`Antigravity` + `Claude Code`):** Directly patches Antigravity IDE `settings.json` & Desktop `app.asar` to talk to `:6969` (zero `:50999` shim, isolated native vs. router HTTP/2 pools, auto-healing on restart). For Claude Code, mints safe `claude-bsl-*` aliases & dedicated `Opus`/`Sonnet`/`Haiku` tier slots and syncs a clean, exclusive picker directly into `~/.claude/settings.json` and Claude Desktop's `inferenceModels`. |
+| **6** | **"My token bill is exploding because each provider uses a different caching protocol."** | You have to configure separate rules for Anthropic `cache_control`, OpenAI `prompt_cache_key`, Kimi, and DeepSeek — and Codex `/responses` (`store: False`) drops cache keys altogether. | **💰 1-Button Unified `Smart Prompt Caching` (All 2026 Families):** One master switch auto-injects 3-stage `cache_control` breakpoints (`tools[-1]`, `system`, rolling history) on Anthropic/GLM/MiniMax, propagates deterministic `prompt_cache_key` across OpenAI (`GPT-5.6/6.1`), Codex `/responses`, and Kimi (`K3*`), and anchors static prefixes for DeepSeek (`V4*`), Gemini (`4*`/`Argon`), and Qwen. |
+
+---
+
+## ⚔️ Head-to-Head: BSL Router vs. 9Router, CLIProxyAPI, OmniRouter & LiteLLM
+
+| Capability | **⚡ BSL Router `v1.1.0`** | **9Router** | **CLIProxyAPI** | **OmniRouter** | **LiteLLM / One-API** |
+|---|---|---|---|---|---|
+| **Primary Architecture** | **5-Tier AI Intelligence & Verification Engine** | Local OAuth/API Proxy | Headless CLI OAuth Tunnel | Multi-Provider API Proxy | Protocol Gateway / Billing |
+| **Model Authenticity Lab (`TraitMark V2/V3`)** | ✅ **4 Forensic Lanes (`discriminator`, `spatial_curve`, `token_jsd`, `hard_series`)** | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Native Antigravity IDE & Desktop Integration** | ✅ **Direct `:6969` ASAR/Settings Patcher + Isolated Native Pool (No `:50999` proxy)** | ⚠️ Requires external `:50999` shim or MITM | ❌ Manual config only | ❌ None | ❌ None |
+| **Native Claude Code (Desktop + CLI) Integration** | ✅ **1-Click Exclusive Picker (`inferenceModels`) + `Opus`/`Sonnet`/`Haiku` Tier Slots** | ⚠️ Manual env vars | ⚠️ Manual env vars | ⚠️ Manual env vars | ⚠️ Manual env vars |
+| **OAuth Multi-Account Rotation** | ✅ **Per-Session Sticky Anti-Ban + Exhaustive Per-Leaf Failover** | ⚠️ Per-request RR (ban & cache-miss risk) | ⚠️ Basic token rotation | ⚠️ Basic key rotation | ⚠️ Basic load balancing |
+| **Live OAuth `5h` + `7d` Quota Bars & Tier Badges** | ✅ **9 OAuth Providers + Antigravity `Google`/`Claude` Split + Plan Badges** | ⚠️ Partial / single-window | ❌ CLI logs only | ❌ Basic counters | ⚠️ API credits only |
+| **Faithful Execution Layer (FEL)** | ✅ **`<0.9ms` Semantic Reframe + Early-Stream Refusal Recovery + Native `gemini-4-argon`** | ❌ None | ❌ None | ❌ None | ❌ None |
+| **1-Button Unified Smart Prompt Caching** | ✅ **Auto 3-Stage Breakpoints + Codex/Kimi/GPT-6.1 `prompt_cache_key` + 2026 Wildcards** | ⚠️ Pass-through only | ⚠️ Pass-through only | ⚠️ Pass-through only | ⚠️ Partial / manual |
+| **5-Tier Blacksand Smart Routing + Quality Gates** | ✅ **13 Categories × 3 Tiers + 15-Role Orchestrator + Worst-Score-Wins Gate** | ❌ Manual model only | ❌ Manual model only | ⚠️ Static rules | ⚠️ Conditional routing |
+| **Thinking-Parameter Parity & `thought_signature` Cache** | ✅ **11 Model Families Conformance-Tested + Router-Side `thought_signature` Re-Signing** | ⚠️ Partial | ⚠️ Partial | ❌ Pass-through | ❌ Pass-through |
+| **True Token/Cache Accounting & False-`499` Fix** | ✅ **Unified Cross-Dialect Accounting + Independent Backfill + Post-`[DONE]` `200 OK`** | ⚠️ Misses relay usage | ❌ No usage DB | ⚠️ Basic token logs | ⚠️ Varies by adapter |
+| **100% Local & Machine-Bound Encrypted Keys** | ✅ **Fernet + Windows DPAPI (`enc:`) + 4-Gate Pre-Push Scanner** | ⚠️ Local JSON | ⚠️ Plaintext auth files | ⚠️ Env / DB | ⚠️ Env / DB |
+
+---
+
+## 🧠 Tour the Core Engine (`v1.1.0`)
+
+```
+                          ┌──────────────────────────────────────────────────────────────┐
+                          │                    BSL Router v1.1.0 Engine                  │
+                          │                                                              │
+   ┌───────────────┐      │  ┌──────────────┐   ┌──────────────┐   ┌──────────────────┐  │      ┌───────────────┐
+   │ Claude Code   │      │  │ FEL Pre-Flight│   │  Blacksand   │   │  Smart Caching   │  │      │ Anthropic/OAuth│
+   │ Antigravity   │─────▶│  │ Clarity +     │──▶│ 5-Tier Matrix│──▶│ + Per-Session    │──┼─────▶│ Codex / OpenAI │
+   │ Cursor / IDE  │◀─────│  │ <0.9ms Reframe│   │ + Combo Tree │   │ OAuth Anti-Ban   │  │      │ Gemini 4 Argon│
+   └───────────────┘      │  └──────────────┘   └──────────────┘   └──────────────────┘  │      │ GLM/Kimi/V4.1+│
+                          │         ▲                   ▲                    ▲           │      └───────────────┘
+                          │   Early-Stream       Mechanical Quality   Per-Leaf Multi-Key │
+                          │  Refusal Recovery     Gates (Ultra/Max)   Infinite Failover  │
+                          └──────────────────────────────────────────────────────────────┘
+```
+
+### 1. 🖥️ Unified App Integration (`Antigravity IDE/Desktop` + `Claude Code Desktop/CLI`)
+- **Antigravity IDE & Desktop (Zero `:50999` Middle Proxy):** Click **Start Integration** in the **Endpoint** tab. BSL Router patches Antigravity IDE's `settings.json` and Desktop's `resources/app.asar` directly to `http://127.0.0.1:6969`, injects your custom Combo Models into `/v1internal:fetchAvailableModels` and `/GetAvailableModels`, and isolates native Google Cloud Code traffic (`_ANTIGRAVITY_EGRESS_CLIENT`) from router OAuth traffic (`_ROUTER_ANTIGRAVITY_EGRESS_CLIENT`) with automatic stale-socket retry and edge-IP rotation.
+- **Claude Code Desktop & CLI:** Configure your `Opus`, `Sonnet`, `Haiku`, and `Default` tier slots plus custom models in one UI. Clicking **Sync to Claude Code** atomically updates `~/.claude/settings.json` and Claude Desktop's `inferenceModels` config — filtering `/v1/models` so your Claude Desktop dropdown shows **only** your curated BSL models.
+
+### 2. 🔬 Model Authenticity Lab (`TraitMark V2/V3`)
+Don't trust third-party relays — **verify them**. Open the **Authenticity** tab, pick any suspect provider/model, and run a multi-layer forensic audit against frozen canonical standards:
+- **Layer 1 (Structural & Tokenizer Signature):** Measures sub-word tokenization boundaries and latency jitter.
+- **Layer 2 (Knowledge Needles & Temporal Cutoff):** Shuffled pre-cutoff and post-cutoff needles graded per candidate standard.
+- **Layer 3 (`TraitMark V2/V3` Forensic Lanes):**
+  - `discriminator`: 10-probe behavioral boundary & style consistency digest battery.
+  - `spatial_curve`: 2D/3D geometric reasoning decay curve.
+  - `token_jsd`: Jensen-Shannon divergence over token logprob distributions.
+  - `hard_series`: Verified hard-math tiers + cross-family judge-graded `visual_svg`, `spatial_3d`, and `sys_design` probes.
+
+### 3. 🛡️ Per-Session OAuth Anti-Ban, Dual `5h`/`7d` Quotas & Subscription Tier Badges
+- **Session-Sticky Round-Robin:** Spreads load across your OAuth pool (`codex`, `claude`, `antigravity`, `gemini-cli`, `kiro`, `grok-cli`, `cursor`, `github`, `kimi`) by rotating the starting account **on each new conversation**, while locking all turns of an active conversation to a single account.
+- **Dual `5h` & `7d` Quota Bars + Tier Badges:** Every OAuth connection displays real-time `5h` and `7d` remaining `%`, reset countdowns, and color-coded plan badges (`Free`, `Plus`, `Pro`, `Ultra`, `Pro x5/x20/x50`, `Max 5x/20x`, `SuperGrok`, `Power`, `Vivace`). Antigravity accounts even split quota bars into separate **`Google`** and **`Claude`** pools matching the native IDE.
+- **Hardened Codex JSON Import:** Import `auth.json` files or raw JSON directly from the UI (`POST /api/oauth/codex/import-json`) with 256 KiB stream bounding, duplicate-key rejection, and automatic token refresh.
+
+### 4. ⚡ Faithful Execution Layer (FEL) Overhaul & Native `gemini-4-argon` Support
+- **Why FEL Exists:** Frontier models frequently false-refuse benign security testing, reverse engineering, or DevOps automation prompts — or stop early with `"// TODO: implement the rest"`.
+- **How FEL Works:**
+  - **Pre-Flight Clarity & `<0.9ms` Semantic Reframing:** Starter-word indexed regex engine (`_COMPILED_SENSITIVITY_CACHE`) rewrites trigger phrases into accurate professional engineering terminology (in English & Vietnamese) across the last turn or full conversation history (`context_scope: "full"`), prepending operator authorization context once.
+  - **Cache-Aligned Completion Directives:** Appends positive-framing execution contracts to the system tail while shifting Anthropic `cache_control: {"type": "ephemeral"}` to the tail block so your prompt cache stays 100% warm.
+  - **Early-Stream & Non-Stream Refusal Recovery:** Detects soft refusals across English, Vietnamese, and Chinese (`_fel_stream_with_recovery`) and transparently re-dispatches with a clarification turn, while strictly respecting hard safety walls (`blocked`).
+  - **Interactive UI Sandbox:** Test any prompt against any model (including `gemini-4-argon`) in the **Tools → FEL Dry-Run Preview** box before sending a single API call.
+
+### 5. 🧠 Blacksand 5-Tier Smart Routing & Recursive Multi-Token Combos
+Point your client at one virtual model and let Blacksand route every turn:
 
 | Tier | Virtual Model | What It Does | Matrix Size |
 |---|---|---|---|
@@ -62,749 +125,116 @@ This is what no other router has. Instead of blindly forwarding to whatever mode
 | **4** | `blacksand-agentic-ultra` | Balanced-tier coding with consultant routing + **mechanical quality gates** | 15 agent roles + 5 member roles + phase cap 22 |
 | **5** | `blacksand-agentic-max` | Multi-domain fusion for complex cross-domain workflows | Inherits Ultra config + cross-domain orchestration |
 
-### How It Works
-
-Point your client at a single virtual model name — `blacksand-chat` — and BSL Router:
-
-1. **Classifies** the request intent (chat, code, agentic tool use)
-2. **Categorizes** it (13 categories: general, technical, creative, scout, power_coder, vision, fast_coder, architect, reviewer, debugger, refactorer, documenter, tester)
-3. **Estimates complexity** → picks an effort tier (fast / standard / strong)
-4. **Routes** to the best provider for that category+tier combination via **combo aliases**
-
-### Combo Alias System
-
-Each matrix slot references a combo alias — a fallback chain you define:
-
-```yaml
-combos:
-  - alias: coder-1          # Fast tier: quick completions, cheap models
-    chain:
-      - provider: deepseek
-        model: deepseek-v4-flash
-      - provider: glm
-        model: glm-5.1-flash
-    strategy: fallback
-
-  - alias: coder-2          # Standard tier: balanced quality/speed
-    chain:
-      - provider: anthropic
-        model: claude-sonnet-4
-      - provider: openai
-        model: gpt-4o
-    strategy: fallback
-
-  - alias: coder-3          # Strongest tier: complex reasoning, architecture
-    chain:
-      - provider: anthropic
-        model: claude-opus-4
-      - provider: openai
-        model: gpt-5
-    strategy: fallback
-```
-
-Now your coding agent gets `coder-1` for quick completions, `coder-2` for standard work, and `coder-3` for architecture — **all from a single `blacksand-lite` model name**, automatically.
-
-### Quality-Gated Orchestration (Ultra + Max tiers)
-
-`blacksand-agentic-ultra` and `blacksand-agentic-max` go beyond routing — they **orchestrate**:
-
-- **15 agent roles**: general, planner, auditor, vision, scout, planner_architect, planner_challenger, planner_planner, auditor_reviewer, auditor_auditor, refactor, fast_coder, power_coder, ultra_coder, frontend_coder
-- **5 member roles** (commit-boundary only): planner_architect, planner_challenger, planner_planner, auditor_reviewer, auditor_auditor
-- **Mechanical quality gate**: Every member output is parsed, scored, and worst-merged into the lead's verdict. Members can only LOWER a dimension score, never raise it. A single `fail` on any dimension blocks the phase.
-- **Phase cap**: 22 internal calls per client request — bounded by design, never infinite.
-
-```xml
-<!-- This is what the quality gate produces, mechanically: -->
-<quality_verdict>
-  <dimension name="completeness" score="pass" />
-  <dimension name="coherence" score="partial" />
-  <dimension name="correctness" score="pass" />
-  <dimension name="safety" score="pass" />
-</quality_verdict>
-<!-- derive_verdict(): any partial → overall: PARTIAL → lead must address gaps -->
-```
-
-> 📖 See [Architecture: Blacksand Model Routing](docs/ARCHITECTURE.md#blacksand-model-routing) for the full matrix spec.
+- **Exhaustive Per-Leaf Multi-Token Failover:** If `providerA/model1` has 4 API keys or OAuth cookies, BSL Router tries **all 4 connections on `model1`** before advancing to `model2` in your Combo — and supports **recursive nested Combos** (`Combo A → Combo B → Combo C → Model`).
 
 ---
 
-## ⚔️ BSL Router vs Other AI Gateways
+## 🛠️ Our Commitment to Continuous Fixes & Relentless Upgrades
 
-| Feature | **BSL Router** | LiteLLM | One-API | Portkey |
-|---|---|---|---|---|
-| **Protocol translation** | ✅ Bidirectional (OpenAI ↔ Anthropic ↔ Gemini) | ✅ OpenAI format only | ✅ OpenAI format only | ✅ OpenAI format only |
-| **5-tier routing intelligence** | ✅ Blacksand matrix (13 cat × 3 tiers) | ❌ Manual model selection | ❌ Manual model selection | ❌ Conditional routing only |
-| **Agentic orchestration** | ✅ 15-role dispatch + quality gates | ❌ Not available | ❌ Not available | ❌ Not available |
-| **Mechanical quality gates** | ✅ Worst-score-wins merge, fail=block | ❌ Not available | ❌ Not available | ❌ Guardrails (different) |
-| **Infinite retry failover** | ✅ Chain wraps with 2s→30s backoff | ⚠️ Basic fallback | ⚠️ Basic fallback | ✅ Fallbacks + retries |
-| **Thinking-parameter parity** | ✅ 11 model families, conformance-tested | ❌ Not available | ❌ Not available | ❌ Not available |
-| **Fuzzy model-ID resolution** | ✅ Typos still route correctly | ❌ Exact match only | ❌ Exact match only | ❌ Exact match only |
-| **FEL refusal softening** | ✅ Pre-flight directives + auto-retry | ❌ Not available | ❌ Not available | ❌ Not available |
-| **Document Intelligence** | ✅ PDF/DOCX/XLSX/PPTX parsing | ❌ Not available | ❌ Not available | ❌ Not available |
-| **Vision Bridge** | ✅ Image→text for non-vision models | ❌ Not available | ❌ Not available | ❌ Not available |
-| **MITM proxy mode** | ✅ OS-level interception for hardcoded apps | ❌ Not available | ❌ Not available | ❌ Not available |
-| **Antigravity IDE integration** | ✅ Direct-inference overlay | ❌ Not available | ❌ Not available | ❌ Not available |
-| **Encrypted key storage** | ✅ Fernet + machine-bound | ⚠️ Plaintext env vars | ⚠️ Database-stored | ⚠️ Cloud-managed |
-| **Admin dashboard** | ✅ 9-tab web UI | ⚠️ Basic UI | ✅ Web UI | ✅ Cloud dashboard |
-| **Self-hosted** | ✅ 100% local, no cloud dependency | ✅ Self-hosted | ✅ Self-hosted | ❌ Cloud-first |
-| **Provider count** | 12+ | 100+ | 20+ | 200+ |
+Most open-source AI routers are weekend side-projects that rot the moment OpenAI, Anthropic, or Google changes an upstream header. **BSL Router is our live, 24/7 production backbone.** Here is our engineering pledge to every user who downloads this repo:
 
-> **The bottom line:** LiteLLM/One-API/Portkey are protocol gateways — they forward requests. BSL Router is an **intelligence engine** — it classifies, routes, orchestrates, quality-checks, and fights to deliver your request. Blacksand's 5-tier matrix doesn't exist anywhere else.
+1. **Daily Dogfooding Under Heavy Agentic Load:** Every line of BSL Router is battle-tested daily on multi-hour Claude Code, Antigravity IDE, and multi-agent coding sessions. When an upstream breaks (`Codex /responses` wire changes, Google Cloud Code `v1internal` HTTP/2 disconnects, Anthropic `message_delta` token accounting, or false `499` stream disconnects), we diagnose, fix, and regression-test it immediately.
+2. **Day-Zero 2026 Frontier Model Support:** Built-in reasoning contracts, caching wildcards, and family adapters ship ready for **`Gemini 4 Argon`**, **`GPT-5.6 / GPT-6.1 (SOL / Terra / Luna)`**, **`Claude 4.6 / Opus 5`**, **`Kimi K2.7 / K3`**, **`DeepSeek V4 / V4.1+`**, **`GLM-5.2 / 5.3`**, **`MiniMax M2.7 / M3.1`**, and **`Qwen 3.8`**.
+3. **3,830+ Automated Tests & Zero-Downtime Reloads:** Every fix ships with permanent regression tests (`3,830+` tests across `150+` test files). Graceful server restarts (`POST /api/version/restart`) drain active IDE streams before swapping processes so your coding agent never drops a connection.
+4. **Strict 4-Gate Security & Privacy Hygiene:** Every release passes `scripts/pre-push-check.ps1` (tracked-tree secret sweep, machine-path sweep, diff key scan, and gitignore verification) before a single commit reaches GitHub.
 
 ---
 
-## 🚀 Quick Start
-
-### 1. Install
-
-```bash
-git clone https://github.com/dongden-alt/bsl-router.git
-cd bsl-router
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
-
-pip install -r requirements.txt
-```
-
-### 2. Configure
-
-```bash
-cp config.example.yaml config.yaml
-# Edit config.yaml — add your provider API keys
-```
-
-### 3. Run
-
-```bash
-python -m uvicorn app.main:app --host 0.0.0.0 --port 6969
-```
-
-Open `http://localhost:6969` → admin dashboard.
-
-> **Windows users**: Use `.\scripts\bslrouter.ps1 -start` for managed startup with automatic port cleanup, dual-stack health checks, and supervisor process handling.
-
-### 4. Point Your Client
-
-| Your client | Set base URL to | Works with |
-|---|---|---|
-| **Claude Code** | `http://localhost:6969` | `ANTHROPIC_BASE_URL` env var |
-| **Cursor** | `http://localhost:6969/v1` | OpenAI-compatible setting |
-| **Any OpenAI client** | `http://localhost:6969/v1` | Drop-in replacement |
-| **Any Anthropic client** | `http://localhost:6969` | `/v1/messages` endpoint |
-| **Antigravity IDE** | Configure from dashboard → Endpoint tab | Direct overlay, no MITM needed |
-
-Now send `model: "blacksand-chat"` and watch BSL Router classify, route, and deliver.
-
----
-
-## 🔑 Core Features
-
-### 🧠 Smart Routing + Blacksand Matrix
-Send `model: blacksand-chat` → BSL Router classifies (13 categories × 3 tiers), routes to your best provider, and falls back automatically. Your client never sees a failure.
-
-### 🔄 Bidirectional Protocol Translation
-
-| From | To | Status |
-|---|---|---|
-| OpenAI | Anthropic | ✅ |
-| OpenAI | Gemini | ✅ |
-| Anthropic | OpenAI | ✅ |
-| Anthropic | Gemini | ✅ |
-| Gemini | OpenAI | ✅ |
-| Any | Any | ✅ |
-
-Message format, tool calls, thinking parameters, streaming — all translated bidirectionally.
-
-### 🛡️ Infinite-Retry Failover Engine
-
-```yaml
-combos:
-  - alias: my-smart-chain
-    chain:
-      - provider: openai       # Try first
-        model: gpt-4o
-      - provider: anthropic    # Fallback 1
-        model: claude-sonnet-4
-      - provider: deepseek     # Last resort
-        model: deepseek-v4
-    strategy: fallback
-```
-
-If the first provider fails, BSL Router tries the next — **and cycles through retry passes**: each revisit dials the next API key in the pool, bounded by a chain-sized wall clock so slow-failing providers never strand the rest. When the **entire** chain fails, the router wraps around with exponential backoff (2s→30s) until the client disconnects — exhaustion is a pass boundary, never a dead end.
-
-### 🧠 Thinking-Parameter Parity (11 Model Families)
-
-Every model family's reasoning vocabulary is locked to official docs via conformance-tested contracts:
-
-| Family | Reasoning Vocabulary |
-|---|---|
-| GLM-5.2/5.3 | `none` / `auto` / `thinking` |
-| Grok-4.5/4.6 | `auto` / `on` / `off` |
-| Qwen 3.8 | `no_think` / `enable_thinking` |
-| Kimi K2/K3 | `default` / `auto` / `none` |
-| DeepSeek V4 | `low` / `medium` / `high` / `max` |
-| Claude | `none` / `auto` / `enabled` |
-| GPT-5 | `low` / `medium` / `high` / `max` |
-| + 4 more | Family-specific |
-
-Wrong-vocabulary requests are **coerced before reaching upstream** — and rejected thinking params degrade-and-retry automatically.
-
-### 🔍 Fuzzy Model-ID Resolution
-
-Typos and format variants still route correctly: `gpt-5-6-terra`, `gpt-terra-5-6` → `gpt-5.6-terra`. Exact model names are never rewritten.
-
-### 🛡️ FEL: Refusal Softening & Egress Directives
-
-When a provider refuses a request (content policy, safety filter), BSL Router:
-1. **Detects** the refusal class (CN-family, GPT-family, Claude-family, Gemini-family)
-2. **Injects pre-flight clarity directives** — reframes the request to reduce false triggers
-3. **Auto-retries** with softened egress framing
-4. **Tracks analytics** — per-family refusal rates, recovery rates, top refusal models
-
-Per-family toggles let you enable FEL for specific provider families only.
-
-### 🧰 Tools & Intelligence Pipeline
-
-Built-in content processing that runs **before** your request reaches the provider:
-
-| Tool | What It Does |
-|---|---|
-| **Document Intelligence** | Parses PDF, DOCX, XLSX, PPTX attachments → summarizes large documents before sending |
-| **Vision Bridge** | Intercepts image URLs sent to text-only models → replaces with detailed text descriptions |
-| **Token Budget** | Hard max_tokens ceiling (1024–65535) to prevent cost overruns, with anti-truncation floor when disabled |
-| **Prompt Caching** | Provider-specific: Anthropic explicit cache, Kimi key-bound, OpenAI cache-key routing, static-first sorting |
-| **Context Compaction** | 1.75× code-traffic ratio guard + EMA usage feedback + min-savings smart gate — compresses context before it hits token limits |
-| **GLM Parallel Tool Guard** | Injects `disable_parallel_tool_use` into GLM-family payloads — fixes dropped tool args in multi-tool batches |
-| **Degenerate Output Guard** | Detects empty/zero-token responses and retries automatically |
-
-### 📊 Live Quota Indicators
-
-Per-key remaining quota (from one-api/new-api billing endpoints and rate-limit headers) rendered as compact % bars inline with each key's status row — works for both API keys and OAuth accounts. Percentage only, no dollar values.
-
-### 🕴 Antigravity IDE Integration
-
-Direct-inference overlay for [Antigravity IDE](https://antigravity.dev) — no MITM proxy needed:
-- Map Antigravity's model slots to your BSL Router providers/combos
-- Unmapped slots use native Google Cloud Code
-- `thought_signature` preserved end-to-end across multi-turn tool calls — required by Gemini thinking models, re-injected from a bounded router-side cache even if the client strips it
-- Configure from the admin dashboard → Endpoint tab
-
-### 🌐 Remote Access
-
-| Method | Use Case |
-|---|---|
-| **Cloudflare Tunnel** | Secure public URL via Cloudflared — share with team members |
-| **Tailscale** | Share on your Tailnet — private mesh network access |
-| **API Keys** | Generate scoped keys for other applications |
-| **Shared Pool (Ed25519)** | Tier-2 inbound auth for router-to-router pool peers |
-
-### 🔐 Built-in Security
-
-- API keys stored **encrypted** on disk (Fernet encryption)
-- Admin dashboard protected by password + session expiry
-- Security scanner audits provider config for exfil URLs, key injection, URL spoofing
-- Machine-bound encryption key (config is non-portable)
-- Optional Ed25519 signature verification for pool-peer inbound traffic
-
-### ⏱️ Anti-Freeze Protection
-
-- **Stream hard deadline**: 10-minute cap per stream prevents infinite hangs
-- **Chain deadline**: total budget across all fallback hops prevents cascading timeouts
-- **Circuit breaker**: unhealthy providers are automatically rotated out
-- **Stream guard**: SSE stream integrity validation catches malformed chunks
-- **Connection-level proxy bypass**: per-connection DIRECT egress escape hatch
-
-### 📊 Monitoring Dashboard
-
-Web-based admin UI with 9 tabs:
-
-| Tab | What It Does |
-|---|---|
-| **Endpoint** | Local endpoints, remote access (Cloudflare/Tailscale), API keys, Antigravity integration |
-| **Providers** | Manage AI providers — add, edit, delete, verify connections |
-| **Combos** | Define fallback chains and combo aliases |
-| **BSL Models** | Configure the 5 Blacksand routing models' matrices |
-| **MITM** | Optional transparent proxy for apps with hardcoded API URLs |
-| **Tools** | Document Intelligence, Vision Bridge, Token Budget, Prompt Caching, FEL toggles |
-| **Usage** | Per-model usage statistics, cost tracking, FEL analytics, live in-flight request strip |
-| **Logs** | Live request/response logs with filtering |
-| **Settings** | Admin password, shutdown, logout |
-
----
-
-## 📡 Supported Providers
-
-| Provider | Protocol | Auth | Popular Models |
-|---|---|---|---|
-| **OpenAI** | OpenAI | API Key | GPT-4o, GPT-5.x |
-| **Anthropic** | Anthropic | API Key | Claude 4.x, 5.x |
-| **Google Gemini** | Gemini | OAuth | Gemini 2.x |
-| **DeepSeek** | OpenAI | API Key | DeepSeek V3, V4 |
-| **GLM (Zhipu)** | Anthropic | API Key | GLM-5.x |
-| **MiniMax** | OpenAI | API Key | MiniMax M3 |
-| **Kimi (Moonshot)** | OpenAI | API Key | Kimi K3 |
-| **Qwen (Alibaba)** | OpenAI | API Key | Qwen 3.x |
-| **Grok (xAI)** | OpenAI | API Key | Grok 4 |
-| **OpenRouter** | OpenAI | API Key | Multi-model |
-| **GitHub Models** | OpenAI | OAuth | Various |
-| **Google Cloud Code** | Gemini | OAuth | Gemini 2.x |
-
-> **Adding a new provider?** Just add a section to `config.yaml` with `type: custom`. No code changes needed. Also supports `type: image_custom` for image/video generation providers.
-
----
-
-## 📡 API Endpoints
-
-Point your AI client at BSL Router — it works as a drop-in replacement:
-
-| What You're Doing | Endpoint | Format |
-|---|---|---|
-| Chat with a model | `POST /v1/chat/completions` | OpenAI |
-| Chat with a model | `POST /v1/messages` | Anthropic |
-| List available models | `GET /v1/models` | OpenAI |
-| Health check | `GET /health` | — |
-
-**Admin endpoints** (for the dashboard):
-
-| What You're Doing | Endpoint |
-|---|---|
-| View/edit config | `GET/POST /api/config` |
-| Manage MITM proxy | `GET/POST /api/mitm/*` |
-| View usage stats | `GET /api/observability/usage` |
-| View live in-flight requests | `GET /api/observability/usage/inflight` |
-| Manage tunnels | `GET/POST /api/tunnel/*` |
-| Run security scan | `GET/POST /api/scan-keys` |
-| Update BSL matrix | `GET/POST /api/bsl-matrix/*` |
-| Manage Antigravity | `GET/POST /api/antigravity/*` |
-| Admin login | `POST /api/auth/login` |
-
----
-
-## 🌐 Optional: MITM Proxy Mode
-
-For apps that don't let you change the API URL (like some VS Code extensions), BSL Router can intercept traffic at the OS level:
-
-1. Modifies your hosts file to redirect `api.openai.com` → `localhost`
-2. Runs a transparent proxy on port 443
-3. Routes intercepted traffic through BSL Router's full pipeline
-4. Your app thinks it's talking to OpenAI — BSL Router handles everything
-5. Watchdog process auto-restarts the proxy if it crashes
-
-> ⚠️ This is optional and only needed for apps with hardcoded API URLs. Most apps support custom base URLs — just point them at `http://localhost:6969`.
-
----
-
-## ✅ Verification
-
-| Metric | Value |
-|---|---|
-| **Test suite** | 2,800+ tests across 20+ suites |
-| **Test pass rate** | 100% (0 failures, 0 regressions) |
-| **Quality gate tests** | 18/18 (worst-score-wins, verdict derivation, member merge) |
-| **Orchestration tests** | 46/46 (orchestrator:20, ultra:13, max:13) |
-| **Full suite runtime** | ~315 seconds |
-| **Python version** | 3.11+ |
-| **Framework** | FastAPI 0.129+ |
-
----
-
-## 📖 Learn More
+## 📖 Documentation & Architecture
 
 | Document | What's Inside |
 |---|---|
-| [Architecture](docs/ARCHITECTURE.md) | How BSL Router works under the hood — full request lifecycle |
-| [Contributing](CONTRIBUTING.md) | Development setup and PR guidelines |
-| [Security](SECURITY.md) | Vulnerability reporting and security features |
-| [Changelog](CHANGELOG.md) | Version history |
-| [Config Example](config.example.yaml) | Annotated configuration template |
-
----
-
-## 📄 License
-
-MIT License — see [LICENSE](LICENSE) for details.
-
-**Built by [Đồng Tôn](https://github.com/dongden-alt)**
+| **[Architecture Guide (EN / VN)](docs/ARCHITECTURE.md)** | Deep-dive into the request lifecycle, Blacksand 5-tier matrix, FEL, Authenticity Lab, OAuth Anti-Ban, and App Integration |
+| **[Changelog (EN / VN)](CHANGELOG.md)** | Complete release notes for `v1.1.0` and all prior versions |
+| **[Config Template](config.example.yaml)** | Annotated `config.yaml` starter template |
+| **[Security Policy](SECURITY.md)** | Fernet/DPAPI encryption, key scanner, and vulnerability reporting |
+| **[Contributing](CONTRIBUTING.md)** | Development setup and test suite guidelines |
 
 ---
 ---
 
-# 🇻🇳 Tiếng Việt
+# 🇻🇳 Tiếng Việt — Bản Tiếng Việt Đầy Đủ
 
 ---
 
-## 💡 Vấn Đề
-
-Mọi team AI đều gặp cùng một bức tường:
-
-| Nỗi đau | Hậu quả |
-|---|---|
-| **Bị khóa giao thức** | Client nói OpenAI, model tốt nhất nằm ở Anthropic. Kẹt. |
-| **Provider sập** | Một provider down → toàn bộ workflow đóng băng. |
-| **Key loạn** | 12 API key, 3 OAuth token, 5 rate limit. Quay tay thủ công cực khổ. |
-| **Không có trí tuệ** | Router khác chỉ forward request. Không phân loại, không quality gate, không orchestration. |
-| **Phức tạp agentic** | Coding agent cần model khác nhau cho lập kế hoạch, viết code, review — nhưng bạn phải tự swap config. |
-| **Stream treo** | Provider stall giữa luồng → IDE hang → kill process → mất việc. |
-
-## BSL Router Khác Gì
-
-BSL Router không phải "AI gateway" thông thường. Nó là một **lớp trí tuệ** nằm giữa client và provider:
-
-```
-                         ┌──────────────────────────────────────────────┐
-                         │              BSL Router Engine               │
-                         │                                              │
-   ┌──────────┐          │  ┌─────────┐  ┌──────────┐  ┌─────────────┐  │          ┌──────────┐
-   │  App AI  │  request │  │Phân loại│→ │ Blacksand│→ │   Dịch +    │  │  stream  │ OpenAI   │
-   │  (bất kỳ)│─────────▶│  │+ Định   │  │  Matrix  │  │   Phục hồi  │──┼─────────▶│ Anthropic│
-   │          │◀─────────│  │tuyến    │  │  (5 tầng)│  │             │  │          │ Google   │
-   └──────────┘ response │  └─────────┘  └──────────┘  └─────────────┘  │          │ DeepSeek │
-                         │     ↑                         ↑               │          │ GLM      │
-                         │  Cổng chất lượng        Engine dự phòng       │          │ + 8 nữa  │
-                         │  (cơ học)              (retry vô hạn)         │          └──────────┘
-                         └──────────────────────────────────────────────┘
-```
-
-**Nghĩ nó như một bộ điều phối giao thông AI thực sự hiểu request của bạn cần gì — và chiến đấu để giao nó.**
-
----
-
-## 🧠 Blacksand: Engine Định Tuyến 5 Tầng
-
-Đây là thứ không router nào khác có. Thay vì mù quáng forward đến model bạn ghi, BSL Router phân loại request và định tuyến qua **ma trận trí tuệ 5 tầng**:
-
-| Tầng | Model Ảo | Chức Năng | Kích Thước Ma Trận |
-|---|---|---|---|
-| **1** | `blacksand-chat` | Định tuyến thông minh theo danh mục cho chat & hỏi đáp | 13 danh mục × 3 tầng = **39 ô** |
-| **2** | `blacksand-lite` | Định tuyến per-agent cho coding (model khác mỗi role) | 10 agent × 3 tầng = **30 ô** |
-| **3** | `blacksand-agentic` | Orchestration agentic coding tầng nhanh, dispatch đa agent | Dispatch đa agent |
-| **4** | `blacksand-agentic-ultra` | Coding tầng cân bằng + consultant + **cổng chất lượng cơ học** | 15 role agent + 5 role member + phase cap 22 |
-| **5** | `blacksand-agentic-max` | Fusion đa domain cho workflow phức tạp | Kế thừa Ultra + orchestration cross-domain |
-
-### Cách Hoạt Động
-
-Trỏ client vào một tên model ảo duy nhất — `blacksand-chat` — BSL Router sẽ:
-
-1. **Phân loại** intent request (chat, code, agentic tool use)
-2. **Categorize** (13 danh mục: general, technical, creative, scout, power_coder, vision, fast_coder, architect, reviewer, debugger, refactorer, documenter, tester)
-3. **Ước lượng độ phức tạp** → chọn tầng effort (fast / standard / strong)
-4. **Định tuyến** đến provider tốt nhất cho tổ hợp danh mục+tầng đó qua **combo alias**
-
-### Hệ Thống Combo Alias
-
-Mỗi ô ma trận tham chiếu một combo alias — chuỗi fallback bạn tự định nghĩa:
-
-```yaml
-combos:
-  - alias: coder-1          # Tầng nhanh: hoàn thành nhanh, model rẻ
-    chain:
-      - provider: deepseek
-        model: deepseek-v4-flash
-      - provider: glm
-        model: glm-5.1-flash
-    strategy: fallback
-
-  - alias: coder-2          # Tầng tiêu chuẩn: cân bằng chất lượng/tốc độ
-    chain:
-      - provider: anthropic
-        model: claude-sonnet-4
-      - provider: openai
-        model: gpt-4o
-    strategy: fallback
-
-  - alias: coder-3          # Tầng mạnh nhất: reasoning phức tạp, kiến trúc
-    chain:
-      - provider: anthropic
-        model: claude-opus-4
-      - provider: openai
-        model: gpt-5
-    strategy: fallback
-```
-
-Giờ coding agent của bạn nhận `coder-1` cho task nhanh, `coder-2` cho task chuẩn, `coder-3` cho kiến trúc — **tất cả từ một tên `blacksand-lite` duy nhất**, tự động.
-
-### Orchestration Có Cổng Chất Lượng (Ultra + Max)
-
-`blacksand-agentic-ultra` và `blacksand-agentic-max` vượt ra ngoài định tuyến — chúng **orchestrate**:
-
-- **15 role agent**: general, planner, auditor, vision, scout, planner_architect, planner_challenger, planner_planner, auditor_reviewer, auditor_auditor, refactor, fast_coder, power_coder, ultra_coder, frontend_coder
-- **5 role member** (commit-boundary): planner_architect, planner_challenger, planner_planner, auditor_reviewer, auditor_auditor
-- **Cổng chất lượng cơ học**: Mọi output của member được parse, chấm điểm, và worst-merge vào verdict của lead. Member chỉ có thể HẠ điểm dimension, không bao giờ nâng. Một `fail` duy nhất trên bất kỳ dimension nào = block phase.
-- **Phase cap**: 22 cuộc gọi nội bộ mỗi client request — có giới hạn thiết kế, không bao giờ vô hạn.
-
-> 📖 Xem [Kiến trúc: Blacksand Model Routing](docs/ARCHITECTURE.md#blacksand-model-routing) để xem spec ma trận đầy đủ.
-
----
-
-## ⚔️ BSL Router vs Các AI Gateway Khác
-
-| Tính Năng | **BSL Router** | LiteLLM | One-API | Portkey |
-|---|---|---|---|---|
-| **Dịch giao thức** | ✅ Hai chiều (OpenAI ↔ Anthropic ↔ Gemini) | ✅ Chỉ OpenAI | ✅ Chỉ OpenAI | ✅ Chỉ OpenAI |
-| **Định tuyến 5 tầng** | ✅ Ma trận Blacksand (13 cat × 3 tầng) | ❌ Chọn model thủ công | ❌ Chọn model thủ công | ❌ Chỉ conditional routing |
-| **Agentic orchestration** | ✅ Dispatch 15 role + cổng chất lượng | ❌ Không có | ❌ Không có | ❌ Không có |
-| **Cổng chất lượng cơ học** | ✅ Worst-score-wins, fail=block | ❌ Không có | ❌ Không có | ❌ Guardrails (khác) |
-| **Failover retry vô hạn** | ✅ Chuỗi wrap với backoff 2s→30s | ⚠️ Fallback cơ bản | ⚠️ Fallback cơ bản | ✅ Fallback + retry |
-| **Parity tham số thinking** | ✅ 11 họ model, test conform | ❌ Không có | ❌ Không có | ❌ Không có |
-| **Phân giải model-ID mờ** | ✅ Gõ sai vẫn đúng | ❌ Match chính xác | ❌ Match chính xác | ❌ Match chính xác |
-| **FEL làm mềm refusal** | ✅ Directive pre-flight + auto-retry | ❌ Không có | ❌ Không có | ❌ Không có |
-| **Document Intelligence** | ✅ Parse PDF/DOCX/XLSX/PPTX | ❌ Không có | ❌ Không có | ❌ Không có |
-| **Vision Bridge** | ✅ Ảnh→text cho model không vision | ❌ Không có | ❌ Không có | ❌ Không có |
-| **MITM proxy mode** | ✅ Chặn OS-level cho app hardcoded | ❌ Không có | ❌ Không có | ❌ Không có |
-| **Tích hợp Antigravity IDE** | ✅ Overlay direct-inference | ❌ Không có | ❌ Không có | ❌ Không có |
-| **Lưu key mã hóa** | ✅ Fernet + machine-bound | ⚠️ Env vars plaintext | ⚠️ Lưu DB | ⚠️ Cloud-managed |
-| **Dashboard admin** | ✅ Web UI 9 tab | ⚠️ UI cơ bản | ✅ Web UI | ✅ Cloud dashboard |
-| **Self-hosted** | ✅ 100% local, không phụ thuộc cloud | ✅ Self-hosted | ✅ Self-hosted | ❌ Cloud-first |
-| **Số provider** | 12+ | 100+ | 20+ | 200+ |
-
-> **Tóm lại:** LiteLLM/One-API/Portkey là gateway giao thức — chúng forward request. BSL Router là **engine trí tuệ** — nó phân loại, định tuyến, orchestrate, kiểm tra chất lượng, và chiến đấu để giao request. Ma trận 5 tầng Blacksand không tồn tại ở đâu khác.
-
----
-
-## 🚀 Bắt Đầu Nhanh
-
-### 1. Cài Đặt
+## ⚡ Khởi Chạy Trong 60 Giây
 
 ```bash
-git clone https://github.com/dongden-alt/bsl-router.git
-cd bsl-router
+git clone https://github.com/dongden-alt/BSL-Router.git
+cd BSL-Router
 python -m venv .venv
 
-# Windows
-.venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
-
+# Windows: .venv\Scripts\activate   |   macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 2. Cấu Hình
-
-```bash
 cp config.example.yaml config.yaml
-# Sửa config.yaml — thêm API key của các provider
+
+# Khởi chạy Server Dual-Stack (:6969)
+python -m app.dualstack_serve --port 6969
 ```
 
-### 3. Chạy
-
-```bash
-python -m uvicorn app.main:app --host 0.0.0.0 --port 6969
-```
-
-Mở `http://localhost:6969` → trang quản trị.
-
-> **Người dùng Windows**: Dùng `.\scripts\bslrouter.ps1 -start` để khởi động có quản lý, tự dọn port, dual-stack health check, và supervisor process.
-
-### 4. Trỏ Client Vào
-
-| Client của bạn | Base URL | Cách cấu hình |
-|---|---|---|
-| **Claude Code** | `http://localhost:6969` | Env var `ANTHROPIC_BASE_URL` |
-| **Cursor** | `http://localhost:6969/v1` | Setting OpenAI-compatible |
-| **OpenAI client bất kỳ** | `http://localhost:6969/v1` | Drop-in thay thế |
-| **Anthropic client bất kỳ** | `http://localhost:6969` | Endpoint `/v1/messages` |
-| **Antigravity IDE** | Cấu hình từ dashboard → tab Endpoint | Overlay trực tiếp, không cần MITM |
-
-Giờ gửi `model: "blacksand-chat"` và xem BSL Router phân loại, định tuyến, và giao hàng.
+👉 **Mở ngay `http://localhost:6969`** để vào **Trung Tâm Chỉ Huy 10 Tab**, kết nối tài khoản OAuth hoặc API key, bấm **Start Integration** cho **Antigravity IDE** hoặc **Sync to Claude Code**, và bắt đầu chiến.
 
 ---
 
-## 🔑 Tính Năng Chính
+## 🔥 Vì Sao Dân Kỹ Thuật Chuyển Sang BSL Router? (6 Nỗi Đau Mà Router Khác Bó Tay)
 
-### 🧠 Định Tuyến Thông Minh + Ma Trận Blacksand
-Gửi `model: blacksand-chat` → BSL Router phân loại (13 danh mục × 3 tầng), định tuyến đến provider tốt nhất, và tự fallback. Client không bao giờ thấy lỗi.
+Các công cụ như **9Router**, **CLIProxyAPI**, **OmniRouter**, hay **LiteLLM** đều được thiết kế như những *"ống dẫn thụ động" (dumb pipes)*: nhận request, đổi vỏ JSON rồi đẩy đi. Khi bạn chạy các phiên coding agent 100k+ token liên tục mỗi ngày, **ống dẫn thụ động sẽ vỡ trận ở 6 điểm chí mạng — và BSL Router `v1.1.0` giải quyết tận gốc cả 6:**
 
-### 🔄 Dịch Giao Thức Hai Chiều
-
-| Từ | Sang | Trạng thái |
-|---|---|---|
-| OpenAI | Anthropic | ✅ |
-| OpenAI | Gemini | ✅ |
-| Anthropic | OpenAI | ✅ |
-| Anthropic | Gemini | ✅ |
-| Gemini | OpenAI | ✅ |
-| Bất kỳ | Bất kỳ | ✅ |
-
-Format message, tool call, tham số thinking, streaming — tất cả được dịch hai chiều.
-
-### 🛡️ Engine Dự Phòng Retry Vô Hạn
-
-Nếu provider đầu lỗi, BSL Router thử provider tiếp theo — **và quay vòng qua các lượt retry**: mỗi lượt bấm API key tiếp theo trong pool, giới hạn bởi đồng hồ scale theo chuỗi để provider lỗi chậm không làm kẹt phần còn lại. Khi **cả chuỗi** thất bại, router quay vòng lại với backoff lũy thừa (2s→30s) cho đến khi client ngắt — hết chuỗi là ranh giới lượt, không bao giờ là ngõ cụt.
-
-### 🧠 Chuẩn Hóa Tham Số Thinking (11 Họ Model)
-
-Từ vựng reasoning của mỗi họ model khóa theo tài liệu chính thức qua conformance test:
-
-| Họ | Từ Vựng Reasoning |
-|---|---|
-| GLM-5.2/5.3 | `none` / `auto` / `thinking` |
-| Grok-4.5/4.6 | `auto` / `on` / `off` |
-| Qwen 3.8 | `no_think` / `enable_thinking` |
-| Kimi K2/K3 | `default` / `auto` / `none` |
-| DeepSeek V4 | `low` / `medium` / `high` / `max` |
-| Claude | `none` / `auto` / `enabled` |
-| GPT-5 | `low` / `medium` / `high` / `max` |
-| + 4 nữa | Theo từng họ |
-
-Từ sai bị **ép đúng trước khi đến upstream** — tham số bị từ chối tự hạ cấp và thử lại.
-
-### 🔍 Phân Giải Model-ID Mờ
-
-Gõ sai vẫn định tuyến đúng: `gpt-5-6-terra`, `gpt-terra-5-6` → `gpt-5.6-terra`. Tên chính xác không bao giờ bị viết lại.
-
-### 🛡️ FEL: Làm Mềm Refusal & Directive Egress
-
-Khi provider từ chối request (content policy, safety filter), BSL Router:
-1. **Phát hiện** loại refusal (CN-family, GPT-family, Claude-family, Gemini-family)
-2. **Inject directive clarity pre-flight** — đóng khung lại request để giảm trigger sai
-3. **Auto-retry** với egress framing làm mềm
-4. **Track analytics** — tỷ lệ refusal theo họ, tỷ lệ recovery, top model bị refusal
-
-Toggle per-family cho phép bật FEL chỉ cho provider family cụ thể.
-
-### 🧰 Pipeline Tools & Intelligence
-
-Xử lý nội dung tích hợp **trước** khi request đến provider:
-
-| Tool | Chức Năng |
-|---|---|
-| **Document Intelligence** | Parse PDF, DOCX, XLSX, PPTX → tóm tắt tài liệu lớn trước khi gửi |
-| **Vision Bridge** | Chặn URL ảnh gửi cho model không vision → thay bằng mô tả text chi tiết |
-| **Token Budget** | Trần max_tokens cứng (1024–65535) chống vượt chi phí, có sàn chống truncate khi tắt |
-| **Prompt Caching** | Theo provider: Anthropic explicit, Kimi key-bound, OpenAI cache-key, static-first sorting |
-| **Context Compaction** | Guard tỷ lệ code-traffic 1.75× + EMA feedback + smart gate — nén context trước khi chạm token limit |
-| **GLM Parallel Tool Guard** | Inject `disable_parallel_tool_use` vào payload GLM — sửa lỗi mất tool args trong batch đa tool |
-| **Degenerate Output Guard** | Phát hiện response rỗng/zero-token và tự retry |
-
-### 📊 Chỉ Báo Quota Trực Tiếp
-
-Quota còn lại theo từng key (từ billing endpoint one-api/new-api và header rate-limit) hiển thị thanh % gọn ngay dòng trạng thái key — cho cả API key lẫn tài khoản OAuth. Chỉ phần trăm, không hiển thị tiền.
-
-### 🕴 Tích Hợp Antigravity IDE
-
-Overlay direct-inference cho Antigravity IDE — không cần MITM proxy:
-- Map slot model của Antigravity vào provider/combo của BSL Router
-- Slot không map dùng native Google Cloud Code
-- `thought_signature` giữ nguyên xuyên suốt qua các lượt tool call — yêu cầu bắt buộc của model Gemini thinking, được tái chèn từ cache có giới hạn phía router ngay cả khi client lược bỏ
-- Cấu hình từ dashboard → tab Endpoint
-
-### 🌐 Truy Cập Từ Xa
-
-| Phương Pháp | Use Case |
-|---|---|
-| **Cloudflare Tunnel** | URL public an toàn qua Cloudflared — chia sẻ với team |
-| **Tailscale** | Chia sẻ trên Tailnet — mesh network private |
-| **API Keys** | Sinh key scoped cho ứng dụng khác |
-| **Shared Pool (Ed25519)** | Xác thực Tier-2 cho pool peer router-to-router |
-
-### 🔐 Bảo Mật Tích Hợp
-
-- API key lưu **mã hóa** trên disk (Fernet encryption)
-- Dashboard admin bảo vệ bằng password + session hết hạn
-- Bộ quét bảo mật kiểm tra config provider cho exfil URL, key injection, URL spoofing
-- Khóa mã hóa gắn máy (config không portable)
-- Ed25519 signature verification tùy chọn cho traffic inbound pool-peer
-
-### ⏱️ Chống Treo (Anti-Freeze)
-
-- Stream hard deadline 10 phút chống hang vô hạn
-- Chain deadline: tổng ngân sách qua tất cả fallback hop chống timeout cascading
-- Circuit breaker: provider lỗi tự động bị xoay ra
-- Stream guard: validate integrity SSE bắt chunk lỗi
-- Proxy bypass connection-level: DIRECT egress escape hatch per-connection
-
-### 📊 Bảng Điều Khiển
-
-Giao diện web admin với 9 tab:
-
-| Tab | Chức Năng |
-|---|---|
-| **Endpoint** | Endpoint local, truy cập xa (Cloudflare/Tailscale), API key, tích hợp Antigravity |
-| **Providers** | Quản lý AI provider — thêm, sửa, xóa, verify |
-| **Combos** | Định nghĩa chuỗi fallback và combo alias |
-| **BSL Models** | Cấu hình ma trận 5 Blacksand model |
-| **MITM** | Proxy trong suốt tùy chọn cho app hardcoded URL |
-| **Tools** | Document Intelligence, Vision Bridge, Token Budget, Prompt Caching, FEL toggles |
-| **Usage** | Thống kê per-model, tracking chi phí, FEL analytics, dải request đang chạy (in-flight) trực tiếp |
-| **Logs** | Log request/response trực tiếp với filter |
-| **Settings** | Password admin, shutdown, logout |
-
----
-
-## 📡 Provider Hỗ Trợ
-
-| Provider | Giao Thức | Xác Thực | Model Phổ Biến |
+| # | Nỗi Đau Thực Tế Khi Dùng AI Hàng Ngày | Vì Sao 9Router / CLIProxyAPI / OmniRouter Thất Bại | Cách **BSL Router `v1.1.0`** Giải Quyết Triệt Để |
 |---|---|---|---|
-| **OpenAI** | OpenAI | API Key | GPT-4o, GPT-5.x |
-| **Anthropic** | Anthropic | API Key | Claude 4.x, 5.x |
-| **Google Gemini** | Gemini | OAuth | Gemini 2.x |
-| **DeepSeek** | OpenAI | API Key | DeepSeek V3, V4 |
-| **GLM (Zhipu)** | Anthropic | API Key | GLM-5.x |
-| **MiniMax** | OpenAI | API Key | MiniMax M3 |
-| **Kimi (Moonshot)** | OpenAI | API Key | Kimi K3 |
-| **Qwen (Alibaba)** | OpenAI | API Key | Qwen 3.x |
-| **Grok (xAI)** | OpenAI | API Key | Grok 4 |
-| **OpenRouter** | OpenAI | API Key | Đa model |
-| **GitHub Models** | OpenAI | OAuth | Đa dạng |
-| **Google Cloud Code** | Gemini | OAuth | Gemini 2.x |
-
-> **Thêm provider mới?** Chỉ cần thêm mục vào `config.yaml` với `type: custom`. Không cần sửa code. Hỗ trợ `type: image_custom` cho provider tạo ảnh/video.
+| **1** | **"Liệu bên bán API/relay có lén tráo model rẻ tiền hoặc bản lượng tử hóa (quantized) không?"** | Không có bất kỳ công cụ kiểm chứng nào. Nếu một bên relay gắn nhãn `Sonnet` hoặc `Flash` thành `Claude Opus 5` hay `DeepSeek V4-Pro`, các router khác vẫn chuyển tiếp mù quáng trong khi bạn trả tiền giá cao cho code chất lượng thấp. | **🔬 Phòng Thí Nghiệm Kiểm Định Model (`TraitMark V2/V3`):** Đo vân tay bất kỳ endpoint nào so với chuẩn gốc đã đóng băng qua độ lệch tokenizer, đường cong năng lực, kim tri thức (knowledge needles) và 4 làn kiểm định V2/V3 (`discriminator`, `spatial_curve`, `token_jsd`, `hard_series` gồm toán khó + giám khảo chấm SVG/3D/kiến trúc). Vạch mặt model giả/bị hạ cấp chỉ trong vài phút. |
+| **2** | **"Bật Round-Robin cho OAuth xong thì tài khoản bị khóa hàng loạt, mất sạch Prompt Cache!"** | Round-robin ngây thơ theo từng request sẽ rải các lượt trả lời liên tiếp của *cùng một cuộc hội thoại* qua 5 tài khoản OAuth khác nhau — vừa kích hoạt cờ chống gian lận của nhà cung cấp (dẫn đến khóa nick), vừa làm mất toàn bộ bộ nhớ đệm KV prompt cache (buộc nạp lại 100k+ token uncached mỗi lượt). | **🛡️ Chống Ban OAuth Theo Phiên (Per-Session Sticky) + Xoay Cạn Kiệt Từng Lá:** Xoay tài khoản bắt đầu **theo từng phiên hội thoại mới**, nhưng ghim toàn bộ các lượt trong cùng một phiên vào **1 tài khoản duy nhất**. Nếu chạm giới hạn, BSL tự động thử hết **mọi token/cookie còn sống trên cùng model đó** trước khi chuyển sang model tiếp theo trong Combo. |
+| **3** | **"Không biết tài khoản OAuth nào đã cạn quota 5h/7d hay đang ở gói thuê bao nào."** | CLIProxyAPI không có giao diện web; các router khác chỉ hiện chấm xanh/đỏ chung chung hoặc chờ đến khi gọi lỗi giữa chừng mới biết hết hạn mức. | **📊 Thanh Quota Kép `5h` + `7d` Trực Tiếp & Huy Hiệu Hạng Thuê Bao:** Hiển thị thanh phần trăm quota `5h` và `7d` (tuần), đồng hồ đếm ngược hồi phục (`↻ 2h 14m`), nút `Force Refresh`, **Import JSON Codex** an toàn, và **Huy hiệu hạng thuê bao** (`Free`, `Plus`, `Pro`, `Ultra`, `Pro x5/x20/x50`, `Max 5x/20x`, `SuperGrok`, `Power`, `Vivace`) cho cả 9 provider OAuth — tự động bỏ qua tài khoản `0%` quota khi chọn kết nối. |
+| **4** | **"Model tự dưng từ chối các tác vụ kiểm thử bảo mật / dịch ngược hợp lệ hoặc dừng ngang xương."** | Các router khác gửi nguyên xi prompt thô. Bộ lọc nhạy cảm quá mức của upstream dễ chặn nhầm các yêu cầu audit bảo mật, phân tích mã nhị phân, tự động hóa — hoặc model lười biếng để lại `// TODO`. | **⚡ Đại Tu Faithful Execution Layer (FEL) `v1.1.0`:** Tự động viết lại từ nhạy cảm sang thuật ngữ kỹ thuật chuẩn xác trong `<0,9ms` (`~223x` nhanh hơn nhờ `_COMPILED_SENSITIVITY_CACHE`), nối hợp đồng hoàn thành công việc mà vẫn giữ nguyên `cache_control`, tự phục hồi từ chối mềm ngay đầu stream (`_fel_stream_with_recovery` hỗ trợ Anh/Việt/Trung), hỗ trợ cả **`gemini-4-argon` native**, kèm hộp **Dry-Run Preview** trực quan. |
+| **5** | **"Tích hợp model ngoài vào Antigravity IDE hay Claude Code Desktop rất dễ lỗi và treo stream."** | Các bản vá ngoài dùng proxy trung gian `:50999` (`ag-model`) mở sớm stream HTTP `200` làm hỏng cơ chế fallback của Combo; trong khi `/v1/models` thông thường đổ tràn hơn 50 model thô vào menu của Claude Desktop. | **🖥️ Tích Hợp Ứng Dụng Native 1-Click (`Antigravity` + `Claude Code`):** Patch trực tiếp `settings.json` và `app.asar` của Antigravity về `:6969` (bỏ hoàn toàn `:50999`, tách riêng pool HTTP/2 native và router, tự áp dụng khi khởi động). Với Claude Code, tự tạo alias `claude-bsl-*` & các slot tầng `Opus`/`Sonnet`/`Haiku`, đồng bộ danh sách model gọn sạch vào `~/.claude/settings.json` và `inferenceModels` của Claude Desktop. |
+| **6** | **"Chi phí token tăng vọt vì mỗi hãng AI lại dùng một chuẩn Prompt Caching khác nhau."** | Bạn phải tự cấu hình riêng rẽ `cache_control` cho Anthropic, `prompt_cache_key` cho OpenAI/Kimi, trong khi Codex `/responses` (`store: False`) thường làm rơi mất khóa cache. | **💰 `Smart Prompt Caching` 1 Nút Bấm Hợp Nhất (Mọi Họ Model 2026):** Một công tắc duy nhất tự động chèn 3 tầng điểm ngắt `cache_control` (`tools[-1]`, `system`, lịch sử hội thoại) cho Anthropic/GLM/MiniMax, truyền `prompt_cache_key` xuyên suốt cho OpenAI (`GPT-5.6/6.1`), Codex `/responses`, Kimi (`K3*`), và neo tiền tố tĩnh cho DeepSeek (`V4*`), Gemini (`4*`/`Argon`), Qwen. |
 
 ---
 
-## 📡 API Endpoints
+## ⚔️ Đặt Lên Bàn Cân: BSL Router vs. 9Router, CLIProxyAPI, OmniRouter & LiteLLM
 
-Trỏ app AI vào BSL Router — hoạt động như drop-in thay thế:
-
-| Đang Làm Gì | Endpoint | Format |
-|---|---|---|
-| Chat với model | `POST /v1/chat/completions` | OpenAI |
-| Chat với model | `POST /v1/messages` | Anthropic |
-| Liệt kê model | `GET /v1/models` | OpenAI |
-| Kiểm tra sức khỏe | `GET /health` | — |
-
----
-
-## 🌐 Tùy Chọn: MITM Proxy Mode
-
-Cho app không cho đổi API URL, BSL Router chặn traffic ở OS level. Watchdog tự khởi động lại proxy nếu sập.
-
-> ⚠️ Chỉ cần cho app có API URL cố định. Phần lớn app cho phép đặt base URL riêng.
+| Tính Năng / Năng Lực | **⚡ BSL Router `v1.1.0`** | **9Router** | **CLIProxyAPI** | **OmniRouter** | **LiteLLM / One-API** |
+|---|---|---|---|---|---|
+| **Kiến trúc cốt lõi** | **Engine Trí Tuệ 5 Tầng & Kiểm Định Độ Xác Thực AI** | Local OAuth/API Proxy | CLI OAuth Tunnel (Không UI) | Multi-Provider API Proxy | Gateway Giao Thức / Billing |
+| **Kiểm định Model Thật/Giả (`TraitMark V2/V3`)** | ✅ **4 Làn Pháp Y (`discriminator`, `spatial_curve`, `token_jsd`, `hard_series`)** | ❌ Không có | ❌ Không có | ❌ Không có | ❌ Không có |
+| **Tích hợp Native Antigravity IDE & Desktop** | ✅ **Patch Trực Tiếp `:6969` ASAR/Settings + Cách Ly Pool Native (Không cần `:50999`)** | ⚠️ Cần shim `:50999` ngoài hoặc MITM | ❌ Cấu hình thủ công | ❌ Không có | ❌ Không có |
+| **Tích hợp Native Claude Code (Desktop + CLI)** | ✅ **Đồng Bộ 1-Click Menu Độc Quyền (`inferenceModels`) + Slot Tầng `Opus`/`Sonnet`/`Haiku`** | ⚠️ Đặt biến môi trường tay | ⚠️ Đặt biến môi trường tay | ⚠️ Đặt biến môi trường tay | ⚠️ Đặt biến môi trường tay |
+| **Xoay đa tài khoản OAuth** | ✅ **Ghim Theo Phiên Chống Ban + Xoay Cạn Kiệt Từng Lá Trong Combo** | ⚠️ Xoay theo từng request (dễ bị ban & mất cache) | ⚠️ Xoay token cơ bản | ⚠️ Xoay key cơ bản | ⚠️ Load balancing cơ bản |
+| **Thanh Quota Kép `5h` + `7d` & Huy Hiệu Gói** | ✅ **9 Provider OAuth + Tách Quota `Google`/`Claude` Cho Antigravity + Huy Hiệu Gói** | ⚠️ Một phần / 1 cửa sổ | ❌ Chỉ xem log CLI | ❌ Bộ đếm đơn giản | ⚠️ Chỉ hiện tiền API |
+| **Faithful Execution Layer (FEL)** | ✅ **Reframe `<0,9ms` + Phục Hồi Từ Chối Đầu Stream + Hỗ Trợ `gemini-4-argon` Native** | ❌ Không có | ❌ Không có | ❌ Không có | ❌ Không có |
+| **Smart Prompt Caching 1 Nút Bấm** | ✅ **Tự Chèn 3 Tầng Breakpoint + `prompt_cache_key` Codex/Kimi/GPT-6.1 + Wildcard 2026** | ⚠️ Chỉ chuyển tiếp | ⚠️ Chỉ chuyển tiếp | ⚠️ Chỉ chuyển tiếp | ⚠️ Thủ công / một phần |
+| **Định Tuyến Thông Minh 5 Tầng Blacksand** | ✅ **13 Danh Mục × 3 Tầng + Điều Phối 15 Role + Cổng Chất Lượng Cơ Học** | ❌ Chọn model thủ công | ❌ Chọn model thủ công | ⚠️ Luật tĩnh | ⚠️ Định tuyến điều kiện |
+| **Chuẩn hóa Thinking & Cache `thought_signature`** | ✅ **11 Họ Model Được Kiểm Chứng + Tự Động Ký Lại `thought_signature` Phía Router** | ⚠️ Một phần | ⚠️ Một phần | ❌ Chỉ chuyển tiếp | ❌ Chỉ chuyển tiếp |
+| **Đếm Token/Cache Chuẩn & Sửa Lỗi Giả `499`** | ✅ **Chuẩn Hóa Đa Giao Thức + Backfill Độc Lập + Nâng Cấp `200 OK` Sau `[DONE]`** | ⚠️ Thiếu usage từ relay | ❌ Không có DB usage | ⚠️ Log token cơ bản | ⚠️ Tùy adapter |
+| **100% Local & Mã Hóa Khóa Gắn Theo Máy** | ✅ **Fernet + Windows DPAPI (`enc:`) + 4 Cổng Quét Bí Mật Trước Khi Push** | ⚠️ File JSON local | ⚠️ File auth plaintext | ⚠️ Env / DB | ⚠️ Env / DB |
 
 ---
 
-## ✅ Verification
+## 🛠️ Cam Kết Sửa Lỗi Liên Tục & Nâng Cấp Thực Chiến
 
-| Chỉ Số | Giá Trị |
+Phần lớn các AI router mã nguồn mở chỉ là dự án cuối tuần và nhanh chóng lỗi thời ngay khi OpenAI, Anthropic hay Google đổi cấu trúc header/stream. **BSL Router là xương sống vận hành thực tế 24/7 của chính chúng tôi.** Khi tải về và sử dụng BSL Router, bạn nhận được cam kết kỹ thuật rõ ràng:
+
+1. **Thực chiến mỗi ngày dưới tải Agentic nặng:** Mọi tính năng đều được rèn giũa trực tiếp qua hàng trăm nghìn token mỗi ngày trên Claude Code, Antigravity IDE và các luồng multi-agent. Bất kỳ lỗi giao thức nào từ upstream (như Codex `/responses`, ngắt kết nối HTTP/2 của Google Cloud Code `v1internal`, sai lệch token `message_delta`, hay báo giả `499 client_disconnected`) đều được khoanh vùng, sửa tận gốc và khóa bằng test tự động.
+2. **Hỗ trợ ngay lập tức thế hệ Model Frontier 2026:** Tích hợp sẵn hợp đồng tham số suy luận (reasoning), wildcard bộ nhớ đệm và bộ nhận diện họ model cho **`Gemini 4 Argon`**, **`GPT-5.6 / GPT-6.1 (SOL / Terra / Luna)`**, **`Claude 4.6 / Opus 5`**, **`Kimi K2.7 / K3`**, **`DeepSeek V4 / V4.1+`**, **`GLM-5.2 / 5.3`**, **`MiniMax M2.7 / M3.1`**, và **`Qwen 3.8`**.
+3. **Hơn 3.830+ bài kiểm thử tự động & Khởi động lại không rớt mạng:** Mọi bản vá đều đi kèm regression test (`3.830+` tests trên `150+` bộ test). Cơ chế khởi động lại êm ái (`POST /api/version/restart`) chờ các luồng stream trong IDE hoàn tất rồi mới chuyển giao tiến trình.
+4. **Kỷ luật bảo mật 4 tầng nghiêm ngặt:** Mọi bản cập nhật đều bắt buộc vượt qua `scripts/pre-push-check.ps1` (quét khóa bí mật, quét đường dẫn máy cá nhân, kiểm tra diff và bảo vệ `.gitignore`) trước khi phát hành.
+
+---
+
+## 📖 Tài Liệu & Kiến Trúc
+
+| Tài Liệu | Nội Dung Chi Tiết |
 |---|---|
-| **Test suite** | 2.800+ test qua 20+ suite |
-| **Tỷ lệ pass** | 100% (0 fail, 0 regression) |
-| **Test cổng chất lượng** | 18/18 (worst-score-wins, verdict, member merge) |
-| **Test orchestration** | 46/46 (orchestrator:20, ultra:13, max:13) |
-| **Runtime full suite** | ~315 giây |
-| **Python version** | 3.11+ |
-| **Framework** | FastAPI 0.129+ |
+| **[Kiến Trúc Hệ Thống (EN / VN)](docs/ARCHITECTURE.md)** | Giải thích chi tiết vòng đời request, ma trận 5 tầng Blacksand, FEL, Authenticity Lab, OAuth Anti-Ban và App Integration |
+| **[Nhật Ký Thay Đổi (EN / VN)](CHANGELOG.md)** | Chi tiết bản phát hành lớn `v1.1.0` và lịch sử các phiên bản |
+| **[File Cấu Hình Mẫu](config.example.yaml)** | Mẫu `config.yaml` có chú thích đầy đủ |
+| **[Chính Sách Bảo Mật](SECURITY.md)** | Cơ chế mã hóa Fernet/DPAPI, trình quét khóa và báo cáo lỗ hổng |
+| **[Hướng Dẫn Đóng Góp](CONTRIBUTING.md)** | Thiết lập môi trường phát triển và quy chuẩn kiểm thử |
 
 ---
 
-## 📖 Tài Liệu
+## 📄 License / Giấy Phép
 
-| Tài Liệu | Nội Dung |
-|---|---|
-| [Kiến trúc](docs/ARCHITECTURE.md) | Cách BSL Router hoạt động bên trong — lifecycle request đầy đủ |
-| [Đóng góp](CONTRIBUTING.md) | Setup dev và hướng dẫn PR |
-| [Bảo mật](SECURITY.md) | Báo cáo lỗ hổng và tính năng bảo mật |
-| [Nhật ký thay đổi](CHANGELOG.md) | Lịch sử phiên bản |
-| [Config mẫu](config.example.yaml) | Template cấu hình có chú thích |
+MIT License — see [LICENSE](LICENSE) for details / xem [LICENSE](LICENSE) để biết chi tiết.
 
----
-
-## 📄 Giấy Phép
-
-MIT License — xem [LICENSE](LICENSE) để biết chi tiết.
-
-**Xây dựng bởi [Đồng Tôn](https://github.com/dongden-alt)**
+**Built with relentless engineering by [Đồng Tôn](https://github.com/dongden-alt)**

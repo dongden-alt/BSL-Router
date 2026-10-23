@@ -1,12 +1,12 @@
-﻿name: Release
+name: Release
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v1.0.7)'
+        description: 'Tag to release (e.g. v1.1.0)'
         required: true
-        default: 'v1.0.7'
+        default: 'v1.1.0'
       latest:
         description: 'Mark this release as latest (true/false). Use false for backfills of older tags.'
         required: false
