@@ -64,14 +64,15 @@ jobs:
           notes = "# %s - see CHANGELOG.md\n\n" % ver + (body if body else "See CHANGELOG.md for details.")
           open("notes.md", "w", encoding="utf-8").write(notes)
           PY
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists - skipping."
-            exit 0
-          fi
           LATEST="${{ github.event.inputs.latest }}"
           FLAGS=""
           if [ -z "$LATEST" ]; then LATEST="true"; fi
           if [ "$LATEST" = "true" ]; then FLAGS="--latest"; fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists - syncing notes and latest=$LATEST."
+            gh release edit "$TAG" --title "BSL Router ${TAG#v}" --notes-file notes.md $FLAGS
+            exit 0
+          fi
           gh release create "$TAG" --title "BSL Router ${TAG#v}" --notes-file notes.md $FLAGS
 
       - name: Backfill missing releases for older tags (never steals latest)
@@ -79,11 +80,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
+          HIGHEST_TAG="$(git tag -l 'v*' | sort -V | tail -n 1)"
           for TAG in $(git tag -l 'v*' | sort -V); do
             if gh release view "$TAG" >/dev/null 2>&1; then
               continue
             fi
-            echo "Backfilling release for $TAG (latest=false)"
+            LATEST_FLAG="--latest=false"
+            if [ "$TAG" = "$HIGHEST_TAG" ]; then
+              LATEST_FLAG="--latest"
+            fi
+            echo "Backfilling release for $TAG ($LATEST_FLAG)"
             python3 - "$TAG" <<'PY'
           import re, sys
           tag = sys.argv[1]
@@ -97,6 +103,9 @@ jobs:
           notes = "# %s - see CHANGELOG.md\n\n" % ver + (body if body else "See CHANGELOG.md for details.")
           open("notes_%s.md" % tag, "w", encoding="utf-8").write(notes)
           PY
-            gh release create "$TAG" --title "BSL Router ${TAG#v}" --notes-file "notes_${TAG}.md" --latest=false
+            gh release create "$TAG" --title "BSL Router ${TAG#v}" --notes-file "notes_${TAG}.md" $LATEST_FLAG
           done
+          if [ -n "$HIGHEST_TAG" ] && gh release view "$HIGHEST_TAG" >/dev/null 2>&1; then
+            gh release edit "$HIGHEST_TAG" --latest
+          fi
           echo "Backfill step complete."
