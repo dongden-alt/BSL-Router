@@ -77,7 +77,8 @@ async def call_with_backoff(client, endpoint, api_key, model_id, probe, timeout_
     Returns the LAST ProbeResult (never raises)."""
     r = None
     for attempt in range(len(gaps) + 1):
-        await _pace()
+        if not isinstance(getattr(client, "transport", None), httpx.MockTransport):
+            await _pace()
         try:
             r = await run_probe(client, endpoint, api_key, model_id, probe,
                                 timeout_s, extra=extra, retries=0)
@@ -879,7 +880,7 @@ async def _judge_hard_answer(judge: tuple, task: str, answer: str,
                "Content-Type": "application/json"}
     try:
         if client is not None:
-            resp = await client.post(url, json=payload, headers=headers)
+            resp = await client.post(url, json=payload, headers=headers, timeout=timeout_s)
             if resp.status_code != 200:
                 logger.warning("hard_series judge: %s HTTP %s | body=%r",
                                judge_model, resp.status_code,
@@ -1001,6 +1002,8 @@ async def run_hard_series(client, endpoint, api_key, model_id,
         tier, key, text, correct = item
         if text:
             answers[key] = text
+        if correct is None:
+            continue
         t = tally.setdefault(tier, [0, 0])
         t[1] += 1
         if correct:
@@ -1692,14 +1695,12 @@ def compute_v2_dims(sus_v2: dict, candidates: dict) -> dict:
     _sus_tok = sus_v2.get("tokenizer") or {}
     _tok_slack = _common_tokenizer_slack(
         _sus_tok, [(b.get("tokenizer") or {}) for b in cand_v2.values()])
-    sus_lp = {"logprob_profile": _logprob_profile_of(sus_v2)}
-    _tok_slack = _common_tokenizer_slack(
-        _sus_tok, [(b.get("tokenizer") or {}) for b in cand_v2.values()])
+    sus_lp = _logprob_profile_of(sus_v2)
     for k, b in cand_v2.items():
         # logprob_profile lives on the standard's structural block (TraitMark
         # shape) with a legacy flat fallback -- exactly the two sites the V5
         # logprob dim in matcher.py already reads.
-        b_lp = _logprob_profile_of(b)
+        b_lp = _logprob_profile_of(candidates.get(k) or b)
         out[k] = {
             "tokenizer": similarity_tokenizer(_sus_tok, b.get("tokenizer"),
                                               slack=_tok_slack),
@@ -1717,8 +1718,7 @@ def compute_v2_dims(sus_v2: dict, candidates: dict) -> dict:
             # token_jsd reads the logprob_profile captured by the SAME probes
             # the V5 logprob dim uses -- no extra paid calls, strictly more
             # information (full first-token distribution, not just argmax).
-            "token_jsd": similarity_token_jsd(sus_lp.get("logprob_profile"),
-                                              b_lp.get("logprob_profile")),
+            "token_jsd": similarity_token_jsd(sus_lp or None, b_lp or None),
             # hard_series mixes the math accuracy curve with the judged axes;
             # needs 3 shared components total (see similarity_hard_series).
             "hard_series": similarity_hard_series(sus_v2.get("hard_series"),

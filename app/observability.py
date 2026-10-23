@@ -12,8 +12,26 @@ from contextlib import contextmanager
 # Append-only JSONL persistence paths (survive server restarts).
 # In-memory lists below remain the hot read path; every new entry is also
 # appended to disk, and the tail is reloaded on startup.
-_USAGE_LOG_PATH = "data/usage_stats.jsonl"
-_CONSOLE_LOG_PATH = "data/console_logs.jsonl"
+_DEFAULT_USAGE_LOG_PATH = "data/usage_stats.jsonl"
+_DEFAULT_CONSOLE_LOG_PATH = "data/console_logs.jsonl"
+_DEFAULT_USAGE_DB_PATH = "data/usage_stats.sqlite3"
+_USAGE_LOG_PATH = _DEFAULT_USAGE_LOG_PATH
+_CONSOLE_LOG_PATH = _DEFAULT_CONSOLE_LOG_PATH
+
+_NON_USAGE_PROVIDERS = frozenset({"authenticity"})
+
+
+def _is_non_usage_provider(provider) -> bool:
+    return str(provider or "").strip().lower() in _NON_USAGE_PROVIDERS
+
+
+def _is_pytest_default_path(path: str, default_path: str) -> bool:
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        return False
+    try:
+        return os.path.abspath(path or "") == os.path.abspath(default_path or "")
+    except Exception:
+        return False
 
 # ── Log rotation guard ───────────────────────────────────────────────────────
 # Prevents unbounded JSONL growth. When a log file exceeds _MAX_LOG_FILE_SIZE,
@@ -52,6 +70,8 @@ def _persist_entry(path, entry, max_file_size=_MAX_LOG_FILE_SIZE, max_entries=_M
     Optional kwargs preserve the console 5k/5 MB defaults for two-arg callers
     while allowing usage JSONL to retain up to _USAGE_RETENTION entries.
     """
+    if _is_pytest_default_path(path, _DEFAULT_USAGE_LOG_PATH) or _is_pytest_default_path(path, _DEFAULT_CONSOLE_LOG_PATH):
+        return
     try:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
@@ -197,6 +217,7 @@ def _ensure_fel_columns():
 def init_usage_store():
     """Create usage_tables and perform one-shot JSONL migration. Idempotent."""
     try:
+        _RECENT_REQUEST_ROW_IDS.clear()
         with _usage_conn() as conn:
             conn.executescript(_USABLE_SCHEMA)
         _ensure_error_column()
@@ -334,9 +355,14 @@ def append_usage_event(entry: dict) -> None:
     (classifier verdict) keys — absent keys insert NULL, so pre-FEL callers
     and old JSONL rows keep working unchanged.
     """
+    if not isinstance(entry, dict) or _is_non_usage_provider(entry.get("provider")):
+        return
+    if _is_pytest_default_path(_get_usage_db_path(), _DEFAULT_USAGE_DB_PATH):
+        return
     try:
+        rid = str(entry.get("request_id") or "").strip()
         with _usage_conn() as conn:
-            conn.execute(
+            cur = conn.execute(
                 """INSERT INTO usage_events
                    (ts, ts_epoch, provider, model, ttft_ms, total_time_ms,
                     in_cached, cache_write_tokens, in_uncached, out, cost, savings, error,
@@ -360,6 +386,11 @@ def append_usage_event(entry: dict) -> None:
                     entry.get("refusal_class"),
                 ),
             )
+            if rid and getattr(cur, "lastrowid", None):
+                _RECENT_REQUEST_ROW_IDS[rid] = int(cur.lastrowid)
+                if len(_RECENT_REQUEST_ROW_IDS) > _RECENT_ROW_IDS_MAX:
+                    for _old in list(_RECENT_REQUEST_ROW_IDS.keys())[:200]:
+                        _RECENT_REQUEST_ROW_IDS.pop(_old, None)
     except Exception as _e:
         print(f"[UsageStore] append failed (non-blocking): {_e}", flush=True)
 
@@ -372,6 +403,8 @@ def append_usage_event(entry: dict) -> None:
 
 _FEL_REQUEST_CONTEXT: dict = {}
 _FEL_CONTEXT_MAX = 5000
+_RECENT_REQUEST_ROW_IDS: dict = {}
+_RECENT_ROW_IDS_MAX = 2000
 
 
 def note_fel_context(request_id, fel=None, refusal_class=None) -> None:
@@ -379,6 +412,8 @@ def note_fel_context(request_id, fel=None, refusal_class=None) -> None:
 
     Called from FEL wiring stages in app/main.py. Never raises; unknown/bad
     input is ignored. Bounded: oldest entries evicted past _FEL_CONTEXT_MAX.
+    If log_request already committed the SQLite row for request_id (streaming
+    outer-wrapper order), updates the committed row in place and cleans up.
     """
     try:
         rid = str(request_id or "").strip()
@@ -395,6 +430,36 @@ def note_fel_context(request_id, fel=None, refusal_class=None) -> None:
         if len(_FEL_REQUEST_CONTEXT) > _FEL_CONTEXT_MAX:
             for _old in list(_FEL_REQUEST_CONTEXT.keys())[:200]:
                 _FEL_REQUEST_CONTEXT.pop(_old, None)
+
+        row_id = _RECENT_REQUEST_ROW_IDS.get(rid)
+        if row_id and not _is_pytest_default_path(_get_usage_db_path(), _DEFAULT_USAGE_DB_PATH):
+            try:
+                with _usage_conn() as conn:
+                    if fel and refusal_class:
+                        conn.execute(
+                            "UPDATE usage_events SET fel = COALESCE(fel, ?), refusal_class = ? WHERE id = ?",
+                            (str(fel)[:32], str(refusal_class)[:32], row_id),
+                        )
+                    elif refusal_class:
+                        conn.execute(
+                            "UPDATE usage_events SET refusal_class = ? WHERE id = ?",
+                            (str(refusal_class)[:32], row_id),
+                        )
+                    elif fel:
+                        conn.execute(
+                            "UPDATE usage_events SET fel = COALESCE(fel, ?) WHERE id = ?",
+                            (str(fel)[:32], row_id),
+                        )
+            except Exception:
+                pass
+            for _u in reversed(usage_stats):
+                if isinstance(_u, dict) and _u.get("request_id") == rid:
+                    if fel and not _u.get("fel"):
+                        _u["fel"] = str(fel)[:32]
+                    if refusal_class:
+                        _u["refusal_class"] = str(refusal_class)[:32]
+                    break
+            _FEL_REQUEST_CONTEXT.pop(rid, None)
     except Exception:
         pass
 
@@ -447,7 +512,7 @@ def query_usage_events(start=None, end=None, provider=None, model=None, q=None,
 
     Returns {entries, total, has_more, next_before_id, next_before_ts}.
     """
-    where_clauses = []
+    where_clauses = ["LOWER(COALESCE(provider, '')) != 'authenticity'"]
     params = []
 
     if start:
@@ -575,7 +640,7 @@ def _nearest_rank_percentile(sorted_vals, p):
 def query_usage_summary(start=None, end=None, provider=None, model=None, q=None,
                         timeframe=None):
     """Server-side aggregate summary for cards/charts/buckets. Never returns raw rows."""
-    where_clauses = []
+    where_clauses = ["LOWER(COALESCE(provider, '')) != 'authenticity'"]
     params = []
 
     if start:
@@ -1506,13 +1571,23 @@ def log_request(
     # finally block and an outer cancellation guard. Keep one visible END row.
     # A non-200 result is more authoritative than a provisional 200, so replace
     # the in-memory row when the later event reports a disconnect/error.
+    _non_usage = _is_non_usage_provider(provider)
     _skip_side_effects = False
     if event == "end" and request_id and request_id in _terminal_end_registry:
         _existing_idx = _terminal_end_registry[request_id]
         _existing = console_logs[_existing_idx] if 0 <= _existing_idx < len(console_logs) else None
         if _existing is not None:
             _existing_status = _existing.get("status")
-            _replace_existing = _existing_status == 200 and status != 200
+            _is_late_disconnect_after_completion = (
+                _existing_status == 200
+                and status == 499
+                and ((_existing.get("out_tokens") or 0) > 0 or out_tokens > 0)
+            )
+            _replace_existing = (
+                _existing_status == 200
+                and status != 200
+                and not _is_late_disconnect_after_completion
+            )
             if _replace_existing:
                 console_logs[_existing_idx] = log_entry
                 _persist_entry(_CONSOLE_LOG_PATH, {**log_entry, "event": "end_correction"})
@@ -1520,30 +1595,88 @@ def log_request(
                 # ep.record_outcome / CircuitBreaker.record_outcome in the
                 # first pass. Re-record with the corrected (non-200) status so
                 # error prevention and circuit breaker see the real outcome.
-                try:
-                    import app.error_prevention as ep
-                    ep.record_outcome(config, provider, model, status, error_msg, out_tokens=out_tokens)
-                except Exception as _ep_err:
-                    print(f"[ErrorPrevention] correction record_outcome failed (non-blocking): {_ep_err}", flush=True)
-                try:
-                    from app.circuit_breaker import get_breaker
-                    _breaker = get_breaker()
-                    if _breaker and _breaker.enabled and conn_index is not None:
-                        _breaker.record_outcome(
-                            provider, model, conn_index, status, error_msg, out_tokens=out_tokens,
-                        )
-                except Exception as _cb_err:
-                    print(f"[CircuitBreaker] correction record_outcome failed (non-blocking): {_cb_err}", flush=True)
+                if not _non_usage:
+                    try:
+                        import app.error_prevention as ep
+                        ep.record_outcome(config, provider, model, status, error_msg, out_tokens=out_tokens)
+                    except Exception as _ep_err:
+                        print(f"[ErrorPrevention] correction record_outcome failed (non-blocking): {_ep_err}", flush=True)
+                    try:
+                        from app.circuit_breaker import get_breaker
+                        _breaker = get_breaker()
+                        if _breaker and _breaker.enabled and conn_index is not None:
+                            _breaker.record_outcome(
+                                provider, model, conn_index, status, error_msg, out_tokens=out_tokens,
+                            )
+                    except Exception as _cb_err:
+                        print(f"[CircuitBreaker] correction record_outcome failed (non-blocking): {_cb_err}", flush=True)
+            elif _existing_status == 200 and status == 200:
+                _new_tot = (in_tokens or 0) + (out_tokens or 0) + (cached_tokens or 0) + (cache_write_tokens or 0)
+                _old_tot = (
+                    (_existing.get("in_tokens") or 0)
+                    + (_existing.get("out_tokens") or 0)
+                    + (_existing.get("cached_tokens") or 0)
+                    + (_existing.get("cache_write_tokens") or 0)
+                )
+                if _new_tot > _old_tot:
+                    console_logs[_existing_idx] = log_entry
+                    if not _non_usage:
+                        try:
+                            rates_map = _load_model_costs(config)
+                            m_rates = rates_map.get(model, {"in": 0.0, "out": 0.0, "cache": 0.0})
+                            in_write = cache_write_tokens
+                            in_uncached = max(0, in_tokens - cached_tokens - in_write)
+                            cost = (
+                                (in_uncached / 1_000_000) * m_rates["in"]
+                                + (in_write / 1_000_000) * (m_rates["in"] * 1.25)
+                                + (cached_tokens / 1_000_000) * m_rates["cache"]
+                                + (out_tokens / 1_000_000) * m_rates["out"]
+                            )
+                            cache_savings = (
+                                (cached_tokens / 1_000_000) * (m_rates["in"] - m_rates["cache"])
+                                if cached_tokens else 0.0
+                            )
+                            if (
+                                usage_stats
+                                and usage_stats[-1].get("provider") == provider
+                                and usage_stats[-1].get("model") == model
+                            ):
+                                usage_stats[-1].update({
+                                    "in_cached": cached_tokens,
+                                    "cache_write_tokens": in_write,
+                                    "in_uncached": in_uncached,
+                                    "out": out_tokens,
+                                    "cost": cost,
+                                    "savings": cache_savings,
+                                })
+                            if not _is_pytest_default_path(_get_usage_db_path(), _DEFAULT_USAGE_DB_PATH):
+                                with _usage_conn() as _uconn:
+                                    _uconn.execute(
+                                        """UPDATE usage_events
+                                           SET in_cached = ?, cache_write_tokens = ?, in_uncached = ?,
+                                               out = ?, cost = ?, savings = ?
+                                           WHERE id = (
+                                               SELECT id FROM usage_events
+                                               WHERE provider = ? AND model = ?
+                                               ORDER BY id DESC LIMIT 1
+                                           )""",
+                                        (
+                                            cached_tokens, in_write, in_uncached,
+                                            out_tokens, cost, cache_savings,
+                                            provider, model,
+                                        ),
+                                    )
+                        except Exception:
+                            pass
             _skip_side_effects = True
-    # Clean up the registry entry once the terminal event has been processed
-    # (either replaced or appended) so it doesn't leak for the server lifetime.
-    if event == "end" and request_id and request_id in _terminal_end_registry and _skip_side_effects:
-        del _terminal_end_registry[request_id]
-    
+
     if not _skip_side_effects:
         console_logs.append(log_entry)
         if event == "end" and request_id:
             _terminal_end_registry[request_id] = len(console_logs) - 1
+            if len(_terminal_end_registry) > 5000:
+                for _old_k in list(_terminal_end_registry.keys())[:500]:
+                    _terminal_end_registry.pop(_old_k, None)
         _persist_entry(_CONSOLE_LOG_PATH, log_entry)
 
         if len(console_logs) > 10000:
@@ -1579,7 +1712,7 @@ def log_request(
 
     # Auto Error Prevention — record outcome (may softban/longban/disable model).
     # Fail-open: prevention logic must never break request logging.
-    if not _skip_side_effects:
+    if not _skip_side_effects and not _non_usage:
         try:
             import app.error_prevention as ep
             ep.record_outcome(config, provider, model, status, error_msg, out_tokens=out_tokens)
@@ -1603,90 +1736,104 @@ def log_request(
     if status != 200:
         _err_token = _short_error_token(error_msg) if error_msg else "http_%s" % status
     if _err_token and not _skip_side_effects:
-        err_entry = {
-            "timestamp": timestamp,
-            "provider": provider,
-            "model": model,
-            "ttft_ms": ttft_ms,
-            "total_time_ms": total_ms,
-            "in_cached": 0,
-            "cache_write_tokens": 0,
-            "in_uncached": 0,
-            "out": out_tokens,
-            "cost": 0.0,
-            "savings": 0.0,
-            "error": _err_token,
-        }
-        _apply_fel_context(err_entry, _take_fel_context(request_id))
-        append_usage_event(err_entry)
-        usage_stats.append(err_entry)
-        # SQLite now holds the terminal row for this request — drop it from
-        # the in-flight registry so the live strip reclaims the slot.
-        _complete_inflight(request_id)
-        if len(usage_stats) > _USAGE_RETENTION:
-            del usage_stats[:-_USAGE_RETENTION]
-        try:
-            _persist_entry(
-                _USAGE_LOG_PATH,
-                err_entry,
-                max_file_size=_USAGE_MAX_LOG_FILE_SIZE,
-                max_entries=_USAGE_RETENTION,
-            )
-        except Exception:
-            pass
-    if status == 200:
-        rates_map = _load_model_costs(config)
-        m_rates = rates_map.get(model, {"in": 0.0, "out": 0.0, "cache": 0.0})
-        
-        in_write = cache_write_tokens
-        in_uncached = max(0, in_tokens - cached_tokens - in_write)
-        
-        # Precise cost formula
-        cost_uncached_in = (in_uncached / 1_000_000) * m_rates["in"]
-        cost_write_in = (in_write / 1_000_000) * (m_rates["in"] * 1.25)
-        cost_cached_in = (cached_tokens / 1_000_000) * m_rates["cache"]
-        cost_out_total = (out_tokens / 1_000_000) * m_rates["out"]
-        
-        cost = cost_uncached_in + cost_write_in + cost_cached_in + cost_out_total
-        
-        # Savings = What we WOULD have paid (in_tokens * in_rate) minus what we DID pay (in_uncached * in_rate + cached * cache_rate)
-        # Simplified: cached_tokens * (in_rate - cache_rate)
-        cache_savings = (cached_tokens / 1_000_000) * (m_rates["in"] - m_rates["cache"]) if cached_tokens else 0.0
-        
-        usage_entry = {
-            "timestamp": timestamp,
-            "provider": provider,
-            "model": model,
-            "ttft_ms": ttft_ms,
-            "total_time_ms": total_ms,
-            "in_cached": cached_tokens,
-            "cache_write_tokens": cache_write_tokens,
-            "in_uncached": in_uncached,
-            "out": out_tokens,
-            "cost": cost,
-            "savings": cache_savings
-        }
-        _apply_fel_context(usage_entry, _take_fel_context(request_id))
-        # Write to SQLite — the only durable usage source of truth.
-        append_usage_event(usage_entry)
-        # Legacy compat list: retain newest _USAGE_RETENTION entries.
-        usage_stats.append(usage_entry)
-        # SQLite now holds the terminal row for this request — drop it from
-        # the in-flight registry so the live strip reclaims the slot.
-        _complete_inflight(request_id)
-        if len(usage_stats) > _USAGE_RETENTION:
-            del usage_stats[:-_USAGE_RETENTION]
-        # Optional JSONL archive append (kept for backward-compat; reads come from SQLite).
-        # Usage-specific rotation policy — do not inherit console 5k/5 MB limits.
-        try:
-            _persist_entry(
-                _USAGE_LOG_PATH,
-                usage_entry,
-                max_file_size=_USAGE_MAX_LOG_FILE_SIZE,
-                max_entries=_USAGE_RETENTION,
-            )
-        except Exception:
-            pass  # archive write must never fail
+        if _non_usage:
+            _complete_inflight(request_id)
+        else:
+            _preserve_err_in = bool(status == 499 or cached_tokens > 0 or cache_write_tokens > 0)
+            _err_in_write = cache_write_tokens if _preserve_err_in else 0
+            _err_in_cached = cached_tokens if _preserve_err_in else 0
+            _err_in_uncached = max(0, in_tokens - _err_in_cached - _err_in_write) if _preserve_err_in else 0
+            err_entry = {
+                "timestamp": timestamp,
+                "provider": provider,
+                "model": model,
+                "ttft_ms": ttft_ms,
+                "total_time_ms": total_ms,
+                "in_cached": _err_in_cached,
+                "cache_write_tokens": _err_in_write,
+                "in_uncached": _err_in_uncached,
+                "out": out_tokens,
+                "cost": 0.0,
+                "savings": 0.0,
+                "error": _err_token,
+            }
+            if request_id:
+                err_entry["request_id"] = request_id
+            _apply_fel_context(err_entry, _take_fel_context(request_id))
+            append_usage_event(err_entry)
+            usage_stats.append(err_entry)
+            # SQLite now holds the terminal row for this request — drop it from
+            # the in-flight registry so the live strip reclaims the slot.
+            _complete_inflight(request_id)
+            if len(usage_stats) > _USAGE_RETENTION:
+                del usage_stats[:-_USAGE_RETENTION]
+            try:
+                _persist_entry(
+                    _USAGE_LOG_PATH,
+                    err_entry,
+                    max_file_size=_USAGE_MAX_LOG_FILE_SIZE,
+                    max_entries=_USAGE_RETENTION,
+                )
+            except Exception:
+                pass
+    if status == 200 and not _skip_side_effects:
+        if _non_usage:
+            _complete_inflight(request_id)
+        else:
+            rates_map = _load_model_costs(config)
+            m_rates = rates_map.get(model, {"in": 0.0, "out": 0.0, "cache": 0.0})
+
+            in_write = cache_write_tokens
+            in_uncached = max(0, in_tokens - cached_tokens - in_write)
+
+            # Precise cost formula
+            cost_uncached_in = (in_uncached / 1_000_000) * m_rates["in"]
+            cost_write_in = (in_write / 1_000_000) * (m_rates["in"] * 1.25)
+            cost_cached_in = (cached_tokens / 1_000_000) * m_rates["cache"]
+            cost_out_total = (out_tokens / 1_000_000) * m_rates["out"]
+
+            cost = cost_uncached_in + cost_write_in + cost_cached_in + cost_out_total
+
+            # Savings = What we WOULD have paid (in_tokens * in_rate) minus what we DID pay (in_uncached * in_rate + cached * cache_rate)
+            # Simplified: cached_tokens * (in_rate - cache_rate)
+            cache_savings = (cached_tokens / 1_000_000) * (m_rates["in"] - m_rates["cache"]) if cached_tokens else 0.0
+
+            usage_entry = {
+                "timestamp": timestamp,
+                "provider": provider,
+                "model": model,
+                "ttft_ms": ttft_ms,
+                "total_time_ms": total_ms,
+                "in_cached": cached_tokens,
+                "cache_write_tokens": cache_write_tokens,
+                "in_uncached": in_uncached,
+                "out": out_tokens,
+                "cost": cost,
+                "savings": cache_savings
+            }
+            if request_id:
+                usage_entry["request_id"] = request_id
+            _apply_fel_context(usage_entry, _take_fel_context(request_id))
+            # Write to SQLite — the only durable usage source of truth.
+            append_usage_event(usage_entry)
+            # Legacy compat list: retain newest _USAGE_RETENTION entries.
+            usage_stats.append(usage_entry)
+            # SQLite now holds the terminal row for this request — drop it from
+            # the in-flight registry so the live strip reclaims the slot.
+            _complete_inflight(request_id)
+            if len(usage_stats) > _USAGE_RETENTION:
+                del usage_stats[:-_USAGE_RETENTION]
+            # Optional JSONL archive append (kept for backward-compat; reads come from SQLite).
+            # Usage-specific rotation policy — do not inherit console 5k/5 MB limits.
+            try:
+                _persist_entry(
+                    _USAGE_LOG_PATH,
+                    usage_entry,
+                    max_file_size=_USAGE_MAX_LOG_FILE_SIZE,
+                    max_entries=_USAGE_RETENTION,
+                )
+            except Exception:
+                pass  # archive write must never fail
 
 
 # (Part D) Legacy recompute cache removed — SQLite is the sole usage source of

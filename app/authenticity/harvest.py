@@ -459,9 +459,10 @@ async def harvest_model(
                 async with _sem:
                     r = await call_with_backoff(client, endpoint, api_key, model_id,
                                                 probe, probe_timeout, gaps=_gaps)
-                r.tier = tier
-                if r.error:
-                    gaps.append(f"probe_error:{probe['id']}")
+                if r is not None:
+                    r.tier = tier
+                    if r.error:
+                        gaps.append(f"probe_error:{probe['id']}")
                 return r
 
             async def _probe_lp(probe):
@@ -473,7 +474,8 @@ async def harvest_model(
                         client, endpoint, api_key, model_id, probe, probe_timeout,
                         extra={"logprobs": True, "top_logprobs": 5,
                                "temperature": 0}, gaps=_gaps)
-                r.tier = 2
+                if r is not None:
+                    r.tier = 2
                 return r
 
             async def _probe_lp_once(probe):
@@ -488,7 +490,8 @@ async def harvest_model(
                         client, endpoint, api_key, model_id, probe, probe_timeout,
                         extra={"logprobs": True, "top_logprobs": 5,
                                "temperature": 0}, retries=0)
-                r.tier = 2
+                if r is not None:
+                    r.tier = 2
                 return r
 
             # Tier 1 + Tier 2 (parallel): reasoning probes take ~20s each, so
@@ -660,10 +663,12 @@ async def harvest_model(
             if isinstance(v2_profile, dict) and (v2_profile.get("tokenizer")
                                                   or v2_profile.get("capability_curve")
                                                   or v2_profile.get("knowledge_bank")
-                                                  or v2_profile.get("discriminator")):
+                                                  or v2_profile.get("discriminator")
+                                                  or v2_profile.get("spatial_curve")
+                                                  or v2_profile.get("hard_series")):
                 _struct["v2"] = v2_profile
             for _lane in ("tokenizer", "capability_curve", "knowledge_bank",
-                          "discriminator"):
+                          "discriminator", "spatial_curve", "hard_series"):
                 if not (isinstance(v2_profile, dict) and v2_profile.get(_lane)):
                     gaps.append(f"v2_{_lane}:unavailable")
         # Phase 4 consistency scoring (opt-in).

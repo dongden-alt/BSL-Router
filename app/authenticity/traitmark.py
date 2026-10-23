@@ -45,6 +45,7 @@ class MetaLayer:
     standard_version: int = 1
     tier: str = "canonical"          # canonical (unwrapped) | wrapped (real+persona)
     contested: bool = False          # sources disagreed at harvest → treat cautiously
+    cutoff_override: str = ""
     harvest_gaps: list = field(default_factory=list)  # layers left at defaults + why
     judged_by: str = ""                # judge model that graded the T2.5 noncoding battery
     source_tag: str = ""               # provenance: aibox | zai-web1 | arena | codex | antigravity ...

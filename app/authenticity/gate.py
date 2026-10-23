@@ -3,7 +3,7 @@
 Reality-based verdict model (see scoring.py): the question is "what model is
 this TRULY, and what has been done to the delivery?" — not "is it authentic".
 
-Flow (fail-open always — never raises):
+Flow (fail-open except cooperative user cancellation):
   0. Cache get (fresh stable verdict short-circuits).
   1. scope.in_scope(model_id, reference_hint) → narrows focus. Out-of-scope
      → honest UNVERIFIABLE (never "fake").
@@ -53,7 +53,7 @@ async def authenticity_check(
     judge_model: str = "",
     on_progress=None,
 ) -> "RealityVerdict":
-    """Main entry point. NEVER raises — fail-open always.
+    """Main entry point. Fail-open except cooperative user cancellation.
 
     claimed:        what the seller says this model is (defaults to model_id).
     reference_hint: optional "I think this is X" — narrows which frozen
@@ -113,7 +113,7 @@ async def authenticity_check(
         # Tier 0: Cache — fresh stable verdict short-circuits re-probing.
         cache_ttl = config.get("cache_ttl_seconds", 1800)
         cache = get_cache(ttl_seconds=cache_ttl)
-        cached = None if _no_cache else cache.get(endpoint_base, model_id)
+        cached = None if _no_cache else cache.get(endpoint_base, model_id, reference_hint=reference_hint)
         if cached is not None:
             _progress("done", "cached verdict")
             return cached
@@ -134,6 +134,8 @@ async def authenticity_check(
 
         # Load family reference
         family_ref = _load_family_ref(model_id)
+        if family_ref is None and (reference_hint or scope_info.get("family")):
+            family_ref = _load_family_ref(reference_hint or scope_info.get("family", ""))
         if family_ref is None:
             verdict = compute_reality(
                 model_id=model_id, endpoint=endpoint_base,
@@ -146,6 +148,12 @@ async def authenticity_check(
             )
             logger.info("AUTH %s", verdict.headline())
             return verdict
+
+        def _match_baselines():
+            baselines = _load_match_baselines(model_id)
+            if not baselines and (reference_hint or scope_info.get("family")):
+                baselines = _load_match_baselines(reference_hint or scope_info.get("family", ""))
+            return baselines
 
         # Run probes
         probe_timeout = config.get("probe_timeout_s", 30)
@@ -241,7 +249,8 @@ async def authenticity_check(
                     modifications=[], probe_errors=probe_errors,
                     latency_ms=_elapsed_ms(),
                 )
-                cache.put(endpoint_base, model_id, verdict)
+                if not _no_cache:
+                    cache.put(endpoint_base, model_id, verdict, reference_hint=reference_hint)
                 logger.warning("AUTH %s — impostor %s",
                                verdict.headline(),
                                family_verdict.evidence.get("impostor_hits"))
@@ -269,7 +278,7 @@ async def authenticity_check(
                     features.cutoff_month = features2.cutoff_month
                     features.capability_correct = features2.capability_correct
 
-                baselines = _load_match_baselines(model_id)
+                baselines = _match_baselines()
                 if baselines:
                     match_result = match_submodel(features, baselines)
 
@@ -332,14 +341,14 @@ async def authenticity_check(
                             logger.warning("AUTH %s: noncoding judge gap -> %s",
                                            model_id, nc["judge_gap"])
                         features.noncoding = nc
-                except RuntimeError:
-                    raise  # cooperative cancel: never swallowed by fail-open
                 except Exception as _nc_exc:
+                    if isinstance(_nc_exc, RuntimeError) and "cancelled" in str(_nc_exc).lower():
+                        raise
                     logger.warning("non-coding lane failed (fail-open): %s", _nc_exc)
 
                 # Re-run sub-model match WITH non-coding evidence if we have it.
                 if getattr(features, "noncoding", None) and features.noncoding.get("judge"):
-                    baselines = _load_match_baselines(model_id)
+                    baselines = _match_baselines()
                     if baselines:
                         match_result = match_submodel(features, baselines)
 
@@ -354,7 +363,7 @@ async def authenticity_check(
                             collect_family_needles, build_needle_probe,
                             classify_needle_answers,
                         )
-                        _candidates = _load_match_baselines(model_id)
+                        _candidates = _match_baselines()
                         needles = collect_family_needles(_candidates)
                         if needles:
                             _progress("needles", "Deep · knowledge-needle probes")
@@ -364,12 +373,14 @@ async def authenticity_check(
                                                 **_probe_kwargs(run_probe))
                             if r.status_code == 200 and r.content:
                                 features.knowledge_needles = classify_needle_answers(
-                                    r.content, needles)
+                                    r.content, probe.get("_items") or needles)
                                 # Re-run match WITH the knowledge dimension.
-                                _b2 = _load_match_baselines(model_id)
+                                _b2 = _match_baselines()
                                 if _b2:
                                     match_result = match_submodel(features, _b2)
                     except Exception as _kn_exc:
+                        if isinstance(_kn_exc, RuntimeError) and "cancelled" in str(_kn_exc).lower():
+                            raise
                         logger.warning("V1 needle lane failed (fail-open): %s", _kn_exc)
 
                 # ── V5 LOGPROB TAIL (deep mode) — weight-level, search-immune ──
@@ -401,10 +412,12 @@ async def authenticity_check(
                                 }
                         if prof:
                             features.logprob_profile = prof
-                            _b3 = _load_match_baselines(model_id)
+                            _b3 = _match_baselines()
                             if _b3:
                                 match_result = match_submodel(features, _b3)
                     except Exception as _lp_exc:
+                        if isinstance(_lp_exc, RuntimeError) and "cancelled" in str(_lp_exc).lower():
+                            raise
                         logger.warning("V5 logprob lane failed (fail-open): %s", _lp_exc)
 
                 # ── V6a BOUNDARY lane (L1, deep mode, ALWAYS) ──
@@ -427,10 +440,12 @@ async def authenticity_check(
                                     or sig.get("json_mode") == "supported"):
                             features.boundary_signature = sig
                             _l1_landed = True
-                            _b4 = _load_match_baselines(model_id)
+                            _b4 = _match_baselines()
                             if _b4:
                                 match_result = match_submodel(features, _b4)
                     except Exception as _bnd_exc:
+                        if isinstance(_bnd_exc, RuntimeError) and "cancelled" in str(_bnd_exc).lower():
+                            raise
                         logger.warning("V6a boundary lane failed (fail-open): %s", _bnd_exc)
 
                 # ── REFUSAL/ALIGNMENT lane (deep mode, ALWAYS) ──
@@ -448,12 +463,12 @@ async def authenticity_check(
                             **_probe_kwargs(run_refusal_probes))
                         if rsig and rsig.get("axes"):
                             features.refusal_signature = rsig
-                            _b4r = _load_match_baselines(model_id)
+                            _b4r = _match_baselines()
                             if _b4r:
                                 match_result = match_submodel(features, _b4r)
-                    except RuntimeError:
-                        raise  # cooperative cancel must propagate
                     except Exception as _ref_exc:
+                        if isinstance(_ref_exc, RuntimeError) and "cancelled" in str(_ref_exc).lower():
+                            raise
                         logger.warning("refusal lane failed (fail-open): %s", _ref_exc)
 
                 # ── STANDARD v2 lane (deep mode, budget-guarded) ──
@@ -485,9 +500,9 @@ async def authenticity_check(
                                 client, endpoint_base, api_key, model_id,
                                 probe_timeout, mode="live", sink=_v2_sink),
                             timeout=_v2_budget)
-                    except RuntimeError:
-                        raise  # cooperative cancel must propagate
                     except Exception as _v2_exc:
+                        if isinstance(_v2_exc, RuntimeError) and "cancelled" in str(_v2_exc).lower():
+                            raise
                         # str(TimeoutError()) == '' -- log the TYPE so a budget
                         # expiry is never again an empty, undiagnosable line.
                         _v2_gap = f"v2_{type(_v2_exc).__name__}_after_{_v2_budget:.0f}s"
@@ -500,7 +515,9 @@ async def authenticity_check(
                         _v2_gap = ":".join(x for x in (_v2.get("gap"), _v2.get("gap_detail")) if x)
                     if any(_v2.get(k) for k in _V2_LANES):
                         features.v2_profile = _v2
-                        _b4v = _load_match_baselines(model_id)
+                        if features.logprob_profile and isinstance(features.v2_profile, dict):
+                            features.v2_profile.setdefault("logprob_profile", features.logprob_profile)
+                        _b4v = _match_baselines()
                         if _b4v:
                             match_result = match_submodel(features, _b4v)
                     elif _v2:
@@ -533,10 +550,12 @@ async def authenticity_check(
                         if prof and prof.get("mode_hash"):
                             features.stability_profile = prof
                             _l2_landed = True
-                            _b5 = _load_match_baselines(model_id)
+                            _b5 = _match_baselines()
                             if _b5:
                                 match_result = match_submodel(features, _b5)
                     except Exception as _stab_exc:
+                        if isinstance(_stab_exc, RuntimeError) and "cancelled" in str(_stab_exc).lower():
+                            raise
                         logger.warning("V6b stability lane failed (fail-open): %s", _stab_exc)
 
                 # ── V7 TIMING lane (L3, deep mode, only if STILL abstaining) ──
@@ -560,6 +579,8 @@ async def authenticity_check(
                             # neither veto nor rescue, so re-matching would
                             # spend budget for an identical verdict.
                     except Exception as _tim_exc:
+                        if isinstance(_tim_exc, RuntimeError) and "cancelled" in str(_tim_exc).lower():
+                            raise
                         logger.warning("V7 timing lane failed (fail-open): %s", _tim_exc)
 
                 # ── JUDGE TIE-BREAK (deep, only on a TRUE tie) ──
@@ -584,7 +605,7 @@ async def authenticity_check(
                                 and match_result.best_model):
                             _progress("judge_tiebreak", "Deep · judge ranking tied candidates")
                             from .judge_rank import rank_candidates
-                            _allb = _load_match_baselines(model_id)
+                            _allb = _match_baselines()
                             _tied = {k: _allb.get(k) for k in
                                      (match_result.best_model, match_result.runner_up)
                                      if k and k in _allb}
@@ -660,6 +681,8 @@ async def authenticity_check(
                                         "rejected", "not_decisive" if (_p1 or _p2) else "no_judge_reply")
                                     match_result.dimensions["judge_tiebreak"] = _jt_rec
                     except Exception as _jt_exc:
+                        if isinstance(_jt_exc, RuntimeError) and "cancelled" in str(_jt_exc).lower():
+                            raise
                         logger.warning("judge tie-break failed (fail-open): %s", _jt_exc)
 
         # ── LANE STATUS AUDIT (2026-10-12) ───────────────────────────────
@@ -680,7 +703,7 @@ async def authenticity_check(
         # Skip reasons are RECORDED at the skip site (_lane_skip), not inferred.
         from .standard_v2 import v2_of as _v2_of
         from .standard_v2 import _logprob_profile_of
-        _pool_for_status = _load_match_baselines(model_id) or {}
+        _pool_for_status = _match_baselines() or {}
 
         def _baseline_has(getter) -> bool:
             for _b in _pool_for_status.values():
@@ -779,7 +802,7 @@ async def authenticity_check(
         verdict.evidence["lane_status"] = lane_status
         verdict.evidence["evidence_complete"] = not _missing
         if not _no_cache:
-            cache.put(endpoint_base, model_id, verdict)
+            cache.put(endpoint_base, model_id, verdict, reference_hint=reference_hint)
         _progress("done", verdict.verdict)
 
         if verdict.verdict in ("substitution", "downgrade"):
@@ -790,6 +813,8 @@ async def authenticity_check(
         return verdict
 
     except Exception as exc:
+        if isinstance(exc, RuntimeError) and "cancelled" in str(exc).lower():
+            raise
         # FAIL-OPEN: any exception → error verdict, let request through.
         logger.warning("authenticity_check failed for %s: %s", model_id, exc)
         return RealityVerdict(

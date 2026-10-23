@@ -383,3 +383,383 @@ class TestFixICutoffMonthUnknown:
         feats = FingerprintFeatures(capability_correct=3, cutoff_year=2024, cutoff_month=10)
         assert match_submodel(feats, {"m": base}).dimensions["cutoff"] == 0.8  # old: 0.3
 
+
+# 2026-10-23 audit: cache isolation, evidence grading and native transport pools.
+import asyncio
+import copy
+import json
+from types import SimpleNamespace
+
+import httpx
+import pytest
+from starlette.requests import Request
+
+import app.main as main
+import app.authenticity.gate as gate
+import app.authenticity.harvest as harvest
+import app.authenticity.probes as probes
+import app.authenticity.standard_v2 as v2
+from app.authenticity.cache import AuthenticityCache, reset_cache
+from app.authenticity.classifier import classify_family
+from app.authenticity.fingerprint import extract_features
+from app.authenticity.scoring import RealityVerdict, canonical_submodel
+
+
+@pytest.fixture
+def audit_gate(monkeypatch):
+    reset_cache()
+    features = FingerprintFeatures()
+    monkeypatch.setattr(gate, "_load_family_ref", lambda mid: {"family": "claude"})
+    monkeypatch.setattr(gate, "_load_families", lambda: {})
+    monkeypatch.setattr(gate, "_load_match_baselines", lambda mid: {"std": _std()})
+    monkeypatch.setattr("app.authenticity.fingerprint.extract_features", lambda *a: features)
+    monkeypatch.setattr(probes, "TIER1_PROBES", [{"id": "tier1"}])
+    monkeypatch.setattr(probes, "TIER2_PROBES", [{"id": "tier2"}])
+    monkeypatch.setattr(probes, "LOGPROB_PROBES", [])
+    monkeypatch.setattr(harvest, "NONCODING_PROBES", [])
+
+    async def probe(*args, **kwargs):
+        return SimpleNamespace(status_code=200, content="offline", error="", logprobs=None)
+
+    async def empty(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(probes, "run_probe", probe)
+    for name in ("run_boundary_probes", "run_refusal_probes", "run_stability_probe", "run_timing_probe"):
+        monkeypatch.setattr(probes, name, empty)
+    monkeypatch.setattr(v2, "run_standard_v2", empty)
+    yield features
+    reset_cache()
+
+
+def _audit_check(**kwargs):
+    config = {"no_cache": True, "max_tier": 2, "total_timeout_s": 60}
+    config.update(kwargs.pop("config", {}))
+    return gate.authenticity_check("claude-opus-5-5", "http://offline.test", "test-key",
+                                   config, mode="deep", **kwargs)
+
+
+def test_cache_reference_hint_isolation_and_legacy_keys():
+    cache = AuthenticityCache()
+    verdict = RealityVerdict(model_id="m", endpoint="x", claimed="m", verdict="family_match")
+    cache.put("x", "m", verdict)
+    cache.put("x", "m", verdict, reference_hint=" CLAUDE ")
+    assert cache._key("x", "m") == "x::m"
+    assert cache.get("x", "m", "claude") is verdict
+    assert cache.get("x", "m", "gpt") is None
+    cache.invalidate("x", "m", "Claude")
+    assert cache.get("x", "m", "claude") is None
+    assert cache.get("x", "m") is verdict
+
+
+def test_gate_grades_shuffled_needle_items(monkeypatch, audit_gate):
+    import app.authenticity.knowledge_needles as kn
+    items = [{"fact": "first event", "needle": "Alpha", "kind": "known"},
+             {"fact": "second event", "needle": "Beta", "kind": "known"}]
+    monkeypatch.setattr(kn, "collect_family_needles", lambda pool: items)
+    monkeypatch.setattr(kn, "build_needle_probe", lambda ns: {"id": "knowledge_needles", "_items": ns[::-1]})
+
+    async def probe(*args, **kwargs):
+        return SimpleNamespace(status_code=200, content="1. Beta\n2. Alpha", error="", logprobs=None)
+
+    monkeypatch.setattr(probes, "run_probe", probe)
+    asyncio.run(_audit_check())
+    assert set(audit_gate.knowledge_needles["known_hits"]) == {"first event", "second event"}
+
+
+def test_candidate_local_needle_kind_and_needle_text():
+    base = {"knowledge": {"known_facts": [{"fact": "event A", "needle": "Alpha"}],
+                          "post_cutoff_unknown": [{"fact": "event B", "needle": "Beta"}]}}
+    features = _needle_features([("event A", "wrong", "post_cutoff"),
+                                 ("event B", "Beta", "known")],
+                                {"event A": "Alpha", "event B": "unknown"})
+    assert match_submodel(features, {"m": base}).dimensions["knowledge"] == 1.0
+    features.knowledge_needles = classify_needle_answers("1. unknown\n2. Beta", [
+        {"fact": "event A", "needle": "Alpha", "kind": "post_cutoff"},
+        {"fact": "event B", "needle": "Beta", "kind": "known"}])
+    assert match_submodel(features, {"m": base}).dimensions["knowledge"] == 0.0
+
+
+@pytest.mark.parametrize("location", ["structural", "tokenizer_signature", "flat"])
+def test_token_jsd_full_standard_unwrapping_and_weights(location):
+    from app.authenticity.judge_rank import FEATURE_WEIGHTS, coverage_adjust, decisive_lane_margin
+    lp = {f"lp{i}": {"logprob": -0.1, "top": {"A": -0.1, "B": -2.3}} for i in range(4)}
+    if location == "structural":
+        standard = {"structural": {"logprob_profile": lp}}
+    elif location == "tokenizer_signature":
+        standard = {"structural": {"tokenizer_signature": {"logprob_profile": lp}}}
+    else:
+        standard = {"logprob_profile": lp}
+    dims = v2.compute_v2_dims({"logprob_profile": lp}, {"m": standard})
+    assert dims["m"]["token_jsd"] == 1.0
+    assert coverage_adjust({"token_jsd": 1.0}) == {"token_jsd": 1.0}
+    ranked = [{"id": "a", "dims": {"token_jsd": 0.2}}, {"id": "b", "dims": {"token_jsd": 0.8}}]
+    assert decisive_lane_margin(ranked, "a", "b") == pytest.approx(0.6)
+    assert "token_jsd" not in FEATURE_WEIGHTS
+    assert sum(FEATURE_WEIGHTS.values()) == pytest.approx(1.0)
+
+
+def test_gate_passes_live_logprobs_into_v2(monkeypatch, audit_gate):
+    audit_gate.logprob_profile = {"lp": {"top": {"A": -0.1}}}
+
+    async def standard(*args, sink, **kwargs):
+        sink.update({"tokenizer": {"tokens": 1}})
+        return sink
+
+    monkeypatch.setattr(v2, "run_standard_v2", standard)
+    asyncio.run(_audit_check())
+    assert audit_gate.v2_profile["logprob_profile"] == audit_gate.logprob_profile
+
+
+@pytest.mark.parametrize("text,month", [
+    ("My knowledge cutoff is 2024. I may not know later events.", 0),
+    ("My cutoff is May 2024.", 5), ("My cutoff is may of 2024.", 5),
+    ("My cutoff is 2024 June.", 6), ("My cutoff is 2024-09.", 9),
+    ("My cutoff is 2024/12.", 12), ("My cutoff is 2024-13.", 0),
+    ("My knowledge is from 2024, dismay is not a month.", 0)])
+def test_cutoff_month_parsing(text, month):
+    result = SimpleNamespace(probe_id="cutoff_probe", status_code=200, content=text)
+    assert extract_features([result], {}).cutoff_month == month
+
+
+@pytest.mark.parametrize("name,family", [("kimi-k2.5", "kimi"), ("mimo-v2.5", "mimo"),
+    ("qwen2.5", "qwen"), ("solar-model", None), ("vendor-r1-model", "deepseek")])
+def test_family_name_priority(name, family):
+    from app.authenticity.scope import detect_family
+    assert detect_family(name) == family
+
+
+def test_honest_unknown_identity_is_unverifiable():
+    from app.authenticity.scoring import compute_reality
+    family = classify_family(FingerprintFeatures(), {})
+    assert family.confidence == 0.3 and family.behavior_family == "unknown"
+    verdict = compute_reality("claude-opus-5-5", "x", "claude-opus-5-5",
+        {"verdict_scope": "full", "family": "claude"}, family, None, [], [], 0)
+    assert verdict.verdict == "unverifiable"
+
+
+@pytest.mark.parametrize("lane", ["needles", "v5", "boundary", "refusal", "v2", "stability", "timing"])
+def test_cooperative_cancel_propagates_from_each_deep_lane(monkeypatch, audit_gate, lane):
+    import app.authenticity.knowledge_needles as kn
+    monkeypatch.setattr(kn, "collect_family_needles", lambda pool: [{"fact": "x", "needle": "x", "kind": "known"}])
+
+    def progress(step, label):
+        if step == lane:
+            raise RuntimeError("authenticity test cancelled by user")
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        asyncio.run(_audit_check(on_progress=progress))
+
+
+def test_non_cancel_runtime_error_still_fails_open(monkeypatch, audit_gate):
+    async def boom(*args, **kwargs):
+        raise RuntimeError("boom-boundary")
+    monkeypatch.setattr(probes, "run_boundary_probes", boom)
+    assert asyncio.run(_audit_check()).verdict != "error"
+
+
+def test_reference_hint_fallback_keeps_loader_signatures(monkeypatch, audit_gate):
+    family_calls, baseline_calls = [], []
+    def family(mid):
+        family_calls.append(mid)
+        return {"family": "claude"} if mid == "claude" else None
+    def baselines(mid):
+        baseline_calls.append(mid)
+        return {"std": _std()} if mid == "claude" else {}
+    monkeypatch.setattr(gate, "_load_family_ref", family)
+    monkeypatch.setattr(gate, "_load_match_baselines", baselines)
+    verdict = asyncio.run(_audit_check(reference_hint="claude"))
+    assert verdict.verdict != "error"
+    assert "claude" in family_calls and "claude" in baseline_calls
+
+
+class _AuditStream(httpx.AsyncByteStream):
+    def __init__(self, content):
+        self.content = content
+
+    async def __aiter__(self):
+        yield self.content
+
+
+def _audit_request(path="/v1internal:generateContent", body=None):
+    raw = json.dumps(body or {}).encode()
+    async def receive():
+        return {"type": "http.request", "body": raw, "more_body": False}
+    return Request({"type": "http", "method": "POST", "path": path,
+        "query_string": b"", "scheme": "http", "server": ("127.0.0.1", 6969),
+        "headers": [(b"authorization", b"Bearer test-key")]}, receive)
+
+
+def test_delete_standard_source_tag_and_slash_route(monkeypatch, tmp_path):
+    canonical = tmp_path / harvest.standard_filename("claude", "provider/opus")
+    private = tmp_path / harvest.standard_filename("claude", "provider/opus", "local")
+    canonical.write_text("{}")
+    private.write_text("{}")
+    monkeypatch.setattr(harvest, "STANDARDS_DIR", tmp_path)
+    response = asyncio.run(main.delete_auth_standard("claude", "provider/opus", source_tag="local"))
+    assert response.status_code == 200
+    assert canonical.exists() and not private.exists()
+    assert not harvest.delete_standard(tmp_path, "claude", "provider/opus", source_tag="local")
+    assert any(r.path == "/api/authenticity/standards/{family}/{sub_model:path}" for r in main.app.routes)
+
+
+def test_router_native_egress_clients_are_isolated(monkeypatch):
+    native, router, injected = object(), object(), object()
+    clients = iter([native, router])
+    monkeypatch.setattr(main, "google_egress_client", None)
+    monkeypatch.setattr(main, "_ANTIGRAVITY_EGRESS_CLIENT", None)
+    monkeypatch.setattr(main, "_ROUTER_ANTIGRAVITY_EGRESS_CLIENT", None)
+    monkeypatch.setattr(main, "build_google_egress_client", lambda: next(clients))
+    assert main._get_antigravity_egress_client() is native
+    assert main._get_router_antigravity_egress_client() is router
+    monkeypatch.setattr(main, "_ANTIGRAVITY_EGRESS_CLIENT", None)
+    assert main._get_router_antigravity_egress_client() is router
+    monkeypatch.setattr(main, "google_egress_client", injected)
+    assert main._get_antigravity_egress_client() is injected
+    assert main._get_router_antigravity_egress_client() is injected
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("error", [httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError])
+def test_native_retries_stale_pool_once(monkeypatch, stream, error):
+    async def go():
+        requests = []
+        def broken(request):
+            requests.append(request)
+            raise error("stale connection")
+        def healthy(request):
+            requests.append(request)
+            return httpx.Response(200, stream=_AuditStream(b"native"), headers={"content-type": "application/json"})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(broken)) as old:
+            async with httpx.AsyncClient(transport=httpx.MockTransport(healthy)) as fresh:
+                monkeypatch.setattr(main, "google_egress_client", None)
+                monkeypatch.setattr(main, "_ANTIGRAVITY_EGRESS_CLIENT", old)
+                monkeypatch.setattr(main, "build_google_egress_client", lambda: fresh)
+                router = object()
+                monkeypatch.setattr(main, "_ROUTER_ANTIGRAVITY_EGRESS_CLIENT", router)
+                response = await main._forward_antigravity_native(_audit_request(), stream, b"payload")
+                assert response.status_code == 200 and len(requests) == 2
+                assert requests[0] is not requests[1]
+                assert all(r.content == b"payload" for r in requests)
+                assert main._get_antigravity_egress_client() is fresh
+                assert main._get_router_antigravity_egress_client() is router
+                if stream:
+                    assert b"".join([chunk async for chunk in response.body_iterator]) == b"native"
+                    await response.background()
+                else:
+                    assert response.body == b"native"
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize("operation", ["control", "catalog"])
+def test_control_and_model_catalog_retry_stale_pool(monkeypatch, operation):
+    async def go():
+        calls = []
+        def broken(request):
+            calls.append("broken")
+            raise httpx.RemoteProtocolError("stale connection")
+        def healthy(request):
+            calls.append("healthy")
+            return httpx.Response(200, stream=_AuditStream(json.dumps(
+                {"models": {"native": {"displayName": "Native"}}}).encode()))
+        async with httpx.AsyncClient(transport=httpx.MockTransport(broken)) as old:
+            async with httpx.AsyncClient(transport=httpx.MockTransport(healthy)) as fresh:
+                monkeypatch.setattr(main, "google_egress_client", None)
+                monkeypatch.setattr(main, "_ANTIGRAVITY_EGRESS_CLIENT", old)
+                monkeypatch.setattr(main, "build_google_egress_client", lambda: fresh)
+                monkeypatch.setattr(main, "cs_get_config", lambda: {"antigravity_integration": {
+                    "custom_models": [_audit_custom_model()]}})
+                request = _audit_request("/v1internal:fetchAvailableModels")
+                if operation == "control":
+                    response = await main._forward_antigravity_ccpa_control(request, "fetchAvailableModels")
+                    payload = json.loads(b"".join([c async for c in response.body_iterator]))
+                    await response.background()
+                else:
+                    response = await main.antigravity_fetch_available_models(request)
+                    payload = json.loads(response.body)
+                assert response.status_code == 200 and calls == ["broken", "healthy"]
+                assert "native" in payload["models"]
+    asyncio.run(go())
+
+
+def test_native_transport_failure_resets_only_native_pool(monkeypatch):
+    async def go():
+        def broken(request):
+            raise httpx.ConnectError("offline")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(broken)) as client:
+            router = object()
+            monkeypatch.setattr(main, "google_egress_client", None)
+            monkeypatch.setattr(main, "_ANTIGRAVITY_EGRESS_CLIENT", client)
+            monkeypatch.setattr(main, "_ROUTER_ANTIGRAVITY_EGRESS_CLIENT", router)
+            response = await main._forward_antigravity_native(_audit_request(), False, b"{}")
+            assert response.status_code == 502
+            assert main._ANTIGRAVITY_EGRESS_CLIENT is None
+            assert main._ROUTER_ANTIGRAVITY_EGRESS_CLIENT is router
+    asyncio.run(go())
+
+
+def _audit_custom_model():
+    return {"slug": "custom-test", "placeholder_index": 401, "target": "provider/model", "display_name": "Test"}
+
+
+def test_custom_catalog_bad_entries_do_not_hide_native_models():
+    upstream = {"models": {"native": {"displayName": "Native"}}}
+    before = copy.deepcopy(upstream)
+    models = [None, "bad", {}, {"slug": []}, _audit_custom_model()]
+    merged = main._merge_antigravity_custom_models_catalog(upstream, models)
+    assert merged["models"]["native"] == upstream["models"]["native"]
+    assert "custom-test" in merged["models"]
+    assert upstream == before
+    malformed_sorts = {**upstream, "agentModelSorts": [{"groups": 42}]}
+    assert main._merge_antigravity_custom_models_catalog(malformed_sorts, models) == malformed_sorts
+    assert main._merge_antigravity_custom_models_catalog(upstream, 42) == upstream
+
+
+def test_custom_grpc_catalog_skips_bad_entries():
+    native = main._proto_string(1, "models/native") + main._proto_string(2, "Native")
+    body = main._proto_varint(10) + main._proto_varint(len(native)) + native
+    frame = b"\0" + len(body).to_bytes(4, "big") + body
+    result = main._inject_custom_models_into_grpc_web_proto(frame, [None, {}, {"placeholder_index": 402}, _audit_custom_model()])
+    assert native in result and b"MODEL_PLACEHOLDER_M401" in result
+    assert b"MODEL_PLACEHOLDER_M402" not in result
+    assert main._inject_custom_models_into_grpc_web_proto(frame, 42) == frame
+
+
+def test_cancel_checks_do_not_overwrite_progress(monkeypatch):
+    monkeypatch.setattr(main, "_AUTH_TEST_STATUS", {})
+    monkeypatch.setattr(main, "_AUTH_TEST_CANCEL", set())
+    progress = main._auth_test_progress("m")
+    progress("boundary", "Boundary probes")
+    saved = dict(main._AUTH_TEST_STATUS["m"])
+    progress("_cancel_check", "")
+    assert main._AUTH_TEST_STATUS["m"] == saved
+    assert saved["status"] == "running"
+    main._AUTH_TEST_CANCEL.add("m")
+    with pytest.raises(RuntimeError, match="cancelled"):
+        progress("_cancel_check", "")
+
+
+@pytest.mark.parametrize("raw,canonical", [("deepseek_v4_pro", "deepseek-v4-pro"),
+    ("glm_glm-4.6", "glm-4-6"), ("qwen_qwen3_max", "qwen3-max"),
+    ("claude_claude_opus_5", "claude-opus-5")])
+def test_canonical_model_preserves_underscore_versions(raw, canonical):
+    assert canonical_submodel(raw) == canonical
+
+
+def test_capability_score_is_clamped_and_alias_is_not_downgrade():
+    features = FingerprintFeatures(capability_correct=3)
+    assert match_submodel(features, {"m": _std(cap=1)}).dimensions["capability"] == 1.0
+    match = _mr("claude-opus-5", 0.95, None)
+    match.alias_group = ["claude-opus-5-5"]
+    assert _reality("claude-opus-5-5", "claude", match, 0.95).verdict == "real"
+
+
+def test_cutoff_override_roundtrip_and_corruption_indices():
+    from app.authenticity.traitmark import TraitMark
+    from app.authenticity.diffmatrix import detect_corruption
+    data = {"meta": {"cutoff_override": "user-stated 2025-01 (self-reported 2024-06)"}}
+    assert TraitMark.from_dict(data).to_dict()["meta"]["cutoff_override"] == data["meta"]["cutoff_override"]
+    standard = {"knowledge": {"known_facts": [{"fact": "empty", "needle": ""},
+        {"fact": "Beta is the answer", "needle": "Beta"}]}}
+    assert not any("embedded" in f for f in detect_corruption(standard))
+

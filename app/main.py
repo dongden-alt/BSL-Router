@@ -57,7 +57,10 @@ from app.oauth import (
     consume_oauth_state,
     OAuthStateError,
 )
-from app.utils.google_cloudcode_egress import build_google_egress_client
+from app.utils.google_cloudcode_egress import build_google_egress_client, rotate_google_ip_cache
+from app.compat.adapters import antigravity_upstream as _ag_upstream_contract
+# The unified App Integration targets the current Desktop Cloud Code identity.
+_ag_upstream_contract.ANTIGRAVITY_UPSTREAM_UA = "antigravity/hub/2.24.0 windows/amd64"
 from app.normalizer import UniversalNormalizer
 from app.middleware.caching import PromptCachingAdapter, pick_warmest_connection, propagate_prompt_cache_key, record_cache_warmth
 from app.scouts.vision import polyfill_vision, VisionPolyfillFailed
@@ -148,6 +151,7 @@ from app.middleware.fel_wiring import (  # FEL-2a (default OFF — tools.fel.ena
     select_profile,
     set_last_user_text,
 )
+from app.middleware.faithful_execution import build_directives
 from app.middleware.fel_wiring import (  # local alias — visible-text extractor
     response_visible_text as fel_response_visible_text,
 )
@@ -735,33 +739,37 @@ async def _sse_keepalive_pre_first_chunk(
                 pass
 
 
-async def _fel_observe_stream(source, *, model: str = "", provider: str = ""):
+async def _fel_observe_stream(
+    source, *, model: str = "", provider: str = "", request_id: str = ""
+):
     """Yield chunks unchanged while accumulating a copy for analytics.
 
     Each chunk is yielded as soon as it arrives, so time-to-first-token is
     unaffected. If the observer has any trouble it is dropped and the stream
     continues normally.
     """
-    obs = None
+    fel_obs = None
     try:
         from app.middleware.fel_wiring import FelStreamObserver
-        obs = FelStreamObserver(model=model, provider=provider)
+        fel_obs = FelStreamObserver(model=model, provider=provider)
     except Exception:
-        obs = None
+        fel_obs = None
 
     try:
         async for chunk in source:
-            if obs is not None:
+            if fel_obs is not None:
                 try:
-                    obs.observe(chunk if isinstance(chunk, bytes)
-                                else str(chunk).encode("utf-8", "ignore"))
+                    fel_obs.observe(chunk if isinstance(chunk, bytes)
+                                    else str(chunk).encode("utf-8", "ignore"))
                 except Exception:
-                    obs = None
+                    fel_obs = None
             yield chunk
     finally:
-        if obs is not None:
+        if fel_obs is not None:
             try:
-                obs.finalize()
+                verdict = fel_obs.finalize()
+                if verdict and request_id:
+                    obs.note_fel_context(request_id, refusal_class=verdict)
             except Exception:
                 pass
         aclose = getattr(source, "aclose", None)
@@ -780,29 +788,29 @@ async def _guard_observe_stream(source, *, model: str = "", provider: str = ""):
     observer and the stream continues normally. log_only mode = read-only
     telemetry; finalize() emits ONE guard_event and never mutates the stream.
     """
-    obs = None
+    guard_obs = None
     try:
         _gcfg = resolve_guard(get_mutable_config().get("tools", {}))
         if _gcfg is not None:
-            obs = ResponseGuardObserver(
+            guard_obs = ResponseGuardObserver(
                 model=model, provider=provider, max_chars=_gcfg.max_chars
             )
     except Exception:
-        obs = None
+        guard_obs = None
 
     try:
         async for chunk in source:
-            if obs is not None:
+            if guard_obs is not None:
                 try:
-                    obs.observe(chunk if isinstance(chunk, bytes)
-                                else str(chunk).encode("utf-8", "ignore"))
+                    guard_obs.observe(chunk if isinstance(chunk, bytes)
+                                      else str(chunk).encode("utf-8", "ignore"))
                 except Exception:
-                    obs = None
+                    guard_obs = None
             yield chunk
     finally:
-        if obs is not None:
+        if guard_obs is not None:
             try:
-                obs.finalize()
+                guard_obs.finalize()
             except Exception:
                 pass
         aclose = getattr(source, "aclose", None)
@@ -811,6 +819,18 @@ async def _guard_observe_stream(source, *, model: str = "", provider: str = ""):
                 await aclose()
             except Exception:
                 pass
+
+
+def _wrap_egress_stream(
+    stream_gen, *, model: str = "", provider: str = "", request_id: str = ""
+):
+    """Wrap any egress SSE stream generator with both FelStreamObserver and
+    ResponseGuardObserver so every streaming return path records FEL refusal
+    telemetry + ResponseGuard injection telemetry consistently."""
+    s = _fel_observe_stream(
+        stream_gen, model=model, provider=provider, request_id=request_id
+    )
+    return _guard_observe_stream(s, model=model, provider=provider)
 
 
 _RECOVERABLE = {400, 401, 403, 404, 405, 408, 409, 413, 422, 429, 500, 502, 503, 504, 524, 525, 526}  # HTTP status codes that trigger combo/chain advance
@@ -1503,7 +1523,11 @@ def load_config():
         _replace_runtime_config(config)
     # Initialize the connection-level circuit breaker from the loaded config.
     init_breaker(config)
+    # 2026-10-22: no legacy auto-import. ``custom_models`` stays empty until the
+    # operator explicitly adds models via "+ Add Model"; the public repo must
+    # never inherit a machine-local ~/.gemini/antigravity/custom_models.json.
     config = _validate_antigravity_integration_config(config)
+    config = _validate_claude_code_integration_config(config)
     replace_config(config)
     # Compaction eligibility observability (2026-08-26): the skip-regex bug
     # silently excluded glm-*-anthropic models; make eligibility visible.
@@ -1533,45 +1557,36 @@ def load_config():
 # 2026-10-06: the Claude Sonnet 4.6, Claude Opus 4.6 (Thinking) and GPT-OSS
 # 120B (Medium) slots were retired per the refreshed Antigravity IDE menu.
 ANTIGRAVITY_INTEGRATION_SLOTS = (
-    "gemini-3.6-flash-high",
-    "gemini-3.6-flash-medium",
-    "gemini-3.6-flash-low",
-    "gemini-3.1-pro-low",
-    "gemini-3.1-pro-high",
-    "claude-opus-5-5-low",
-    "claude-opus-5-5-medium",
-    "claude-opus-5-5-high",
-    "claude-sonnet-5-5-low",
-    "claude-sonnet-5-5-medium",
-    "claude-sonnet-5-5-high",
+    "gemini-3.8-flash-tiered",
+    "gemini-4-argon-low",
+    "gemini-4-argon-medium",
+    "gemini-4-argon-high",
+    "gemini-2.5-pro",
 )
 _ANTIGRAVITY_INTEGRATION_SLOT_SET = frozenset(ANTIGRAVITY_INTEGRATION_SLOTS)
 # The legacy ``gemini-3-flash-agent`` alias migrates to the surviving Flash-high
 # slot. 2026-09-25: retargeted from the retired ``gemini-3.5-flash-high`` to
 # ``gemini-3.6-flash-high`` so the migration destination stays a live slot.
 _ANTIGRAVITY_LEGACY_SLOT_MIGRATIONS = {
-    "gemini-3-flash-agent": "gemini-3.6-flash-high",
-    # 2026-10-15 (live probe): ``gemini-pro-agent`` returns 404 NOT_FOUND and was
-    # dropped from the OAuth catalog, so saved mappings would orphan. Retarget to
-    # ``gemini-3.6-flash-high`` like the other retired Flash slots — NOT to
-    # ``gemini-3-flash`` (verified live upstream): migration is single-pass (the
-    # loop reads the original mappings, never its own output), but the validator
-    # afterwards only keeps keys in _ANTIGRAVITY_INTEGRATION_SLOT_SET, and
-    # ``gemini-3-flash`` is an obsolete slot there, so a mapping migrated onto it
-    # would be dropped as an unknown source slot on the same save.
-    "gemini-pro-agent": "gemini-3.6-flash-high",
-    # 2026-10-06 (user directive): bare ``gemini-3-flash`` is retired upstream
-    # ("unavailable"); retarget to the surviving Flash-high slot. deepseek-v4.1-
-    # flash / glm-5.3-flash were offered as fallbacks but are not needed while
-    # gemini-3.6-flash-high stays live.
-    "gemini-3-flash": "gemini-3.6-flash-high",
-    # 2026-10-06 (user directive): the Claude 4.6 slots were retired upstream
-    # (refreshed Antigravity IDE menu). Sonnet 4.6 was the Thinking variant
-    # ≈ high effort; both retarget to the new 5.5 High slots.
-    "claude-sonnet-4-6": "claude-sonnet-5-5-high",
-    "claude-opus-4-6-thinking": "claude-opus-5-5-high",
+    "gemini-3-flash-agent": "gemini-3.8-flash-tiered",
+    "gemini-pro-agent": "gemini-3.8-flash-tiered",
+    "gemini-3-flash": "gemini-3.8-flash-tiered",
 }
 _ANTIGRAVITY_OBSOLETE_SLOTS = frozenset({
+    'gemini-3.6-flash-high',
+    'gemini-3.6-flash-medium',
+    'gemini-3.6-flash-low',
+    'gemini-3.1-pro-low',
+    'gemini-3.1-pro-high',
+    'claude-opus-5-5-low',
+    'claude-opus-5-5-medium',
+    'claude-opus-5-5-high',
+    'claude-sonnet-5-5-low',
+    'claude-sonnet-5-5-medium',
+    'claude-sonnet-5-5-high',
+    'claude-sonnet-4-6',
+    'claude-opus-4-6-thinking',
+
     "gemini-default",
     "gemini-3.5-flash-extra-low",
     "gemini-3.1-pro-request-antigravity",
@@ -1590,6 +1605,7 @@ _ANTIGRAVITY_NATIVE_HOSTS = frozenset({
 _ANTIGRAVITY_INTEGRATION_LOCK = asyncio.Lock()
 # Lazy singleton — built on first use so startup import order doesn't matter.
 _ANTIGRAVITY_EGRESS_CLIENT: Optional[httpx.AsyncClient] = None
+_ROUTER_ANTIGRAVITY_EGRESS_CLIENT: Optional[httpx.AsyncClient] = None
 google_egress_client: Optional[httpx.AsyncClient] = None
 
 
@@ -1606,6 +1622,16 @@ def _get_antigravity_egress_client() -> httpx.AsyncClient:
     if _ANTIGRAVITY_EGRESS_CLIENT is None:
         _ANTIGRAVITY_EGRESS_CLIENT = build_google_egress_client()
     return _ANTIGRAVITY_EGRESS_CLIENT
+
+
+def _get_router_antigravity_egress_client() -> httpx.AsyncClient:
+    """Return the dedicated egress client for router-model upstream traffic."""
+    if google_egress_client is not None:
+        return google_egress_client
+    global _ROUTER_ANTIGRAVITY_EGRESS_CLIENT
+    if _ROUTER_ANTIGRAVITY_EGRESS_CLIENT is None:
+        _ROUTER_ANTIGRAVITY_EGRESS_CLIENT = build_google_egress_client()
+    return _ROUTER_ANTIGRAVITY_EGRESS_CLIENT
 
 
 def _antigravity_integration_settings(config_data=None) -> dict:
@@ -1749,7 +1775,204 @@ def _validate_antigravity_integration_config(config_data: dict) -> dict:
         "enabled": enabled,
         "mappings": normalized_mappings,
     }
+    if "custom_models" in integration:
+        config_data["antigravity_integration"]["custom_models"] = _validate_app_custom_models(config_data, integration["custom_models"])
     return config_data
+
+
+_CLAUDE_SETTINGS_PATH = None
+_AG_RESERVED_INDICES = {16,18,19,20,21,26,28,35,36,37,50,71,72,73,84,187,198,318,319,320,322,417,418,419}
+
+
+def _validate_app_custom_models(config_data, entries, claude=False):
+    if not isinstance(entries, list):
+        raise ValueError("custom_models must be a list")
+    protected = {entry.get("alias_id") for entry in entries if isinstance(entry, dict) and isinstance(entry.get("alias_id"), str) and re.fullmatch(r"claude-bsl-\d+", entry["alias_id"])} if claude else {
+        entry["placeholder_index"] for entry in entries if isinstance(entry, dict) and type(entry.get("placeholder_index")) is int and 0 <= entry["placeholder_index"] <= 650 and entry["placeholder_index"] not in _AG_RESERVED_INDICES
+    }
+    result, targets, used, aliases = [], set(), set(_AG_RESERVED_INDICES), set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("custom_models entries must be objects")
+        target = entry.get("target")
+        if not isinstance(target, str) or not _is_known_antigravity_mapping_target(config_data, target.strip()):
+            raise ValueError("Unknown custom model target")
+        target = target.strip()
+        if target in targets:
+            continue
+        targets.add(target)
+        name, enabled = entry.get("display_name", target), entry.get("enabled", True)
+        if not isinstance(name, str) or not isinstance(enabled, bool):
+            raise ValueError("Invalid custom model display_name or enabled")
+        model = {"target": target, "display_name": name or target, "enabled": enabled}
+        if claude:
+            alias = entry.get("alias_id", "")
+            if not isinstance(alias, str) or not re.fullmatch(r"claude-bsl-\d+", alias) or alias in aliases:
+                i = 1
+                while f"claude-bsl-{i}" in aliases or f"claude-bsl-{i}" in protected:
+                    i += 1
+                alias = f"claude-bsl-{i}"
+            aliases.add(alias)
+            description = entry.get("description", f"BSL Router ({target})")
+            if not isinstance(description, str):
+                raise ValueError("Invalid custom model description")
+            model.update(alias_id=alias, description=description)
+        else:
+            index = entry.get("placeholder_index")
+            if type(index) is not int or not 0 <= index <= 650 or index in used:
+                hashed = 5381
+                for char in target.lower():
+                    hashed = (hashed * 33 + ord(char)) & 0xffffffff
+                index = 400 + hashed % 250
+                for _ in range(651):
+                    if index not in used and index not in protected:
+                        break
+                    index = (index + 1) % 651
+                else:
+                    raise ValueError("No available placeholder indices")
+            used.add(index)
+            model.update(placeholder_index=index, slug="custom-" + re.sub(r"[^a-z0-9]+", "-", target.lower()).strip("-"))
+        result.append(model)
+    return result
+
+
+def _resolve_antigravity_custom_model(config_data, *selectors):
+    for entry in config_data.get("antigravity_integration", {}).get("custom_models", []):
+        if not entry.get("enabled", True):
+            continue
+        index = entry.get("placeholder_index")
+        keys = {str(entry.get(k, "")) for k in ("target", "slug", "display_name")}
+        if type(index) is int:
+            keys.update((f"MODEL_PLACEHOLDER_M{index}", str(1000 + index)))
+        keys.discard("")
+        for selector in selectors:
+            if not isinstance(selector, (str, int)):
+                continue
+            value = str(selector)
+            for prefix in ("models/custom/", "models/"):
+                if value.startswith(prefix):
+                    value = value[len(prefix):]
+                    break
+            if value in keys:
+                return entry["target"]
+    return None
+
+
+def _validate_claude_code_integration_config(config_data):
+    if "claude_code_integration" not in config_data:
+        return config_data
+    raw = config_data["claude_code_integration"]
+    if not isinstance(raw, dict):
+        raise ValueError("claude_code_integration must be an object")
+    normalized = {}
+    for key in ("enabled", "replace_builtin"):
+        value = raw.get(key, True)
+        if not isinstance(value, bool):
+            raise ValueError(f"claude_code_integration.{key} must be boolean")
+        normalized[key] = value
+    default = raw.get("default_model", "")
+    if not isinstance(default, str) or (default and not _is_known_antigravity_mapping_target(config_data, default)):
+        raise ValueError("Invalid Claude Code default_model")
+    slots = raw.get("tier_slots", {})
+    if not isinstance(slots, dict) or any(k not in ("opus", "sonnet", "haiku") or not isinstance(v, str) or (v and not _is_known_antigravity_mapping_target(config_data, v)) for k, v in slots.items()):
+        raise ValueError("Invalid Claude Code tier_slots")
+    normalized.update(default_model=default, tier_slots=dict(slots), custom_models=_validate_app_custom_models(config_data, raw.get("custom_models", []), True))
+    config_data["claude_code_integration"] = normalized
+    return config_data
+
+
+def _claude_code_models(config_data):
+    cfg = config_data.get("claude_code_integration", {})
+    if not cfg.get("enabled", True):
+        return []
+    models = [dict(m) for m in cfg.get("custom_models", []) if m.get("enabled", True)]
+    default_target = cfg.get("default_model")
+    if default_target and not any(m["target"] == default_target for m in models):
+        models.append({"target": default_target, "alias_id": "claude-bsl-tier-default", "display_name": default_target,
+                       "description": f"BSL Router ({default_target})", "enabled": True})
+    for tier in ("opus", "sonnet", "haiku", "custom"):
+        target = (cfg.get("tier_slots") or {}).get(tier)
+        alias_id = f"claude-bsl-tier-{tier}"
+        if target and not any(m.get("alias_id") == alias_id for m in models):
+            models.append({"target": target, "alias_id": alias_id, "display_name": target,
+                           "description": f"BSL Router ({target})", "enabled": True})
+    return models
+
+
+def _resolve_claude_code_alias(config_data, selector):
+    for model in _claude_code_models(config_data):
+        if selector in (model["alias_id"], model["target"], model["display_name"]):
+            return model["target"]
+    cfg = config_data.get("claude_code_integration", {})
+    if cfg.get("enabled", True) and selector in ("opus", "sonnet", "haiku"):
+        return cfg.get("tier_slots", {}).get(selector)
+    return None
+
+
+def _sync_claude_code_settings(config_data):
+    from pathlib import Path
+    from app.antigravity_patcher import _atomic_write
+    path = Path(_CLAUDE_SETTINGS_PATH or os.path.join(os.path.expanduser("~"), ".claude", "settings.json"))
+    settings = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
+    if not isinstance(settings, dict) or not isinstance(settings.get("env", {}), dict):
+        raise ValueError("Claude settings and env must be objects")
+    cfg = config_data.get("claude_code_integration", {})
+    env = settings.setdefault("env", {})
+    models = _claude_code_models(config_data)
+    keys = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]
+    for prefix in ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_CUSTOM_MODEL_OPTION"):
+        keys.extend((prefix, prefix + "_NAME", prefix + "_DESCRIPTION"))
+    if cfg.get("enabled", True) and models:
+        server = config_data.get("server", {})
+        api_keys = server.get("api_keys") or []
+        env.update(ANTHROPIC_BASE_URL=f"http://127.0.0.1:{server.get('port', 6969)}", ANTHROPIC_AUTH_TOKEN=api_keys[0] if api_keys else "sk-bsl-local", CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY="1")
+        default = next((m for m in models if m["alias_id"] == "claude-bsl-tier-default"), next((m for m in models if m["target"] == cfg.get("default_model")), models[0]))
+        settings["model"] = default["alias_id"]
+        for tier in ("opus", "sonnet", "haiku", "custom"):
+            chosen = next((m for m in models if m["alias_id"] == f"claude-bsl-tier-{tier}"), next((m for m in models if m["target"] == cfg.get("tier_slots", {}).get(tier)), default))
+            prefix = "ANTHROPIC_CUSTOM_MODEL_OPTION" if tier == "custom" else f"ANTHROPIC_DEFAULT_{tier.upper()}_MODEL"
+            env.update({prefix: chosen["alias_id"], prefix + "_NAME": chosen["display_name"], prefix + "_DESCRIPTION": chosen.get("description", "")})
+        settings["modelPicker"] = {
+            "replaceBuiltInOptions": cfg.get("replace_builtin", True),
+            "options": [
+                {
+                    "model": m["alias_id"],
+                    "value": m["alias_id"],
+                    "label": m["display_name"],
+                    "description": m.get("description") or f"BSL Router -> {m['target']}",
+                    "behavesAs": "claude-opus-4-8",
+                }
+                for m in models
+            ],
+        }
+    else:
+        if str(env.get("ANTHROPIC_BASE_URL", "")).startswith("http://127.0.0.1:"):
+            for key in keys:
+                env.pop(key, None)
+        if str(settings.get("model", "")).startswith("claude-bsl-"):
+            settings.pop("model", None)
+        picker = settings.get("modelPicker", {})
+        if isinstance(picker, dict) and any(str(m.get("value", "") or m.get("model", "")).startswith("claude-bsl-") for m in picker.get("options", [])):
+            settings.pop("modelPicker", None)
+    _atomic_write(path, (json.dumps(settings, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    if _CLAUDE_SETTINGS_PATH is None:
+        try:
+            meta_path = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "Claude-3p" / "configLibrary" / "_meta.json"
+            if meta_path.exists():
+                meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+                applied_id = meta.get("appliedId") if isinstance(meta, dict) else None
+                gw_path = meta_path.parent / f"{applied_id}.json" if applied_id else None
+                if gw_path and gw_path.exists():
+                    gw_cfg = json.loads(gw_path.read_text(encoding="utf-8-sig"))
+                    if isinstance(gw_cfg, dict):
+                        if cfg.get("enabled", True) and models and cfg.get("replace_builtin", True):
+                            gw_cfg["inferenceModels"] = [{"name": m["alias_id"], "labelOverride": m["display_name"], "maxEffort": "max"} for m in models]
+                        else:
+                            gw_cfg.pop("inferenceModels", None)
+                        _atomic_write(gw_path, (json.dumps(gw_cfg, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+        except Exception:
+            pass
+    return {"ok": True, "path": str(path), "enabled": cfg.get("enabled", True), "models": len(models)}
 
 
 def _persist_config_snapshot(updated_config: dict) -> None:
@@ -2168,21 +2391,75 @@ def _afz_passthrough_guard(raw_agen, content_type, *, protocol="openai", allow_d
     return _afz_sid, _afz_registry_only_guard(raw_agen, _afz_sid)
 
 
+def _apply_fel_to_antigravity_native_body(request: Request, raw_body: bytes) -> tuple[bytes, str, bool]:
+    model_name = "gemini-4-argon"
+    try:
+        payload = json.loads(raw_body)
+        if not isinstance(payload, dict):
+            return raw_body, model_name, False
+        native_request = payload.get("request")
+        if not isinstance(native_request, dict):
+            native_request = {}
+        model_name = str(payload.get("model") or native_request.get("model") or model_name)
+        if not isinstance(payload.get("contents"), list) and not isinstance(native_request.get("contents"), list):
+            return raw_body, model_name, False
+        config = cs_get_config()
+        fel = resolve_fel(config.get("tools", {}))
+        headers = dict(request.headers) if request is not None else None
+        if (
+            fel is None
+            or not _fel_family_enabled(config, "gemini")
+            or (request is not None and request.headers.get("x-bsl-fel", "").strip().lower() == "off")
+        ):
+            return raw_body, model_name, False
+        profile_name = request.headers.get(fel.profile_header, "") if request is not None and fel.profile_header else ""
+        last_text = extract_last_user_text(payload)
+        if last_text:
+            adjusted, _, _ = clarity_preprocess(last_text, fel, profile_name)
+            adjusted, _, _ = reframe_text(adjusted, fel, profile_name)
+            if adjusted != last_text:
+                set_last_user_text(payload, adjusted)
+        if fel.reframe_context_scope == "full":
+            reframe_context_wide(payload, fel, profile_name)
+        payload = apply_fel_directives(
+            payload, model=model_name, provider="antigravity", fel=fel, headers=headers,
+        )
+        adjusted_body = json.dumps(payload).encode("utf-8")
+        fel_event("directives", model=model_name, provider="antigravity", details={"wire": "gemini-native"})
+        if request is not None:
+            request.state.bsl_fel_family = "gemini"
+            request.state.bsl_fel_applied = True
+        return adjusted_body, model_name, True
+    except Exception:
+        return raw_body, model_name, False
+
+
 async def _forward_antigravity_native(request: Request, is_stream: bool, raw_body: bytes):
     """Pass inference requests to Google without re-entering local BSL."""
+    global _ANTIGRAVITY_EGRESS_CLIENT
+    raw_body, _ag_fel_model, _ag_fel_on = _apply_fel_to_antigravity_native_body(request, raw_body)
     try:
         # Use the hosts-file-bypassing egress client so the native fallback reaches
         # the REAL Google servers even when daily-cloudcode-pa.googleapis.com is
         # redirected to 127.0.0.1 in the hosts file for MITM interception.
-        client = _get_antigravity_egress_client()
-        upstream_request = client.build_request(
-            "POST",
-            _build_antigravity_native_url(request),
-            headers=_antigravity_native_request_headers(request),
-            content=raw_body,
-        )
+        for attempt in range(3):
+            client = _get_antigravity_egress_client()
+            upstream_request = client.build_request(
+                "POST",
+                _build_antigravity_native_url(request),
+                headers=_antigravity_native_request_headers(request),
+                content=raw_body,
+            )
+            try:
+                upstream_response = await client.send(upstream_request, stream=is_stream)
+                break
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
+                if google_egress_client is not None or attempt >= 2:
+                    raise
+                rotate_google_ip_cache()
+                # Do not close a pool that may still carry another native stream.
+                _ANTIGRAVITY_EGRESS_CLIENT = None
         if is_stream:
-            upstream_response = await client.send(upstream_request, stream=True)
             if upstream_response.status_code != 200:
                 _err_body = await upstream_response.aread()
                 await upstream_response.aclose()
@@ -2224,7 +2501,7 @@ async def _forward_antigravity_native(request: Request, is_stream: bool, raw_bod
                     protocol="gemini",
                 )
                 return StreamingResponse(
-                    _afz_body,
+                    _wrap_egress_stream(_afz_body, model=_ag_fel_model, provider="antigravity"),
                     status_code=upstream_response.status_code,
                     headers=headers,
                     background=BackgroundTask(upstream_response.aclose),
@@ -2233,7 +2510,6 @@ async def _forward_antigravity_native(request: Request, is_stream: bool, raw_bod
                 await upstream_response.aclose()
                 raise
 
-        upstream_response = await client.send(upstream_request)
         try:
             return Response(
                 content=upstream_response.content,
@@ -2243,6 +2519,9 @@ async def _forward_antigravity_native(request: Request, is_stream: bool, raw_bod
         finally:
             await upstream_response.aclose()
     except Exception as exc:
+        if google_egress_client is None and isinstance(exc, httpx.TransportError):
+            rotate_google_ip_cache()
+            _ANTIGRAVITY_EGRESS_CLIENT = None
         # Do not include request headers, authorization, or raw payload data in logs.
         import traceback
         traceback.print_exc()
@@ -2312,14 +2591,20 @@ def _detect_capabilities_lite(
             "claude-opus",
             "claude-sonnet",
             "gpt-5",
+            "gpt-6",
             "gpt-4o",
             "gemini",
+            "4-argon",
             "grok",
             "mimo-v2-omni",
             "kimi",
+            "k3",
             "glm-5",
             "deepseek-v4",
+            "v4.",
+            "v4-",
             "minimax-m3",
+            "m3.1",
             "qwen3",
             "seed-2-0",
         ):
@@ -2924,6 +3209,29 @@ async def lifespan(app: FastAPI):
 
     log_rotation_task = asyncio.create_task(_periodic_log_rotation())
 
+    from app.antigravity_patcher import apply_staged_asar_if_present, patch_antigravity
+
+    try:
+        _boot_cfg = cs_get_config()
+        if _boot_cfg.get("antigravity_integration", {}).get("enabled", False):
+            await asyncio.to_thread(patch_antigravity, port=_boot_cfg.get("server", {}).get("port", 6969), restore=False)
+        if _boot_cfg.get("claude_code_integration", {}).get("enabled", True):
+            await asyncio.to_thread(_sync_claude_code_settings, _boot_cfg)
+    except Exception as _boot_int_err:
+        print(f"[BSL Router] Startup app integration sync warning: {_boot_int_err}", flush=True)
+
+    async def _staged_asar_watcher():
+        while True:
+            await asyncio.sleep(2)
+            try:
+                await asyncio.to_thread(apply_staged_asar_if_present)
+            except asyncio.CancelledError:
+                raise
+            except Exception as _e:
+                print(f"[BSL Router] Staged Antigravity ASAR check failed: {_e}", flush=True)
+
+    staged_asar_task = asyncio.create_task(_staged_asar_watcher())
+
     # ── Capture-log writer + boot self-heal (I/O stall fix 2026-08-30) ────────
     # Drain the inbound-capture queue off the event loop, and fire-and-forget
     # rotation checks for ALL THREE unbounded loggers so a restart heals files
@@ -2943,6 +3251,7 @@ async def lifespan(app: FastAPI):
     yield
     watchdog_task.cancel()
     log_rotation_task.cancel()
+    staged_asar_task.cancel()
     capture_writer_task.cancel()
     try:
         await watchdog_task
@@ -3010,7 +3319,7 @@ def _invalidate_admin_session(token: str):
 #  - /admin: static files (HTML/CSS/JS must load to render login overlay)
 #  - /v1/, /anthropic/, /gemini/, /v1internal:: proxy traffic (protected by API key)
 #  - /api/auth/: login/logout/status must be reachable without session
-_PUBLIC_PATHS = {"/health", "/favicon.ico", "/callback"}
+_PUBLIC_PATHS = {"/health", "/favicon.ico", "/callback", "/GetAvailableModels"}
 _PUBLIC_PREFIXES = (
     "/admin",
     "/v1/", "/v1beta/", "/v1alpha/", "/anthropic/", "/gemini/", "/v1internal:",
@@ -3433,6 +3742,9 @@ def _connection_identity(conn):
     name = str(conn.get("name") or "").strip()
     if name:
         return ("name", name.lower())
+    email = str(conn.get("email") or "").strip()
+    if email:
+        return ("email", email.lower())
     return None
 
 
@@ -3455,12 +3767,14 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
     duplicate blank-key row. The fix is a single authoritative dedup-MERGE
     pass keyed on the KEY-INDEPENDENT ``_connection_identity``:
 
-      * server rows are authoritative and preserved (lost-update protection);
-      * a body row that matches a server row by identity UPDATES that server
-        row IN PLACE (carrying the server's api_key across when the body's is
-        blank/missing) instead of being appended as a duplicate;
-      * a server row with no body match is kept (a stale tab dropped it);
-      * a body row whose identity is genuinely new (no server match) is appended;
+      * body rows come FIRST in the client's order so Move Up / Move Down
+        reordering persists across saves and hard refreshes;
+      * a body row that matches a server row by identity merges in place
+        (carrying the server's api_key/access_token/refresh_token across when
+        the body's is blank/missing) instead of being appended as a duplicate;
+      * a server row with no body match is appended at the end (lost-update
+        restoration when a stale tab dropped it);
+      * a body row whose identity is genuinely new (no server match) is kept;
       * a body row with NO identity (no id AND no name) is NEVER appended --
         an unidentifiable row must not grow the list.
 
@@ -3469,7 +3783,7 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
     merge.
 
     Explicit opt-out: a body carrying ``_deleted_connection`` =
-    ``{"provider": "<id>", "api_key": "<key>"}`` is a deliberate single-tab
+    ``{"provider": "<id>", "api_key": "<key>", ...}`` is a deliberate single-tab
     deleteConnection — the guard drops the matching server row instead of
     restoring it, so genuine deletes are never "restored".
     """
@@ -3484,6 +3798,9 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
         deletion = {}
     del_provider = deletion.get("provider")
     del_api_key = str(deletion.get("api_key") or "").strip()
+    del_access_token = str(deletion.get("access_token") or "").strip()
+    del_id = str(deletion.get("id") or "").strip()
+    del_name = str(deletion.get("name") or "").strip().lower()
 
     for prov_id, old_prov in old_providers.items():
         if not isinstance(old_prov, dict):
@@ -3523,29 +3840,65 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
             body_conns = []
             new_prov["connections"] = body_conns
 
-        # ── Dedup-merge (Bug 3, 2026-09-29) ────────────────────────────────
-        # ONE authoritative pass replaces the old Pass 1 (name/positional key
-        # guessing) + Pass 2 (append-on-mismatch). Server rows are kept in
-        # order and merged in place with their body match; genuinely-new body
-        # rows are appended; unidentifiable body rows are dropped (never
-        # appended); the deliberate-delete target is dropped, not restored.
-        is_delete_target = (
-            lambda c: prov_id == del_provider
-            and bool(del_api_key)
-            and str((c or {}).get("api_key") or "").strip() == del_api_key
-        )
+        # ── Dedup-merge (Bug 3, 2026-09-29; Order-preserving fix 2026-10-22) ─
+        # Body rows are processed FIRST so intentional client reordering
+        # (Move Up / Move Down) is preserved, while matching server rows
+        # supply any blanked credentials. Server rows absent from the body
+        # (stale-tab lost-update protection) are appended afterwards unless
+        # matched by _deleted_connection.
+        def is_delete_target(c):
+            if prov_id != del_provider or not isinstance(c, dict):
+                return False
+            if del_api_key and str(c.get("api_key") or "").strip() == del_api_key:
+                return True
+            if del_access_token and str(c.get("access_token") or "").strip() == del_access_token:
+                return True
+            if del_id and str(c.get("id") or "").strip() == del_id:
+                return True
+            if del_name and not del_api_key and not del_access_token and not del_id:
+                if str(c.get("name") or "").strip().lower() == del_name:
+                    return True
+            return False
 
-        body_identities = []
-        for bc in body_conns:
-            bid = _connection_identity(bc)
-            if bid is not None:
-                body_identities.append(bid)
-        body_id_set = set(body_identities)
+        old_by_id = {}
+        for old_conn in old_conns:
+            if not isinstance(old_conn, dict) or is_delete_target(old_conn):
+                continue
+            oid = _connection_identity(old_conn)
+            if oid is not None and oid not in old_by_id:
+                old_by_id[oid] = old_conn
 
         merged = []
         seen = set()
         restored_keys = 0
         restored_conns = 0
+
+        # Pass 1: Keep body rows in the client's exact order (preserves Move Up/Down).
+        for body_conn in body_conns:
+            if not isinstance(body_conn, dict):
+                continue
+            bid = _connection_identity(body_conn)
+            if bid is None or bid in seen:
+                continue
+            old_match = old_by_id.get(bid)
+            if old_match is not None:
+                if not str(body_conn.get("api_key") or "").strip() and str(
+                    old_match.get("api_key") or ""
+                ).strip():
+                    body_conn["api_key"] = old_match["api_key"]
+                    restored_keys += 1
+                if not str(body_conn.get("access_token") or "").strip() and str(
+                    old_match.get("access_token") or ""
+                ).strip():
+                    body_conn["access_token"] = old_match["access_token"]
+                if not str(body_conn.get("refresh_token") or "").strip() and str(
+                    old_match.get("refresh_token") or ""
+                ).strip():
+                    body_conn["refresh_token"] = old_match["refresh_token"]
+            merged.append(body_conn)
+            seen.add(bid)
+
+        # Pass 2: Append server rows missing from the body (stale-tab protection).
         for old_conn in old_conns:
             if not isinstance(old_conn, dict):
                 merged.append(old_conn)
@@ -3554,43 +3907,11 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
                 continue  # deliberate deleteConnection — drop, do not restore
             oid = _connection_identity(old_conn)
             if oid is not None and oid in seen:
-                # Duplicate server row (same id/name as one already merged) —
-                # collapse it instead of re-adding a second copy.
                 continue
-            if oid is not None and oid in body_id_set and oid not in seen:
-                body_match = None
-                for bc in body_conns:
-                    if _connection_identity(bc) == oid:
-                        body_match = bc
-                        break
-                if body_match is not None:
-                    # In-place merge: take the body's fields, but carry the
-                    # server's live api_key across when the body blanked it.
-                    if not str(body_match.get("api_key") or "").strip() and str(
-                        old_conn.get("api_key") or ""
-                    ).strip():
-                        body_match["api_key"] = old_conn["api_key"]
-                        restored_keys += 1
-                    merged.append(body_match)
-                    seen.add(oid)
-                    continue
-            # Server row with no body match — a stale tab dropped it. Keep it
-            # (lost-update restoration), unless it was a delete target above.
             merged.append(old_conn)
             if oid is not None:
                 seen.add(oid)
             restored_conns += 1
-
-        # Append genuinely-new body rows (identity not yet seen). Rows with no
-        # identity (no id AND no name) are NEVER appended — they cannot be
-        # matched on a later save and would otherwise grow the list forever.
-        for body_conn in body_conns:
-            bid = _connection_identity(body_conn)
-            if bid is None:
-                continue
-            if bid not in seen:
-                merged.append(body_conn)
-                seen.add(bid)
 
         new_prov["connections"] = merged
 
@@ -3764,8 +4085,56 @@ async def update_config(request: Request):
 
         new_config = normalize_custom_text_provider_urls(new_config)
         new_config = _validate_antigravity_integration_config(new_config)
+        new_config = _validate_claude_code_integration_config(new_config)
+
+        # Remap index-keyed quota & usage state when connections are reordered
+        # (Move Up / Move Down) so Cookie 1 never displays Cookie 2's quota.
+        try:
+            for prov_id, old_prov in old_providers.items():
+                if not isinstance(old_prov, dict):
+                    continue
+                new_prov = new_providers.get(prov_id)
+                if not isinstance(new_prov, dict):
+                    continue
+                old_c_list = old_prov.get("connections") or []
+                new_c_list = new_prov.get("connections") or []
+                if not isinstance(old_c_list, list) or not isinstance(new_c_list, list):
+                    continue
+                old_idx_by_id = {}
+                for o_idx, oc in enumerate(old_c_list):
+                    oid = _connection_identity(oc)
+                    if oid is not None and oid not in old_idx_by_id:
+                        old_idx_by_id[oid] = o_idx
+                idx_remap = {}
+                for n_idx, nc in enumerate(new_c_list):
+                    nid = _connection_identity(nc)
+                    if nid is not None and nid in old_idx_by_id:
+                        idx_remap[old_idx_by_id[nid]] = n_idx
+                if idx_remap and any(k != v for k, v in idx_remap.items()):
+                    if prov_id in _OAUTH_QUOTA and isinstance(_OAUTH_QUOTA[prov_id], dict):
+                        old_q = _OAUTH_QUOTA[prov_id]
+                        _OAUTH_QUOTA[prov_id] = {
+                            new_i: old_q[old_i]
+                            for old_i, new_i in idx_remap.items()
+                            if old_i in old_q
+                        }
+                    with _oauth_antiban._CONNECTION_USAGE_LOCK:
+                        old_u = {
+                            old_i: _oauth_antiban._CONNECTION_USAGE.pop((str(prov_id), old_i), None)
+                            for old_i in list(idx_remap.keys())
+                        }
+                        for old_i, new_i in idx_remap.items():
+                            dq = old_u.get(old_i)
+                            if dq is not None:
+                                _oauth_antiban._CONNECTION_USAGE[(str(prov_id), new_i)] = dq
+            _QUOTA_CACHE["ts"] = 0.0
+            _QUOTA_CACHE["providers"] = {}
+        except Exception:
+            pass
 
         _replace_runtime_config(new_config)
+        if "claude_code_integration" in new_config:
+            _sync_claude_code_settings(new_config)
 
         # Clear round-robin state so edited/reordered combos start fresh.
         # Without this, RR counters leak stale indices after combo add/remove/reorder.
@@ -4069,64 +4438,34 @@ async def antigravity_integration_stop():
 
 @app.post("/api/antigravity-integration/start-full")
 async def antigravity_integration_start_full():
-    """Combined: set enabled=True + restore hosts entries + start MITM (kills port 443 conflicts)."""
-    # Step 1: Enable integration flag
+    """Combined: set enabled=True + apply direct Antigravity runtime patch."""
+    from app import antigravity_patcher
     flag_result = await _set_antigravity_integration_enabled(True)
     if hasattr(flag_result, "status_code") and flag_result.status_code >= 400:
         return flag_result
-
-    # Step 2: Restore hosts entries (single owner: _sync_antigravity_hosts)
-    hosts_note = await asyncio.to_thread(_sync_antigravity_hosts, True)
-
-    # Step 3: Start MITM — delegate to existing endpoint (handles lock + kill + verify)
-    mitm_resp = await mitm_start()
-    mitm_payload: dict = {}
-    try:
-        mitm_payload = json.loads(mitm_resp.body) if isinstance(mitm_resp.body, bytes) else {}
-    except Exception:
-        pass
-
-    if not mitm_payload.get("ok", False):
-        # Rollback the integration flag if MITM failed
-        await _set_antigravity_integration_enabled(False)
-        # MITM never came up -> do not leave a hijack pointing at a dead socket.
-        hosts_note = await asyncio.to_thread(_sync_antigravity_hosts, False)
-        return JSONResponse({
-            "ok": False,
-            "error": f"Failed to start MITM server: {mitm_payload.get('error', 'unknown error')}. Hosts file status: {hosts_note}",
-            "mitm": mitm_payload
-        }, status_code=mitm_resp.status_code if hasattr(mitm_resp, "status_code") else 500)
-
+    port = cs_get_config().get("server", {}).get("port", 6969)
+    patch_res = await asyncio.to_thread(antigravity_patcher.patch_antigravity, port=port, restore=False)
     return JSONResponse({
         "ok": True,
         "enabled": True,
-        "message": "Antigravity integration fully started.",
-        "hosts": hosts_note,
-        "mitm": mitm_payload,
+        "message": patch_res.get("message", "Antigravity integration started."),
+        "patch": patch_res,
         **_antigravity_integration_status_payload(),
     })
 
 
 @app.post("/api/antigravity-integration/stop-full")
 async def antigravity_integration_stop_full():
-    """Combined: stop MITM + set enabled=False."""
-    # Step 1: Stop MITM — delegate to existing endpoint (handles lock + verify)
-    mitm_resp = await mitm_stop(force=True)
-    mitm_note: str
-    try:
-        mitm_body = json.loads(mitm_resp.body) if isinstance(mitm_resp.body, bytes) else {}
-        mitm_note = "mitm_stopped" if mitm_body.get("ok") else f"mitm_error:{mitm_body.get('code', 'unknown')}"
-    except Exception:
-        mitm_note = "mitm_response_parse_error"
-
-    # Step 2: Disable integration flag (best-effort even if MITM stop had issues)
+    """Combined: restore Antigravity runtime + set enabled=False."""
+    from app import antigravity_patcher
+    port = cs_get_config().get("server", {}).get("port", 6969)
+    patch_res = await asyncio.to_thread(antigravity_patcher.patch_antigravity, port=port, restore=True)
     await _set_antigravity_integration_enabled(False)
-
     return JSONResponse({
         "ok": True,
         "enabled": False,
-        "message": "Antigravity integration stopped.",
-        "mitm": mitm_note,
+        "message": patch_res.get("message", "Antigravity integration stopped."),
+        "patch": patch_res,
         **_antigravity_integration_status_payload(),
     })
 
@@ -4220,6 +4559,188 @@ def _fel_family_enabled(config: dict, family: str) -> bool:
     except Exception:
         pass
     return True
+
+
+def _resolve_preflight_fel_family(model_id: str, config: dict) -> str:
+    """Resolve aliases and either combo shape with at most three nested hops."""
+    try:
+        aliases = (config or {}).get("aliases") or {}
+        combos = (config or {}).get("combos") or {}
+
+        def _resolve(target, depth: int = 0) -> str:
+            if depth > 3:
+                return "other"
+            provider = ""
+            if isinstance(target, dict):
+                if not target.get("enabled", True):
+                    return "other"
+                provider = str(target.get("provider") or "")
+                target = target.get("model") or ""
+            target = str(target or "")
+            family = detect_family(target, provider)
+            if family != "other":
+                return family
+            if isinstance(aliases, dict) and target in aliases:
+                family = _resolve(aliases[target], depth + 1)
+                if family != "other":
+                    return family
+            combo_def = None
+            if isinstance(combos, dict):
+                combo_def = combos.get(target)
+            elif isinstance(combos, list):
+                combo_def = next((
+                    item for item in combos
+                    if isinstance(item, dict) and item.get("alias") == target
+                ), None)
+            if isinstance(combo_def, dict):
+                entries = combo_def.get("models") or combo_def.get("chain") or []
+            else:
+                entries = combo_def if isinstance(combo_def, list) else []
+            for entry in entries:
+                family = _resolve(entry, depth + 1)
+                if family != "other":
+                    return family
+            return "other"
+
+        return _resolve(model_id)
+    except Exception:
+        return "other"
+
+
+def _reframe_upstream_payload_in_place(
+    payload: dict,
+    fel,
+    profile_name: str = "",
+    *,
+    body: dict = None,
+    model: str = "",
+    provider: str = "",
+) -> bool:
+    """Span-rewrite conversation history + last user turn on an upstream
+    payload (and optionally the outer request body) for Tier-2
+    data_inspection_failed escalation. Returns True if any text changed."""
+    if not isinstance(payload, dict) or fel is None:
+        return False
+    changed = False
+    ctx = {"changed": False, "messages_reframed": 0, "rewrites": []}
+    try:
+        ctx = reframe_context_wide(payload, fel, profile_name)
+        if ctx.get("changed"):
+            changed = True
+    except Exception:
+        pass
+    try:
+        last_txt = extract_last_user_text(payload)
+        if last_txt:
+            reframed_last, last_rw, last_ch = reframe_text(last_txt, fel, profile_name)
+            if last_ch and reframed_last != last_txt:
+                if set_last_user_text(payload, reframed_last):
+                    changed = True
+                    ctx.setdefault("rewrites", []).extend(last_rw)
+    except Exception:
+        pass
+    if isinstance(body, dict) and body is not payload:
+        try:
+            b_ctx = reframe_context_wide(body, fel, profile_name)
+            if b_ctx.get("changed"):
+                changed = True
+            b_last = extract_last_user_text(body)
+            if b_last:
+                b_ref, _, b_ch = reframe_text(b_last, fel, profile_name)
+                if b_ch and b_ref != b_last:
+                    if set_last_user_text(body, b_ref):
+                        changed = True
+        except Exception:
+            pass
+    if changed and (model or provider):
+        try:
+            fel_event(
+                "context_escalation",
+                model=model,
+                provider=provider,
+                details={
+                    "messages_reframed": ctx.get("messages_reframed", 0),
+                    "rewrites": ctx.get("rewrites", []),
+                },
+            )
+        except Exception:
+            pass
+    return changed
+
+
+@app.post("/admin/fel/preview")
+async def admin_fel_preview(request: Request):
+    """Dry-run FEL preview for the admin dashboard."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    text = str(payload.get("text") or "")
+    model = str(payload.get("model") or "glm-5.1")
+    provider = str(payload.get("provider") or "")
+    profile_name = str(payload.get("profile") or "")
+
+    cfg = get_mutable_config()
+    fel = resolve_fel(cfg.get("tools", {}))
+    family = (
+        detect_family(model, provider)
+        if provider
+        else _resolve_preflight_fel_family(model, cfg)
+    )
+    family_enabled = _fel_family_enabled(cfg, family)
+    fel_enabled = fel is not None
+    if fel is None:
+        tools_cfg = cfg.get("tools") or {}
+        raw_fel = tools_cfg.get("fel") or {} if isinstance(tools_cfg, dict) else None
+        if isinstance(raw_fel, dict):
+            fel = resolve_fel({**tools_cfg, "fel": {**raw_fel, "enabled": True}})
+
+    if fel is None:
+        return {
+            "enabled": False,
+            "family": family,
+            "family_enabled": family_enabled,
+            "original_text": text,
+            "clarity_text": text,
+            "reframed_text": text,
+            "clarity_changes": [],
+            "clarity_flagged": False,
+            "reframe_rewrites": [],
+            "directive_preview": "",
+        }
+
+    clarity_text, clarity_changes, clarity_flagged = clarity_preprocess(
+        text, fel, profile_name
+    )
+    reframed_text, reframe_rewrites, _ = reframe_text(
+        clarity_text, fel, profile_name
+    )
+    ctx, ref, scope = select_profile(fel, profile_name)
+    directive_preview = (
+        build_directives(
+            model,
+            provider,
+            fel.directive_lang,
+            research_content=bool(getattr(fel, "research_content", False)),
+            research_coding=bool(getattr(fel, "research_coding", False)),
+        )
+        if family_enabled
+        else ""
+    )
+    return {
+        "enabled": fel_enabled,
+        "family": family,
+        "family_enabled": family_enabled,
+        "original_text": text,
+        "clarity_text": clarity_text,
+        "reframed_text": reframed_text,
+        "clarity_changes": clarity_changes,
+        "clarity_flagged": clarity_flagged,
+        "reframe_rewrites": reframe_rewrites,
+        "directive_preview": directive_preview,
+    }
 
 
 @app.get("/api/observability/usage")
@@ -4386,9 +4907,11 @@ def _auth_test_progress(model_id: str):
     def _cb(step: str, label: str):
         if model_id in _AUTH_TEST_CANCEL:
             raise RuntimeError("authenticity test cancelled by user")
+        if step == "_cancel_check":
+            return
         try:
             _AUTH_TEST_STATUS[model_id] = {
-                "step": str(step), "label": str(label),
+                "step": str(step), "label": str(label), "status": "running",
                 "ts": __import__("time").time(),
             }
         except Exception:
@@ -4594,12 +5117,12 @@ async def auth_harvest_status(model_id: str):
     return JSONResponse(_AUTH_HARVEST_STATUS.get(model_id, {"status": "unknown", "detail": ""}))
 
 
-@app.delete("/api/authenticity/standards/{family}/{sub_model}")
-async def delete_auth_standard(family: str, sub_model: str, persist: bool = False):
+@app.delete("/api/authenticity/standards/{family}/{sub_model:path}")
+async def delete_auth_standard(family: str, sub_model: str, persist: bool = False, source_tag: str = ""):
     """Delete a frozen standard. With persist=true the canonical file is also
     `git rm`'d so the public repo drops it (canonical standards are tracked;
     provider-tagged local ones are untracked and only ever removed from disk)."""
-    ok = auth_harvest.delete_standard(auth_harvest.STANDARDS_DIR, family, sub_model)
+    ok = auth_harvest.delete_standard(auth_harvest.STANDARDS_DIR, family, sub_model, source_tag=source_tag)
     if not ok:
         return JSONResponse({"error": "standard not found"}, status_code=404)
     persisted = False
@@ -4610,7 +5133,7 @@ async def delete_auth_standard(family: str, sub_model: str, persist: bool = Fals
             # Single filename source of truth: the same helper delete_standard used
             # to unlink the file, so the git-index removal can never target a
             # different path than the on-disk delete.
-            fname = auth_harvest.standard_filename(family, sub_model)
+            fname = auth_harvest.standard_filename(family, sub_model, source_tag=source_tag)
             rel = f"app/authenticity/reference/standards/{fname}"
             proc = subprocess.run(["git", "rm", "-q", "--cached", "--ignore-unmatch", rel],
                                   cwd=str(_REPO_ROOT), capture_output=True, timeout=15)
@@ -4741,6 +5264,8 @@ async def run_auth_test(request: Request):
                 judge_model=judge_model,
                 on_progress=_auth_test_progress(model_id),
             )
+            if _AUTH_TEST_TASKS.get(model_id) is not asyncio.current_task():
+                return
             _auth_persist_verdict(model_id, verdict)
             # Auto-escalation: ambiguous shallow result → re-run ONCE in deep mode.
             # GUARD: don't escalate when the normal test already produced a strong
@@ -4764,6 +5289,7 @@ async def run_auth_test(request: Request):
                 # measured 262s wall, but it inherited the 240s shallow budget,
                 # so every late lane was budget-skipped -> null match dims.
                 _deep_cfg = dict(cfg)
+                _deep_cfg["no_cache"] = True
                 _deep_cfg["total_timeout_s"] = max(
                     float(cfg.get("total_timeout_s", 240) or 240),
                     float(cfg.get("deep_total_timeout_s", 900) or 900))
@@ -4779,6 +5305,8 @@ async def run_auth_test(request: Request):
                     judge_model=judge_model,
                     on_progress=_auth_test_progress(model_id),
                 )
+                if _AUTH_TEST_TASKS.get(model_id) is not asyncio.current_task():
+                    return
                 _auth_persist_verdict(model_id, verdict)
             if model_id in _AUTH_TEST_CANCEL:
                 # Cancel landed between the escalation guard and this terminal
@@ -4798,8 +5326,7 @@ async def run_auth_test(request: Request):
                 }
         except asyncio.CancelledError:
             # Superseded by a newer submission — don't clobber the new task's status.
-            _cur = _AUTH_TEST_TASKS.get(model_id)
-            if _cur is None or _cur.done():
+            if _AUTH_TEST_TASKS.get(model_id) is asyncio.current_task():
                 _AUTH_TEST_STATUS[model_id] = {
                     "step": "cancelled", "label": "Superseded by new test",
                     "status": "cancelled",
@@ -4808,6 +5335,8 @@ async def run_auth_test(request: Request):
                     "ts": __import__("time").time(),
                 }
         except Exception as exc:
+            if _AUTH_TEST_TASKS.get(model_id) is not asyncio.current_task():
+                return
             if "cancelled" in str(exc).lower():
                 _AUTH_TEST_STATUS[model_id] = {
                     "step": "cancelled", "label": "Cancelled by user",
@@ -4824,7 +5353,9 @@ async def run_auth_test(request: Request):
                     "ts": __import__("time").time(),
                 }
         finally:
-            _AUTH_TEST_CANCEL.discard(model_id)
+            if _AUTH_TEST_TASKS.get(model_id) is asyncio.current_task():
+                _AUTH_TEST_TASKS.pop(model_id, None)
+                _AUTH_TEST_CANCEL.discard(model_id)
 
     task = asyncio.create_task(_job())
     _AUTH_TEST_TASKS[model_id] = task
@@ -5408,11 +5939,18 @@ async def test_model(request: Request):
                     "max_tokens": 8,
                     "temperature": 0,
                     "stream": False,
+                    "_bsl_test_probe": True,
                 }
                 resp = await asyncio.wait_for(
-                    _process_chat_completion(probe_body),
+                    _process_chat_completion(dict(probe_body)),
                     timeout=_MODEL_TEST_TIMEOUT_S,
                 )
+                if getattr(resp, "status_code", 200) in (502, 503, 504):
+                    await asyncio.sleep(0.5)
+                    resp = await asyncio.wait_for(
+                        _process_chat_completion(dict(probe_body)),
+                        timeout=_MODEL_TEST_TIMEOUT_S,
+                    )
             except asyncio.TimeoutError:
                 return JSONResponse(
                     {"ok": False, "status": 504,
@@ -7466,46 +8004,90 @@ async def _bsl_agentic_max_dispatch(
     )
 
 
+def _extract_cache_write_tokens(usage: dict) -> int:
+    """Extract cache write/creation tokens from OpenAI, Anthropic, or relay usage dicts."""
+    if not isinstance(usage, dict) or not usage:
+        return 0
+    _cache_create = int(usage.get("cache_creation_input_tokens") or 0)
+    if _cache_create > 0:
+        return _cache_create
+    for _details_key in ("prompt_tokens_details", "input_tokens_details"):
+        _details = usage.get(_details_key)
+        if isinstance(_details, dict):
+            _cw = int(
+                _details.get("cache_write_tokens")
+                or _details.get("cache_creation_tokens")
+                or _details.get("cache_creation_input_tokens")
+                or 0
+            )
+            if _cw > 0:
+                return _cw
+    return 0
+
+
 def _extract_usage_tokens(usage: dict) -> tuple[int, int, int]:
     """Normalize a usage dict into (in_tokens, out_tokens, cached_tokens).
 
     OpenAI prompt_tokens is INCLUSIVE of cached tokens; Anthropic input_tokens
     is EXCLUSIVE (fresh only) with cache_read_input_tokens / cache_creation_input_tokens
-    reported separately. This helper always returns an INCLUSIVE prompt count so the
-    cached_tokens <= in_tokens invariant holds regardless of upstream format. Only
-    cache READS map to cached_tokens (creation is fresh cache writes, not a
-    discounted read). Shared across all stats/logging sites so they cannot diverge.
+    reported separately. Hybrid relays and Responses API (Codex) may report
+    input_tokens INCLUSIVE of cache (verified via input_tokens_details.cached_tokens
+    or total_tokens == input_tokens + output_tokens). This helper always returns
+    an INCLUSIVE prompt count without double-counting cache hits, ensuring the
+    cached_tokens <= in_tokens invariant holds across all dialects.
     """
-    if not usage:
+    if not isinstance(usage, dict) or not usage:
         return 0, 0, 0
-    _cache_read = usage.get("cache_read_input_tokens", 0) or 0
-    _cache_create = usage.get("cache_creation_input_tokens", 0) or 0
-    _prompt = usage.get("prompt_tokens")
-    if _prompt:
-        # OpenAI shape: prompt_tokens is already inclusive of cache.
-        # Truthy gate (not `is not None`): prompt_tokens=0 means "nothing
-        # processed" or a format artifact — fall through to the Anthropic fold,
-        # which correctly handles both cases instead of zeroing out input_tokens.
-        _in = _prompt
+    _cache_read = int(usage.get("cache_read_input_tokens") or 0)
+    _cache_create = _extract_cache_write_tokens(usage)
+    _ptd = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
+    _itd = usage.get("input_tokens_details") if isinstance(usage.get("input_tokens_details"), dict) else {}
+    _detail_cached = int(
+        _ptd.get("cached_tokens")
+        or _itd.get("cached_tokens")
+        or usage.get("prompt_cache_hit_tokens")
+        or usage.get("cachedContentTokenCount")
+        or usage.get("cached_tokens")
+        or 0
+    )
+    _cached = _detail_cached or _cache_read
+    _out = int(
+        usage.get("completion_tokens")
+        or usage.get("output_tokens")
+        or usage.get("candidatesTokenCount")
+        or 0
+    )
+    _prompt = int(usage.get("prompt_tokens") or usage.get("promptTokenCount") or 0)
+    _input = int(usage.get("input_tokens") or 0)
+    _total = int(usage.get("total_tokens") or usage.get("totalTokenCount") or 0)
+
+    if _prompt > 0:
+        if _prompt < _cached and _cache_read > 0:
+            _in = _prompt + _cache_read + _cache_create
+        else:
+            _in = _prompt
+    elif usage.get("prompt_cache_miss_tokens") is not None:
+        _in = int(usage.get("prompt_cache_miss_tokens") or 0) + _cached + _cache_create
+    elif _input > 0:
+        _is_inclusive_input = (
+            (_detail_cached > 0 and _cache_read == 0 and _input >= _detail_cached)
+            or (
+                _total > 0
+                and (_cache_read + _cache_create) > 0
+                and _input >= (_cache_read + _cache_create)
+                and abs(_total - (_input + _out)) <= 2
+            )
+        )
+        if _is_inclusive_input:
+            _in = _input
+        else:
+            _in = _input + _cache_read + _cache_create
     else:
-        # Anthropic shape: fold fresh + read + creation into an inclusive count.
-        _in = (usage.get("input_tokens", 0) or 0) + _cache_read + _cache_create
-    _out = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0
-    _cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or _cache_read
-    return _in, _out, _cached
+        _in = _cache_read + _cache_create
 
-
-def _extract_cache_write_tokens(usage: dict) -> int:
-    """Extract cache write/creation tokens from OpenAI or Anthropic usage dict."""
-    if not usage:
-        return 0
-    _cache_create = usage.get("cache_creation_input_tokens", 0) or 0
-    if _cache_create:
-        return _cache_create
-    _prompt_details = usage.get("prompt_tokens_details") or {}
-    if isinstance(_prompt_details, dict):
-        return _prompt_details.get("cache_write_tokens", 0) or 0
-    return 0
+    if _in > 0 and _cached > _in:
+        _cached = _in
+    return int(_in), int(_out), int(_cached)
 
 
 def _usage_from_sse_data(data_json) -> Optional[dict]:
@@ -7513,50 +8095,128 @@ def _usage_from_sse_data(data_json) -> Optional[dict]:
 
     OpenAI/Anthropic message_delta put usage top-level; Anthropic
     message_start nests it under message.usage; Responses-API nests
-    under response.usage. Shared by both streaming stats sites so
-    they cannot diverge (same doctrine as _extract_usage_tokens).
+    under response.usage; Gemini nests under usageMetadata.
     """
     if not isinstance(data_json, dict):
         return None
     for _container in (data_json, data_json.get("message"), data_json.get("response")):
         if isinstance(_container, dict):
-            _u = _container.get("usage")
+            _u = _container.get("usage") or _container.get("usageMetadata")
             if isinstance(_u, dict):
                 return _u
     return None
 
 
-def _backfill_missing_usage(stats: dict, request_messages, delivered_text: str,
-                            provider_name: str = "", target_model: str = "") -> None:
-    """Estimate in/out tokens when the provider omitted the usage frame.
+def _merge_usage_into_stats(stats: dict, usage: dict) -> None:
+    """Merge an SSE or JSON usage dict into stats without zero-clobbering earlier frames.
 
-    Aggregator relays (MintRouter is the observed case) stream content frames
-    but drop the terminal usage object, leaving stats["in"]/stats["out"] at 0
-    even though the request succeeded -- the log then reads "In: 0 | Out: 0"
-    for a healthy stream, and the zero-output fallback mis-fires. This backfill
-    runs ONLY when the provider reported nothing (both counts 0) AND real text
-    was delivered, so a genuine usage frame always wins and a dead leaf (no
-    content) is never masked. Fail-open: any error leaves stats untouched.
+    In Anthropic SSE, message_start carries input_tokens + cache_read_input_tokens
+    (with output_tokens=0) while message_delta carries only output_tokens (with no
+    input_tokens). Unconditional assignment on message_delta clobbered stats['in'],
+    stats['cached'], and stats['cache_write'] back to 0.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return
+    _i, _o, _c = _extract_usage_tokens(usage)
+    _cw = _extract_cache_write_tokens(usage)
+    if _c:
+        stats["cached"] = _c
+    if _cw:
+        stats["cache_write"] = _cw
+    if _o:
+        stats["out"] = _o
+        stats["stream_completed"] = True
+    if _i:
+        _has_explicit_base = bool(
+            usage.get("prompt_tokens")
+            or usage.get("promptTokenCount")
+            or usage.get("input_tokens")
+            or usage.get("prompt_cache_miss_tokens")
+        )
+        if _has_explicit_base or not stats.get("in"):
+            stats["in"] = max(
+                _i,
+                int(stats.get("cached") or 0) + int(stats.get("cache_write") or 0),
+            )
+            stats["_uncached_in"] = max(
+                0,
+                stats["in"] - int(stats.get("cached") or 0) - int(stats.get("cache_write") or 0),
+            )
+        else:
+            _prev_uncached = int(stats.get("_uncached_in", stats.get("in") or 0) or 0)
+            stats["in"] = _prev_uncached + int(stats.get("cached") or 0) + int(stats.get("cache_write") or 0)
+
+
+def _mark_stream_completed_if_terminal(stats: dict, data_json) -> None:
+    """Mark stats['stream_completed']=True when an SSE frame carries a terminal stop signal."""
+    if not isinstance(data_json, dict):
+        return
+    if data_json.get("type") in ("message_stop", "message_delta", "response.completed"):
+        stats["stream_completed"] = True
+        return
+    for _ch in (data_json.get("choices") or []):
+        if isinstance(_ch, dict) and _ch.get("finish_reason"):
+            stats["stream_completed"] = True
+            return
+    for _cand in (data_json.get("candidates") or []):
+        if isinstance(_cand, dict) and _cand.get("finishReason"):
+            stats["stream_completed"] = True
+            return
+
+
+def _should_mark_client_disconnected(stats: dict) -> bool:
+    """Return True only when the client disconnected BEFORE the stream completed."""
+    if stats.get("stream_completed"):
+        return False
+    if stats.get("status") == 200 and stats.get("out", 0) > 0 and not stats.get("error"):
+        return False
+    return True
+
+
+def _backfill_missing_usage(stats: dict, request_messages, delivered_text: str,
+                            provider_name: str = "", target_model: str = "",
+                            delivered_chars: int = 0) -> None:
+    """Estimate missing in/out tokens when the provider omitted or partially reported usage.
+
+    Runs when either stats["in"] or stats["out"] is 0 AND real output was delivered
+    (via delivered_text or delivered_chars from tool calls). A dead leaf with zero
+    delivered output and out==0 is never masked. Fail-open: any error leaves stats
+    untouched.
     """
     try:
-        if stats.get("in") or stats.get("out"):
-            return  # a real usage frame already populated stats -- never override
-        if not delivered_text or not delivered_text.strip():
-            return  # nothing delivered -> out==0 is truthful; do not mask a dead leaf
-        _est_out = max(1, len(delivered_text) // 4)
-        stats["out"] = _est_out
-        try:
-            _est_in = _count_tokens(request_messages) if request_messages else 0
-        except Exception:
+        if stats.get("in") and stats.get("out"):
+            return  # both counts already populated from upstream usage
+        _has_text = bool(delivered_text and delivered_text.strip())
+        _eff_chars = (len(delivered_text) if _has_text else 0) + max(0, int(delivered_chars or 0))
+        if not stats.get("out"):
+            if _eff_chars <= 0:
+                return  # nothing delivered -> out==0 is truthful; do not mask a dead leaf
+            stats["out"] = max(1, _eff_chars // 4)
+            stats["usage_estimated"] = True
+        if not stats.get("in") and (stats.get("out") or _eff_chars > 0):
             _est_in = 0
-        if _est_in and not stats.get("in"):
-            stats["in"] = _est_in
-        stats["usage_estimated"] = True
-        print(
-            f"[Usage] {provider_name}/{target_model} omitted usage frame -- "
-            f"estimated in={stats.get('in', 0)} out={_est_out} from delivered text",
-            flush=True,
-        )
+            try:
+                _est_in = _count_tokens(request_messages) if request_messages else 0
+            except Exception:
+                _est_in = 0
+            if not _est_in and request_messages:
+                try:
+                    _est_in = max(
+                        1,
+                        sum(len(str(m.get("content") or "")) for m in request_messages if isinstance(m, dict)) // 4,
+                    )
+                except Exception:
+                    _est_in = 0
+            _min_in = int(stats.get("cached") or 0) + int(stats.get("cache_write") or 0)
+            if _est_in or _min_in:
+                stats["in"] = max(_est_in, _min_in)
+                stats["usage_estimated"] = True
+        if stats.get("usage_estimated"):
+            print(
+                f"[Usage] {provider_name}/{target_model} omitted usage frame -- "
+                f"estimated in={stats.get('in', 0)} out={stats.get('out', 0)} from delivered output",
+                flush=True,
+            )
     except Exception:
         pass  # fail-open: an estimator bug must never break a healthy stream
 
@@ -7663,6 +8323,8 @@ async def _accumulate_sse_stream(
     _a_in = 0
     _a_out = 0
     _a_cached = 0
+    _a_cache_write = 0
+    _a_stats = {"in": 0, "out": 0, "cached": 0, "cache_write": 0}
     _a_err = None
 
     try:
@@ -7809,27 +8471,19 @@ async def _accumulate_sse_stream(
                                 _a_fr = _srm.get(_do["stop_reason"], _do["stop_reason"])
                             _uu = _as_obj(_ev.get("usage"))
                             if _uu:
-                                _a_out = _uu.get("output_tokens", _a_out)
+                                _merge_usage_into_stats(_a_stats, _uu)
+                                _a_in = _a_stats["in"]
+                                _a_out = _a_stats["out"]
+                                _a_cached = _a_stats["cached"]
+                                _a_cache_write = _a_stats["cache_write"]
                         elif _et == "message_start":
                             _uu = _as_obj(_as_obj(_ev.get("message")).get("usage"))
                             if _uu:
-                                # Anthropic input_tokens is EXCLUSIVE of cache; OpenAI
-                                # prompt_tokens is INCLUSIVE. Fold fresh + read + creation
-                                # so the assembled OpenAI-shaped usage keeps the
-                                # cached_tokens <= prompt_tokens invariant. Only cache
-                                # READS map to cached_tokens (creation is fresh writes).
-                                _a_cache_read = _uu.get("cache_read_input_tokens", 0) or 0
-                                _a_cache_create = _uu.get("cache_creation_input_tokens", 0) or 0
-                                _pt = _uu.get("prompt_tokens")
-                                _fresh = _uu.get("input_tokens")
-                                if _pt:
-                                    # OpenAI shape: prompt_tokens is already
-                                    # inclusive of cache, so use it as-is.
-                                    # Folding would double-count -> 90k-vs-50k.
-                                    _a_in = _pt
-                                elif _fresh is not None:
-                                    _a_in = _fresh + _a_cache_read + _a_cache_create
-                                _a_cached = _a_cache_read or _a_cached
+                                _merge_usage_into_stats(_a_stats, _uu)
+                                _a_in = _a_stats["in"]
+                                _a_out = _a_stats["out"]
+                                _a_cached = _a_stats["cached"]
+                                _a_cache_write = _a_stats["cache_write"]
                         if _et:
                             # Consumed as Anthropic - skip OpenAI pass for this event.
                             break
@@ -7882,17 +8536,11 @@ async def _accumulate_sse_stream(
                                     _a_lp.extend(_lp_c)
                         _uu = _as_obj(_ev.get("usage"))
                         if _uu:
-                            if _uu.get("prompt_tokens") is not None:
-                                _a_in = _uu.get("prompt_tokens", _a_in)
-                            elif _uu.get("input_tokens") is not None:
-                                _a_in = _uu.get("input_tokens", _a_in)
-                            if _uu.get("completion_tokens") is not None:
-                                _a_out = _uu.get("completion_tokens", _a_out)
-                            elif _uu.get("output_tokens") is not None:
-                                _a_out = _uu.get("output_tokens", _a_out)
-                            _ct = _as_obj(_uu.get("prompt_tokens_details"))
-                            if _ct.get("cached_tokens") is not None:
-                                _a_cached = _ct.get("cached_tokens", _a_cached)
+                            _merge_usage_into_stats(_a_stats, _uu)
+                            _a_in = _a_stats["in"]
+                            _a_out = _a_stats["out"]
+                            _a_cached = _a_stats["cached"]
+                            _a_cache_write = _a_stats["cache_write"]
                         if not _a_cp and _ev.get("id"):
                             _a_rid = _ev["id"]
 
@@ -7957,7 +8605,16 @@ async def _accumulate_sse_stream(
             "prompt_tokens": _a_in,
             "completion_tokens": _a_out,
             "total_tokens": _a_in + _a_out,
-            **({"prompt_tokens_details": {"cached_tokens": _a_cached}} if _a_cached else {}),
+            **(
+                {
+                    "prompt_tokens_details": {
+                        **({"cached_tokens": _a_cached} if _a_cached else {}),
+                        **({"cache_write_tokens": _a_cache_write} if _a_cache_write else {}),
+                    }
+                }
+                if (_a_cached or _a_cache_write)
+                else {}
+            ),
         },
     }
 
@@ -8029,6 +8686,14 @@ def _combo_restart_or_give_up(model, retry_state, active_chain, original_model,
     pass_no = int((retry_state or {}).get('pass_no', 1))
     backoff = min(2 * (2 ** (pass_no - 1)), 30)
     chain = list(active_chain or (retry_state or {}).get('chain') or [])
+    try:
+        _live_cfg = cs_get_config()
+        if model and any(isinstance(_c, dict) and _c.get("alias") == model for _c in _live_cfg.get("combos", [])):
+            _live_combo = resolve_combo(model, None, _live_cfg, {})
+            if _live_combo.active_chain:
+                chain, _ = expand_chain_for_retries(_live_combo.active_chain, _live_cfg, min_passes=2)
+    except Exception:
+        pass
     # PASS-COUNT SAFETY NET (Bug 2 Part A item 5, 2026-09-29): logging only.
     # The loop conversion keeps the stack O(1) in pass count, so there is no
     # recursion ceiling to hit — this line is observability for a wedged
@@ -8395,7 +9060,36 @@ or ('"reasoning": "' in text_chunk and '"reasoning": ""' not in text_chunk)
         or ('"function_call": {' in text_chunk and '"function_call": {}' not in text_chunk)
         or '"finish_reason":"tool_calls"' in text_chunk
         or '"finish_reason": "tool_calls"' in text_chunk
+        or '"output_text.delta"' in text_chunk
+        or '"reasoning_summary_text.delta"' in text_chunk
+        or '"reasoning_text.delta"' in text_chunk
     )
+
+
+def _codex_event_carries_output(dj: dict) -> bool:
+    """True when a parsed Codex Responses SSE event carries real model output.
+
+    Excludes lifecycle/scaffolding events (response.created, response.in_progress,
+    response.output_item.added, etc.) whose `response` envelope echoes request
+    instructions/tools that would otherwise false-positive substring checks.
+    """
+    if not isinstance(dj, dict):
+        return False
+    ev_type = dj.get("type") or ""
+    if ev_type in (
+        "response.output_text.delta",
+        "response.reasoning_summary_text.delta",
+        "response.reasoning_text.delta",
+    ):
+        return bool(dj.get("delta"))
+    if ev_type == "response.output_item.done":
+        item = dj.get("item")
+        return (
+            isinstance(item, dict)
+            and item.get("type") == "function_call"
+            and bool(item.get("name"))
+        )
+    return False
 
 
 def _degenerate_effective_models(guard_cfg: dict) -> set:
@@ -8680,7 +9374,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # Guard flags ride request.state: once-per-request idempotency, and the
     # recovery re-dispatch frame (bsl_fel_recovered) never re-prepends context.
     _fel = resolve_fel(config.get("tools", {}))
-    _fel_req_family = detect_family(model, "") if _fel is not None else ""
+    _fel_req_family = _resolve_preflight_fel_family(model, config) if _fel is not None else ""
     if (
         _fel is not None
         and _fel_family_enabled(config, _fel_req_family)
@@ -8703,7 +9397,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 # the (possibly clarity-adjusted) text, BEFORE the write so
                 # ONE set_last_user_text mutation carries both stages.
                 _fel_adjusted, _fel_reframes, _fel_reframe_changed = reframe_text(
-                    _fel_adjusted, _fel
+                    _fel_adjusted, _fel, _fel_profile_name
                 )
                 _fel_write_ok = False
                 if _fel_adjusted != _fel_last_text:
@@ -8722,24 +9416,20 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         fel_event("reframe", model=model, provider="", details={
                             "rewrites": _fel_reframes,
                         })
-                # Tier-2 context-wide reframe (2026-09-24): when
-                # reframe.context_scope == "full", span-rewrite user/assistant/
-                # tool history text in place via reframe_context_wide AFTER the
-                # last-turn reframe_text + set_last_user_text. The single
-                # attestation/engagement prepend stays on the last user turn
-                # (reframe_context_wide only span-rewrites; it never prepends),
-                # so no double-prepend. Runs under the same bsl_fel_clarified /
-                # bsl_fel_recovered once-per-request guards; fail-open.
-                if (
-                    _fel_write_ok
-                    and getattr(_fel, "reframe_context_scope", "last_turn") == "full"
-                ):
-                    _ctx = reframe_context_wide(body, _fel, _fel_profile_name)
-                    if _ctx.get("changed"):
-                        fel_event("context_reframe", model=model, provider="", details={
-                            "messages_reframed": _ctx.get("messages_reframed", 0),
-                            "rewrites": _ctx.get("rewrites", []),
-                        })
+            # Tier-2 context-wide reframe (2026-09-24): when
+            # reframe.context_scope == "full", span-rewrite user/assistant/
+            # tool history text in place via reframe_context_wide even when
+            # the last user turn itself is benign (or is a tool_result turn).
+            if getattr(_fel, "reframe_context_scope", "last_turn") == "full":
+                _ctx = reframe_context_wide(body, _fel, _fel_profile_name)
+                if _ctx.get("changed"):
+                    request.state.bsl_fel_clarified = True
+                    if not getattr(request.state, "bsl_fel_family", ""):
+                        request.state.bsl_fel_family = _fel_req_family
+                    fel_event("context_reframe", model=model, provider="", details={
+                        "messages_reframed": _ctx.get("messages_reframed", 0),
+                        "rewrites": _ctx.get("rewrites", []),
+                    })
         except Exception as _fel_clarity_err:
             print(f"[FEL] clarity pre-flight failed (fail-open): {_fel_clarity_err}", flush=True)
 
@@ -9047,9 +9737,28 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # keys remain eligible, rotate to the next key instead of 503ing
             # (resolve_active_connection's exclude_indexes handles the skip).
             _rotate_key_instead = False
-            if _retry_state:
+            if ban_type != "disabled":
                 try:
-                    _tried_here = (_retry_state.get('tried_conns') or {}).get(provider_name) or ()
+                    from app.utils.model_resolver import untried_connection_count as _untried
+                    _cb_pre = get_breaker()
+                    _conns_pre = (provider_config or {}).get("connections") or []
+                    _tc_pre_map = (_retry_state or {}).get("tried_conns") or {}
+                    _tried_pre = set(_tc_pre_map.get(f"{provider_name}/{target_model}") or _tc_pre_map.get(provider_name) or ())
+                    _has_healthy_sibling = any(
+                        isinstance(_c, dict) and _c.get("enabled", True)
+                        and (_cb_pre is None or not _cb_pre.is_open(provider_name, target_model, _i)[0])
+                        for _i, _c in enumerate(_conns_pre)
+                    )
+                    if (_tried_pre or _has_healthy_sibling) and _untried(
+                        config, provider_name, target_model, _tried_pre
+                    ) > (0 if _tried_pre else 1):
+                        _rotate_key_instead = True
+                except Exception:
+                    pass
+            if _retry_state and ban_type != "disabled":
+                try:
+                    _tc_here_map = _retry_state.get('tried_conns') or {}
+                    _tried_here = _tc_here_map.get(f"{provider_name}/{target_model}") or _tc_here_map.get(provider_name) or ()
                     if _tried_here:
                         from app.utils.model_resolver import untried_connection_count as _untried
                         if _untried(config, provider_name, target_model, set(_tried_here)) > 0:
@@ -9232,7 +9941,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # carries its own tried-set and the resolver filters on it, which keeps
     # connection_indexes / round_robin / breaker semantics intact.
     _tried_conns = (_retry_state or {}).get("tried_conns") or {}
-    _tried_idx = set(_tried_conns.get(provider_name) or ())
+    _leaf_tc_key = f"{provider_name}/{target_model}"
+    if _leaf_tc_key in _tried_conns:
+        _tried_idx = set(_tried_conns[_leaf_tc_key] or ())
+    else:
+        _tried_idx = set(_tried_conns.get(provider_name) or ())
 
     active_conn, _active_conn_index = resolve_active_connection(
         config, provider_name, target_model, breaker=_breaker,
@@ -9305,8 +10018,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # Every OAuth provider's access_token expires (~1h). Previously BSL used
     # the stored token blindly with no refresh, causing 401 loops. Now we
     # call ensure_fresh_token which checks expiry and refreshes if needed.
-    _fresh_token = stored_api_key = active_conn.get('api_key', '')
-    if active_conn.get('token_type') == 'oauth' and stored_api_key:
+    _fresh_token = stored_api_key = active_conn.get('api_key') or active_conn.get('access_token') or ''
+    if (active_conn.get('token_type') == 'oauth' or active_conn.get('refresh_token') or active_conn.get('access_token')) and (stored_api_key or active_conn.get('refresh_token')):
         try:
             _fresh_token = await ensure_fresh_token(
                 provider_name, active_conn, provider_config
@@ -9425,6 +10138,14 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     f"(system={sys_bp}, messages={msg_bp}) for {provider_name}/{target_model}",
                     flush=True,
                 )
+            else:
+                upstream_payload = PromptCachingAdapter.apply_provider_caching(
+                    upstream_payload,
+                    "anthropic",
+                    target_model,
+                    tools_config=config.get("tools", {}),
+                    obs=obs,
+                )
             # Send version header, no beta (Anthropic-compatible upstreams)
             if _profile.requires_anthropic_version:
                 headers["anthropic-version"] = "2023-06-01"
@@ -9443,6 +10164,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     else:
         # For OpenAI and Gemini (via OpenAI compat), just dump the model back to dict
         upstream_payload = internal_request.model_dump(exclude_none=True)
+        upstream_payload = propagate_prompt_cache_key(upstream_payload, internal_request)
         # Strip side-channel fields that should never reach upstream providers
         upstream_payload.pop("_bsl_cache_breakpoints", None)
         # Anthropic top-level system must never ride the OpenAI wire
@@ -9470,9 +10192,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # (tools.fel.families) also skips directives + downstream recovery/stream
     # classification for families the operator turned off — the leaf's
     # family tag rides request.state so later stages reuse it.
+    _is_test_probe = bool(isinstance(body, dict) and body.get("_bsl_test_probe"))
     _fel_applied = False
-    _fel_family_tag = detect_family(target_model, provider_name) if _fel is not None else ""
-    if _fel is not None and _fel_family_enabled(config, _fel_family_tag):
+    _fel_family_tag = detect_family(target_model, provider_name) if (_fel is not None and not _is_test_probe) else ""
+    if _fel is not None and not _is_test_probe and _fel_family_enabled(config, _fel_family_tag):
         try:
             _fel_new_payload = apply_fel_directives(
                 upstream_payload,
@@ -9542,6 +10265,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # Combo-level per-entry thinking override takes precedence over provider default.
     if combo_thinking_override:
         thinking_suffix = str(combo_thinking_override).lower()
+    if _is_test_probe and provider_name == "codex":
+        thinking_suffix = "low"
 
     # Thinking config actually applied — recorded on every request log entry so
     # the console shows which reasoning knobs a call ran with. For gpt-5.6-sol
@@ -9639,6 +10364,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         # honored here (no shared path); instead such gateways expose a
         # proprietary zero-retention header via the `retention_headers`
         # provider-config key handled in _inject_provider_headers.
+        if thinking_suffix and thinking_suffix not in ("auto", "off", ""):
+            upstream_payload.setdefault("reasoning_effort", thinking_suffix)
         upstream_payload = codex_adapter.openai_to_responses(upstream_payload)
         headers["Content-Type"] = "application/json"
 
@@ -9694,7 +10421,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 _dog_cfg,
             )
             if _dog_cap:
-                upstream_payload["reasoning_effort"] = _dog_cap["to"]
+                if "input" not in upstream_payload:
+                    upstream_payload["reasoning_effort"] = _dog_cap["to"]
                 _dog_reasoning = upstream_payload.get("reasoning")
                 if isinstance(_dog_reasoning, dict):
                     _dog_reasoning["effort"] = _dog_cap["to"]
@@ -9857,7 +10585,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # hosts-file-bypassing egress client), so the flag is a no-op there.
     _egress_proxy = _effective_egress_proxy(active_conn, provider_name)
     if provider_name == "antigravity" or _upstream_host in _ANTIGRAVITY_NATIVE_HOSTS:
-        client = _get_antigravity_egress_client()
+        client = _get_router_antigravity_egress_client()
         # Cloud Code upstream adapter (2026-08-23): the antigravity host serves
         # ONLY v1internal:* RPC verbs — /chat/completions gets an HTML 404.
         # Wrap the egress client so OpenAI-canonical payloads are forged into
@@ -10149,6 +10877,38 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     _thinking_retry_armed = False
             except Exception as _tf_err:
                 print(f"[ThinkingFallback] stream degrade-retry failed (non-blocking): {_tf_err}", flush=True)
+        if (
+            _resp.status_code in (400, 403)
+            and _fel is not None
+            and request is not None
+            and getattr(_fel, "reframe_escalate_on_inspection_fail", True)
+            and not getattr(request.state, "bsl_fel_context_escalated", False)
+            and not getattr(request.state, "bsl_fel_recovered", False)
+        ):
+            try:
+                _err_body = await _resp.aread()
+                _insp_text = _err_body.decode("utf-8", errors="replace")[:2000]
+                if is_data_inspection_wall(_resp.status_code, _insp_text):
+                    request.state.bsl_fel_context_escalated = True
+                    _escal_profile = ""
+                    if _fel.profile_header:
+                        _escal_profile = request.headers.get(_fel.profile_header, "") or ""
+                    import copy as _copy_mod
+                    _reframed_payload = _copy_mod.deepcopy(_active_payload)
+                    if _reframe_upstream_payload_in_place(
+                        _reframed_payload,
+                        _fel,
+                        _escal_profile,
+                        body=body if isinstance(body, dict) else None,
+                        model=target_model,
+                        provider=provider_name,
+                    ):
+                        _new = await client.send(_build_req(_reframed_payload), stream=True)
+                        await _resp.aclose()
+                        _resp = _new
+                        _active_payload = _reframed_payload
+            except Exception as _fel_st_err:
+                print(f"[FEL] stream context-escalation failed (fail-open): {_fel_st_err}", flush=True)
         # OAuth anti-ban G2/G6: feed the final status code to the backoff +
         # usage governors. Fail-open: any error returns a no-op decision and
         # never touches the live response. Cheap no-op for non-OAuth lanes.
@@ -10162,6 +10922,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 tokens_used=0.0,
                 config=config,
             )
+        except Exception:
+            pass
+        try:
+            _capture_rate_limit_headers(provider_name, _active_conn_index, _resp.headers)
         except Exception:
             pass
         # OAuth anti-ban G2/G6: feed the final status code + real token usage to
@@ -10210,6 +10974,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         if not _stream_guard:
             return agen
         return afz_guard(agen, sid, **afz_kwargs)
+
+    def _has_untried_sibling_conns() -> bool:
+        if _active_conn_index is None:
+            return False
+        try:
+            from app.utils.model_resolver import untried_connection_count as _ucc_chk
+            _tc_now = set(_tried_idx) | {_active_conn_index}
+            return _ucc_chk(config, provider_name, target_model, _tc_now) > 0
+        except Exception:
+            return False
 
     def _midstream_transport_fallback(
         stats, _emit, status_code: int, err: str, partial_text: str = ""
@@ -10265,7 +11039,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         # emission veto; the FLAG gate further down is where `_delivered` decides).
         if stats.get("out", 0) == 0:
             _mid_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
-            if active_chain and _mid_next_idx < len(active_chain):
+            if active_chain and (_mid_next_idx < len(active_chain) or _has_untried_sibling_conns()):
                 print(
                     f"[Combo Fallback] '{model}' mid-stream transport error for "
                     f"{target_model}/{provider_name}: {err} — advancing to entry {_mid_next_idx}",
@@ -10489,6 +11263,37 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # failures can be returned before their SSE sockets open. Gemini bypasses it:
     # gemini_egress_stream emits its heartbeat before awaiting upstream headers
     # and already translates upstream failures into Gemini SSE error frames.
+    def _mark_conn_failed_for_retry(_st: dict, _sc: int, _err_msg: str = "") -> dict:
+        if _active_conn_index is not None and isinstance(_st, dict):
+            _leaf_tc_key = f"{provider_name}/{target_model}"
+            _tc = {k: list(v) for k, v in ((_retry_state or {}).get("tried_conns") or {}).items()}
+            _prov_tc = _tc.setdefault(_leaf_tc_key, list(_tc.get(provider_name) or []))
+            if _active_conn_index not in _prov_tc:
+                _prov_tc.append(_active_conn_index)
+            _tc[provider_name] = list(_prov_tc)
+            _st["tried_conns"] = _tc
+            try:
+                from app.utils.model_resolver import untried_connection_count as _ucc_retry
+                _is_model_404 = int(_sc or 0) == 404 and "model" in str(_err_msg or "").lower()
+                if not _is_model_404 and _ucc_retry(config, provider_name, target_model, set(_prov_tc)) > 0:
+                    _st["idx"] = (_retry_state.get("idx", 0) if isinstance(_retry_state, dict) else 0)
+                else:
+                    # Moving to the next model ID in the chain: clear the provider-wide legacy key
+                    # so a subsequent model on the same provider can try all of its connections fresh.
+                    _tc.pop(provider_name, None)
+            except Exception:
+                pass
+            if _breaker is not None and _sc:
+                try:
+                    _breaker.record_outcome(provider_name, target_model, _active_conn_index, int(_sc), str(_err_msg or ""), out_tokens=0)
+                except Exception:
+                    pass
+            try:
+                _oauth_antiban.get_store().release(_oauth_antiban.current_request_session_key(), provider_name)
+            except Exception:
+                pass
+        return _st
+
     _probe_resp = None
     if _should_probe_stream_status(is_stream, active_chain, client_wants_gemini):
         try:
@@ -10505,6 +11310,21 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 raise httpx.ReadTimeout(
                     f"upstream header wait exceeded {HEADER_WAIT_TIMEOUT}s"
                 ) from _hdr_to
+            if _probe_resp.status_code == 401 and active_conn and (active_conn.get("token_type") == "oauth" or active_conn.get("refresh_token")):
+                await _probe_resp.aclose()
+                _forced_token = await ensure_fresh_token(provider_name, active_conn, provider_config, force=True)
+                headers["Authorization"] = f"Bearer {_forced_token}"
+                _inject_provider_headers(headers, provider_name, active_conn, provider_config)
+                req = _build_req(upstream_payload)
+                _probe_resp = await asyncio.wait_for(
+                    client.send(req, stream=True),
+                    timeout=max(1.0, min(HEADER_WAIT_TIMEOUT, _chain_budget_remaining())),
+                )
+            _capture_rate_limit_headers(provider_name, _active_conn_index, _probe_resp.headers)
+            _oauth_antiban.govern_post_send(
+                provider_name=provider_name, conn=active_conn if isinstance(active_conn, dict) else {},
+                conn_index=_active_conn_index, status_code=_probe_resp.status_code, config=config,
+            )
             if _probe_resp.status_code != 200:
                 _err_body = await _probe_resp.aread()
                 _err_text = _err_body.decode("utf-8", errors="replace")
@@ -10539,6 +11359,44 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     if _probe_resp.status_code != 200:
                         _err_body = await _probe_resp.aread()
                         _err_text = _err_body.decode("utf-8", errors="replace")
+
+                if (
+                    _probe_resp.status_code in (400, 403)
+                    and _fel is not None
+                    and request is not None
+                    and getattr(_fel, "reframe_escalate_on_inspection_fail", True)
+                    and not getattr(request.state, "bsl_fel_context_escalated", False)
+                    and not getattr(request.state, "bsl_fel_recovered", False)
+                    and is_data_inspection_wall(_probe_resp.status_code, _err_text)
+                ):
+                    try:
+                        request.state.bsl_fel_context_escalated = True
+                        _escal_profile = ""
+                        if _fel.profile_header:
+                            _escal_profile = request.headers.get(_fel.profile_header, "") or ""
+                        import copy as _copy_mod
+                        _reframed_payload = _copy_mod.deepcopy(upstream_payload)
+                        if _reframe_upstream_payload_in_place(
+                            _reframed_payload,
+                            _fel,
+                            _escal_profile,
+                            body=body if isinstance(body, dict) else None,
+                            model=target_model,
+                            provider=provider_name,
+                        ):
+                            await _probe_resp.aclose()
+                            _new_req = _build_req(_reframed_payload)
+                            _probe_resp = await asyncio.wait_for(
+                                client.send(_new_req, stream=True),
+                                timeout=max(1.0, min(HEADER_WAIT_TIMEOUT, _chain_budget_remaining())),
+                            )
+                            upstream_payload = _reframed_payload
+                            req = _new_req
+                            if _probe_resp.status_code != 200:
+                                _err_body = await _probe_resp.aread()
+                                _err_text = _err_body.decode("utf-8", errors="replace")
+                    except Exception as _fel_pr_err:
+                        print(f"[FEL] probe context-escalation failed (fail-open): {_fel_pr_err}", flush=True)
                 
             # THINKING-RETRY FIX (2026-08-22): this gate is at the SAME level as the
             # non-200 block above (not nested inside it), so the combo-advance code
@@ -10572,16 +11430,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 # payload errors advance — a different provider may accept the same
                 # payload (different validation rules, different model capabilities).
                 _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
-                if active_chain and _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
+                if active_chain and (_next_idx < len(active_chain) or _has_untried_sibling_conns()) and _chain_budget_remaining() > 0:
                     # MULTI-KEY FAILOVER: mark THIS leaf's connection as tried so
                     # the recursive frame doesn't re-dial the same drained key.
-                    _kc = (_retry_state or {}).get('tried_conns') if _retry_state else None
-                    _kc = dict(_kc) if _kc else {}
-                    if _active_conn_index is not None:
-                        _kc.setdefault(provider_name, []).append(_active_conn_index)
+                    _next_retry_state = _mark_conn_failed_for_retry(
+                        {'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                        _probe_resp.status_code, _err_text_short,
+                    )
                     _recursed = await _process_chat_completion(
                         body, client_wants_anthropic, client_wants_gemini,
-                        _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
+                        _retry_state=_next_retry_state,
                         request=request,
                     )
                     print(
@@ -10732,16 +11590,17 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 combo=_combo_label,
             )
             _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
-            if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
+            if active_chain and (_next_idx < len(active_chain) or _has_untried_sibling_conns()) and _chain_budget_remaining() > 0:
                 print(f"[Combo Fallback] '{model}' stream network error for {target_model}/{provider_name}: {_probe_err} — advancing to entry {_next_idx}")
                 # MULTI-KEY FAILOVER: mark this leaf's connection as tried
                 # so the recursive frame doesn't re-dial the same drained key.
-                _kc = dict((_retry_state or {}).get('tried_conns') or {})
-                if _active_conn_index is not None:
-                    _kc.setdefault(provider_name, []).append(_active_conn_index)
+                _next_retry_state = _mark_conn_failed_for_retry(
+                    {'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                    502, str(_probe_err),
+                )
                 return await _process_chat_completion(
                     body, client_wants_anthropic, client_wants_gemini,
-                    _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
+                    _retry_state=_next_retry_state,
                     request=request,
                 )
             if _chain_budget_remaining() <= 0:
@@ -10783,6 +11642,132 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         # egress is excluded (it already heartbeats during its connect window).
         _sse_ka_on, _sse_ka_iv = _sse_keepalive_settings(config)
         _sse_ka_fmt = "anthropic" if client_wants_anthropic else "openai"
+
+        async def _fel_stream_with_recovery(source):
+            """Peek at the start of an egress stream when FEL refusal recovery
+            is enabled; if the initial response is a soft refusal / ToS lecture,
+            abort the refused stream and re-dispatch once with the recovery turn."""
+            _can_recover = (
+                _fel is not None
+                and getattr(_fel, "refusal_recovery_enabled", False)
+                and getattr(_fel, "max_recoveries", 0) >= 1
+                and request is not None
+                and not getattr(request.state, "bsl_fel_recovered", False)
+                and isinstance(body, dict)
+                and isinstance(body.get("messages"), list)
+                and _fel_family_enabled(config, detect_family(target_model, provider_name))
+            )
+            if not _can_recover:
+                async for _ch in source:
+                    yield _ch
+                return
+
+            from app.middleware.fel_wiring import FelStreamObserver as _PeekObs
+            _peek_obs = _PeekObs(model=target_model, provider=provider_name)
+            _buffered = []
+            _passthrough = False
+            _triggered_class = ""
+            _peek_text = ""
+            try:
+                async for _ch in source:
+                    if _passthrough:
+                        yield _ch
+                        continue
+                    _buffered.append(_ch)
+                    try:
+                        _peek_obs.observe(
+                            _ch if isinstance(_ch, bytes) else str(_ch).encode("utf-8", "ignore")
+                        )
+                    except Exception:
+                        _passthrough = True
+                        for _b in _buffered:
+                            yield _b
+                        _buffered.clear()
+                        continue
+                    if _peek_obs._had_tools:
+                        _passthrough = True
+                        for _b in _buffered:
+                            yield _b
+                        _buffered.clear()
+                        continue
+                    _peek_text = "".join(_peek_obs._text_chunks)
+                    if len(_peek_text) >= 40:
+                        _rc = classify_refusal(_peek_text, had_tool_calls=False)
+                        if _rc in ("refusal", "tos_lecture"):
+                            _triggered_class = _rc
+                            break
+                    if len(_peek_text) >= 220:
+                        _passthrough = True
+                        for _b in _buffered:
+                            yield _b
+                        _buffered.clear()
+            except Exception:
+                for _b in _buffered:
+                    yield _b
+                return
+
+            if not _triggered_class and _buffered and not _passthrough:
+                _peek_text = "".join(_peek_obs._text_chunks)
+                if _peek_text and not _peek_obs._had_tools:
+                    _rc = classify_refusal(_peek_text, had_tool_calls=False)
+                    if _rc in ("refusal", "tos_lecture"):
+                        _triggered_class = _rc
+
+            if _triggered_class:
+                try:
+                    _aclose = getattr(source, "aclose", None)
+                    if _aclose is not None:
+                        await _aclose()
+                except Exception:
+                    pass
+                try:
+                    request.state.bsl_fel_recovered = True
+                    _rec_profile = ""
+                    if _fel.profile_header:
+                        _rec_profile = request.headers.get(_fel.profile_header, "") or ""
+                    fel_event("refusal", model=target_model, provider=provider_name, details={
+                        "classification": _triggered_class,
+                        "stream": True,
+                        "chars": len(_peek_text),
+                    })
+                    fel_event("recovery", model=target_model, provider=provider_name, details={
+                        "from_class": _triggered_class,
+                        "attempt": 1,
+                        "stream": True,
+                    })
+                    if request_id:
+                        obs.note_fel_context(
+                            request_id,
+                            fel=detect_family(target_model, provider_name),
+                            refusal_class="recovered",
+                        )
+                    _rec_body = build_recovery_body({
+                        **body,
+                        "messages": list(body["messages"]) + [
+                            {"role": "assistant", "content": _peek_text},
+                        ],
+                    }, _fel, _rec_profile)
+                    _rec_body["stream"] = True
+                    _rec_retry_state = None if not _retry_state else {
+                        **_retry_state,
+                        "idx": _retry_state.get("idx", 0),
+                    }
+                    _rec_resp = await _process_chat_completion(
+                        _rec_body,
+                        client_wants_anthropic,
+                        client_wants_gemini,
+                        _retry_state=_rec_retry_state,
+                        request=request,
+                    )
+                    if hasattr(_rec_resp, "body_iterator"):
+                        async for _rc_chunk in _rec_resp.body_iterator:
+                            yield _rc_chunk
+                        return
+                except Exception as _srec_err:
+                    print(f"[FEL] stream refusal recovery failed (fail-open): {_srec_err}", flush=True)
+
+            for _b in _buffered:
+                yield _b
 
         async def _client_disconnected() -> bool:
             # Null-safe client-abort probe. Returns False when no Request is
@@ -10884,7 +11869,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     # NON-MUTATING copy: S3/S6 retries and combo wraps re-read
                     # upstream_payload, mirroring the buffered path's injection.
                     _su_payload = {**upstream_payload, "stream": True}
-                    if not _is_anthropic_fmt:
+                    if not _is_anthropic_fmt and provider_name not in ("codex", "kiro") and "input" not in upstream_payload:
                         _su_payload["stream_options"] = {"include_usage": True}
                     resp = await _send_stream_with_thinking_fallback(
                         stream_req=_build_req(_su_payload),
@@ -10940,7 +11925,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     _next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                     if _is_wall:
                         pass  # terminal wall: never advance, never wrap
-                    elif active_chain and _next_idx < len(active_chain):
+                    elif active_chain and (_next_idx < len(active_chain) or _has_untried_sibling_conns()):
                         _fb_state = {
                             "chain": active_chain,
                             "idx": _next_idx,
@@ -10999,94 +11984,162 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 # zero-token guard could fire on a perfectly healthy stream. The
                 # incremental decoder carries the partial sequence to the next
                 # chunk, so nothing is ever dropped.
-                _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
-                try:
-                    async for chunk in _pump(resp.aiter_raw(), _emit, _attempt, "openai"):
-                        _detector.feed(chunk)
-                        if await _client_disconnected():
-                            stats["error"] = stats["error"] or "client_disconnected"
-                            stats["status"] = 499
-                            break
+                _codex_overload_attempt = 0
+                _CODEX_OVERLOAD_MAX = 4
+                while True:
+                    _codex_retry_overload = False
+                    _codex_pre_buf = []
+                    _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                    buffer = ""
+                    try:
+                        async for chunk in _pump(resp.aiter_raw(), _emit, _attempt, "openai"):
+                            _detector.feed(chunk)
+                            if await _client_disconnected():
+                                if _should_mark_client_disconnected(stats):
+                                    stats["error"] = stats["error"] or "client_disconnected"
+                                    stats["status"] = 499
+                                break
 
-                        # Extract usage from chunk
+                            # Extract usage from chunk
+                            _codex_chunk_has_output = False
+                            try:
+                                text_chunk = _utf8_dec.decode(chunk)
+                                if stats["ttft"] == 0.0 and provider_name != "codex":
+                                    _is_openai_content = (
+                                        _openai_chunk_carries_output(text_chunk)
+                                        # CODEX FIX (2026-08-22): Responses SSE emits
+                                        # response.output_text.delta frames (delta field,
+                                        # no content/text keys). Without this match TTFT
+                                        # never sets and the zero_output_tokens guard
+                                        # below kills a healthy 200 stream pre-emission.
+                                        or '"output_text.delta"' in text_chunk
+                                    )
+                                    _is_gemini_content = (
+                                        '"candidates"' in text_chunk or
+                                        '"parts"' in text_chunk or
+                                        '"role":"' in text_chunk
+                                    )
+                                    _is_anthropic_content = (
+                                        '"text_delta"' in text_chunk or
+                                        '"content_block_delta"' in text_chunk or
+                                        '"message_delta"' in text_chunk or
+                                        '"thinking_delta"' in text_chunk
+                                    )
+                                    if _is_openai_content or _is_gemini_content or _is_anthropic_content:
+                                        stats["ttft"] = time.time() - start_time
+                                buffer += text_chunk
+                                lines = buffer.split("\n")
+                                buffer = lines.pop()
+
+                                for line in lines:
+                                    if line.strip() == "data: [DONE]":
+                                        stats["stream_completed"] = True
+                                    elif line.startswith("data:"):
+                                        data_str = line[5:].lstrip()
+                                        try:
+                                            data_json = json.loads(data_str)
+                                            if provider_name == "codex" and _codex_event_carries_output(data_json):
+                                                _codex_chunk_has_output = True
+                                                if stats["ttft"] == 0.0:
+                                                    stats["ttft"] = time.time() - start_time
+                                            if isinstance(data_json, dict) and data_json.get("type") in ("response.failed", "error"):
+                                                _rf_err = ((data_json.get("response") or {}).get("error") or data_json.get("error") or {})
+                                                if not isinstance(_rf_err, dict):
+                                                    _rf_err = {"message": str(_rf_err)}
+                                                _rf_msg = str(_rf_err.get("message") or _rf_err.get("code") or data_json.get("type") or "response.failed")
+                                                _rf_sc = 429 if any(m in _rf_msg.lower() for m in ("rate", "quota", "limit", "credit")) else 503
+                                                if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
+                                                    _codex_overload_attempt += 1
+                                                    _codex_retry_overload = True
+                                                    print(
+                                                        f"[CodexOverloadRetry] {provider_name}/{target_model} conn={_active_conn_index} "
+                                                        f"transient 503 ({_rf_msg[:120]}) — retrying same account "
+                                                        f"({_codex_overload_attempt}/{_CODEX_OVERLOAD_MAX})",
+                                                        flush=True,
+                                                    )
+                                                    break
+                                                stats["status"] = _rf_sc
+                                                stats["error"] = _rf_msg
+                                                if not _emit.emitted:
+                                                    bench_leaf(config, provider_name, target_model, _rf_sc, _rf_msg, 0)
+                                                    if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("codex_response_failed"):
+                                                        raise _ComboFallbackNeeded(_rf_sc, _rf_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                            _mark_stream_completed_if_terminal(stats, data_json)
+                                            # CODEX FIX (2026-08-22): Responses SSE nests
+                                            # usage under response.usage (event
+                                            # response.completed); OpenAI/Anthropic put it
+                                            # top-level. Accept both so stats["out"] is
+                                            # populated and the zero-token fallback does not
+                                            # fire for codex.
+                                            _usage_src = _usage_from_sse_data(data_json)
+                                            if _usage_src:
+                                                usage = _usage_src
+                                                _merge_usage_into_stats(stats, usage)
+                                                record_cache_warmth(provider_name, _active_conn_index, usage, tools_config=config.get("tools", {}))
+                                        except json.JSONDecodeError:
+                                            pass
+                            except _ComboFallbackNeeded:
+                                raise
+                            except Exception:
+                                pass
+
+                            if _codex_retry_overload:
+                                break
+
+                            if provider_name == "codex":
+                                if _codex_chunk_has_output:
+                                    _emit.mark_emitted(chunk)
+                                if _emit.emitted or stats.get("stream_completed") or stats.get("error"):
+                                    for _pb in _codex_pre_buf:
+                                        yield _pb
+                                    _codex_pre_buf.clear()
+                                    yield chunk
+                                else:
+                                    _codex_pre_buf.append(chunk)
+                            elif _tool_guard is not None:
+                                # Guard may hold tool_use fragments; only mark what
+                                # actually reaches the client (emission-state must
+                                # reflect delivered bytes, not inspected bytes).
+                                for _tg_out in _tool_guard.feed(chunk):
+                                    if not is_scaffolding_only(_tg_out):
+                                        _emit.mark_emitted(_tg_out)
+                                    yield _tg_out
+                            else:
+                                # BUG M (2026-09-27): an SSE keepalive/comment-only
+                                # chunk (": PING\n\n") must NOT flip emitted=True --
+                                # that vetoed every later fallback and surfaced the
+                                # client 502 on a mid-stream transport death. Yield
+                                # it (TTFT/keepalive) but commit only real content.
+                                if not is_scaffolding_only(chunk):
+                                    _emit.mark_emitted(chunk)
+                                yield chunk
+                    except (httpx.RemoteProtocolError, httpx.TransportError) as _mid_err:
+                        # BUG J: transport death mid-body. Route into the combo chain
+                        # instead of falling through to `except Exception` (which
+                        # never advanced the chain and left the IDE waiting).
+                        _midstream_transport_fallback(
+                            stats, _emit, 502, f"midstream_transport: {_mid_err}",
+                            partial_text=_detector.partial_text or "",
+                        )
+                        # Not re-raised: fallback declined (content already sent, or
+                        # chain exhausted). Fall through to the terminal frame below.
+                    if _codex_retry_overload:
                         try:
-                            text_chunk = _utf8_dec.decode(chunk)
-                            if stats["ttft"] == 0.0:
-                                _is_openai_content = (
-                                    _openai_chunk_carries_output(text_chunk)
-                                    # CODEX FIX (2026-08-22): Responses SSE emits
-                                    # response.output_text.delta frames (delta field,
-                                    # no content/text keys). Without this match TTFT
-                                    # never sets and the zero_output_tokens guard
-                                    # below kills a healthy 200 stream pre-emission.
-                                    or '"output_text.delta"' in text_chunk
-                                )
-                                _is_gemini_content = (
-                                    '"candidates"' in text_chunk or
-                                    '"parts"' in text_chunk or
-                                    '"role":"' in text_chunk
-                                )
-                                _is_anthropic_content = (
-                                    '"text_delta"' in text_chunk or
-                                    '"content_block_delta"' in text_chunk or
-                                    '"message_delta"' in text_chunk or
-                                    '"thinking_delta"' in text_chunk
-                                )
-                                if _is_openai_content or _is_gemini_content or _is_anthropic_content:
-                                    stats["ttft"] = time.time() - start_time
-                            buffer += text_chunk
-                            lines = buffer.split("\n")
-                            buffer = lines.pop()
-
-                            for line in lines:
-                                if line.startswith("data: ") and line.strip() != "data: [DONE]":
-                                    data_str = line[6:]
-                                    try:
-                                        data_json = json.loads(data_str)
-                                        # CODEX FIX (2026-08-22): Responses SSE nests
-                                        # usage under response.usage (event
-                                        # response.completed); OpenAI/Anthropic put it
-                                        # top-level. Accept both so stats["out"] is
-                                        # populated and the zero-token fallback does not
-                                        # fire for codex.
-                                        _usage_src = _usage_from_sse_data(data_json)
-                                        if _usage_src:
-                                            usage = _usage_src
-                                            stats["in"], stats["out"], stats["cached"] = _extract_usage_tokens(usage)
-                                            stats["cache_write"] = _extract_cache_write_tokens(usage)
-                                            record_cache_warmth(provider_name, _active_conn_index, usage, tools_config=config.get("tools", {}))
-                                    except json.JSONDecodeError:
-                                        pass
+                            await resp.aclose()
                         except Exception:
                             pass
-
-                        if _tool_guard is not None:
-                            # Guard may hold tool_use fragments; only mark what
-                            # actually reaches the client (emission-state must
-                            # reflect delivered bytes, not inspected bytes).
-                            for _tg_out in _tool_guard.feed(chunk):
-                                if not is_scaffolding_only(_tg_out):
-                                    _emit.mark_emitted(_tg_out)
-                                yield _tg_out
-                        else:
-                            # BUG M (2026-09-27): an SSE keepalive/comment-only
-                            # chunk (": PING\n\n") must NOT flip emitted=True --
-                            # that vetoed every later fallback and surfaced the
-                            # client 502 on a mid-stream transport death. Yield
-                            # it (TTFT/keepalive) but commit only real content.
-                            if not is_scaffolding_only(chunk):
-                                _emit.mark_emitted(chunk)
-                            yield chunk
-                except (httpx.RemoteProtocolError, httpx.TransportError) as _mid_err:
-                    # BUG J: transport death mid-body. Route into the combo chain
-                    # instead of falling through to `except Exception` (which
-                    # never advanced the chain and left the IDE waiting).
-                    _midstream_transport_fallback(
-                        stats, _emit, 502, f"midstream_transport: {_mid_err}",
-                        partial_text=_detector.partial_text or "",
-                    )
-                    # Not re-raised: fallback declined (content already sent, or
-                    # chain exhausted). Fall through to the terminal frame below.
+                        await asyncio.sleep(1.5 * _codex_overload_attempt)
+                        _su_payload = {**upstream_payload, "stream": True}
+                        resp = await _send_stream_with_thinking_fallback(
+                            stream_req=_build_req(_su_payload),
+                            stream_payload=_su_payload,
+                        )
+                        stats["status"] = resp.status_code
+                        continue
+                    for _pb in _codex_pre_buf:
+                        yield _pb
+                    _codex_pre_buf.clear()
+                    break
                 if _tool_guard is not None:
                     # ANTHROPIC TOOL REPAIR: release any block still held at
                     # stream end (missing content_block_stop) — verbatim,
@@ -11188,6 +12241,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 _backfill_missing_usage(
                     stats, internal_request.messages, _detector.partial_text,
                     provider_name=provider_name, target_model=target_model,
+                    delivered_chars=getattr(_detector, "tool_call_chars", 0),
                 )
                 if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft"):
                     _zero_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
@@ -11268,8 +12322,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     except Exception:
                         pass
             except (GeneratorExit, asyncio.CancelledError):
-                stats["error"] = stats["error"] or "client_disconnected"
-                stats["status"] = 499
+                if _should_mark_client_disconnected(stats):
+                    stats["error"] = stats["error"] or "client_disconnected"
+                    stats["status"] = 499
                 raise
             except _ComboFallbackNeeded:
                 raise
@@ -11347,6 +12402,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         client=client_label,
                         stream=True,
                         upstream_url=_upstream_url,
+                        conn_index=_active_conn_index,
                         thinking=thinking_info,
                         cache_write_tokens=stats.get("cache_write", 0),
                         combo=_combo_label,
@@ -11399,6 +12455,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     # stack stays O(1) in pass count.
                     _ns_backoff = float(getattr(_cf_raw, "backoff", 0) or 0)
                     _ns_state = _cf_raw.retry_state
+                    if not _ns_backoff:
+                        _mark_conn_failed_for_retry(_ns_state, getattr(_cf_raw, "status_code", 502), getattr(_cf_raw, "err_text", ""))
                     while True:
                         if _ns_backoff:
                             # NEVER-STOP wrap: sleep the pass backoff (client
@@ -11507,7 +12565,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         # copy of upstream_payload, gated to OpenAI-format
                         # upstreams exactly like the buffered path.
                         _su_payload = {**upstream_payload, "stream": True}
-                        if not _is_anthropic_fmt:
+                        if not _is_anthropic_fmt and provider_name not in ("codex", "kiro") and "input" not in upstream_payload:
                             _su_payload["stream_options"] = {"include_usage": True}
                         resp = await _send_stream_with_thinking_fallback(
                             stream_req=_build_req(_su_payload),
@@ -11540,7 +12598,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 flush=True,
                             )
                         _fb_next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
-                        if not _is_wall_ae and active_chain and _fb_next_idx < len(active_chain):
+                        if not _is_wall_ae and active_chain and (_fb_next_idx < len(active_chain) or _has_untried_sibling_conns()):
                             _fb_retry_state = {
                                 "chain": active_chain,
                                 "idx": _fb_next_idx,
@@ -11589,156 +12647,190 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         return
 
                     async def _raw_ok():
-                        nonlocal buffer
-                        # 2026-10-02 idle-parity mirror (BUG A class, Gemini
-                        # lane sibling — parity hardening for /v1/messages
-                        # Claude-Code-style clients): this lane iterated the
-                        # guarded pump DIRECTLY, so a wedged relay (content
-                        # streams, then the upstream holds the TCP socket open
-                        # with no [DONE]/EOF) blocked the `async for` forever:
-                        # no cap, no keepalive tick, no client-disconnect
-                        # check. Mirror the Gemini egress shape
-                        # (~_drain_openai_source): drain task + asyncio.Queue +
-                        # wait_for(_q.get(), GEMINI_EGRESS_KEEPALIVE_INTERVAL),
-                        # capping upstream silence at GEMINI_EGRESS_MAX_IDLE
-                        # (lane-generic ceiling despite the GEMINI_ prefix).
-                        # The timer resets ONLY on a real chunk — never on a
-                        # keepalive tick. On expiry: stats["error"] =
-                        # "upstream_idle_timeout" + stats["status"] = 504 +
-                        # break, so the post-drain stall branch below (tuple
-                        # extended 2026-10-02) emits the Anthropic terminal
-                        # error frames (or combo-fallbacks pre-content) instead
-                        # of a silent stream end.
-                        _ae_q: asyncio.Queue = asyncio.Queue()
-                        _SENTINEL = object()
-                        _ae_drain_err = None
-                        _guarded_source = _transport_guarded(
-                            _pump(resp.aiter_raw(), _emit, _attempt, "anthropic-egress"),
-                            stats, _emit,
-                        )
+                        nonlocal buffer, resp
+                        _codex_overload_attempt = 0
+                        _CODEX_OVERLOAD_MAX = 4
+                        while True:
+                            _codex_retry_overload = False
+                            _codex_pre_buf = []
+                            buffer = ""
+                            _ae_q: asyncio.Queue = asyncio.Queue()
+                            _SENTINEL = object()
+                            _ae_drain_err = None
+                            _guarded_source = _transport_guarded(
+                                _pump(resp.aiter_raw(), _emit, _attempt, "anthropic-egress"),
+                                stats, _emit,
+                            )
 
-                        async def _drain_ae_source():
-                            nonlocal _ae_drain_err
+                            async def _drain_ae_source():
+                                nonlocal _ae_drain_err
+                                try:
+                                    async for _c in _guarded_source:
+                                        await _ae_q.put(_c)
+                                except _ComboFallbackNeeded as _cf:
+                                    _ae_drain_err = _cf
+                                except _DeadlineRetryNeeded as _dr:
+                                    _ae_drain_err = _dr
+                                except Exception as _de:
+                                    _ae_drain_err = _de
+                                finally:
+                                    await _ae_q.put(_SENTINEL)
+
+                            _drain_task = asyncio.ensure_future(_drain_ae_source())
+                            _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                            _last_upstream_data = time.monotonic()
                             try:
-                                async for _c in _guarded_source:
-                                    await _ae_q.put(_c)
-                            except _ComboFallbackNeeded as _cf:
-                                _ae_drain_err = _cf
-                            except _DeadlineRetryNeeded as _dr:
-                                _ae_drain_err = _dr
-                            except Exception as _de:
-                                _ae_drain_err = _de
-                            finally:
-                                await _ae_q.put(_SENTINEL)
-
-                        _drain_task = asyncio.ensure_future(_drain_ae_source())
-                        # Split-multibyte fix (2026-10-21): SSE chunks are raw byte
-                        # blocks, so a multi-byte character can straddle a chunk
-                        # boundary. A one-shot `chunk.decode("utf-8")` raises on the
-                        # split and the enclosing `except` discards the ENTIRE
-                        # chunk, silently dropping frames. The incremental decoder
-                        # buffers the incomplete tail and emits it with the next
-                        # chunk - zero loss, zero exception. Same pattern as
-                        # stream_normalizer.py:117/637/853.
-                        _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
-                        _last_upstream_data = time.monotonic()
-                        try:
-                            while True:
-                                try:
-                                    chunk = await asyncio.wait_for(
-                                        _ae_q.get(), timeout=GEMINI_EGRESS_KEEPALIVE_INTERVAL
-                                    )
-                                except asyncio.TimeoutError:
+                                while True:
+                                    try:
+                                        chunk = await asyncio.wait_for(
+                                            _ae_q.get(), timeout=GEMINI_EGRESS_KEEPALIVE_INTERVAL
+                                        )
+                                    except asyncio.TimeoutError:
+                                        if await _client_disconnected():
+                                            if _should_mark_client_disconnected(stats):
+                                                stats["error"] = stats["error"] or "client_disconnected"
+                                                stats["status"] = 499
+                                            break
+                                        _idle = time.monotonic() - _last_upstream_data
+                                        if _idle > GEMINI_EGRESS_MAX_IDLE:
+                                            print(
+                                                f"[AnthropicEgress] upstream idle {_idle:.0f}s > "
+                                                f"{GEMINI_EGRESS_MAX_IDLE}s - ending wedged stream "
+                                                f"(provider={provider_name} model={target_model})",
+                                                flush=True,
+                                            )
+                                            stats["error"] = stats.get("error") or "upstream_idle_timeout"
+                                            stats["status"] = 504
+                                            break
+                                        yield b": keepalive\n\n"
+                                        continue
+                                    if chunk is _SENTINEL:
+                                        if stats.get("error") is None and (
+                                            stats.get("out", 0) > 0
+                                            or bool(_detector.partial_text)
+                                            or getattr(_detector, "tool_call_chars", 0) > 0
+                                        ):
+                                            stats["stream_completed"] = True
+                                        break
+                                    _last_upstream_data = time.monotonic()
+                                    _detector.feed(chunk)
                                     if await _client_disconnected():
-                                        stats["error"] = stats["error"] or "client_disconnected"
-                                        stats["status"] = 499
+                                        if _should_mark_client_disconnected(stats):
+                                            stats["error"] = stats["error"] or "client_disconnected"
+                                            stats["status"] = 499
                                         break
-                                    # 2026-10-02 idle-parity mirror: a keepalive
-                                    # tick is NOT upstream data — do not reset
-                                    # the timer here. Only a real chunk (below)
-                                    # resets it.
-                                    _idle = time.monotonic() - _last_upstream_data
-                                    if _idle > GEMINI_EGRESS_MAX_IDLE:
-                                        print(
-                                            f"[AnthropicEgress] upstream idle {_idle:.0f}s > "
-                                            f"{GEMINI_EGRESS_MAX_IDLE}s - ending wedged stream "
-                                            f"(provider={provider_name} model={target_model})",
-                                            flush=True,
-                                        )
-                                        stats["error"] = stats.get("error") or "upstream_idle_timeout"
-                                        stats["status"] = 504
+                                    _codex_chunk_has_output = False
+                                    try:
+                                        text_chunk = _utf8_dec.decode(chunk)
+                                        if stats["ttft"] == 0.0 and provider_name != "codex":
+                                            _is_openai_content = _openai_chunk_carries_output(text_chunk)
+                                            _is_gemini_content = (
+                                                '"candidates"' in text_chunk or
+                                                '"parts"' in text_chunk or
+                                                '"role":"' in text_chunk
+                                            )
+                                            _is_anthropic_content = (
+                                                '"text_delta"' in text_chunk or
+                                                '"content_block_delta"' in text_chunk or
+                                                '"message_delta"' in text_chunk or
+                                                '"thinking_delta"' in text_chunk
+                                            )
+                                            if _is_openai_content or _is_gemini_content or _is_anthropic_content:
+                                                stats["ttft"] = time.time() - start_time
+                                        buffer += text_chunk
+                                        lines = buffer.split("\n")
+                                        buffer = lines.pop()
+                                        for line in lines:
+                                            if line.strip() == "data: [DONE]":
+                                                stats["stream_completed"] = True
+                                            elif line.startswith("data:"):
+                                                try:
+                                                    dj = json.loads(line[5:].lstrip())
+                                                    if provider_name == "codex" and _codex_event_carries_output(dj):
+                                                        _codex_chunk_has_output = True
+                                                        if stats["ttft"] == 0.0:
+                                                            stats["ttft"] = time.time() - start_time
+                                                    if isinstance(dj, dict) and dj.get("type") in ("response.failed", "error"):
+                                                        _rf_err = ((dj.get("response") or {}).get("error") or dj.get("error") or {})
+                                                        if not isinstance(_rf_err, dict):
+                                                            _rf_err = {"message": str(_rf_err)}
+                                                        _rf_msg = str(_rf_err.get("message") or _rf_err.get("code") or dj.get("type") or "response.failed")
+                                                        _rf_sc = 429 if any(m in _rf_msg.lower() for m in ("rate", "quota", "limit", "credit")) else 503
+                                                        if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
+                                                            _codex_overload_attempt += 1
+                                                            _codex_retry_overload = True
+                                                            print(
+                                                                f"[CodexOverloadRetry] {provider_name}/{target_model} conn={_active_conn_index} "
+                                                                f"transient 503 ({_rf_msg[:120]}) — retrying same account "
+                                                                f"({_codex_overload_attempt}/{_CODEX_OVERLOAD_MAX})",
+                                                                flush=True,
+                                                            )
+                                                            break
+                                                        stats["status"] = _rf_sc
+                                                        stats["error"] = _rf_msg
+                                                        if not _emit.emitted:
+                                                            bench_leaf(config, provider_name, target_model, _rf_sc, _rf_msg, 0)
+                                                            if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("codex_response_failed"):
+                                                                raise _ComboFallbackNeeded(_rf_sc, _rf_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                                    _mark_stream_completed_if_terminal(stats, dj)
+                                                    u = _usage_from_sse_data(dj)
+                                                    if u:
+                                                        _merge_usage_into_stats(stats, u)
+                                                        record_cache_warmth(provider_name, _active_conn_index, u, tools_config=config.get("tools", {}))
+                                                except json.JSONDecodeError:
+                                                    pass
+                                    except _ComboFallbackNeeded:
+                                        raise
+                                    except Exception:
+                                        pass
+                                    if _codex_retry_overload:
                                         break
-                                    yield b": keepalive\n\n"
-                                    continue
-                                if chunk is _SENTINEL:
-                                    break
-                                # Real upstream data arrived — reset the idle
-                                # timer so a healthy stream with intermittent
-                                # reasoning gaps can run as long as it keeps
-                                # producing bytes.
-                                _last_upstream_data = time.monotonic()
-                                _detector.feed(chunk)
-                                if await _client_disconnected():
-                                    stats["error"] = stats["error"] or "client_disconnected"
-                                    stats["status"] = 499
-                                    break
+                                    if provider_name == "codex":
+                                        if _codex_chunk_has_output:
+                                            _emit.mark_emitted(chunk)
+                                        if _emit.emitted or stats.get("stream_completed") or stats.get("error"):
+                                            for _pb in _codex_pre_buf:
+                                                yield _pb
+                                            _codex_pre_buf.clear()
+                                            yield chunk
+                                        else:
+                                            _codex_pre_buf.append(chunk)
+                                    else:
+                                        if not is_scaffolding_only(chunk):
+                                            _emit.mark_emitted(chunk)
+                                        yield chunk
+                            finally:
+                                if not _drain_task.done():
+                                    _drain_task.cancel()
                                 try:
-                                    text_chunk = _utf8_dec.decode(chunk)
-                                    if stats["ttft"] == 0.0:
-                                        _is_openai_content = _openai_chunk_carries_output(text_chunk)
-                                        _is_gemini_content = (
-                                            '"candidates"' in text_chunk or
-                                            '"parts"' in text_chunk or
-                                            '"role":"' in text_chunk
-                                        )
-                                        _is_anthropic_content = (
-                                            '"text_delta"' in text_chunk or
-                                            '"content_block_delta"' in text_chunk or
-                                            '"message_delta"' in text_chunk or
-                                            '"thinking_delta"' in text_chunk
-                                        )
-                                        if _is_openai_content or _is_gemini_content or _is_anthropic_content:
-                                            stats["ttft"] = time.time() - start_time
-                                    buffer += text_chunk
-                                    lines = buffer.split("\n")
-                                    buffer = lines.pop()
-                                    for line in lines:
-                                        if line.startswith("data: ") and line.strip() != "data: [DONE]":
-                                            try:
-                                                dj = json.loads(line[6:])
-                                                u = _usage_from_sse_data(dj)
-                                                if u:
-                                                    stats["in"], stats["out"], stats["cached"] = _extract_usage_tokens(u)
-                                                    stats["cache_write"] = _extract_cache_write_tokens(u)
-                                            except json.JSONDecodeError:
-                                                pass
+                                    await _drain_task
+                                except BaseException:
+                                    pass
+                                try:
+                                    _close_source = getattr(_guarded_source, "aclose", None)
+                                    if _close_source is not None:
+                                        await _close_source()
+                                except BaseException:
+                                    pass
+                            if _codex_retry_overload:
+                                try:
+                                    await resp.aclose()
                                 except Exception:
                                     pass
-                                # BUG M (2026-09-27): keepalive/comment-only chunk
-                                # (": PING\n\n") must not commit the transcript.
-                                if not is_scaffolding_only(chunk):
-                                    _emit.mark_emitted(chunk)
-                                yield chunk
-                        finally:
-                            if not _drain_task.done():
-                                _drain_task.cancel()
-                            try:
-                                await _drain_task
-                            except BaseException:
-                                pass
-                            try:
-                                _close_source = getattr(_guarded_source, "aclose", None)
-                                if _close_source is not None:
-                                    await _close_source()
-                            except BaseException:
-                                pass
-                        # 2026-10-02 idle-parity mirror: a drain error must
-                        # propagate EXACTLY as it did when the pump was iterated
-                        # directly — re-raise so this egress's existing catchers
-                        # (combo advance, transport fallback, generic) run
-                        # unchanged.
-                        if _ae_drain_err is not None:
-                            raise _ae_drain_err
+                                await asyncio.sleep(1.5 * _codex_overload_attempt)
+                                _su_payload = {**upstream_payload, "stream": True}
+                                resp = await _send_stream_with_thinking_fallback(
+                                    stream_req=_build_req(_su_payload),
+                                    stream_payload=_su_payload,
+                                )
+                                stats["status"] = resp.status_code
+                                continue
+                            for _pb in _codex_pre_buf:
+                                yield _pb
+                            _codex_pre_buf.clear()
+                            if _ae_drain_err is not None:
+                                raise _ae_drain_err
+                            break
                         # USAGE BACKFILL (2026-09-29, BUG B): aggregator relays
                         # (MintRouter is the observed case) stream content frames
                         # but drop the terminal usage object, leaving In:0/Out:0
@@ -11755,6 +12847,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         _backfill_missing_usage(
                             stats, internal_request.messages, _detector.partial_text,
                             provider_name=provider_name, target_model=target_model,
+                            delivered_chars=getattr(_detector, "tool_call_chars", 0),
                         )
                         if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft"):
                             _zero_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
@@ -11892,9 +12985,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     _openai_source = _anthropic_egress_openai_source(provider_name, _raw_ok_chain())
                     async for out in normalizer.convert_openai_to_anthropic(_openai_source):
                         yield out
+                    if stats.get("error") is None and (stats.get("out", 0) > 0 or bool(_detector.partial_text) or getattr(_detector, "tool_call_chars", 0) > 0):
+                        stats["stream_completed"] = True
                 except (GeneratorExit, asyncio.CancelledError):
-                    stats["error"] = stats["error"] or "client_disconnected"
-                    stats["status"] = 499
+                    if _should_mark_client_disconnected(stats):
+                        stats["error"] = stats["error"] or "client_disconnected"
+                        stats["status"] = 499
                     raise
                 except (_ComboFallbackNeeded, _DeadlineRetryNeeded):
                     raise
@@ -12006,6 +13102,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         stats["error"] = None
                         _retry_again = True
                     except _ComboFallbackNeeded as _cf_egr:
+                        if not getattr(_cf_egr, "backoff", 0):
+                            _mark_conn_failed_for_retry(_cf_egr.retry_state, getattr(_cf_egr, "status_code", 502), getattr(_cf_egr, "err_text", ""))
                         if getattr(_cf_egr, "backoff", 0):
                             # NEVER-STOP wrap: sleep the pass backoff (client
                             # disconnect cancels — the only permitted terminator).
@@ -12088,11 +13186,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 _ka_body = _sse_keepalive_pre_first_chunk(
                     _ka_body, interval_s=_sse_ka_iv, fmt="anthropic",
                 )
+            _ka_body = _wrap_egress_stream(
+                _fel_stream_with_recovery(_ka_body),
+                model=target_model, provider=provider_name, request_id=request_id
+            )
             return StreamingResponse(_ka_body, media_type="text/event-stream")
         if convert_gemini_egress:
             def _next_gemini_combo_retry_state():
                 _next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
-                if not active_chain or _next_idx >= len(active_chain):
+                if not active_chain or (_next_idx >= len(active_chain) and not _has_untried_sibling_conns()):
                     return None
                 return {
                     "chain": active_chain,
@@ -12228,8 +13330,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 if _conn_task.done():
                                     break
                                 if await _client_disconnected():
-                                    stats["error"] = "client_disconnected"
-                                    stats["status"] = 499
+                                    if _should_mark_client_disconnected(stats):
+                                        stats["error"] = "client_disconnected"
+                                        stats["status"] = 499
                                     await _cancel_connection_task()
                                     return
                                 if asyncio.get_running_loop().time() >= _conn_deadline:
@@ -12242,8 +13345,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             resp = await _conn_task
                         except (GeneratorExit, asyncio.CancelledError):
                             await _cancel_connection_task()
-                            stats["error"] = stats["error"] or "client_disconnected"
-                            stats["status"] = 499
+                            if _should_mark_client_disconnected(stats):
+                                stats["error"] = stats["error"] or "client_disconnected"
+                                stats["status"] = 499
                             raise
                         except UPSTREAM_TRANSPORT_ERRORS as _transport_err:
                             await _cancel_connection_task()
@@ -12304,73 +13408,110 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         return
 
                     async def _raw_ok():
-                        buffer = ""
-                        # Split-multibyte fix (2026-10-21): same guard as the other
-                        # drain loops. A strict decode that hits a chunk boundary
-                        # raises, `except Exception: pass` at the bottom of the
-                        # loop swallows it, and the whole chunk - usage frame
-                        # included - is discarded. Carry the partial sequence
-                        # instead so stats["out"] is never starved.
-                        _raw_utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
-                        async for chunk in _transport_guarded(_pump(resp.aiter_raw(), _emit, 0, "gemini"), stats, _emit):
-                            _detector.feed(chunk)
-                            if await _client_disconnected():
-                                stats["error"] = stats["error"] or "client_disconnected"
-                                stats["status"] = 499
-                                break
-                            try:
-                                _c = _raw_utf8_dec.decode(chunk)
-                                if stats["ttft"] == 0.0:
-                                    _is_openai_content = (
-                                        ('"content":"' in _c and '"content":""' not in _c) or
-                                        ('"content": "' in _c and '"content": ""' not in _c) or
-                                        ('"reasoning_content":"' in _c and '"reasoning_content":""' not in _c) or
-('"reasoning":"' in _c and '"reasoning":""' not in _c) or
-                                        ('"text":"' in _c and '"text":""' not in _c)
-                                    )
-                                    _is_gemini_content = (
-                                        '"candidates"' in _c or
-                                        '"parts"' in _c or
-                                        '"role":"' in _c
-                                    )
-                                    _is_anthropic_content = (
-                                        '"text_delta"' in _c or
-                                        '"content_block_delta"' in _c or
-                                        '"message_delta"' in _c or
-                                        '"thinking_delta"' in _c
-                                    )
-                                    if _is_openai_content or _is_gemini_content or _is_anthropic_content:
-                                        stats["ttft"] = time.time() - start_time
-                                buffer += _c
-                                lines = buffer.split("\n")
-                                buffer = lines.pop()
-                                for line in lines:
-                                    stripped = line.strip()
-                                    if not stripped.startswith("data: ") or stripped == "data: [DONE]":
-                                        continue
-                                    try:
-                                        dj = json.loads(stripped[6:])
-                                    except json.JSONDecodeError:
-                                        continue
-                                    if dj.get("usage"):
-                                        _i, _o, _c = _extract_usage_tokens(dj["usage"])
-                                        stats["in"] = _i or stats["in"]
-                                        stats["out"] = _o or stats["out"]
-                                        stats["cached"] = _c or stats["cached"]
-                                        stats["cache_write"] = _extract_cache_write_tokens(dj["usage"]) or stats["cache_write"]
-                                        record_cache_warmth(provider_name, _active_conn_index, dj["usage"], tools_config=config.get("tools", {}))
-                                    elif dj.get("type") == "message_start":
-                                        u = (dj.get("message", {}) or {}).get("usage", {}) or {}
-                                        _i, _o, _c = _extract_usage_tokens(u)
-                                        stats["in"] = _i or stats["in"]
-                                        stats["cached"] = _c or stats["cached"]
-                                        stats["cache_write"] = _extract_cache_write_tokens(u) or stats["cache_write"]
-                                    elif dj.get("type") == "message_delta":
-                                        u = dj.get("usage", {}) or {}
-                                        stats["out"] = u.get("output_tokens", stats["out"])
-                            except Exception:
-                                pass
-                            yield chunk
+                        nonlocal resp
+                        _codex_overload_attempt = 0
+                        _CODEX_OVERLOAD_MAX = 4
+                        while True:
+                            _codex_retry_overload = False
+                            _codex_pre_buf = []
+                            buffer = ""
+                            _raw_utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                            async for chunk in _transport_guarded(_pump(resp.aiter_raw(), _emit, 0, "gemini"), stats, _emit):
+                                _detector.feed(chunk)
+                                if await _client_disconnected():
+                                    if _should_mark_client_disconnected(stats):
+                                        stats["error"] = stats["error"] or "client_disconnected"
+                                        stats["status"] = 499
+                                    break
+                                try:
+                                    _c = _raw_utf8_dec.decode(chunk)
+                                    if stats["ttft"] == 0.0 and provider_name != "codex":
+                                        _is_openai_content = _openai_chunk_carries_output(_c)
+                                        _is_gemini_content = (
+                                            '"candidates"' in _c or
+                                            '"parts"' in _c or
+                                            '"role":"' in _c
+                                        )
+                                        _is_anthropic_content = (
+                                            '"text_delta"' in _c or
+                                            '"content_block_delta"' in _c or
+                                            '"message_delta"' in _c or
+                                            '"thinking_delta"' in _c
+                                        )
+                                        if _is_openai_content or _is_gemini_content or _is_anthropic_content:
+                                            stats["ttft"] = time.time() - start_time
+                                    buffer += _c
+                                    lines = buffer.split("\n")
+                                    buffer = lines.pop()
+                                    for line in lines:
+                                        stripped = line.strip()
+                                        if stripped == "data: [DONE]":
+                                            stats["stream_completed"] = True
+                                            continue
+                                        if not stripped.startswith("data:"):
+                                            continue
+                                        try:
+                                            dj = json.loads(stripped[5:].lstrip())
+                                        except json.JSONDecodeError:
+                                            continue
+                                        if provider_name == "codex" and _codex_event_carries_output(dj):
+                                            if stats["ttft"] == 0.0:
+                                                stats["ttft"] = time.time() - start_time
+                                        if isinstance(dj, dict) and dj.get("type") in ("response.failed", "error"):
+                                            _rf_err = ((dj.get("response") or {}).get("error") or dj.get("error") or {})
+                                            if not isinstance(_rf_err, dict):
+                                                _rf_err = {"message": str(_rf_err)}
+                                            _rf_msg = str(_rf_err.get("message") or _rf_err.get("code") or dj.get("type") or "response.failed")
+                                            _rf_sc = 429 if any(m in _rf_msg.lower() for m in ("rate", "quota", "limit", "credit")) else 503
+                                            if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
+                                                _codex_overload_attempt += 1
+                                                _codex_retry_overload = True
+                                                print(
+                                                    f"[CodexOverloadRetry] {provider_name}/{target_model} conn={_active_conn_index} "
+                                                    f"transient 503 ({_rf_msg[:120]}) — retrying same account "
+                                                    f"({_codex_overload_attempt}/{_CODEX_OVERLOAD_MAX})",
+                                                    flush=True,
+                                                )
+                                                break
+                                            stats["status"] = _rf_sc
+                                            stats["error"] = _rf_msg
+                                            bench_leaf(config, provider_name, target_model, _rf_sc, _rf_msg, 0)
+                                            if not _emit.emitted:
+                                                _raise_gemini_combo_fallback(_rf_sc, _rf_msg, _emit)
+                                        _mark_stream_completed_if_terminal(stats, dj)
+                                        _u_gem = _usage_from_sse_data(dj)
+                                        if _u_gem:
+                                            _merge_usage_into_stats(stats, _u_gem)
+                                            record_cache_warmth(provider_name, _active_conn_index, _u_gem, tools_config=config.get("tools", {}))
+                                except _ComboFallbackNeeded:
+                                    raise
+                                except Exception:
+                                    pass
+                                if _codex_retry_overload:
+                                    break
+                                if provider_name == "codex":
+                                    if stats["ttft"] > 0.0 or stats.get("stream_completed") or stats.get("error"):
+                                        for _pb in _codex_pre_buf:
+                                            yield _pb
+                                        _codex_pre_buf.clear()
+                                        yield chunk
+                                    else:
+                                        _codex_pre_buf.append(chunk)
+                                else:
+                                    yield chunk
+                            if _codex_retry_overload:
+                                try:
+                                    await resp.aclose()
+                                except Exception:
+                                    pass
+                                await asyncio.sleep(1.5 * _codex_overload_attempt)
+                                resp = await _send_stream_with_thinking_fallback()
+                                stats["status"] = resp.status_code
+                                continue
+                            for _pb in _codex_pre_buf:
+                                yield _pb
+                            _codex_pre_buf.clear()
+                            break
 
                     if provider_name == 'codex':
                         # Codex upstream speaks Responses SSE (event:/data: pairs, no [DONE]).
@@ -12505,8 +13646,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 )
                             except asyncio.TimeoutError:
                                 if await _client_disconnected():
-                                    stats["error"] = stats["error"] or "client_disconnected"
-                                    stats["status"] = 499
+                                    if _should_mark_client_disconnected(stats):
+                                        stats["error"] = stats["error"] or "client_disconnected"
+                                        stats["status"] = 499
                                     break
                                 # BUG A: cap a wedged relay. A keepalive tick is NOT
                                 # upstream data — do not reset the timer here. Only
@@ -12535,6 +13677,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 yield b": keepalive\n\n"
                                 continue
                             if ochunk is _SENTINEL:
+                                if stats.get("error") is None and (
+                                    stats.get("out", 0) > 0
+                                    or bool(_detector.partial_text)
+                                    or getattr(_detector, "tool_call_chars", 0) > 0
+                                ):
+                                    stats["stream_completed"] = True
                                 break
                             # BUG A: real upstream data arrived — reset the idle
                             # timer so a healthy stream with intermittent reasoning
@@ -12546,12 +13694,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 obuffer = olines.pop()
                                 for line in olines:
                                     stripped = line.strip()
-                                    if not stripped.startswith("data: ") or stripped == "data: [DONE]":
+                                    if stripped == "data: [DONE]":
+                                        stats["stream_completed"] = True
+                                        continue
+                                    if not stripped.startswith("data: "):
                                         continue
                                     try:
                                         openai_chunk = json.loads(stripped[6:])
                                     except json.JSONDecodeError:
                                         continue
+                                    _mark_stream_completed_if_terminal(stats, openai_chunk)
                                     g = openai_chunk_to_gemini(openai_chunk, state)
                                     if g is not None:
                                         from app.compat.adapters.gemini import (
@@ -12805,6 +13957,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     _backfill_missing_usage(
                         stats, internal_request.messages, _detector.partial_text,
                         provider_name=provider_name, target_model=target_model,
+                        delivered_chars=getattr(_detector, "tool_call_chars", 0),
                     )
                     # Zero-token 200: stream COMPLETED with status 200 but produced
                     # zero output tokens — dead leaf. Advance combo if possible.
@@ -12904,11 +14057,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             yield _held
                         _thought_buf.clear()
                     from app.compat.adapters.gemini import SSE_DONE as _G_SSE_DONE
+                    stats["stream_completed"] = True
                     yield _G_SSE_DONE
                 except (GeneratorExit, asyncio.CancelledError):
                     # A real downstream cancellation is never a provider fallback.
-                    stats["error"] = stats["error"] or "client_disconnected"
-                    stats["status"] = 499
+                    if _should_mark_client_disconnected(stats):
+                        stats["error"] = stats["error"] or "client_disconnected"
+                        stats["status"] = 499
                     raise
                 except _ComboFallbackNeeded:
                     raise
@@ -13007,6 +14162,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         pass
                     return
                 except _ComboFallbackNeeded as _cf:
+                    if not getattr(_cf, "backoff", 0):
+                        _mark_conn_failed_for_retry(_cf.retry_state, getattr(_cf, "status_code", 502), getattr(_cf, "err_text", ""))
                     if getattr(_cf, "backoff", 0):
                         # NEVER-STOP wrap: sleep the pass backoff (client
                         # disconnect cancels — the only permitted terminator).
@@ -13104,17 +14261,29 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # deadline_s=0: outer wall-clock is disabled so the inner ladder owns recovery.
             try:
                 from app.compat.adapters.gemini import SSE_DONE as _G_SSE_DEADLINE
-                return StreamingResponse(
-                    _wrap_client_stream(gemini_egress_stream_guarded(), _afz_sid, done_frame=_G_SSE_DEADLINE, protocol="gemini", deadline_s=0),
-                    media_type="text/event-stream",
-                    headers=gemini_response_headers(stream=True),
+                _gem_body = _wrap_client_stream(
+                    gemini_egress_stream_guarded(),
+                    _afz_sid,
+                    done_frame=_G_SSE_DEADLINE,
+                    protocol="gemini",
+                    deadline_s=0,
                 )
             except Exception:
-                return StreamingResponse(
-                    _wrap_client_stream(gemini_egress_stream_guarded(), _afz_sid, protocol="gemini", deadline_s=0),
-                    media_type="text/event-stream",
-                    headers=gemini_response_headers(stream=True),
+                _gem_body = _wrap_client_stream(
+                    gemini_egress_stream_guarded(),
+                    _afz_sid,
+                    protocol="gemini",
+                    deadline_s=0,
                 )
+            _gem_body = _wrap_egress_stream(
+                _fel_stream_with_recovery(_gem_body),
+                model=target_model, provider=provider_name, request_id=request_id
+            )
+            return StreamingResponse(
+                _gem_body,
+                media_type="text/event-stream",
+                headers=gemini_response_headers(stream=True),
+            )
         if convert_anthropic_to_openai_egress:
             # Reverse egress: OpenAI client (/v1/chat/completions) but upstream is
             # Anthropic-compatible (GLM/Kimi/MiniMax). Convert Anthropic SSE → OpenAI SSE.
@@ -13162,7 +14331,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             )
                         # ALL non-200 triggers combo fallback (per user directive).
                         _fb_next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
-                        if not _is_wall_ao and active_chain and _fb_next_idx < len(active_chain):
+                        if not _is_wall_ao and active_chain and (_fb_next_idx < len(active_chain) or _has_untried_sibling_conns()):
                             _fb_retry_state = {
                                 "chain": active_chain,
                                 "idx": _fb_next_idx,
@@ -13266,8 +14435,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     )
                                 except asyncio.TimeoutError:
                                     if await _client_disconnected():
-                                        stats["error"] = stats["error"] or "client_disconnected"
-                                        stats["status"] = 499
+                                        if _should_mark_client_disconnected(stats):
+                                            stats["error"] = stats["error"] or "client_disconnected"
+                                            stats["status"] = 499
                                         break
                                     # 2026-10-02 idle-parity mirror: a keepalive
                                     # tick is NOT upstream data — do not reset
@@ -13287,6 +14457,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     yield b": keepalive\n\n"
                                     continue
                                 if chunk is _SENTINEL:
+                                    if stats.get("error") is None and (
+                                        stats.get("out", 0) > 0
+                                        or bool(_detector.partial_text)
+                                        or getattr(_detector, "tool_call_chars", 0) > 0
+                                    ):
+                                        stats["stream_completed"] = True
                                     break
                                 # Real upstream data arrived — reset the idle
                                 # timer so a healthy stream with intermittent
@@ -13297,8 +14473,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 # delivered text (decoupled from the splice gate).
                                 _detector.feed(chunk)
                                 if await _client_disconnected():
-                                    stats["error"] = stats["error"] or "client_disconnected"
-                                    stats["status"] = 499
+                                    if _should_mark_client_disconnected(stats):
+                                        stats["error"] = stats["error"] or "client_disconnected"
+                                        stats["status"] = 499
                                     break
                                 try:
                                     text_chunk = _utf8_dec.decode(chunk)
@@ -13323,19 +14500,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     lines = buffer.split("\n")
                                     buffer = lines.pop()
                                     for line in lines:
-                                        if line.startswith("data: ") and line.strip() != "data: [DONE]":
+                                        if line.strip() == "data: [DONE]":
+                                            stats["stream_completed"] = True
+                                        elif line.startswith("data: "):
                                             try:
                                                 dj = json.loads(line[6:])
-                                                if dj.get("type") == "message_delta":
-                                                    u = dj.get("usage", {})
-                                                    stats["out"] = u.get("output_tokens", stats["out"])
-                                                elif dj.get("type") == "message_start":
-                                                    msg = dj.get("message", {})
-                                                    u = msg.get("usage", {})
-                                                    _i, _o, _c = _extract_usage_tokens(u)
-                                                    stats["in"] = _i or stats["in"]
-                                                    stats["cached"] = _c or stats["cached"]
-                                                    stats["cache_write"] = _extract_cache_write_tokens(u) or stats["cache_write"]
+                                                _mark_stream_completed_if_terminal(stats, dj)
+                                                _u_a2o = _usage_from_sse_data(dj)
+                                                if _u_a2o:
+                                                    _merge_usage_into_stats(stats, _u_a2o)
+                                                    record_cache_warmth(provider_name, _active_conn_index, _u_a2o, tools_config=config.get("tools", {}))
                                             except json.JSONDecodeError:
                                                 pass
                                 except Exception:
@@ -13381,6 +14555,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         _backfill_missing_usage(
                             stats, internal_request.messages, _detector.partial_text,
                             provider_name=provider_name, target_model=target_model,
+                            delivered_chars=getattr(_detector, "tool_call_chars", 0),
                         )
                         # Zero-token 200: stream completed with status 200 but produced
                         # zero output tokens — dead leaf. Advance combo if possible.
@@ -13600,6 +14775,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         stats["error"] = None
                         _retry_again = True
                     except _ComboFallbackNeeded as _cf_anthr:
+                        if not getattr(_cf_anthr, "backoff", 0):
+                            _mark_conn_failed_for_retry(_cf_anthr.retry_state, getattr(_cf_anthr, "status_code", 502), getattr(_cf_anthr, "err_text", ""))
                         # Body-level upstream failure (e.g. 524 stall after headers) —
                         # advance the combo chain instead of returning an error to the client.
                         if getattr(_cf_anthr, "backoff", 0):
@@ -13633,21 +14810,22 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 yield b"data: [DONE]\n\n"
                         return
                     except (GeneratorExit, asyncio.CancelledError):
-                        try:
-                            obs.log_request(
-                                provider=provider_name, model=target_model, status=499,
-                                ttft=stats["ttft"], in_tokens=stats["in"], out_tokens=stats["out"],
-                                cached_tokens=stats["cached"], config=config,
-                                error_msg="client_disconnected",
-                                total_time=time.time() - start_time,
-                                request_id=request_id, client=client_label, stream=True,
-                                upstream_url=_upstream_url, conn_index=_active_conn_index,
-                                thinking=thinking_info,
-                                cache_write_tokens=stats.get("cache_write", 0),
-                                combo=_combo_label,
-                            )
-                        except Exception:
-                            pass
+                        if _should_mark_client_disconnected(stats):
+                            try:
+                                obs.log_request(
+                                    provider=provider_name, model=target_model, status=499,
+                                    ttft=stats["ttft"], in_tokens=stats["in"], out_tokens=stats["out"],
+                                    cached_tokens=stats["cached"], config=config,
+                                    error_msg="client_disconnected",
+                                    total_time=time.time() - start_time,
+                                    request_id=request_id, client=client_label, stream=True,
+                                    upstream_url=_upstream_url, conn_index=_active_conn_index,
+                                    thinking=thinking_info,
+                                    cache_write_tokens=stats.get("cache_write", 0),
+                                    combo=_combo_label,
+                                )
+                            except Exception:
+                                pass
                         raise
                     except Exception:
                         try:
@@ -13706,6 +14884,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 _ka_body = _sse_keepalive_pre_first_chunk(
                     _ka_body, interval_s=_sse_ka_iv, fmt="openai",
                 )
+            _ka_body = _wrap_egress_stream(
+                _fel_stream_with_recovery(_ka_body),
+                model=target_model, provider=provider_name, request_id=request_id
+            )
             return StreamingResponse(_ka_body, media_type="text/event-stream")
         # Kiro streaming egress: upstream speaks AWS event-stream BINARY
         # (vnd.amazon.eventstream) in production; legacy captures/tests use
@@ -13717,6 +14899,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 # Lane 3: pre-TTFT keepalive, OUTSIDE the eventstream adapter so
                 # the comment frames can never corrupt its binary->SSE decode.
                 _ka_body = _sse_keepalive_pre_first_chunk(_ka_body, interval_s=_sse_ka_iv, fmt="openai")
+            _ka_body = _wrap_egress_stream(
+                _fel_stream_with_recovery(_ka_body),
+                model=target_model, provider=provider_name, request_id=request_id
+            )
             return StreamingResponse(_ka_body, media_type="text/event-stream")
         # Codex streaming egress: wrap raw upstream bytes through Responses SSE→OpenAI SSE converter
         if provider_name == 'codex':
@@ -13725,6 +14911,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             if _sse_ka_on:
                 # Lane 3: pre-TTFT keepalive, OUTSIDE the Responses-SSE adapter.
                 _ka_body = _sse_keepalive_pre_first_chunk(_ka_body, interval_s=_sse_ka_iv, fmt="openai")
+            _ka_body = _wrap_egress_stream(
+                _fel_stream_with_recovery(_ka_body),
+                model=target_model, provider=provider_name, request_id=request_id
+            )
             return StreamingResponse(_ka_body, media_type="text/event-stream")
         _afz_sid = next_stream_id()
         _ka_body = _wrap_client_stream(raw_upstream_guarded(), _afz_sid, deadline_s=0)
@@ -13735,7 +14925,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             _ka_body = _sse_keepalive_pre_first_chunk(
                 _ka_body, interval_s=_sse_ka_iv, fmt=_sse_ka_fmt,
             )
-        _ka_body = _fel_observe_stream(_ka_body, model=target_model, provider=provider_name)
+        _ka_body = _fel_stream_with_recovery(_ka_body)
+        _ka_body = _fel_observe_stream(
+            _ka_body, model=target_model, provider=provider_name, request_id=request_id
+        )
         _ka_body = _guard_observe_stream(_ka_body, model=target_model, provider=provider_name)
         return StreamingResponse(_ka_body, media_type="text/event-stream")
     else:
@@ -13749,7 +14942,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             async def _buffered_send(_payload_to_stream, *, _label="buf"):
                 _bs_t0 = time.time()
                 _bs_payload = {**_payload_to_stream, "stream": True}
-                if not _is_anthropic_fmt:
+                if not _is_anthropic_fmt and provider_name not in ("codex", "kiro") and "input" not in _bs_payload:
                     _bs_payload["stream_options"] = {"include_usage": True}
                 _bs_req = _build_req(_bs_payload)
                 _bs_resp = await _send_stream_with_thinking_fallback(
@@ -13757,7 +14950,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 )
                 _bs_elapsed = time.time() - _bs_t0
                 if _bs_resp.status_code != 200:
-                    if _bs_elapsed < 2.0:
+                    if _bs_elapsed < 2.0 and _bs_resp.status_code in (400, 404, 405, 415, 422, 501):
                         await _bs_resp.aclose()
                         print(
                             f"[StreamBuffer:{_label}] '{target_model}/{provider_name}' "
@@ -13804,7 +14997,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 try:
                     # Non-mutating copy — S3/S6 retries read upstream_payload.
                     _sb_payload = {**upstream_payload, "stream": True}
-                    if not _is_anthropic_fmt:
+                    if not _is_anthropic_fmt and provider_name not in ("codex", "kiro") and "input" not in upstream_payload:
                         _sb_payload["stream_options"] = {"include_usage": True}
                     _sb_req = _build_req(_sb_payload)
                     _sb_resp = await _send_stream_with_thinking_fallback(
@@ -13815,7 +15008,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         # Immediate rejection (<2s): upstream doesn't support
                         # stream or rejected the payload. Fall back to real
                         # non-stream call (safe — no 524 risk at <2s).
-                        if _sb_elapsed < 2.0:
+                        # Never re-dial the same connection on 401/402/403/429/5xx.
+                        if _sb_elapsed < 2.0 and _sb_resp.status_code in (400, 404, 405, 415, 422, 501):
                             await _sb_resp.aclose()
                             print(
                                 f"[StreamBuffer] '{target_model}/{provider_name}' stream rejected "
@@ -13927,10 +15121,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         pass
                 except (asyncio.TimeoutError, TimeoutError):
                     _budget_elapsed = time.time() - start_time
+                    _failure_status = 504
                     _budget_err = (
                         f"generation_budget_exceeded ({_budget_elapsed:.1f}s > "
                         f"{NONSTREAM_TOTAL_BUDGET}s)"
                     )
+                    _failure_text = _budget_err
                     print(
                         f"[Combo Fallback] '{model}' non-stream budget exceeded for "
                         f"{target_model}/{provider_name}: {_budget_err} — advancing",
@@ -13948,15 +15144,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     except Exception:
                         pass
                     _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
-                    if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
+                    if active_chain and (_next_idx < len(active_chain) or _has_untried_sibling_conns()) and _chain_budget_remaining() > 0:
                         # MULTI-KEY FAILOVER: mark this leaf's connection as tried
                         # so the recursive frame doesn't re-dial the same drained key.
-                        _kc = dict((_retry_state or {}).get('tried_conns') or {})
-                        if _active_conn_index is not None:
-                            _kc.setdefault(provider_name, []).append(_active_conn_index)
+                        _next_retry_state = _mark_conn_failed_for_retry(
+                            {'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                            _failure_status, _failure_text,
+                        )
                         return await _process_chat_completion(
                             body, client_wants_anthropic, client_wants_gemini,
-                            _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
+                            _retry_state=_next_retry_state,
                             request=request,
                         )
                     if _chain_budget_remaining() <= 0:
@@ -13984,7 +15181,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         status_code=504,
                     )
                 except (httpx.HTTPError, httpx.TimeoutException, ConnectionError, UnicodeEncodeError) as _send_err:
-                    _send_err_str = str(_send_err)
+                    _failure_status = 502
+                    _send_err_str = _failure_text = str(_send_err)
                     print(
                         f"[Combo Fallback] '{model}' non-stream transport error for "
                         f"{target_model}/{provider_name}: {_send_err_str} — advancing",
@@ -14003,15 +15201,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     except Exception:
                         pass
                     _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
-                    if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
+                    if active_chain and (_next_idx < len(active_chain) or _has_untried_sibling_conns()) and _chain_budget_remaining() > 0:
                         # MULTI-KEY FAILOVER: mark this leaf's connection as tried
                         # so the recursive frame doesn't re-dial the same drained key.
-                        _kc = dict((_retry_state or {}).get('tried_conns') or {})
-                        if _active_conn_index is not None:
-                            _kc.setdefault(provider_name, []).append(_active_conn_index)
+                        _next_retry_state = _mark_conn_failed_for_retry(
+                            {'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                            _failure_status, _failure_text,
+                        )
                         return await _process_chat_completion(
                             body, client_wants_anthropic, client_wants_gemini,
-                            _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
+                            _retry_state=_next_retry_state,
                             request=request,
                         )
                     if _chain_budget_remaining() <= 0:
@@ -14038,7 +15237,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         status_code=502,
                     )
                 except Exception as _send_err:
-                    _send_err_str = str(_send_err)
+                    _failure_status = 500
+                    _send_err_str = _failure_text = str(_send_err)
                     print(
                         f"[Combo Fallback] '{model}' non-stream unexpected error for "
                         f"{target_model}/{provider_name}: {_send_err_str} — advancing",
@@ -14057,15 +15257,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     except Exception:
                         pass
                     _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
-                    if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
+                    if active_chain and (_next_idx < len(active_chain) or _has_untried_sibling_conns()) and _chain_budget_remaining() > 0:
                         # MULTI-KEY FAILOVER: mark this leaf's connection as tried
                         # so the recursive frame doesn't re-dial the same drained key.
-                        _kc = dict((_retry_state or {}).get('tried_conns') or {})
-                        if _active_conn_index is not None:
-                            _kc.setdefault(provider_name, []).append(_active_conn_index)
+                        _next_retry_state = _mark_conn_failed_for_retry(
+                            {'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                            _failure_status, _failure_text,
+                        )
                         return await _process_chat_completion(
                             body, client_wants_anthropic, client_wants_gemini,
-                            _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
+                            _retry_state=_next_retry_state,
                             request=request,
                         )
                     if _chain_budget_remaining() <= 0:
@@ -14168,17 +15369,51 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             _codex_converted = False
             if provider_name == 'codex' and resp.status_code == 200:
                 try:
-                    async def _codex_sse_pre_aiter():
-                        async for _b in resp.aiter_bytes():
-                            yield _b
-                    _cx_completed = await codex_adapter.assemble_responses_from_sse(_codex_sse_pre_aiter())
-                    _cx_openai = codex_adapter.responses_json_to_openai(_cx_completed, model=target_model)
-                    try:
-                        await resp.aclose()
-                    except Exception:
-                        pass
-                    resp = _SyntheticResponse(200, _cx_openai)
-                    _codex_converted = True
+                    for _cx_try in range(5):
+                        async def _codex_sse_pre_aiter():
+                            async for _b in resp.aiter_bytes():
+                                yield _b
+                        _cx_completed = await codex_adapter.assemble_responses_from_sse(_codex_sse_pre_aiter())
+                        _cx_err_obj = _cx_completed.get("error") if isinstance(_cx_completed, dict) else None
+                        _cx_status_str = (_cx_completed.get("status") if isinstance(_cx_completed, dict) else None) or ""
+                        try:
+                            await resp.aclose()
+                        except Exception:
+                            pass
+                        if _cx_err_obj or _cx_status_str == "failed":
+                            _err_code_str = str((_cx_err_obj or {}).get("code") or (_cx_err_obj or {}).get("type") or "").lower() if isinstance(_cx_err_obj, dict) else str(_cx_err_obj or "").lower()
+                            _err_msg_str = str((_cx_err_obj or {}).get("message") or _cx_err_obj or "Codex response.failed") if isinstance(_cx_err_obj, dict) else str(_cx_err_obj or "Codex response.failed")
+                            if any(x in _err_code_str or x in _err_msg_str.lower() for x in ("rate_limit", "quota", "too_many", "usage_limit", "limit_reached")):
+                                _cx_http_status = 429
+                            elif any(x in _err_code_str or x in _err_msg_str.lower() for x in ("auth", "invalid_api_key", "token", "unauthorized")):
+                                _cx_http_status = 401
+                            elif any(x in _err_code_str for x in ("invalid_request", "unsupported", "model_not_found")):
+                                _cx_http_status = 400
+                            else:
+                                _cx_http_status = 502
+                            if _cx_http_status == 502 and _cx_try < 4:
+                                print(
+                                    f"[CodexOverloadRetry] {provider_name}/{target_model} conn={_active_conn_index} "
+                                    f"non-stream transient 502 ({_err_msg_str[:120]}) — retrying same account "
+                                    f"({_cx_try + 1}/4)",
+                                    flush=True,
+                                )
+                                await asyncio.sleep(1.5 * (_cx_try + 1))
+                                resp = await asyncio.wait_for(
+                                    client.send(_build_req(upstream_payload)),
+                                    timeout=max(1.0, min(NONSTREAM_TOTAL_BUDGET, _chain_budget_remaining())),
+                                )
+                                if resp.status_code == 200:
+                                    continue
+                                break
+                            resp = _SyntheticResponse(_cx_http_status, {"error": _cx_err_obj or {"message": _err_msg_str}}, _err_msg_str[:1000])
+                            _codex_converted = True
+                            break
+                        else:
+                            _cx_openai = codex_adapter.responses_json_to_openai(_cx_completed, model=target_model)
+                            resp = _SyntheticResponse(200, _cx_openai)
+                            _codex_converted = True
+                            break
                 except Exception as _cx_err:
                     print(f"[Egress] Codex Responses->OpenAI pre-conversion failed (passthrough): {_cx_err}", flush=True)
 
@@ -14274,7 +15509,29 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     print(f"[ResponseGuard] scan failed (fail-open): {_guard_err}", flush=True)
 
                 _zombie_check = _response_has_model_output(_response_json, out_tokens)
-                
+                if _zombie_check and (not in_tokens or not out_tokens):
+                    try:
+                        _ns_vis, _ = fel_response_visible_text(_response_json)
+                        _ns_targs = serialize_tool_args(_response_json)
+                        _ns_stats = {
+                            "in": in_tokens,
+                            "out": out_tokens,
+                            "cached": cached_tokens,
+                            "cache_write": cache_write_tokens,
+                        }
+                        _backfill_missing_usage(
+                            _ns_stats,
+                            internal_request.messages,
+                            _ns_vis or "",
+                            provider_name=provider_name,
+                            target_model=target_model,
+                            delivered_chars=len(_ns_targs or ""),
+                        )
+                        in_tokens = _ns_stats["in"]
+                        out_tokens = _ns_stats["out"]
+                    except Exception:
+                        pass
+
                 if not _zombie_check:
                     # Report the REAL billed out_tokens (2026-09-11 fix:
                     # hardcoded "out_tokens=0" lied during forensics when the
@@ -14545,30 +15802,41 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         if _fel.profile_header:
                             _escal_profile = request.headers.get(_fel.profile_header, "") or ""
                         _escal_ctx = reframe_context_wide(body, _fel, _escal_profile)
-                        print(
-                            f"[FEL] context-escalation for {target_model}/{provider_name} "
-                            f"(data_inspection_failed) — reframed "
-                            f"{_escal_ctx.get('messages_reframed', 0)} messages, "
-                            f"re-dispatching once",
-                            flush=True,
-                        )
-                        fel_event("context_escalation", model=target_model, provider=provider_name, details={
-                            "messages_reframed": _escal_ctx.get("messages_reframed", 0),
-                            "rewrites": _escal_ctx.get("rewrites", []),
-                        })
-                        # Ensure the escalation frame is treated as a fresh
-                        # single-shot dispatch (no inherited combo idx).
-                        _escal_retry_state = None if not _retry_state else {
-                            **_retry_state,
-                            "idx": _retry_state.get("idx", 0),
-                        }
-                        return await _process_chat_completion(
-                            body,
-                            client_wants_anthropic,
-                            client_wants_gemini,
-                            _retry_state=_escal_retry_state,
-                            request=request,
-                        )
+                        _escal_last_changed = False
+                        _escal_last_txt = extract_last_user_text(body)
+                        if _escal_last_txt:
+                            _escal_adj, _escal_rw, _escal_ch = reframe_text(
+                                _escal_last_txt, _fel, _escal_profile
+                            )
+                            if _escal_ch and _escal_adj != _escal_last_txt:
+                                if set_last_user_text(body, _escal_adj):
+                                    _escal_last_changed = True
+                                    _escal_ctx.setdefault("rewrites", []).extend(_escal_rw)
+                        if _escal_ctx.get("changed") or _escal_last_changed:
+                            print(
+                                f"[FEL] context-escalation for {target_model}/{provider_name} "
+                                f"(data_inspection_failed) — reframed "
+                                f"{_escal_ctx.get('messages_reframed', 0)} messages, "
+                                f"re-dispatching once",
+                                flush=True,
+                            )
+                            fel_event("context_escalation", model=target_model, provider=provider_name, details={
+                                "messages_reframed": _escal_ctx.get("messages_reframed", 0),
+                                "rewrites": _escal_ctx.get("rewrites", []),
+                            })
+                            # Ensure the escalation frame is treated as a fresh
+                            # single-shot dispatch (no inherited combo idx).
+                            _escal_retry_state = None if not _retry_state else {
+                                **_retry_state,
+                                "idx": _retry_state.get("idx", 0),
+                            }
+                            return await _process_chat_completion(
+                                body,
+                                client_wants_anthropic,
+                                client_wants_gemini,
+                                _retry_state=_escal_retry_state,
+                                request=request,
+                            )
                     except Exception as _fel_escalation_err:
                         print(
                             f"[FEL] context-escalation failed (fail-open): "
@@ -14586,17 +15854,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 _is_zombie or resp.status_code != 200
             ):
                 _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
-                if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
+                if (_next_idx < len(active_chain) or _has_untried_sibling_conns()) and _chain_budget_remaining() > 0:
                     _fb_code = 504 if _is_zombie else resp.status_code
-                    print(f"[Combo Fallback] '{model}' non-stream {_fb_code} for {target_model}/{provider_name} — advancing to entry {_next_idx}")
-                    # MULTI-KEY FAILOVER: mark this leaf's connection as tried
-                    # so the recursive frame doesn't re-dial the same drained key.
-                    _kc = dict((_retry_state or {}).get('tried_conns') or {})
-                    if _active_conn_index is not None:
-                        _kc.setdefault(provider_name, []).append(_active_conn_index)
+                    _next_retry_state = _mark_conn_failed_for_retry(
+                        {'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                        _fb_code, _ns_err_text,
+                    )
                     return await _process_chat_completion(
                         body, client_wants_anthropic, client_wants_gemini,
-                        _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
+                        _retry_state=_next_retry_state,
                         request=request,
                     )
                 if _chain_budget_remaining() <= 0:
@@ -14689,7 +15955,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # no DB row, no usage. Fail-open on any error.
             def _log_nonstream_success(_openai_json: dict) -> None:
                 try:
-                    _li, _lo, _lc = _extract_usage_tokens((_openai_json or {}).get("usage") or {})
+                    _u_dict = (_openai_json or {}).get("usage") or {}
+                    _li, _lo, _lc = _extract_usage_tokens(_u_dict)
+                    _lcw = _extract_cache_write_tokens(_u_dict)
+                    _li = _li or in_tokens
+                    _lo = _lo or out_tokens
+                    _lc = _lc or cached_tokens
+                    _lcw = _lcw or cache_write_tokens
                     obs.log_request(
                         provider=provider_name, model=target_model, status=200,
                         ttft=time.time() - start_time, in_tokens=_li, out_tokens=_lo,
@@ -14697,7 +15969,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         total_time=time.time() - start_time,
                         request_id=request_id, client=client_label, stream=False,
                         upstream_url=_upstream_url, conn_index=_active_conn_index,
-                        thinking=thinking_info, combo=_combo_label,
+                        thinking=thinking_info, cache_write_tokens=_lcw,
+                        combo=_combo_label,
                     )
                 except Exception as _log_exc:
                     print(f"[BSL Router] nonstream success log failed: {_log_exc}", flush=True)
@@ -14766,6 +16039,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     _working_json = merge_continuation_response(_working_json, _cont_json)
                                     _normalized_json = _working_json  # Update for egress
                                     _response_mutated = True
+                                    _m_i, _m_o, _m_c = _extract_usage_tokens((_normalized_json or {}).get("usage") or {})
+                                    _m_cw = _extract_cache_write_tokens((_normalized_json or {}).get("usage") or {})
+                                    in_tokens = _m_i or in_tokens
+                                    out_tokens = _m_o or out_tokens
+                                    cached_tokens = _m_c or cached_tokens
+                                    cache_write_tokens = _m_cw or cache_write_tokens
                                     print(
                                         f"[AntiStop] Continuation merged (+{_extract_usage(_cont_json)['completion_tokens']} tokens)",
                                         flush=True,
@@ -14809,6 +16088,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     if _retry_len > _orig_len:
                                         _normalized_json = _retry_json  # Replace with better response
                                         _response_mutated = True
+                                        _r_i, _r_o, _r_c = _extract_usage_tokens((_normalized_json or {}).get("usage") or {})
+                                        _r_cw = _extract_cache_write_tokens((_normalized_json or {}).get("usage") or {})
+                                        in_tokens = _r_i or in_tokens
+                                        out_tokens = _r_o or out_tokens
+                                        cached_tokens = _r_c or cached_tokens
+                                        cache_write_tokens = _r_cw or cache_write_tokens
                                         print(
                                             f"[QualityGate] Retry improved output ({_orig_len} → {_retry_len} chars)",
                                             flush=True,
@@ -15014,16 +16299,17 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             if (active_chain
                     and not isinstance(e, (json.JSONDecodeError, ValueError, KeyError, TypeError))):
                 _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
-                if _next_idx < len(active_chain) and _chain_budget_remaining() > 0:
+                if (_next_idx < len(active_chain) or _has_untried_sibling_conns()) and _chain_budget_remaining() > 0:
                     print(f"[Combo Fallback] '{model}' non-stream network error for {target_model}/{provider_name}: {e} — advancing to entry {_next_idx}")
                     # MULTI-KEY FAILOVER: mark this leaf's connection as tried
                     # so the recursive frame doesn't re-dial the same drained key.
-                    _kc = dict((_retry_state or {}).get('tried_conns') or {})
-                    if _active_conn_index is not None:
-                        _kc.setdefault(provider_name, []).append(_active_conn_index)
+                    _next_retry_state = _mark_conn_failed_for_retry(
+                        {'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
+                        502, str(e),
+                    )
                     return await _process_chat_completion(
                         body, client_wants_anthropic, client_wants_gemini,
-                        _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline, 'tried_conns': _kc},
+                        _retry_state=_next_retry_state,
                         request=request,
                     )
                 if _chain_budget_remaining() <= 0:
@@ -15375,8 +16661,31 @@ async def apply_discovered_models_endpoint(provider_id: str):
 @app.get("/v1/models")
 @app.get("/anthropic/v1/models")
 @app.get("/gemini/v1/models")
-async def list_models(discover: bool = False):
+async def list_models(request: Request = None, discover: bool = False):
     config = cs_get_config()
+    cc_cfg = config.get("claude_code_integration", {})
+    if (
+        cc_cfg.get("enabled", True)
+        and cc_cfg.get("replace_builtin", True)
+        and not discover
+        and request is not None
+        and (
+            request.headers.get("anthropic-version")
+            or request.url.path.startswith("/anthropic/")
+            or "limit" in request.query_params
+        )
+    ):
+        cc_models = [
+            {
+                "id": custom["alias_id"],
+                "display_name": custom["display_name"],
+                "object": "model",
+                "owned_by": "anthropic",
+                "capabilities": {"vision": True, "imageInput": True, "tools": True, "reasoning": True},
+            }
+            for custom in _claude_code_models(config)
+        ]
+        return JSONResponse({"object": "list", "data": cc_models})
     models = []
     for prov_id, prov_data in config.get("providers", {}).items():
         # Hidden providers are excluded from the public catalog.
@@ -15479,6 +16788,10 @@ async def list_models(discover: bool = False):
                 "owned_by": "blacksand-labs",
                 "capabilities": {"vision": True, "imageInput": True, "tools": True, "reasoning": True},
             })
+    for custom in _claude_code_models(config):
+        models.append({"id": custom["alias_id"], "display_name": custom["display_name"],
+                       "object": "model", "owned_by": "anthropic",
+                       "capabilities": {"vision": True, "imageInput": True, "tools": True, "reasoning": True}})
     return JSONResponse({"object": "list", "data": models})
 
 @app.post("/v1/images/generations")
@@ -15752,6 +17065,7 @@ async def videos_generations(request: Request):
 @app.post("/gemini/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await _safe_request_json(request)
+    body["model"] = _resolve_claude_code_alias(cs_get_config(), body.get("model")) or body.get("model", "")
     # ── N2 normalizer_v2 shadow (tools.normalizer_v2, default OFF) ─────────────
     _n2_dialect = endpoint_dialect(request.url.path)
     if _n2_dialect:
@@ -15866,7 +17180,10 @@ async def anthropic_messages(request: Request):
     # This endpoint is only hit by Claude Code (no other client sends Anthropic format).
     model_aliases = config.get("claude_code_aliases", {})
     raw_model = body.get("model", "")
-    if raw_model in model_aliases:
+    integration_target = _resolve_claude_code_alias(config, raw_model)
+    if integration_target:
+        body["model"] = integration_target
+    elif raw_model in model_aliases:
         body["model"] = model_aliases[raw_model]
     else:
         # Wildcard match (e.g. "*sonnet*" -> combo_sonnet)
@@ -15964,7 +17281,13 @@ async def antigravity_generate(request: Request, model: str = None):
     source_model = raw_model if isinstance(raw_model, str) and raw_model else "<unknown>"
     integration = _antigravity_integration_settings()
 
-    if mitm_alias:
+    inner_selectors = body.get("request") if isinstance(body.get("request"), dict) else {}
+    custom_target = _resolve_antigravity_custom_model(
+        config, body.get("model"), body.get("modelId"), body.get("model_id"),
+        inner_selectors.get("model"), inner_selectors.get("modelId"), inner_selectors.get("model_id"), model)
+    if custom_target and not mitm_alias:
+        mapping_target = custom_target
+    elif mitm_alias:
         mapping_target = mitm_alias
         # MITM rewrites body.model to the alias; recover the original source from
         # the trusted internal header, bounded by the pre-rewrite payload/path model.
@@ -16389,6 +17712,7 @@ def _maybe_auto_register(provider_name: str, target_model: str, resp) -> None:
 
 async def _forward_antigravity_ccpa_control(request: Request, operation: str):
     """Stream a non-inference Cloud Code RPC to the pinned Google CCPA origin."""
+    global _ANTIGRAVITY_EGRESS_CLIENT
     if not _ANTIGRAVITY_CCPA_OPERATION_RE.fullmatch(operation):
         return _antigravity_ccpa_error(
             404,
@@ -16419,18 +17743,26 @@ async def _forward_antigravity_ccpa_control(request: Request, operation: str):
     try:
         # Use egress client so BSL Router connects to Google directly (via 8.8.8.8)
         # bypassing the local MITM hosts file which would cause an infinite loop.
-        client = _get_antigravity_egress_client()
         stage = "request-body"
         raw_body = await request.body()
-        stage = "request-build"
-        upstream_request = client.build_request(
-            request.method,
-            _build_antigravity_ccpa_url(request, operation, approved_base_url),
-            headers=_antigravity_native_request_headers(request),
-            content=raw_body,
-        )
-        stage = "upstream-send"
-        upstream_response = await client.send(upstream_request, stream=True)
+        for attempt in range(3):
+            client = _get_antigravity_egress_client()
+            stage = "request-build"
+            upstream_request = client.build_request(
+                request.method,
+                _build_antigravity_ccpa_url(request, operation, approved_base_url),
+                headers=_antigravity_native_request_headers(request),
+                content=raw_body,
+            )
+            stage = "upstream-send"
+            try:
+                upstream_response = await client.send(upstream_request, stream=True)
+                break
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
+                if google_egress_client is not None or attempt >= 2:
+                    raise
+                rotate_google_ip_cache()
+                _ANTIGRAVITY_EGRESS_CLIENT = None
         # Transport succeeded — the singleton pool is healthy. (A corrupted
         # pool raises below; the except path recycles the client so the NEXT
         # hourly poll gets a fresh pool instead of wedging 502 forever.)
@@ -16462,21 +17794,281 @@ async def _forward_antigravity_ccpa_control(request: Request, operation: str):
         # Never include request data or headers here: Google credentials must not
         # reach process logs even when control-plane transport is unavailable.
         _log_antigravity_ccpa_stage_failure(operation, stage, exc)
-        if stage in ("request-build", "upstream-send"):
+        if google_egress_client is None and isinstance(exc, httpx.TransportError):
             # Recycle the shared egress client after a transport-level failure:
             # the historical failure mode on this box is a degraded keep-alive
             # pool that wedges every subsequent connect until process restart.
             # We drop references WITHOUT aclose(): another request may hold a
             # healthy in-flight stream on this pool; keepalive expiry (30s)
             # and GC reclaim the idle pool instead.
-            global google_egress_client, _ANTIGRAVITY_EGRESS_CLIENT
-            google_egress_client = None
+            rotate_google_ip_cache()
             _ANTIGRAVITY_EGRESS_CLIENT = None
         return _antigravity_ccpa_error(
             502,
             "UPSTREAM_UNAVAILABLE",
             "Google Cloud Code control-plane upstream is unavailable.",
         )
+
+
+def _merge_antigravity_custom_models_catalog(upstream_json, custom_models):
+    import copy
+    try:
+        catalog = copy.deepcopy(upstream_json) if isinstance(upstream_json, dict) else {}
+        enabled = [m for m in (custom_models or []) if isinstance(m, dict) and m.get("enabled", True)]
+        if not enabled:
+            return catalog
+        map_entries, list_entries = {}, []
+        for model in enabled:
+            try:
+                slug, index, target = model["slug"], model["placeholder_index"], model["target"]
+                if (not isinstance(slug, str) or not slug or not isinstance(index, int)
+                        or isinstance(index, bool) or index < 0
+                        or not isinstance(model["display_name"], str) or not isinstance(target, str)):
+                    continue
+                entry = {
+                    "displayName": model["display_name"], "supportsImages": True, "supportsThinking": True,
+                    "supportsVideo": False, "supportedMimeTypes": {"image/png": True, "image/jpeg": True, "image/webp": True, "application/pdf": True},
+                    "recommended": True, "maxTokens": 200000, "maxOutputTokens": 64000,
+                    "tokenizerType": "LLAMA_WITH_SPECIAL", "model": f"MODEL_PLACEHOLDER_M{index}",
+                    "apiProvider": "API_PROVIDER_GOOGLE_GEMINI", "modelProvider": "MODEL_PROVIDER_GOOGLE",
+                }
+                list_entries.append({"name": f"models/{slug}", "version": "1.0", "displayName": model["display_name"], "description": f"BSL Router ({target})", **entry})
+                map_entries[slug] = entry
+            except Exception:
+                continue
+        if not map_entries:
+            return catalog
+        containers = [key for key in ("models", "availableModels", "available_models") if key in catalog] or ["models"]
+        for key in containers:
+            if isinstance(catalog.get(key), list):
+                names = {m["name"] for m in list_entries}
+                catalog[key] = [m for m in catalog[key] if not isinstance(m, dict) or m.get("name") not in names] + list_entries
+            else:
+                if not isinstance(catalog.get(key), dict):
+                    catalog[key] = {}
+                catalog[key].update(map_entries)
+        sorts = catalog.setdefault("agentModelSorts", [])
+        added = False
+        if isinstance(sorts, list):
+            for sort in sorts:
+                for group in sort.get("groups", []) if isinstance(sort, dict) else []:
+                    if isinstance(group, dict) and isinstance(group.get("modelIds"), list):
+                        group["modelIds"].extend(slug for slug in map_entries if slug not in group["modelIds"])
+                        added = True
+            if not added:
+                sorts.append({"displayName": "Custom models", "groups": [{"modelIds": list(map_entries)}]})
+        return catalog
+
+    except Exception:
+        return copy.deepcopy(upstream_json) if isinstance(upstream_json, dict) else {}
+
+def _proto_varint(value):
+    result = bytearray()
+    while value > 127:
+        result.append((value & 127) | 128)
+        value >>= 7
+    result.append(value)
+    return bytes(result)
+
+
+def _proto_fields(data):
+    def read_varint(offset):
+        value = 0
+        for shift in range(0, 70, 7):
+            if offset >= len(data):
+                raise ValueError("Truncated protobuf varint")
+            byte = data[offset]
+            offset += 1
+            value |= (byte & 127) << shift
+            if byte < 128:
+                return value, offset
+        raise ValueError("Invalid protobuf varint")
+    fields, offset = [], 0
+    while offset < len(data):
+        start = offset
+        tag, offset = read_varint(offset)
+        number, wire = tag >> 3, tag & 7
+        if not number:
+            raise ValueError("Invalid protobuf field")
+        if wire == 2:
+            length, offset = read_varint(offset)
+            end = offset + length
+            value = data[offset:end]
+        elif wire == 0:
+            value, end = read_varint(offset)
+        elif wire in (1, 5):
+            end = offset + (8 if wire == 1 else 4)
+            value = data[offset:end]
+        else:
+            raise ValueError("Unsupported protobuf wire type")
+        if end > len(data):
+            raise ValueError("Truncated protobuf field")
+        fields.append((number, wire, value, data[start:end]))
+        offset = end
+    return fields
+
+
+def _proto_string(number, value):
+    value = value.encode("utf-8")
+    return _proto_varint(number << 3 | 2) + _proto_varint(len(value)) + value
+
+
+def _inject_custom_models_into_grpc_web_proto(response_buf, custom_models):
+    try:
+        enabled = [m for m in (custom_models or []) if isinstance(m, dict) and m.get("enabled", True)]
+        if not enabled:
+            return response_buf
+        # Preserve trailer frames and unknown fields byte-for-byte. Compressed
+        # messages cannot be safely edited without negotiating their compressor.
+        offset, output, injected = 0, bytearray(), False
+        while offset < len(response_buf):
+            if offset + 5 > len(response_buf):
+                return response_buf
+            flags = response_buf[offset]
+            length = int.from_bytes(response_buf[offset + 1:offset + 5], "big")
+            end = offset + 5 + length
+            if end > len(response_buf):
+                return response_buf
+            body = response_buf[offset + 5:end]
+            if flags == 0 and not injected:
+                try:
+                    fields = _proto_fields(body)
+                    tag, sample = 1, []
+                    found = False
+                    for number, wire, value, raw in fields:
+                        if wire != 2:
+                            continue
+                        try:
+                            nested = _proto_fields(value)
+                        except ValueError:
+                            continue
+                        names = [v for n, w, v, r in nested if n == 1 and w == 2]
+                        if names and (names[0].startswith(b"models/") or b"MODEL_" in names[0]):
+                            tag, sample, found = number, nested, True
+                            break
+                    if fields and not found:
+                        output.extend(response_buf[offset:end])
+                        offset = end
+                        continue
+                    for model in enabled:
+                        try:
+                            index = model["placeholder_index"]
+                            if (not isinstance(index, int) or isinstance(index, bool) or index < 0
+                                    or not isinstance(model["display_name"], str)):
+                                continue
+                            name = f"models/MODEL_PLACEHOLDER_M{model['placeholder_index']}"
+                            if name.encode() in body:
+                                continue
+                            entry = _proto_string(1, name) + _proto_string(2, model["display_name"])
+                            entry += b"".join(raw for n, w, v, raw in sample if n not in (1, 2))
+                            body += _proto_varint(tag << 3 | 2) + _proto_varint(len(entry)) + entry
+                        except Exception:
+                            continue
+                    injected = True
+                except ValueError:
+                    return response_buf
+            output.extend(bytes([flags]) + len(body).to_bytes(4, "big") + body)
+            offset = end
+        return bytes(output)
+
+    except Exception:
+        return response_buf
+
+@app.get("/api/app-integration/status")
+async def app_integration_status():
+    from app.antigravity_patcher import integration_status
+    cfg = cs_get_config()
+    status = await asyncio.to_thread(integration_status)
+    status["enabled"] = cfg.get("antigravity_integration", {}).get("enabled", False)
+    return JSONResponse({"antigravity": status, "claude_code": {"enabled": cfg.get("claude_code_integration", {}).get("enabled", True), "models": len(_claude_code_models(cfg))}})
+
+
+@app.post("/api/app-integration/antigravity/patch")
+async def app_integration_antigravity_patch(request: Request):
+    from app.antigravity_patcher import patch_antigravity, apply_staged_asar_if_present, restart_and_apply_staged_asar
+    try:
+        body = await request.json()
+        action = body.get("action", "apply")
+        if action not in ("apply", "restore", "apply_staged", "restart_and_apply"):
+            raise ValueError("Unknown patch action")
+        if action == "apply_staged":
+            applied = await asyncio.to_thread(apply_staged_asar_if_present)
+            return JSONResponse({"ok": True, "applied": applied})
+        if action == "restart_and_apply":
+            result = await asyncio.to_thread(restart_and_apply_staged_asar)
+            return JSONResponse(result)
+        result = await asyncio.to_thread(patch_antigravity, port=cs_get_config().get("server", {}).get("port", 6969), restore=action == "restore")
+        return JSONResponse(result)
+    except (OSError, ValueError, KeyError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/app-integration/claude-code/sync")
+async def app_integration_claude_code_sync():
+    try:
+        cfg = _validate_claude_code_integration_config(cs_get_config())
+        return JSONResponse(await asyncio.to_thread(_sync_claude_code_settings, cfg))
+    except (OSError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.api_route("/v1internal:fetchAvailableModels", methods=["GET", "POST"])
+@app.api_route("/v1internal/fetchAvailableModels", methods=["GET", "POST"])
+async def antigravity_fetch_available_models(request: Request):
+    global _ANTIGRAVITY_EGRESS_CLIENT
+    models = [m for m in (cs_get_config().get("antigravity_integration", {}).get("custom_models") or [])
+              if isinstance(m, dict) and m.get("enabled", True)]
+    if not models:
+        return await _forward_antigravity_ccpa_control(request, "fetchAvailableModels")
+    upstream = {}
+    if _antigravity_native_credentials_present(request):
+        try:
+            headers = {k: v for k, v in _antigravity_native_request_headers(request).items() if k.lower() != "accept-encoding"}
+            raw_body = await request.body()
+            for attempt in range(3):
+                client = _get_antigravity_egress_client()
+                native_request = client.build_request(request.method, _build_antigravity_ccpa_url(request, "fetchAvailableModels", _validated_antigravity_ccpa_base_url()), headers=headers, content=raw_body)
+                try:
+                    response = await client.send(native_request)
+                    break
+                except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
+                    if google_egress_client is not None or attempt >= 2:
+                        raise
+                    rotate_google_ip_cache()
+                    _ANTIGRAVITY_EGRESS_CLIENT = None
+            try:
+                if response.status_code == 200:
+                    upstream = response.json()
+            finally:
+                await response.aclose()
+        except Exception as exc:
+            if google_egress_client is None and isinstance(exc, httpx.TransportError):
+                rotate_google_ip_cache()
+                _ANTIGRAVITY_EGRESS_CLIENT = None
+            upstream = {}
+    return JSONResponse(_merge_antigravity_custom_models_catalog(upstream, models))
+
+
+@app.post("/GetAvailableModels")
+async def antigravity_get_available_models(request: Request):
+    from urllib.parse import urlsplit
+    target = request.query_params.get("ls", "")
+    try:
+        parsed = urlsplit(target)
+        if parsed.scheme not in ("http", "https") or parsed.hostname not in ("127.0.0.1", "localhost") or parsed.username or parsed.password or parsed.fragment or not parsed.path.endswith("LanguageServerService/GetAvailableModels"):
+            raise ValueError("ls must be a local LanguageServerService/GetAvailableModels URL")
+        parsed.port
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=30.0, trust_env=False, follow_redirects=False) as client:
+            response = await client.post(target, content=await request.body(), headers={"Content-Type": "application/grpc-web+proto", "x-grpc-web": "1"})
+        content = response.content
+        if response.status_code == 200:
+            content = _inject_custom_models_into_grpc_web_proto(content, cs_get_config().get("antigravity_integration", {}).get("custom_models", []))
+        return Response(content=content, status_code=response.status_code, media_type="application/grpc-web+proto")
+    except httpx.HTTPError:
+        return JSONResponse({"error": "Local language server unavailable"}, status_code=502)
 
 
 @app.api_route("/v1internal:{operation}", methods=["GET", "POST"])
@@ -16814,12 +18406,109 @@ async def _probe_oneapi_billing(base: str, key: str) -> Optional[dict]:
         return None
 
 
-# ── OAuth passive quota capture (2026-08-24) ──────────────────────────────
-# OAuth upstreams (claude/codex/etc.) have no billing dashboard API; their
-# rate-limit info arrives in RESPONSE HEADERS of live proxied calls. We parse
-# those passively (zero extra upstream traffic) and expose them through the
-# same /api/quota/status shape the one-api bars already use.
-_OAUTH_QUOTA: dict = {}  # {provider: {conn_index: {remaining_pct, metric, window_reset, updated_at}}}
+_OAUTH_QUOTA: dict = {}
+_OAUTH_PROBE_CACHE: dict = {}
+_OAUTH_PROBE_TTL_S = 120.0
+
+
+def _parse_reset_ts(val, now_ts=None) -> tuple[Optional[str], Optional[int]]:
+    from datetime import datetime, timezone
+    import math
+    import re
+
+    now = time.time() if now_ts is None else now_ts
+    if val is None or val == "":
+        return None, None
+    try:
+        raw = str(val).strip()
+        try:
+            number = float(raw)
+        except ValueError:
+            parts = re.findall(r"(\d+(?:\.\d+)?)([dhms])", raw.lower())
+            if parts and "".join(n + u for n, u in parts) == raw.lower():
+                number = now + sum(float(n) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[u] for n, u in parts)
+            else:
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                number = dt.replace(tzinfo=timezone.utc).timestamp() if dt.tzinfo is None else dt.timestamp()
+        else:
+            if number >= 100_000_000_000:
+                number /= 1000.0
+            elif number < 1_000_000_000:
+                number += now
+        if not math.isfinite(number):
+            return None, None
+        return datetime.fromtimestamp(number, timezone.utc).isoformat().replace("+00:00", "Z"), max(0, int(number - now))
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None, None
+
+
+def _make_window_obj(label: str, remaining_pct: float, reset_val=None, reset_after_s=None, used=None, total=None) -> dict:
+    rem = round(max(0.0, min(100.0, float(remaining_pct))), 1)
+    reset_at, reset_in = _parse_reset_ts(reset_val)
+    if reset_at is None and reset_after_s is not None:
+        reset_at, reset_in = _parse_reset_ts(f"{max(0.0, float(reset_after_s))}s")
+    return {"label": label, "remaining_pct": rem, "used_pct": round(100.0 - rem, 1),
+            "used": used, "total": total, "reset_at": reset_at, "reset_in_seconds": reset_in}
+
+
+def _compute_local_oauth_windows(provider_id: str, conn_index: int) -> dict:
+    from app import oauth_antiban
+
+    now = time.time()
+    now_m = time.monotonic(); usage = list(oauth_antiban._CONNECTION_USAGE.get((str(provider_id), int(conn_index))) or [])
+    result = {}
+    for key, label, seconds, max_reqs, max_toks in (
+        ("five_hour", "5h", 18000, 300, 2_000_000),
+        ("weekly", "7d", 604800, 2500, 15_000_000),
+    ):
+        entries = [(ts, tokens) for ts, tokens in usage if ts >= now_m - seconds]
+        reqs = len(entries)
+        ratio = max(reqs / max_reqs, sum(tokens for _, tokens in entries) / max_toks)
+        reset = max(0, int(min(ts for ts, _ in entries) + seconds - now_m)) if entries else 0
+        result[key] = _make_window_obj(label, 100.0 * (1.0 - min(1.0, ratio)), reset_after_s=reset, used=reqs, total=max_reqs)
+    return result
+
+
+def _merge_oauth_windows(provider_id, conn_index, active=None):
+    result = dict(active or {})
+    live = _OAUTH_QUOTA.get(str(provider_id), {}).get(int(conn_index), {})
+    if live and live.get("updated_at", 0) >= result.get("updated_at", 0):
+        result.update(live)
+        result["source"] = "oauth_live"
+    local = _compute_local_oauth_windows(provider_id, conn_index)
+    for key in ("five_hour", "weekly"):
+        if not result.get(key):
+            result[key] = local[key]
+        else:
+            window = dict(result[key])
+            if window.get("reset_at"):
+                window["reset_at"], window["reset_in_seconds"] = _parse_reset_ts(window["reset_at"])
+            result[key] = window
+    if isinstance(result.get("groups"), dict):
+        merged_groups = {}
+        for g_key, g_label in (("google", "Google"), ("claude", "Claude")):
+            g_raw = dict((result["groups"].get(g_key)) or {})
+            g_out = {"label": g_raw.get("label") or g_label}
+            for w_key in ("five_hour", "weekly"):
+                w_raw = g_raw.get(w_key)
+                if not isinstance(w_raw, dict):
+                    g_out[w_key] = dict(local[w_key])
+                else:
+                    w_copy = dict(w_raw)
+                    if w_copy.get("reset_at"):
+                        w_copy["reset_at"], w_copy["reset_in_seconds"] = _parse_reset_ts(w_copy["reset_at"])
+                    g_out[w_key] = w_copy
+            merged_groups[g_key] = g_out
+        result["groups"] = merged_groups
+    elif str(provider_id).lower() in ("antigravity", "gemini-cli"):
+        result["groups"] = {
+            "google": {"label": "Google", "five_hour": dict(result["five_hour"]), "weekly": dict(result["weekly"])},
+            "claude": {"label": "Claude", "five_hour": dict(result["five_hour"]), "weekly": dict(result["weekly"])},
+        }
+    result.update(remaining_pct=round(min(result["five_hour"]["remaining_pct"], result["weekly"]["remaining_pct"]), 1),
+                  metric="5h/7d", source=result.get("source", "oauth_window"),
+                  updated_at=result.get("updated_at", time.time()))
+    return result
 
 _OAUTH_RL_HEADERS = [
     # (remaining_header, limit_header, metric)
@@ -16831,102 +18520,916 @@ _OAUTH_RL_HEADERS = [
 
 
 def _capture_rate_limit_headers(provider: str, conn_index, headers) -> None:
-    """Passively parse rate-limit headers from a live upstream response.
-
-    Token-based % preferred (most meaningful for LLM traffic); falls back to
-    request-based. Best-effort: never raises, never blocks the stream.
-    """
     if conn_index is None:
         return
     try:
-        _h = {str(k).lower(): v for k, v in headers.items()}
-        entry = None
-        for _rem_k, _lim_k, _metric in _OAUTH_RL_HEADERS:
+        h = {str(k).lower(): v for k, v in headers.items()}
+        entry = {}
+        for suffix, label, used_key, reset_keys in (
+            ("5h", "5h", "anthropic-ratelimit-unified-5h-utilization", ("anthropic-ratelimit-unified-5h-reset",)),
+            ("7d", "7d", "anthropic-ratelimit-unified-7d-utilization", ("anthropic-ratelimit-unified-7d-reset",)),
+        ):
+            raw = str(h.get(used_key, ""))
+            if raw:
+                used = float(raw)
+                if 0 < used <= 1.0 and "." in raw:
+                    used *= 100
+                entry["five_hour" if suffix == "5h" else "weekly"] = _make_window_obj(label, 100 - used, reset_val=h.get(reset_keys[0]))
+        for window, label, used_key, reset_at, reset_after in (
+            ("five_hour", "5h", "x-codex-primary-used-percent", "x-codex-primary-reset-at", "x-codex-primary-reset-after-seconds"),
+            ("weekly", "7d", "x-codex-secondary-used-percent", "x-codex-secondary-reset-at", "x-codex-secondary-reset-after-seconds"),
+        ):
+            if h.get(used_key) is not None:
+                entry[window] = _make_window_obj(label, 100 - float(h[used_key]), reset_val=h.get(reset_at), reset_after_s=h.get(reset_after))
+        for rem_k, lim_k, metric in _OAUTH_RL_HEADERS:
             try:
-                _rem = float(_h.get(_rem_k, "") or "nan")
-                _lim = float(_h.get(_lim_k, "") or "nan")
+                rem, lim = float(h.get(rem_k, "nan")), float(h.get(lim_k, "nan"))
             except (TypeError, ValueError):
                 continue
-            if _rem == _rem and _lim == _lim and _lim > 0:
-                entry = {
-                    "remaining_pct": round(100.0 * max(0.0, _rem) / _lim, 1),
-                    "metric": _metric,
-                    "window_reset": _h.get(_rem_k.replace("remaining", "reset")),
-                    "updated_at": time.time(),
-                }
+            if rem == rem and lim == lim and lim > 0:
+                entry.update(remaining_pct=round(100 * max(0, rem) / lim, 1), metric=metric,
+                             window_reset=h.get(rem_k.replace("remaining", "reset")))
+                entry.setdefault("five_hour", _make_window_obj("5h", 100 * max(0, rem) / lim,
+                                                                  reset_val=entry["window_reset"], used=lim - rem, total=lim))
                 break
         if entry:
+            entry["updated_at"] = time.time()
             _OAUTH_QUOTA.setdefault(str(provider), {})[int(conn_index)] = entry
     except Exception:
         pass
 
 
-@app.get("/api/quota/status")
-async def get_quota_status_endpoint(provider: Optional[str] = None):
-    """Live per-key quota remaining for one-api/new-api gateways (UI Variant C).
+def _oauth_conn_cache_key(conn: dict, conn_index: int) -> str:
+    """Stable cache key for a connection's quota probe across Move Up/Down swaps."""
+    if isinstance(conn, dict):
+        for k in ("id", "email", "access_token", "api_key", "refresh_token", "name"):
+            v = str(conn.get(k) or "").strip()
+            if v:
+                return f"{k}:{v[:64]}"
+    return f"idx:{int(conn_index)}"
 
-    Probes /v1/dashboard/billing/* per API-key connection with the KEY's own
-    credential (per-token quota when the gateway enables DisplayTokenStat,
-    per-account otherwise). 60s cache; ?provider= filters one provider;
-    non-billing gateways yield null entries (never an error). Fail-open: any
-    internal error returns the last cache (or empty), never a 500.
-    """
+
+_ANTIGRAVITY_SUB_CACHE: dict[str, tuple[float, dict]] = {}
+_GROK_JWT_TIER_MAP = {
+    0: "Free",
+    1: "SuperGrok",
+    2: "X Basic",
+    3: "X Premium",
+    4: "X Premium Plus",
+    5: "SuperGrok Heavy",
+    6: "SuperGrok Lite",
+}
+_KIMI_LEVEL_MAP = {
+    "LEVEL_BASIC": "Moderato",
+    "LEVEL_INTERMEDIATE": "Allegretto",
+    "LEVEL_ADVANCED": "Allegro",
+    "LEVEL_STANDARD": "Vivace",
+}
+
+
+def _decode_jwt_claims(token: str) -> dict:
+    if not token or not isinstance(token, str) or token.count(".") != 2:
+        return {}
+    try:
+        import base64 as _b64
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        val = json.loads(_b64.urlsafe_b64decode(payload.encode("ascii")))
+        return val if isinstance(val, dict) else {}
+    except Exception:
+        return {}
+
+
+def _unbox_val(val):
+    if isinstance(val, dict) and "val" in val:
+        return val.get("val")
+    return val
+
+
+def _normalize_oauth_tier(provider_id: str, raw_plan: str | None = None, conn: dict | None = None, extra: dict | None = None) -> str | None:
+    provider = str(provider_id or "").lower()
+    pd = (conn.get("provider_data") if isinstance(conn, dict) else None) or {}
+    if not isinstance(pd, dict):
+        pd = {}
+    extra = extra if isinstance(extra, dict) else {}
+    tok = str((conn or {}).get("api_key") or (conn or {}).get("access_token") or "") if isinstance(conn, dict) else ""
+    id_tok = str((conn or {}).get("id_token") or pd.get("id_token") or pd.get("idToken") or "")
+    jwt_claims = _decode_jwt_claims(id_tok) or _decode_jwt_claims(tok)
+
+    if provider in ("antigravity", "gemini-cli"):
+        paid_tier = extra.get("paidTier") if isinstance(extra.get("paidTier"), dict) else {}
+        paid_id = str(paid_tier.get("id") or "").strip().lower()
+        paid_txt = f"{paid_id} {paid_tier.get('name', '')} {paid_tier.get('description', '')}".strip().lower()
+        if paid_id and paid_id != "free-tier":
+            if "ultra" in paid_txt:
+                return "Ultra"
+            if "pro" in paid_txt and "trial" in paid_txt:
+                return "Pro Trial"
+            if "plus" in paid_txt:
+                return "Plus"
+            if "pro" in paid_txt:
+                return "Pro"
+            if "enterprise" in paid_txt:
+                return "Enterprise"
+            if "business" in paid_txt or "standard" in paid_txt:
+                return "Business"
+        cur_tier = extra.get("currentTier") if isinstance(extra.get("currentTier"), dict) else {}
+        def_tier = {}
+        for t in (extra.get("allowedTiers") or []):
+            if isinstance(t, dict) and t.get("isDefault"):
+                def_tier = t
+                break
+        tier_txt = f"{raw_plan or ''} {cur_tier.get('id', '')} {cur_tier.get('name', '')} {def_tier.get('id', '')} {def_tier.get('name', '')} {pd.get('plan_type', '')} {pd.get('tier', '')}".strip().lower()
+        if "ultra" in tier_txt:
+            return "Ultra"
+        if "pro" in tier_txt and "trial" in tier_txt:
+            return "Pro Trial"
+        if "plus" in tier_txt:
+            return "Plus"
+        if "pro" in tier_txt:
+            return "Pro"
+        if "enterprise" in tier_txt:
+            return "Enterprise"
+        if any(k in tier_txt for k in ("free", "legacy", "individual")) or cur_tier.get("upgradeSubscriptionType"):
+            return "Free"
+        if "business" in tier_txt or "standard" in tier_txt:
+            return "Business"
+        return None
+
+    if provider == "codex":
+        auth_claim = jwt_claims.get("https://api.openai.com/auth")
+        jwt_plan = auth_claim.get("chatgpt_plan_type") if isinstance(auth_claim, dict) else jwt_claims.get("plan_type")
+        summary_plan = (extra.get("summary") or {}).get("plan") if isinstance(extra.get("summary"), dict) else None
+        candidates = [
+            raw_plan,
+            extra.get("plan_type"),
+            extra.get("planType"),
+            summary_plan,
+            pd.get("chatgptPlanType"),
+            pd.get("plan_type"),
+            pd.get("planType"),
+            jwt_plan,
+        ]
+        combined = " ".join(str(c) for c in candidates if c).strip().lower()
+        promo_txt = f"{combined} {extra.get('promo', '')} {pd.get('plan_multiplier', '')} {pd.get('tier', '')}".lower()
+        if not combined:
+            return None
+        if "50x" in promo_txt or "x50" in promo_txt:
+            return "Pro x50"
+        if "20x" in promo_txt or "x20" in promo_txt:
+            return "Pro x20"
+        if "5x" in promo_txt or "x5" in promo_txt:
+            return "Pro x5"
+        if "pro" in combined:
+            return "Pro"
+        if "plus" in combined:
+            return "Plus"
+        if "k12" in combined or "k-12" in combined:
+            return "K12"
+        if "edu" in combined:
+            return "Edu"
+        if "go" in combined:
+            return "Go"
+        if "team" in combined:
+            return "Team"
+        if "enterprise" in combined:
+            return "Enterprise"
+        if "business" in combined:
+            return "Business"
+        if "free" in combined:
+            return "Free"
+        return str(candidates[0] or combined).strip().title()
+
+    if provider in ("grok-cli", "xai"):
+        acc_claims = _decode_jwt_claims(tok) or jwt_claims
+        tier_num = acc_claims.get("tier")
+        if isinstance(tier_num, int) and tier_num in _GROK_JWT_TIER_MAP:
+            return _GROK_JWT_TIER_MAP[tier_num]
+        sub_tier = raw_plan or extra.get("subscriptionTier") or (extra.get("config") or {}).get("subscriptionTier") if isinstance(extra.get("config"), dict) else extra.get("subscriptionTier")
+        sub_tier = sub_tier or pd.get("subscriptionTier") or pd.get("plan_type")
+        if isinstance(sub_tier, str) and sub_tier.strip():
+            s = sub_tier.strip()
+            low = s.lower()
+            if "heavy" in low:
+                return "SuperGrok Heavy"
+            if "lite" in low:
+                return "SuperGrok Lite"
+            if "supergrok" in low:
+                return "SuperGrok"
+            if "premium" in low and ("plus" in low or "+" in low):
+                return "X Premium+"
+            if "premium" in low:
+                return "X Premium"
+            if "basic" in low:
+                return "X Basic"
+            if "free" in low:
+                return "Free"
+            return s
+        if extra.get("hasGrokCodeAccess") is True or pd.get("hasGrokCodeAccess") is True:
+            return "Grok Code"
+        return None
+
+    if provider in ("kiro", "kiro-import"):
+        sub_info = extra.get("subscriptionInfo") if isinstance(extra.get("subscriptionInfo"), dict) else {}
+        title = str(raw_plan or sub_info.get("subscriptionTitle") or pd.get("subscriptionTitle") or pd.get("plan_type") or "").strip()
+        up = title.upper()
+        if "PRO+" in up or "PRO_PLUS" in up or "PROPLUS" in up:
+            return "Pro+"
+        if "POWER" in up:
+            return "Power"
+        if "PRO" in up and "TRIAL" in up:
+            return "Pro Trial"
+        if "PRO" in up:
+            return "Pro"
+        if "TRIAL" in up:
+            return "Free Trial"
+        if "FREE" in up:
+            return "Free"
+        for item in (extra.get("usageBreakdownList") or []):
+            if isinstance(item, dict) and isinstance(item.get("freeTrialInfo"), dict):
+                ft = item["freeTrialInfo"]
+                if float(ft.get("usageLimitWithPrecision") or 0) > 0 and str(ft.get("freeTrialStatus") or "").upper() != "EXPIRED":
+                    return "Free Trial"
+        if title:
+            return title.replace("KIRO ", "").replace("Kiro ", "").strip().title()
+        return None
+
+    if provider == "cursor":
+        plan_info = extra.get("planInfo") if isinstance(extra.get("planInfo"), dict) else {}
+        sub_obj = extra.get("sub") if isinstance(extra.get("sub"), dict) else {}
+        p_txt = str(raw_plan or plan_info.get("planName") or extra.get("planName") or sub_obj.get("planName") or pd.get("plan_type") or "").strip()
+        low = p_txt.lower()
+        if "ultra" in low:
+            return "Ultra"
+        if "business" in low or "team" in low:
+            return "Business"
+        if "pro" in low and "trial" in low:
+            return "Pro Trial"
+        if "trial" in low:
+            return "Free Trial"
+        if "pro+" in low or "pro_plus" in low:
+            return "Pro+"
+        if "pro" in low:
+            return "Pro"
+        if "free" in low or "hobby" in low:
+            return "Free"
+        return p_txt.title() if p_txt else None
+
+    if provider == "claude":
+        p_txt = str(raw_plan or extra.get("tier") or extra.get("plan") or extra.get("subscription_type") or pd.get("plan_type") or pd.get("rateLimitTier") or "").strip()
+        low = p_txt.lower()
+        if "20x" in low or "max_20" in low or "max20" in low:
+            return "Max 20x"
+        if "5x" in low or "max_5" in low or "max5" in low:
+            return "Max 5x"
+        if "max" in low:
+            return "Max"
+        if "enterprise" in low:
+            return "Enterprise"
+        if "team" in low:
+            return "Team"
+        if "pro" in low:
+            return "Pro"
+        if "free" in low:
+            return "Free"
+        return p_txt if p_txt else None
+
+    if provider == "github":
+        sku = str(extra.get("access_type_sku") or extra.get("accessTypeSku") or "")
+        c_plan = str(raw_plan or extra.get("copilot_plan") or extra.get("copilotPlan") or pd.get("plan_type") or "")
+        comb = f"{sku} {c_plan}".strip().upper()
+        if "PRO+" in comb or "PRO_PLUS" in comb or "PROPLUS" in comb:
+            return "Pro+"
+        if "ENTERPRISE" in comb:
+            return "Enterprise"
+        if "BUSINESS" in comb:
+            return "Business"
+        if "STUDENT" in comb:
+            return "Student"
+        if "FREE" in comb:
+            return "Free"
+        if "PRO" in comb or "INDIVIDUAL" in comb:
+            return "Pro"
+        return None
+
+    if provider in ("kimi", "kimi-coding"):
+        user_obj = extra.get("user") if isinstance(extra.get("user"), dict) else {}
+        mem_obj = user_obj.get("membership") if isinstance(user_obj.get("membership"), dict) else {}
+        lvl = str(raw_plan or mem_obj.get("level") or pd.get("plan_type") or "").strip()
+        if lvl in _KIMI_LEVEL_MAP:
+            return _KIMI_LEVEL_MAP[lvl]
+        if lvl.startswith("LEVEL_"):
+            return lvl.replace("LEVEL_", "").title()
+        return lvl if lvl else None
+
+    fallback = str(raw_plan or pd.get("plan_type") or pd.get("tier") or "").strip()
+    return fallback if fallback else None
+
+
+def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: bool = False) -> dict:
+    key = (str(provider_id), _oauth_conn_cache_key(conn, conn_index))
+    now = time.time()
+    cached = _OAUTH_PROBE_CACHE.get(key)
+    if cached and not force and now - cached[0] < _OAUTH_PROBE_TTL_S:
+        # Re-merge local/live window updates with the cached active API window
+        return _merge_oauth_windows(provider_id, conn_index, cached[1])
+    active = {}
+    pd = (conn.get("provider_data") if isinstance(conn, dict) else None) or {}
+    if not isinstance(pd, dict):
+        pd = {}
+    # Prefer api_key first since _update_connection_token always writes refreshed tokens to api_key
+    token = str(conn.get("api_key") or conn.get("access_token") or "").strip()
+    detected_plan = _normalize_oauth_tier(provider_id, None, conn)
+    try:
+        import httpx
+        provider = str(provider_id).lower()
+        if token and provider == "claude":
+            response = httpx.get(
+                "https://api.anthropic.com/api/oauth/usage?cedar_ember=1",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                    "anthropic-beta": "oauth-2025-04-20",
+                    "anthropic-version": "2023-06-01",
+                    "User-Agent": "claude-code/2.1.63",
+                },
+                timeout=4.5,
+            )
+            data = response.json() if response.status_code == 200 else {}
+            if isinstance(data, dict):
+                for source, target, label in (("five_hour", "five_hour", "5h"), ("seven_day", "weekly", "7d")):
+                    item = data.get(source) or {}
+                    if isinstance(item, dict) and item.get("utilization") is not None:
+                        used_pct = float(item.get("utilization") or 0)
+                        if 0 < used_pct <= 1.0 and "." in str(item.get("utilization")):
+                            used_pct *= 100.0
+                        active[target] = _make_window_obj(label, 100.0 - used_pct, reset_val=item.get("resets_at") or item.get("reset_at"))
+                if not active.get("five_hour") and isinstance(data.get("limits"), dict):
+                    lims = data["limits"]
+                    for sources, target, label in ((("five_hour", "primary"), "five_hour", "5h"), (("seven_day", "secondary"), "weekly", "7d")):
+                        for sk in sources:
+                            w = lims.get(sk)
+                            if isinstance(w, dict) and (w.get("remaining_percentage") is not None or w.get("utilization") is not None):
+                                rem = float(w["remaining_percentage"]) if w.get("remaining_percentage") is not None else (100.0 - float(w.get("utilization") or 0))
+                                active[target] = _make_window_obj(label, rem, reset_val=w.get("resets_at") or w.get("reset_at"))
+                                break
+                detected_plan = _normalize_oauth_tier(provider, None, conn, data) or detected_plan
+        elif token and provider == "codex":
+            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+            account_id = str(
+                pd.get("chatgptAccountId")
+                or pd.get("chatgpt_account_id")
+                or pd.get("account_id")
+                or pd.get("workspaceId")
+                or ""
+            ).strip()
+            if not account_id:
+                claims = _decode_jwt_claims(str(conn.get("id_token") or pd.get("id_token") or pd.get("idToken") or "")) or _decode_jwt_claims(token)
+                auth_obj = claims.get("https://api.openai.com/auth")
+                if isinstance(auth_obj, dict) and auth_obj.get("chatgpt_account_id"):
+                    account_id = str(auth_obj["chatgpt_account_id"]).strip()
+            if account_id:
+                headers["ChatGPT-Account-ID"] = account_id
+            response = httpx.get("https://chatgpt.com/backend-api/wham/usage", headers=headers, timeout=4.5)
+            raw_data = response.json() if response.status_code == 200 else {}
+            if isinstance(raw_data, dict):
+                rl = (
+                    raw_data.get("rate_limit")
+                    or raw_data.get("rateLimit")
+                    or ((raw_data.get("rate_limits") or {}).get("codex") if isinstance(raw_data.get("rate_limits"), dict) else None)
+                    or (((raw_data.get("rate_limits_by_limit_id") or {}).get("codex") or {}).get("rate_limit") if isinstance(raw_data.get("rate_limits_by_limit_id"), dict) else None)
+                    or {}
+                )
+                if isinstance(rl, dict):
+                    for sources, target, label in (
+                        (("primary_window", "primaryWindow", "primary"), "five_hour", "5h"),
+                        (("secondary_window", "secondaryWindow", "secondary"), "weekly", "7d"),
+                    ):
+                        item = next((rl.get(k) for k in sources if isinstance(rl.get(k), dict)), None)
+                        if isinstance(item, dict):
+                            used_raw = item.get("used_percent", item.get("usedPercent"))
+                            if used_raw is None and item.get("percent_used") is not None:
+                                p_val = float(item["percent_used"])
+                                used_raw = p_val * 100.0 if 0 < p_val <= 1.0 else p_val
+                            if used_raw is not None:
+                                active[target] = _make_window_obj(
+                                    label,
+                                    100.0 - float(used_raw),
+                                    reset_val=item.get("reset_at") or item.get("resets_at") or item.get("resetAt"),
+                                    reset_after_s=item.get("reset_after_seconds") or item.get("resetAfterSeconds"),
+                                )
+                detected_plan = _normalize_oauth_tier(provider, None, conn, raw_data) or detected_plan
+        elif token and provider in ("antigravity", "gemini-cli"):
+            project_id = str(pd.get("project_id") or pd.get("projectId") or conn.get("project_id") or conn.get("projectId") or "").strip()
+            sub_cache_key = token[:32]
+            sub_cached = _ANTIGRAVITY_SUB_CACHE.get(sub_cache_key)
+            sub_data = sub_cached[1] if (sub_cached and not force and now - sub_cached[0] < 300.0) else None
+            if sub_data is None:
+                try:
+                    sub_resp = httpx.post(
+                        "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "antigravity/1.23.2 darwin/arm64"},
+                        json={"metadata": {"ideType": "ANTIGRAVITY"}, "mode": 1},
+                        timeout=4.5,
+                    )
+                    if sub_resp.status_code == 200 and isinstance(sub_resp.json(), dict):
+                        sub_data = sub_resp.json()
+                        _ANTIGRAVITY_SUB_CACHE[sub_cache_key] = (now, sub_data)
+                except Exception:
+                    sub_data = None
+            if isinstance(sub_data, dict):
+                detected_plan = _normalize_oauth_tier(provider, None, conn, sub_data) or detected_plan
+                if not project_id:
+                    cp = sub_data.get("cloudaicompanionProject")
+                    if isinstance(cp, dict) and cp.get("id"):
+                        project_id = str(cp["id"]).strip()
+                    elif isinstance(cp, str) and cp.strip():
+                        project_id = cp.strip()
+
+            url = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+            ag_ua = getattr(_ag_upstream_contract, "ANTIGRAVITY_UPSTREAM_UA", "antigravity/hub/2.24.0 windows/amd64")
+            response = httpx.post(
+                url,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": ag_ua},
+                json={"project": project_id} if project_id else {},
+                timeout=4.5,
+            )
+            data = response.json() if response.status_code == 200 else {}
+            if not isinstance(data, dict):
+                data = {}
+            if not sub_data and any(k in data for k in ("paidTier", "currentTier", "allowedTiers")):
+                detected_plan = _normalize_oauth_tier(provider, None, conn, data) or detected_plan
+            groups_out = {"google": {"label": "Google"}, "claude": {"label": "Claude"}}
+            parsed_any = False
+            raw_groups = list(data.get("groups") or (data.get("quotaSummary") or {}).get("groups") or [])
+            if data.get("buckets"):
+                raw_groups.append({"displayName": "Google", "buckets": list(data.get("buckets") or [])})
+            if not raw_groups and provider == "gemini-cli" and project_id:
+                try:
+                    g_resp = httpx.post(
+                        "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                        json={"project": project_id},
+                        timeout=4.5,
+                    )
+                    if g_resp.status_code == 200 and isinstance(g_resp.json(), dict) and g_resp.json().get("buckets"):
+                        raw_groups.append({"displayName": "Google", "buckets": list(g_resp.json().get("buckets") or [])})
+                except Exception:
+                    pass
+            for grp in raw_groups:
+                if not isinstance(grp, dict):
+                    continue
+                grp_name = f"{grp.get('displayName', '')} {grp.get('name', '')}".lower()
+                for pos, item in enumerate(grp.get("buckets") or []):
+                    if not isinstance(item, dict) or item.get("remainingFraction") is None:
+                        continue
+                    item_hint = f"{grp_name} {item.get('bucketId', '')} {item.get('id', '')} {item.get('modelId', '')}".lower()
+                    grp_key = "claude" if any(x in item_hint for x in ("claude", "gpt", "3p", "anthropic", "openai", "third")) else "google"
+                    win_hint = f"{item.get('window', '')} {item.get('bucketId', '')} {item.get('displayName', '')} {item}".lower()
+                    target = "weekly" if any(x in win_hint for x in ("week", "7d")) else ("five_hour" if any(x in win_hint for x in ("five", "5h")) else ("five_hour" if pos == 0 else "weekly"))
+                    rem_frac = 0.0 if item.get("disabled") is True else float(item["remainingFraction"])
+                    # Unused 5h/weekly summary buckets omit 'description' and report a rolling horizon
+                    reset_val = None if (rem_frac >= 1.0 and not item.get("description") and item.get("bucketId")) else item.get("resetTime")
+                    win_obj = _make_window_obj("7d" if target == "weekly" else "5h", rem_frac * 100.0, reset_val=reset_val)
+                    groups_out[grp_key][target] = win_obj
+                    if target not in active or win_obj["remaining_pct"] < active[target]["remaining_pct"]:
+                        active[target] = dict(win_obj)
+                    parsed_any = True
+            if parsed_any:
+                for g_key in ("google", "claude"):
+                    groups_out[g_key].setdefault("five_hour", dict(active.get("five_hour") or _make_window_obj("5h", 100.0)))
+                    groups_out[g_key].setdefault("weekly", dict(active.get("weekly") or _make_window_obj("7d", 100.0)))
+                active["groups"] = groups_out
+        elif token and provider in ("kiro", "kiro-import"):
+            auth_method = str(pd.get("authMethod") or pd.get("auth_method") or "").strip().lower()
+            profile_arn = str(pd.get("profileArn") or pd.get("profile_arn") or "").strip()
+            kiro_headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "x-amz-user-agent": "aws-sdk-js/1.0.0 KiroIDE",
+                "user-agent": "aws-sdk-js/1.0.0 KiroIDE",
+            }
+            if auth_method == "external_idp":
+                kiro_headers["TokenType"] = "EXTERNAL_IDP"
+            elif auth_method == "api_key":
+                kiro_headers["tokentype"] = "API_KEY"
+            data = None
+            resp = httpx.get(
+                "https://codewhisperer.us-east-1.amazonaws.com/getUsageLimits?isEmailRequired=true&origin=AI_EDITOR&resourceType=AGENTIC_REQUEST",
+                headers=kiro_headers,
+                timeout=4.5,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+            elif profile_arn:
+                resp2 = httpx.post(
+                    "https://codewhisperer.us-east-1.amazonaws.com",
+                    headers={
+                        **kiro_headers,
+                        "Content-Type": "application/x-amz-json-1.0",
+                        "x-amz-target": "AmazonCodeWhispererService.GetUsageLimits",
+                    },
+                    json={"origin": "AI_EDITOR", "profileArn": profile_arn, "resourceType": "AGENTIC_REQUEST"},
+                    timeout=4.5,
+                )
+                if resp2.status_code == 200:
+                    data = resp2.json()
+            if not isinstance(data, dict):
+                q_url = "https://q.us-east-1.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST"
+                if profile_arn:
+                    from urllib.parse import quote as _url_quote
+                    q_url += f"&profileArn={_url_quote(profile_arn, safe='')}"
+                resp3 = httpx.get(q_url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}, timeout=4.5)
+                if resp3.status_code == 200:
+                    data = resp3.json()
+            if isinstance(data, dict):
+                detected_plan = _normalize_oauth_tier(provider, None, conn, data) or detected_plan
+                top_reset = data.get("nextDateReset") or data.get("resetDate")
+                for pos, item in enumerate(data.get("usageBreakdownList") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    used = float(item.get("currentUsageWithPrecision") if item.get("currentUsageWithPrecision") is not None else (item.get("currentUsage") or 0))
+                    total = float(item.get("usageLimitWithPrecision") if item.get("usageLimitWithPrecision") is not None else (item.get("usageLimit") or 0))
+                    reset_val = item.get("nextDateReset") or item.get("resetDate") or top_reset
+                    ft = item.get("freeTrialInfo") if isinstance(item.get("freeTrialInfo"), dict) else {}
+                    ft_total = float(ft.get("usageLimitWithPrecision") if ft.get("usageLimitWithPrecision") is not None else (ft.get("usageLimit") or 0))
+                    ft_used = float(ft.get("currentUsageWithPrecision") if ft.get("currentUsageWithPrecision") is not None else (ft.get("currentUsage") or 0))
+                    if ft_total > 0 and str(ft.get("freeTrialStatus") or "").upper() != "EXPIRED":
+                        if total <= 0:
+                            used, total = ft_used, ft_total
+                            reset_val = ft.get("freeTrialExpiry") or reset_val
+                        else:
+                            ft_rem = 100.0 * max(0.0, ft_total - ft_used) / ft_total
+                            active["five_hour"] = _make_window_obj("5h", ft_rem, reset_val=ft.get("freeTrialExpiry") or reset_val, used=ft_used, total=ft_total)
+                    hint = str(item).lower()
+                    target = "weekly" if any(x in hint for x in ("week", "7d", "month")) else ("five_hour" if any(x in hint for x in ("five", "5h")) else ("weekly" if "five_hour" in active else ("five_hour" if pos == 0 else "weekly")))
+                    remaining = 100.0 * max(0.0, total - used) / total if total > 0 else 0.0
+                    active[target] = _make_window_obj("7d" if target == "weekly" else "5h", remaining, reset_val=reset_val, used=used, total=total)
+        elif token and provider == "grok-cli":
+            acc_claims = _decode_jwt_claims(token)
+            email = str(conn.get("email") or pd.get("email") or acc_claims.get("email") or "").strip()
+            user_id = str(pd.get("userId") or pd.get("user_id") or acc_claims.get("sub") or "").strip()
+            grok_headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": "grok-shell/1.0.44 (linux; x86_64)",
+                "x-xai-token-auth": "xai-grok-cli",
+                "x-grok-client-identifier": "grok-shell",
+                "x-grok-client-version": "1.0.44",
+                "x-grok-client-mode": "headless",
+            }
+            if email:
+                grok_headers["x-email"] = email
+            if user_id:
+                grok_headers["x-userid"] = user_id
+            resp = httpx.get("https://cli-chat-proxy.grok.com/v1/billing?format=credits", headers=grok_headers, timeout=4.5)
+            data = resp.json() if resp.status_code == 200 else {}
+            if isinstance(data, dict):
+                cfg = data.get("config") if isinstance(data.get("config"), dict) else data
+                detected_plan = _normalize_oauth_tier(provider, None, conn, data) or detected_plan
+                cur_period = cfg.get("currentPeriod") if isinstance(cfg.get("currentPeriod"), dict) else (data.get("currentPeriod") if isinstance(data.get("currentPeriod"), dict) else {})
+                reset_val = (
+                    cfg.get("billingPeriodEnd")
+                    or cfg.get("billing_period_end")
+                    or data.get("billingPeriodEnd")
+                    or data.get("billing_period_end")
+                    or cur_period.get("end")
+                    or cfg.get("resetAt")
+                    or cfg.get("resetsAt")
+                    or cfg.get("periodEnd")
+                )
+                m_lim = _unbox_val(cfg.get("monthlyLimit") if cfg.get("monthlyLimit") is not None else cfg.get("monthly_limit"))
+                m_used = _unbox_val(cfg.get("includedUsed") if cfg.get("includedUsed") is not None else (cfg.get("included_used") if cfg.get("included_used") is not None else cfg.get("totalUsed")))
+                pct_used = _unbox_val(cfg.get("creditUsagePercent") if cfg.get("creditUsagePercent") is not None else (cfg.get("credit_usage_percent") if cfg.get("credit_usage_percent") is not None else data.get("creditUsagePercent")))
+                if m_lim is not None and float(m_lim or 0) > 0:
+                    total_v = float(m_lim)
+                    used_v = float(m_used or 0)
+                    rem_pct = 100.0 * max(0.0, total_v - used_v) / total_v
+                    active["weekly"] = _make_window_obj("7d", rem_pct, reset_val=reset_val, used=used_v, total=total_v)
+                elif pct_used is not None:
+                    active["weekly"] = _make_window_obj("7d", 100.0 - float(pct_used or 0), reset_val=reset_val)
+                else:
+                    for sub_cand in (data.get("credits"), data.get("creditBalance"), data.get("usage"), cfg.get("credits"), cfg.get("includedCredits"), cfg.get("subscriptionCredits")):
+                        if not isinstance(sub_cand, dict):
+                            continue
+                        tot = _unbox_val(sub_cand.get("total") or sub_cand.get("limit") or sub_cand.get("cap") or sub_cand.get("allocation") or sub_cand.get("amount"))
+                        usd = _unbox_val(sub_cand.get("used") or sub_cand.get("spent") or sub_cand.get("consumed"))
+                        rem = _unbox_val(sub_cand.get("remaining") or sub_cand.get("balance") or sub_cand.get("left"))
+                        if tot is not None and float(tot or 0) > 0:
+                            tot_f = float(tot)
+                            usd_f = float(usd) if usd is not None else max(0.0, tot_f - float(rem or 0))
+                            active["weekly"] = _make_window_obj("7d", 100.0 * max(0.0, tot_f - usd_f) / tot_f, reset_val=sub_cand.get("resetAt") or sub_cand.get("resetsAt") or reset_val, used=usd_f, total=tot_f)
+                            break
+                od_cap = _unbox_val(cfg.get("onDemandCap") if cfg.get("onDemandCap") is not None else cfg.get("on_demand_cap"))
+                od_used = _unbox_val(cfg.get("onDemandUsed") if cfg.get("onDemandUsed") is not None else cfg.get("on_demand_used"))
+                if od_cap is not None and float(od_cap or 0) > 0:
+                    cap_f = float(od_cap)
+                    used_f = float(od_used or 0)
+                    active["five_hour"] = _make_window_obj("5h", 100.0 * max(0.0, cap_f - used_f) / cap_f, reset_val=reset_val, used=used_f, total=cap_f)
+        elif token and provider == "cursor":
+            clean_token = token.split("::", 1)[1] if "::" in token else token
+            cursor_headers = {
+                "Authorization": f"Bearer {clean_token}",
+                "connect-protocol-version": "1",
+                "Content-Type": "application/json",
+                "User-Agent": "connect-es/1.6.1",
+            }
+            resp = httpx.post("https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage", headers=cursor_headers, json={}, timeout=4.5)
+            data = resp.json() if resp.status_code == 200 else {}
+            if not isinstance(data, dict) or not (data.get("planUsage") or data.get("spendLimitUsage")):
+                user_id = str(pd.get("userId") or pd.get("user_id") or "").strip()
+                cookie_val = token if "::" in token else (f"{user_id}::{token}" if user_id else token)
+                resp_w = httpx.post(
+                    "https://cursor.com/api/dashboard/get-current-period-usage",
+                    headers={
+                        "Cookie": f"WorkosCursorSessionToken={cookie_val}",
+                        "Content-Type": "application/json",
+                        "Origin": "https://cursor.com",
+                        "Referer": "https://cursor.com/dashboard/spending",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    },
+                    json={},
+                    timeout=4.5,
+                )
+                if resp_w.status_code == 200 and isinstance(resp_w.json(), dict):
+                    data = resp_w.json()
+            if isinstance(data, dict):
+                detected_plan = _normalize_oauth_tier(provider, None, conn, data) or detected_plan
+                reset_val = data.get("billingCycleEnd")
+                usage = data.get("planUsage") if isinstance(data.get("planUsage"), dict) else {}
+                if usage:
+                    total = float(usage.get("limit") or 0)
+                    used = float(usage.get("includedSpend") if usage.get("includedSpend") is not None else (usage.get("totalSpend") or 0))
+                    rem = float(usage.get("remaining")) if usage.get("remaining") is not None else max(0.0, total - used)
+                    if total > 0:
+                        rem_pct = 100.0 * max(0.0, rem) / total
+                        active["weekly"] = _make_window_obj("7d", rem_pct, reset_val=reset_val, used=max(0.0, total - rem), total=total)
+                    elif usage.get("totalPercentUsed") is not None:
+                        active["weekly"] = _make_window_obj("7d", 100.0 - float(usage["totalPercentUsed"]), reset_val=reset_val)
+                spend = data.get("spendLimitUsage") if isinstance(data.get("spendLimitUsage"), dict) else {}
+                if spend:
+                    s_lim = float(spend.get("individualLimit") or spend.get("pooledLimit") or 0)
+                    s_used = float(spend.get("individualUsed") or spend.get("pooledUsed") or 0)
+                    if s_lim > 0:
+                        target_k = "five_hour" if "weekly" in active else "weekly"
+                        active[target_k] = _make_window_obj("5h" if target_k == "five_hour" else "7d", 100.0 * max(0.0, s_lim - s_used) / s_lim, reset_val=reset_val, used=s_used, total=s_lim)
+                if not detected_plan:
+                    try:
+                        p_resp = httpx.post("https://api2.cursor.sh/aiserver.v1.DashboardService/GetPlanInfo", headers=cursor_headers, json={}, timeout=3.5)
+                        if p_resp.status_code == 200 and isinstance(p_resp.json(), dict):
+                            detected_plan = _normalize_oauth_tier(provider, None, conn, p_resp.json()) or detected_plan
+                    except Exception:
+                        pass
+        elif token and provider == "github":
+            gh_resp = httpx.get(
+                "https://api.github.com/copilot_internal/user",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "User-Agent": "GitHubCopilotChat/0.26.7",
+                    "Editor-Version": "vscode/1.100.0",
+                    "Editor-Plugin-Version": "copilot-chat/0.26.7",
+                },
+                timeout=4.5,
+            )
+            data = gh_resp.json() if gh_resp.status_code == 200 else {}
+            if isinstance(data, dict):
+                detected_plan = _normalize_oauth_tier(provider, None, conn, data) or detected_plan
+                reset_val = data.get("quota_reset_date") or data.get("quotaResetDate") or data.get("limited_user_reset_date") or data.get("limitedUserResetDate")
+                snaps = data.get("quota_snapshots") if isinstance(data.get("quota_snapshots"), dict) else {}
+                for snap_key, target, label in (("premium_interactions", "weekly", "7d"), ("chat", "five_hour", "5h")):
+                    s_obj = snaps.get(snap_key)
+                    if isinstance(s_obj, dict) and s_obj.get("unlimited") is not True:
+                        tot = float(s_obj.get("total") or s_obj.get("entitlement") or 0)
+                        rem = s_obj.get("remaining")
+                        usd = s_obj.get("used")
+                        pct_rem = s_obj.get("percent_remaining", s_obj.get("percentRemaining"))
+                        if tot > 0 and rem is not None:
+                            rem_f = float(rem)
+                            active[target] = _make_window_obj(label, 100.0 * max(0.0, rem_f) / tot, reset_val=reset_val, used=max(0.0, tot - rem_f), total=tot)
+                        elif pct_rem is not None:
+                            active[target] = _make_window_obj(label, float(pct_rem), reset_val=reset_val, used=usd, total=tot if tot > 0 else None)
+                if not active and (isinstance(data.get("monthly_quotas"), dict) or isinstance(data.get("limited_user_quotas"), dict)):
+                    mq = data.get("monthly_quotas") if isinstance(data.get("monthly_quotas"), dict) else {}
+                    uq = data.get("limited_user_quotas") if isinstance(data.get("limited_user_quotas"), dict) else {}
+                    for q_key, target, label in (("premium_interactions", "weekly", "7d"), ("chat", "five_hour", "5h")):
+                        tot = float(mq.get(q_key) or 0)
+                        usd = float(uq.get(q_key) or 0)
+                        if tot > 0:
+                            active[target] = _make_window_obj(label, 100.0 * max(0.0, tot - usd) / tot, reset_val=reset_val, used=usd, total=tot)
+        elif token and provider in ("kimi", "kimi-coding"):
+            kimi_headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "X-Msh-Platform": "bsl-router",
+                "X-Msh-Version": "2.1.2",
+                "X-Msh-Device-Model": "windows x64",
+                "X-Msh-Device-Id": str(pd.get("deviceId") or "kimi-usage"),
+            }
+            data = httpx.get("https://api.kimi.com/coding/v1/usages", headers=kimi_headers, timeout=4.5).json()
+            if isinstance(data, dict):
+                detected_plan = _normalize_oauth_tier(provider, None, conn, data) or detected_plan
+                u_obj = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+                u_lim = float(u_obj.get("limit") or u_obj.get("Limit") or 0)
+                if u_lim > 0:
+                    u_used = float(u_obj.get("used") or u_obj.get("Used") or 0)
+                    u_rem = float(u_obj.get("remaining") or u_obj.get("Remaining") or max(0.0, u_lim - u_used))
+                    u_rst = u_obj.get("resetTime") or u_obj.get("ResetTime") or u_obj.get("reset_at") or u_obj.get("resetAt")
+                    active["weekly"] = _make_window_obj("7d", 100.0 * max(0.0, u_rem) / u_lim, reset_val=u_rst, used=u_used, total=u_lim)
+                for lim_item in (data.get("limits") or []):
+                    if isinstance(lim_item, dict) and isinstance(lim_item.get("detail"), dict):
+                        det = lim_item["detail"]
+                        d_lim = float(det.get("limit") or det.get("Limit") or 0)
+                        if d_lim > 0:
+                            d_rem = float(det.get("remaining") or det.get("Remaining") or 0)
+                            d_rst = det.get("resetTime") or det.get("reset_at") or det.get("resetAt")
+                            active["five_hour"] = _make_window_obj("5h", 100.0 * max(0.0, d_rem) / d_lim, reset_val=d_rst, used=max(0.0, d_lim - d_rem), total=d_lim)
+                            break
+                if not active:
+                    windows = data.get("usages") or data.get("data") or data
+                    if isinstance(windows, dict):
+                        windows = windows.get("items") or windows.get("windows") or [windows]
+                    for pos, item in enumerate(windows if isinstance(windows, list) else []):
+                        if not isinstance(item, dict):
+                            continue
+                        hint = str(item).lower()
+                        target = "weekly" if any(x in hint for x in ("week", "7d")) else ("five_hour" if any(x in hint for x in ("five", "5h")) else ("five_hour" if pos == 0 else "weekly"))
+                        remaining = item.get("remaining_pct", item.get("remainingPercent"))
+                        total = item.get("limit", item.get("total"))
+                        used = item.get("used", item.get("usage"))
+                        if remaining is None and total is not None and used is not None and float(total) > 0:
+                            remaining = 100.0 * max(0.0, float(total) - float(used)) / float(total)
+                        if remaining is not None:
+                            active[target] = _make_window_obj("7d" if target == "weekly" else "5h", float(remaining), reset_val=item.get("reset_at") or item.get("resetAt") or item.get("nextResetTime"), used=used, total=total)
+        if active.get("five_hour") or active.get("weekly"):
+            active["source"] = "oauth_api"
+            active["updated_at"] = now
+    except Exception:
+        pass
+    if detected_plan:
+        active["plan"] = detected_plan
+        if isinstance(conn, dict):
+            conn.setdefault("provider_data", {})["plan_type"] = detected_plan
+    result = _merge_oauth_windows(provider_id, conn_index, active)
+    if detected_plan:
+        result["plan"] = detected_plan
+    _OAUTH_PROBE_CACHE[key] = (now, result)
+    return result
+
+
+@app.post("/api/oauth/{provider_id}/force-refresh")
+async def force_refresh_oauth_provider(provider_id: str):
+    """Force-refresh all OAuth connection tokens and quota windows for a provider."""
+    try:
+        from app import oauth as _oauth_mod
+        cfg = cs_get_config()
+        p = (cfg.get("providers") or {}).get(provider_id)
+        if not isinstance(p, dict):
+            return JSONResponse({"ok": False, "error": f"Unknown provider: {provider_id}"}, status_code=404)
+        conns = p.get("connections") or []
+        refreshed = 0
+        errors = []
+        for idx, c in enumerate(conns):
+            if not isinstance(c, dict):
+                continue
+            if c.get("refresh_token"):
+                try:
+                    _oauth_mod._last_refresh_at.pop(provider_id, None)
+                    await ensure_fresh_token(provider_id, c, p, force=True)
+                    refreshed += 1
+                except Exception as exc:
+                    errors.append({"index": idx, "name": c.get("name") or f"#{idx + 1}", "error": str(exc)[:200]})
+        # Clear cached quota probes for this provider
+        for k in [k for k in list(_OAUTH_PROBE_CACHE.keys()) if isinstance(k, tuple) and k[0] == str(provider_id)]:
+            _OAUTH_PROBE_CACHE.pop(k, None)
+        _QUOTA_CACHE["ts"] = 0.0
+        if isinstance(_QUOTA_CACHE.get("providers"), dict):
+            _QUOTA_CACHE["providers"].pop(provider_id, None)
+        return JSONResponse({"ok": True, "provider": provider_id, "total": len(conns), "refreshed": refreshed, "errors": errors})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+_QUOTA_REFRESH_LOCK: Optional[asyncio.Lock] = None
+_QUOTA_REFRESH_FAIL_TS: dict[tuple[str, str], float] = {}
+
+
+async def _ensure_and_probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, prov_cfg: dict, force: bool = False) -> dict:
+    """Refresh expired OAuth tokens before probing upstream quota so status stays synced."""
+    global _QUOTA_REFRESH_LOCK
+    try:
+        from app import oauth as _oauth_mod
+        has_token = bool(str(conn.get("access_token") or conn.get("api_key") or "").strip())
+        if conn.get("refresh_token") and (not has_token or _oauth_mod._is_token_expired(conn.get("expires_at"))):
+            fail_key = (str(provider_id), str(conn.get("id") or conn_index))
+            now_ts = time.time()
+            last_fail = _QUOTA_REFRESH_FAIL_TS.get(fail_key, 0.0)
+            cooldown = 15.0 if force else 300.0
+            if (now_ts - last_fail) >= cooldown:
+                if _QUOTA_REFRESH_LOCK is None:
+                    _QUOTA_REFRESH_LOCK = asyncio.Lock()
+                async with _QUOTA_REFRESH_LOCK:
+                    _oauth_mod._last_refresh_at.pop(provider_id, None)
+                    await asyncio.wait_for(ensure_fresh_token(provider_id, conn, prov_cfg, force=False), timeout=4.5)
+                if _oauth_mod._is_token_expired(conn.get("expires_at")):
+                    _QUOTA_REFRESH_FAIL_TS[fail_key] = time.time()
+                else:
+                    _QUOTA_REFRESH_FAIL_TS.pop(fail_key, None)
+    except Exception:
+        pass
+    res = await asyncio.to_thread(_probe_oauth_quota, provider_id, conn_index, conn, force)
+    if isinstance(res, dict) and conn.get("expires_at"):
+        res["expires_at"] = conn.get("expires_at")
+    return res
+
+
+@app.get("/api/quota/status")
+async def get_quota_status_endpoint(provider: Optional[str] = None, force: bool = False):
     import time as _time
     try:
-        _now = _time.time()
-        _fresh = (_now - _QUOTA_CACHE["ts"]) < _QUOTA_CACHE_TTL_S
-        if not _fresh:
-            async def _null_probe():
-                return None
-
-            _cfg = cs_get_config()
-            _tasks = {}
-            _oauth_reg = {}
-            for _pid, _p in (_cfg.get("providers") or {}).items():
-                _conns = _p.get("connections") or []
-                _p_base = str((_p.get("base_url") or "")).rstrip("/")
-                _conn_tasks = []
-                for _c in _conns:
-                    _k = str(_c.get("api_key") or "").strip()
-                    _cb = str(_c.get("base_url") or "").rstrip("/")
-                    _k_base = _cb or _p_base
-                    if _k and _k_base and not _c.get("refresh_token"):
-                        _conn_tasks.append(_probe_oneapi_billing(_k_base, _k))
-                    elif _c.get("refresh_token") or _c.get("access_token"):
-                        # OAuth connection: serve from passive header-capture registry
-                        _conn_tasks.append(_null_probe())
-                        _oauth_reg.setdefault(_pid, {})[len(_conn_tasks) - 1] = True
-                    else:
-                        _conn_tasks.append(_null_probe())
-                if _conns:
-                    _tasks[_pid] = asyncio.ensure_future(asyncio.gather(*_conn_tasks))
-            _results = {}
-            for _pid, _gather in _tasks.items():
-                try:
-                    _results[_pid] = list(await _gather)
-                except Exception:
-                    _results[_pid] = None
-            _QUOTA_CACHE["ts"] = _now
-            _QUOTA_CACHE["providers"] = {}
-            for _pid, _res in _results.items():
-                _row = [(_r if isinstance(_r, dict) else None) for _r in (_res or [])]
-                # Merge passive OAuth registry entries (live traffic headers)
-                for _oi in _oauth_reg.get(_pid, {}):
-                    _live = _OAUTH_QUOTA.get(_pid, {}).get(_oi)
-                    if _live and _oi < len(_row):
-                        _row[_oi] = {
-                            "remaining_pct": _live.get("remaining_pct", 0.0),
-                            "metric": _live.get("metric"),
-                            "source": "oauth_live",
-                            "updated_at": _live.get("updated_at"),
-                        }
-                _QUOTA_CACHE["providers"][_pid] = _row
-        _out = _QUOTA_CACHE["providers"]
+        now = _time.time()
+        cfg = cs_get_config()
+        all_providers = cfg.get("providers") or {}
         if provider is not None:
-            _out = {provider: _out.get(provider)}
-        return JSONResponse({"cached": _fresh, "providers": _out})
-    except Exception as _e:
-        return JSONResponse({"cached": True, "providers": _QUOTA_CACHE.get("providers", {}), "error": str(_e)})
+            # Fast single-provider path for Admin UI detail view & '↻ Quotas' button
+            prov_map = _QUOTA_CACHE.setdefault("providers", {})
+            p = all_providers.get(provider)
+            if isinstance(p, dict):
+                conns = p.get("connections") or []
+                base = str((p.get("base_url") or "")).rstrip("/")
+                conn_tasks = []
+                for idx, c in enumerate(conns):
+                    key = str(c.get("api_key") or "").strip()
+                    cbase = str(c.get("base_url") or "").rstrip("/") or base
+                    is_oauth = (
+                        c.get("refresh_token")
+                        or c.get("access_token")
+                        or c.get("token_type") == "oauth"
+                        or p.get("auth_type") == "oauth"
+                        or p.get("type") == "oauth"
+                        or provider in _oauth_antiban.OAUTH_AFFINITY_PROVIDERS
+                    )
+                    if is_oauth:
+                        conn_tasks.append(_ensure_and_probe_oauth_quota(provider, idx, c, p, force))
+                    elif key and cbase:
+                        conn_tasks.append(_probe_oneapi_billing(cbase, key))
+                    else:
+                        conn_tasks.append(asyncio.sleep(0, result=None))
+                if conns:
+                    try:
+                        res = list(await asyncio.gather(*conn_tasks))
+                    except Exception:
+                        res = []
+                    prov_map[provider] = [r if isinstance(r, dict) else None for r in res]
+                else:
+                    prov_map[provider] = []
+            return JSONResponse({"cached": False, "providers": {provider: prov_map.get(provider)}})
+
+        fresh = (now - _QUOTA_CACHE["ts"]) < _QUOTA_CACHE_TTL_S and not force
+        if not fresh:
+            tasks, oauth = {}, {}
+            for pid, p in all_providers.items():
+                conns = p.get("connections") or []
+                base = str((p.get("base_url") or "")).rstrip("/")
+                conn_tasks = []
+                for idx, c in enumerate(conns):
+                    key = str(c.get("api_key") or "").strip()
+                    cbase = str(c.get("base_url") or "").rstrip("/") or base
+                    is_oauth = (
+                        c.get("refresh_token")
+                        or c.get("access_token")
+                        or c.get("token_type") == "oauth"
+                        or p.get("auth_type") == "oauth"
+                        or p.get("type") == "oauth"
+                        or pid in _oauth_antiban.OAUTH_AFFINITY_PROVIDERS
+                    )
+                    if is_oauth:
+                        conn_tasks.append(_ensure_and_probe_oauth_quota(pid, idx, c, p, force))
+                        oauth.setdefault(pid, set()).add(idx)
+                    elif key and cbase:
+                        conn_tasks.append(_probe_oneapi_billing(cbase, key))
+                    else:
+                        conn_tasks.append(asyncio.sleep(0, result=None))
+                if conns:
+                    tasks[pid] = asyncio.ensure_future(asyncio.gather(*conn_tasks))
+            results = {}
+            for pid, gather in tasks.items():
+                try: results[pid] = list(await gather)
+                except Exception: results[pid] = None
+            _QUOTA_CACHE.update(ts=now, providers={pid: [r if isinstance(r, dict) else None for r in (res or [])] for pid, res in results.items()})
+        else:
+            for pid, rows in (_QUOTA_CACHE.get("providers") or {}).items():
+                for idx, row in enumerate(rows):
+                    live = _OAUTH_QUOTA.get(pid, {}).get(idx)
+                    if live and isinstance(row, dict):
+                        row.update(live)
+                        merged = _merge_oauth_windows(pid, idx, row)
+                        rows[idx] = merged
+        out = _QUOTA_CACHE["providers"]
+        return JSONResponse({"cached": fresh, "providers": out})
+    except Exception as exc:
+        return JSONResponse({"cached": True, "providers": _QUOTA_CACHE.get("providers", {}), "error": str(exc)})
 
 
 def _compare_versions(v1: str, v2: str) -> int:

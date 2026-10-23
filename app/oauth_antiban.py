@@ -40,7 +40,7 @@ import contextvars
 import random
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -55,6 +55,7 @@ except Exception:  # pragma: no cover - httpx always present in prod
 OAUTH_AFFINITY_PROVIDERS = frozenset({
     "antigravity",
     "codex",
+    "claude",
     "claude_code",
     "claude-code",
     "claudecode",
@@ -147,6 +148,8 @@ def is_oauth_provider(provider_name: str, provider_config: Optional[Dict[str, An
     connection carries an OAuth marker so custom-named OAuth lanes are covered.
     """
     if (provider_name or "").lower() in OAUTH_AFFINITY_PROVIDERS:
+        return True
+    if isinstance(provider_config, dict) and provider_config.get("type") == "oauth":
         return True
     for conn in (provider_config or {}).get("connections", []) or []:
         if is_oauth_connection(conn):
@@ -286,6 +289,8 @@ def current_request_session_key() -> Optional[str]:
 
 # Process-global store (matches circuit_breaker / RR-state module-global style).
 _STORE = AffinityStore()
+_SESSION_RR_CURSOR: Dict[str, int] = {}
+_SESSION_RR_LOCK = threading.Lock()
 
 
 def get_store() -> AffinityStore:
@@ -296,6 +301,8 @@ def reset_store() -> None:
     """Test/config-reload hook: drop all bindings."""
     global _STORE
     _STORE = AffinityStore()
+    with _SESSION_RR_LOCK:
+        _SESSION_RR_CURSOR.clear()
 
 
 def apply_affinity(
@@ -330,16 +337,40 @@ def apply_affinity(
             return eligible
 
         bound = store.lookup(session_key, provider_name)
+        is_rebind = False
         if bound is not None and bound in by_index:
             if _is_healthy(breaker, provider_name, model_id, bound):
                 return [by_index[bound]]
             # Sticky account tripped the breaker -> rebind once to a healthy peer.
             store.release(session_key, provider_name)
+            is_rebind = True
             print(
                 "[affinity] rebind provider=%s reason=breaker-open released_idx=%s"
                 % (provider_name, bound),
                 flush=True,
             )
+
+        # New session under round_robin: rotate starting account across distinct sessions,
+        # then pin the session to that chosen account for subsequent turns.
+        if (
+            not is_rebind
+            and bound is None
+            and isinstance(provider_config, dict)
+            and bool(provider_config.get("round_robin"))
+        ):
+            healthy_eligible = [
+                e for e in eligible
+                if isinstance(e, dict)
+                and e.get("index") is not None
+                and _is_healthy(breaker, provider_name, model_id, e["index"])
+            ]
+            if healthy_eligible:
+                with _SESSION_RR_LOCK:
+                    cur = _SESSION_RR_CURSOR.get(provider_name, 0)
+                    chosen = healthy_eligible[cur % len(healthy_eligible)]
+                    _SESSION_RR_CURSOR[provider_name] = cur + 1
+                store.bind(session_key, provider_name, chosen["index"])
+                return [chosen]
 
         # MISS (or rebind): pick the first healthy eligible index, deterministically.
         for e in eligible:
@@ -781,6 +812,28 @@ def authenticity_grade(score: float) -> str:
 # G6 -- Per-account usage-budget tracker (Antigravity 5h sliding window)
 # ---------------------------------------------------------------------------
 
+_ONE_DAY = 86400.0
+_SEVEN_DAYS = 7 * _ONE_DAY
+_CONNECTION_USAGE: Dict[Tuple[str, Optional[int]], deque] = {}
+_CONNECTION_USAGE_LOCK = threading.Lock()
+
+
+def _prune_window(q: deque, now: float) -> None:
+    cutoff = now - _SEVEN_DAYS
+    while q and q[0][0] < cutoff:
+        q.popleft()
+
+
+def snapshot_connection_usage(provider_id: str, conn_index: Optional[int], now: Optional[float] = None) -> Dict[str, float]:
+    now = time.monotonic() if now is None else now
+    with _CONNECTION_USAGE_LOCK:
+        q = _CONNECTION_USAGE.get((provider_id, conn_index), deque())
+        _prune_window(q, now)
+        reqs = sum(1 for ts, _ in q if ts >= now - _ONE_DAY)
+        toks = sum(t for ts, t in q if ts >= now - _ONE_DAY)
+    return {"requests_last_24h": reqs, "tokens_last_24h": toks}
+
+
 class UsageBudgetTracker:
     """Sliding-window per-account token-spend tracker.
 
@@ -871,11 +924,15 @@ def reset_all() -> None:
     """Test/config-reload hook: drop ALL in-memory anti-ban state."""
     global _STORE, _CADENCE, _BACKOFF, _LANES, _CLAUDE_RHYTHM, _USAGE
     _STORE = AffinityStore()
+    with _SESSION_RR_LOCK:
+        _SESSION_RR_CURSOR.clear()
     _CADENCE = CadenceGovernor()
     _BACKOFF = BackoffGovernor()
     _LANES = SessionLaneStore()
     _CLAUDE_RHYTHM = ClaudeSessionRhythm()
     _USAGE = UsageBudgetTracker()
+    with _CONNECTION_USAGE_LOCK:
+        _CONNECTION_USAGE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -977,6 +1034,19 @@ def govern_post_send(
     Returns {retry, delay} for the dispatcher's retry loop. Fail-open.
     """
     out = {"retry": False, "delay": 0.0}
+    try:
+        with _CONNECTION_USAGE_LOCK:
+            _now = time.monotonic()
+            _q = _CONNECTION_USAGE.setdefault((provider_name, conn_index), deque())
+            _prune_window(_q, _now)
+            _q.append((_now, float(tokens_used)))
+    except Exception:
+        pass
+    if status_code in (401, 402, 403, 429) or (isinstance(status_code, int) and status_code >= 500):
+        try:
+            _STORE.release(current_request_session_key(), provider_name)
+        except Exception:
+            pass
     try:
         cfg = resolve_antiban_config(config)
         if not cfg["enabled"]:

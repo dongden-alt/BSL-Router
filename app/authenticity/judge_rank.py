@@ -81,6 +81,9 @@ def _suspect_profile(features) -> dict:
                 for axis, langs in (rf.get("axes") or {}).items()
             },
         }
+    boundary = getattr(features, "boundary_signature", {}) or {}
+    if boundary:
+        out["boundary_signature"] = boundary
     return out
 
 
@@ -162,7 +165,7 @@ async def rank_candidates(
         obj, _ = json.JSONDecoder().raw_decode(content, start)
         idx = obj.get("best")
         conf = obj.get("confidence")
-        if not isinstance(idx, int) or not (0 <= idx < len(keys)):
+        if not isinstance(idx, int) or isinstance(idx, bool) or not (0 <= idx < len(keys)):
             return None
         try:
             conf = max(0.0, min(1.0, float(conf)))
@@ -182,11 +185,12 @@ def coverage_adjust(dimensions: dict) -> dict:
     the weights scale up to sum to 1.0, so a missing axis neither inflates nor
     deflates the score. Returns {dim: effective_weight}.
     """
-    present = [d for d in FEATURE_WEIGHTS if dimensions.get(d) is not None]
+    present = [d for d in dimensions if dimensions.get(d) is not None
+               and (d in FEATURE_WEIGHTS or d in DECISIVE_LANES)]
     if not present:
         return {}
-    total = sum(FEATURE_WEIGHTS[d] for d in present)
-    return {d: FEATURE_WEIGHTS[d] / total for d in present}
+    total = sum(FEATURE_WEIGHTS.get(d, 0.03) for d in present)
+    return {d: FEATURE_WEIGHTS.get(d, 0.03) / total for d in present}
 
 
 # Judge-free, truth-free lanes that actually split sibling versions (see the
@@ -211,8 +215,8 @@ def decisive_lane_margin(ranked: list, a_id: str, b_id: str):
               if isinstance(da.get(d), (int, float)) and isinstance(db.get(d), (int, float))]
     if not shared:
         return None
-    w = sum(FEATURE_WEIGHTS[d] for d in shared)
-    return sum(FEATURE_WEIGHTS[d] * (db[d] - da[d]) for d in shared) / w
+    w = sum(FEATURE_WEIGHTS.get(d, 0.03) for d in shared)
+    return sum(FEATURE_WEIGHTS.get(d, 0.03) * (db[d] - da[d]) for d in shared) / w
 
 
 def judge_pick_contradicted(ranked: list, pick_id: str, other_id: str,

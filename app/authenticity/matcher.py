@@ -173,7 +173,7 @@ def match_submodel(
         baseline_correct = (baseline.get("capability_correct", 0)
                            or _cap_boundary.get("correct", 0))
         if baseline_correct > 0:
-            dims["capability"] = features.capability_correct / max(baseline_correct, 1)
+            dims["capability"] = min(1.0, features.capability_correct / max(baseline_correct, 1))
         else:
             dims["capability"] = 0.5
 
@@ -211,11 +211,16 @@ def match_submodel(
         # (including the genuine one) near 0. (c) Disclaimer 'facts' are dropped.
         kn_sus = getattr(features, "knowledge_needles", {}) or {}
         knowledge = baseline.get("knowledge") or {}
-        base_known = [fact_text(e) for e in (knowledge.get("known_facts") or [])]
+        raw_known = [e for e in (knowledge.get("known_facts") or [])
+                     if not is_disclaimer_fact(fact_text(e))]
+        base_known = [fact_text(e) for e in raw_known]
         base_post = [fact_text(e) for e in (knowledge.get("post_cutoff_unknown") or [])]
         base_known = [f for f in base_known if f and not is_disclaimer_fact(f)]
         base_post = [f for f in base_post if f and not is_disclaimer_fact(f)]
         kn_answers = kn_sus.get("answers") or []
+        ans_by_fact = ({a.get("fact"): a for a in kn_answers
+                        if isinstance(a, dict) and a.get("fact") and a.get("answered", True)}
+                       if isinstance(kn_answers, list) else {})
         dims["knowledge"] = None  # not compared unless proven below
         if (base_known or base_post) and kn_answers:
             # FIX D: an item with NO parsed answer line (reply truncated /
@@ -224,7 +229,7 @@ def match_submodel(
             # answer and still counts.
             asked = {fact_text(a.get("fact")) for a in kn_answers
                      if isinstance(a, dict) and a.get("fact")
-                     and (a.get("answer") or "").strip()}
+                     and a.get("answered", True) and (a.get("answer") or "").strip()}
             if asked:
                 k_scope = [f for f in base_known if f in asked]
                 p_scope = [f for f in base_post if f in asked]
@@ -234,8 +239,19 @@ def match_submodel(
             if n_scope >= 2:  # 1 item is a coin flip, not evidence
                 known_hits = {fact_text(h) for h in kn_sus.get("known_hits", [])}
                 post_claimed = {fact_text(h) for h in kn_sus.get("post_cutoff_claimed", [])}
-                right = (sum(1 for f in k_scope if f in known_hits)
-                         + sum(1 for f in p_scope if f not in post_claimed))
+                right = 0
+                for raw_item in raw_known:
+                    f = fact_text(raw_item)
+                    if f not in k_scope:
+                        continue
+                    needle = ((raw_item.get("needle") if isinstance(raw_item, dict) else "") or f).strip().lower()
+                    if f in known_hits or (f in ans_by_fact
+                            and not ans_by_fact[f].get("is_unknown")
+                            and needle in (ans_by_fact[f].get("answer") or "").lower()):
+                        right += 1
+                right += sum(1 for f in p_scope
+                             if (f in ans_by_fact and ans_by_fact[f].get("is_unknown"))
+                             or (f not in ans_by_fact and f not in post_claimed))
                 dims["knowledge"] = round(right / n_scope, 3)
 
 

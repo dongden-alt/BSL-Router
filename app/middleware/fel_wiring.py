@@ -54,7 +54,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from app.middleware.faithful_execution import (  # verified module — read-only dependency
     DIRECTIVE_MARKER,
@@ -143,6 +143,28 @@ _REFUSAL_MARKERS: Tuple[str, ...] = (
     #     → 1 hit → "unknown". Same gap class, second verb frame.
     "i can't provide step-by-step",
     "i can't provide instructions",
+    # Chinese (ZH) refusal frames (DeepSeek / Qwen / GLM / Kimi / MiniMax)
+    "抱歉，我无法",
+    "抱歉，我不能",
+    "我无法协助",
+    "我不能协助",
+    "我无法提供",
+    "我不能提供",
+    "无法满足您的请求",
+    "违反了安全政策",
+    "违反相关规定",
+    "不符合安全准则",
+    "作为人工智能",
+    "作为一个ai",
+    # Extended Vietnamese (VI) refusal frames
+    "tôi xin lỗi nhưng tôi không thể",
+    "không thể đáp ứng yêu cầu",
+    "trái với chính sách",
+    "vi phạm nguyên tắc an toàn",
+    "toi xin loi nhung toi khong the",
+    "khong the dap ung yeu cau",
+    "trai voi chinh sach",
+    "vi pham nguyen tac an toan",
 )
 
 # Unicode apostrophe/accent variants → ASCII, so marker matching is
@@ -186,7 +208,16 @@ _RECOVERY_BLOCK_MARKERS: Tuple[str, ...] = (
     "explosive device",
     "bioweapon",
     "nerve agent",
+    # Chinese hard-wall subject classes (CSAM / CBRN / explosives / self-harm)
+    "儿童性虐待",
+    "制造炸药",
+    "爆炸装置",
+    "生物武器",
+    "化学武器",
+    "自残",
+    "自杀",
 )
+_HARD_REFUSAL_TOPICS = _RECOVERY_BLOCK_MARKERS
 
 # Strict classifier limits.
 _MAX_REFUSAL_TEXT_CHARS = 600
@@ -421,7 +452,12 @@ def resolve_fel(cfg_tools: Any) -> Optional[FELConfig]:
             return value
 
         engagement = _dict_or_fail(fel, "engagement") or {}
-        context, client_ref, scope = _profile_from(_dict_or_fail(engagement, "default"))
+        default_block = _dict_or_fail(engagement, "default")
+        d_ctx, d_ref, d_scope = _profile_from(default_block)
+        f_ctx, f_ref, f_scope = _profile_from(engagement)
+        context = d_ctx or f_ctx
+        client_ref = d_ref or f_ref
+        scope = d_scope or f_scope
 
         profiles: Dict[str, Dict[str, str]] = {}
         raw_profiles = _dict_or_fail(engagement, "profiles")
@@ -570,6 +606,8 @@ def _fold_diacritics(text: str) -> Tuple[str, List[int]]:
     try:
         if not text:
             return ("", [])
+        if text.isascii():
+            return (text, [])
         folded_chars: List[str] = []
         index_map: List[int] = [
             ]
@@ -597,6 +635,67 @@ def _fold_diacritics(text: str) -> Tuple[str, List[int]]:
         return (text if isinstance(text, str) else "", [])
 
 
+_WORD_TOKEN_RE = re.compile(r"\w+")
+_COMPILED_SENSITIVITY_CACHE: Dict[
+    Any, Tuple[FrozenSet[str], Dict[str, re.Pattern], Optional[re.Pattern], Dict[str, str]]
+] = {}
+_COMPILED_SENSITIVITY_CACHE_MAX = 32
+
+
+def _get_compiled_lang_matcher(
+    lang: str, smap: Dict[str, str]
+) -> Tuple[FrozenSet[str], Dict[str, re.Pattern], Optional[re.Pattern], Dict[str, str]]:
+    """Cache folded phrase patterns grouped by their first word token."""
+    if not isinstance(smap, dict) or not smap:
+        return (frozenset(), {}, None, {})
+    try:
+        cache_key = (lang, len(smap), tuple(smap.items()))
+    except Exception:
+        cache_key = None
+    if cache_key is not None and cache_key in _COMPILED_SENSITIVITY_CACHE:
+        return _COMPILED_SENSITIVITY_CACHE[cache_key]
+
+    folded_to_orig: Dict[str, str] = {}
+    phrases_by_tok: Dict[str, List[str]] = {}
+    fallback_parts: List[str] = []
+    for phrase in sorted(smap.keys(), key=len, reverse=True):
+        if not isinstance(phrase, str) or not phrase.strip():
+            continue
+        folded_phrase, _ = _fold_diacritics(phrase)
+        fp_clean = folded_phrase.strip().lower()
+        if not fp_clean or fp_clean in folded_to_orig:
+            continue
+        folded_to_orig[fp_clean] = phrase
+        m_tok = _WORD_TOKEN_RE.search(fp_clean)
+        if m_tok is not None:
+            first_tok = m_tok.group(0).lower()
+            phrases_by_tok.setdefault(first_tok, []).append(fp_clean)
+        else:
+            fallback_parts.append(fp_clean)
+
+    by_tok = {
+        tok: re.compile(
+            r"\b(?:" + "|".join(re.escape(p) for p in sorted(parts, key=len, reverse=True)) + r")\b",
+            re.IGNORECASE,
+        )
+        for tok, parts in phrases_by_tok.items()
+    }
+    fallback_pattern = (
+        re.compile(
+            r"\b(?:" + "|".join(re.escape(p) for p in sorted(fallback_parts, key=len, reverse=True)) + r")\b",
+            re.IGNORECASE,
+        )
+        if fallback_parts
+        else None
+    )
+    res = (frozenset(by_tok.keys()), by_tok, fallback_pattern, folded_to_orig)
+    if cache_key is not None:
+        if len(_COMPILED_SENSITIVITY_CACHE) >= _COMPILED_SENSITIVITY_CACHE_MAX:
+            _COMPILED_SENSITIVITY_CACHE.clear()
+        _COMPILED_SENSITIVITY_CACHE[cache_key] = res
+    return res
+
+
 def detect_sensitivity(text: str, fel: Optional[FELConfig]) -> List[Dict[str, Any]]:
     """Detect tool-sensitive phrases in either language. Returns a list of
     {phrase, lang, span} dicts (folded-match spans, mapped to original)."""
@@ -610,15 +709,19 @@ def detect_sensitivity(text: str, fel: Optional[FELConfig]) -> List[Dict[str, An
         if not folded.strip():
             return []
         hits: List[Dict[str, Any]] = []
+        folded_lower_tokens = set(_WORD_TOKEN_RE.findall(folded.lower()))
         for lang, smap in (("en", fel.sensitivity_map_en), ("vi", fel.sensitivity_map_vi)):
-            for phrase in sorted(smap.keys(), key=len, reverse=True):
-                folded_phrase, _ = _fold_diacritics(phrase)
-                if not folded_phrase.strip():
-                    continue
-                pattern = re.compile(r"\b" + re.escape(folded_phrase) + r"\b", re.IGNORECASE)
+            starter_set, by_tok, fallback_pattern, folded_to_orig = _get_compiled_lang_matcher(lang, smap)
+            patterns = [by_tok[tok] for tok in (starter_set & folded_lower_tokens)]
+            if fallback_pattern is not None:
+                patterns.append(fallback_pattern)
+            for pattern in patterns:
                 for m in pattern.finditer(folded):
+                    orig_phrase = folded_to_orig.get(m.group(0).lower())
+                    if not orig_phrase:
+                        continue
                     hits.append({
-                        "phrase": phrase,
+                        "phrase": orig_phrase,
                         "lang": lang,
                         "folded_span": (m.start(), m.end()),
                         "nfc_span": _map_span_folded_to_nfc(
@@ -781,12 +884,14 @@ def reframe_text(
             _b_ctx, _b_ref, _b_scope = select_profile(fel, profile_name)
             _bound = _engagement_bound_line(_b_ctx, _b_ref, _b_scope)
             if _bound:
-                edited = _bound + "\n\n" + edited
+                if not edited.startswith("Context: ") and not edited.startswith("Engagement: "):
+                    edited = _bound + "\n\n" + edited
                 rewrites.append({"type": "engagement_bind", "context": _b_ctx})
                 return (edited, rewrites, True)
             # no profile context configured → no fabrication; existing path.
         if getattr(fel, "reframe_attestation", True):
-            edited = ATTESTATION_TEXT + "\n\n" + edited
+            if not edited.startswith(ATTESTATION_TEXT):
+                edited = ATTESTATION_TEXT + "\n\n" + edited
             rewrites.append({"type": "attestation_prepend"})
         return (edited, rewrites, True)
     except Exception:
@@ -877,15 +982,61 @@ def reframe_context_wide(
         if not isinstance(body, dict):
             return result
         msgs = body.get("messages")
-        if not isinstance(msgs, list) or not msgs:
-            return result
-
         max_messages = int(getattr(fel, "reframe_context_max_messages", 200) or 200)
         max_chars = int(getattr(fel, "reframe_context_max_chars", 400000) or 400000)
         if max_messages <= 0:
             max_messages = 200
         if max_chars <= 0:
             max_chars = 400000
+
+        if not isinstance(msgs, list):
+            contents = body.get("contents")
+            if not isinstance(contents, list) and isinstance(body.get("request"), dict):
+                contents = body["request"].get("contents")
+            if not isinstance(contents, list) or len(contents) <= 1:
+                return result
+            last_user_idx = next((
+                i for i in range(len(contents) - 1, -1, -1)
+                if isinstance(contents[i], dict)
+                and (contents[i].get("role") or "user") == "user"
+            ), -1)
+            scanned_chars = 0
+            count_kept = 0
+            history_parts = []
+            for i in range(last_user_idx - 1, -1, -1):
+                if count_kept >= max_messages:
+                    break
+                turn = contents[i]
+                if not isinstance(turn, dict) or (turn.get("role") or "user") not in ("user", "model"):
+                    continue
+                parts = turn.get("parts")
+                if not isinstance(parts, list):
+                    continue
+                text_parts = [
+                    part for part in parts
+                    if isinstance(part, dict) and part.get("thought") is not True
+                    and isinstance(part.get("text"), str)
+                    and not part["text"].strip().lower().startswith("data:")
+                ]
+                scanned_chars += sum(len(part["text"]) for part in text_parts)
+                if scanned_chars > max_chars:
+                    break
+                count_kept += 1
+                history_parts.append(text_parts)
+            for parts in reversed(history_parts):
+                turn_changed = False
+                for part in parts:
+                    new_text, rewrites, changed = _reframe_span_text(part["text"], fel)
+                    if changed:
+                        part["text"] = new_text
+                        result["rewrites"].extend(rewrites)
+                        turn_changed = True
+                if turn_changed:
+                    result["changed"] = True
+                    result["messages_reframed"] += 1
+            return result
+        if not msgs:
+            return result
 
         last_user_idx = _last_user_index(body)
         # Decide the walk window honoring BOTH caps. Scan from the MOST
@@ -927,8 +1078,6 @@ def reframe_context_wide(
             return _reframe_span_text(orig, fel)
 
         for i in range(keep_from, len(msgs)):
-            if i == last_user_idx:
-                continue  # last-turn path already owns this message
             msg = msgs[i]
             if not isinstance(msg, dict):
                 continue
@@ -940,7 +1089,28 @@ def reframe_context_wide(
             content = msg.get("content")
             msg_rewrites: List[Dict[str, Any]] = []
             msg_changed = False
-            if isinstance(content, str):
+            if i == last_user_idx:
+                # Last user turn text is owned by reframe_text, EXCEPT Anthropic
+                # tool_result blocks inside a user turn which set_last_user_text ignores.
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and (part.get("type") or "") == "tool_result":
+                            tr_c = part.get("content")
+                            if isinstance(tr_c, str):
+                                new_text, rw, ch = _rewrite_text_value(tr_c)
+                                if ch:
+                                    part["content"] = new_text
+                                    msg_rewrites.extend(rw)
+                                    msg_changed = True
+                            elif isinstance(tr_c, list):
+                                for sub in tr_c:
+                                    if _is_text_part(sub):
+                                        new_text, rw, ch = _rewrite_text_value(sub.get("text", ""))
+                                        if ch:
+                                            sub["text"] = new_text
+                                            msg_rewrites.extend(rw)
+                                            msg_changed = True
+            elif isinstance(content, str):
                 new_text, rw, ch = _rewrite_text_value(content)
                 if ch:
                     msg["content"] = new_text
@@ -954,6 +1124,22 @@ def reframe_context_wide(
                             part["text"] = new_text
                             msg_rewrites.extend(rw)
                             msg_changed = True
+                    elif isinstance(part, dict) and (part.get("type") or "") == "tool_result":
+                        tr_c = part.get("content")
+                        if isinstance(tr_c, str):
+                            new_text, rw, ch = _rewrite_text_value(tr_c)
+                            if ch:
+                                part["content"] = new_text
+                                msg_rewrites.extend(rw)
+                                msg_changed = True
+                        elif isinstance(tr_c, list):
+                            for sub in tr_c:
+                                if _is_text_part(sub):
+                                    new_text, rw, ch = _rewrite_text_value(sub.get("text", ""))
+                                    if ch:
+                                        sub["text"] = new_text
+                                        msg_rewrites.extend(rw)
+                                        msg_changed = True
             if msg_changed:
                 messages_reframed += 1
                 changed_any = True
@@ -977,6 +1163,8 @@ for _m in _REFUSAL_MARKERS:
         _REFUSAL_MARKERS_FOLDED[_m] = _fold_diacritics(_m.lower())[0]
     except Exception:
         _REFUSAL_MARKERS_FOLDED[_m] = _m.lower()
+
+_VI_REFUSAL_MARKERS_FOLDED = _REFUSAL_MARKERS_FOLDED
 
 
 def _apply_case(source: str, replacement: str) -> str:
@@ -1104,17 +1292,21 @@ def extract_last_user_text(body: Any) -> str:
                     return _content_text(item.get("content"))
             return ""
         contents = body.get("contents")
+        if not any(key in body for key in ("messages", "input", "contents")) and isinstance(body.get("request"), dict):
+            contents = body["request"].get("contents")
         if isinstance(contents, list):
             for content in reversed(contents):
-                if isinstance(content, dict) and (content.get("role") or "user") != "model":
+                if isinstance(content, dict) and (content.get("role") or "user") == "user":
                     parts = content.get("parts")
                     if isinstance(parts, list):
                         texts = [
-                            part.get("text") for part in parts
-                            if isinstance(part, dict) and isinstance(part.get("text"), str)
+                            part["text"] for part in parts
+                            if isinstance(part, dict) and part.get("thought") is not True
+                            and isinstance(part.get("text"), str)
+                            and not part["text"].strip().lower().startswith("data:")
                         ]
-                        if texts:
-                            return "\n".join(texts)
+                        return "\n".join(texts)
+                    return ""
             return ""
         return ""
     except Exception:
@@ -1134,12 +1326,33 @@ def _content_text(content: Any) -> str:
 
 
 def set_last_user_text(body: Dict[str, Any], new_text: str) -> bool:
-    """Write the adjusted text back into the last user message (openai-chat
-    shape — the normalized body the dispatcher operates on). Returns True on
-    success; never raises, never mutates on failure."""
+    """Write adjusted text into the last user turn, preserving non-text parts."""
     try:
         msgs = body.get("messages")
         if not isinstance(msgs, list):
+            contents = body.get("contents")
+            if not any(key in body for key in ("messages", "input", "contents")) and isinstance(body.get("request"), dict):
+                contents = body["request"].get("contents")
+            if not isinstance(contents, list):
+                return False
+            for turn in reversed(contents):
+                if not isinstance(turn, dict) or (turn.get("role") or "user") != "user":
+                    continue
+                parts = turn.get("parts")
+                if not isinstance(parts, list):
+                    return False
+                text_indices = [
+                    i for i, part in enumerate(parts)
+                    if isinstance(part, dict) and part.get("thought") is not True
+                    and isinstance(part.get("text"), str)
+                    and not part["text"].strip().lower().startswith("data:")
+                ]
+                if not text_indices:
+                    return False
+                parts[text_indices[0]] = {**parts[text_indices[0]], "text": new_text}
+                for i in reversed(text_indices[1:]):
+                    parts.pop(i)
+                return True
             return False
         for i in range(len(msgs) - 1, -1, -1):
             msg = msgs[i]
@@ -1330,17 +1543,40 @@ def apply_fel_directives(
             merged = merge_directives(upstream_payload.get("instructions"), directives)
             return {**upstream_payload, "instructions": merged}
 
-        # Gemini wire: systemInstruction.parts.
-        si = upstream_payload.get("systemInstruction")
-        if isinstance(si, dict):
+        # Gemini wire: systemInstruction.parts, optionally inside Cloud Code.
+        native_request = upstream_payload.get("request")
+        if isinstance(native_request, dict) and "contents" in native_request:
+            si = native_request.get("systemInstruction") or {}
+            if not isinstance(si, dict):
+                return upstream_payload
             parts = si.get("parts")
-            if isinstance(parts, list):
-                new_payload = {**upstream_payload}
-                new_payload["systemInstruction"] = {
-                    **si, "parts": merge_directives(parts, directives),
-                }
-                return new_payload
-            return upstream_payload
+            if parts is not None and not isinstance(parts, list):
+                return upstream_payload
+            merged_parts = merge_directives(parts, directives) if parts else [
+                {"text": merge_directives(None, directives)}
+            ]
+            return {
+                **upstream_payload,
+                "request": {
+                    **native_request,
+                    "systemInstruction": {**si, "parts": merged_parts},
+                },
+            }
+        si = upstream_payload.get("systemInstruction")
+        if isinstance(si, dict) or ("contents" in upstream_payload and "messages" not in upstream_payload):
+            si = si or {}
+            if not isinstance(si, dict):
+                return upstream_payload
+            parts = si.get("parts")
+            if parts is not None and not isinstance(parts, list):
+                return upstream_payload
+            merged_parts = merge_directives(parts, directives) if parts else [
+                {"text": merge_directives(None, directives)}
+            ]
+            return {
+                **upstream_payload,
+                "systemInstruction": {**si, "parts": merged_parts},
+            }
 
         # openai-chat: system message inside messages (or insert one).
         messages = upstream_payload.get("messages")
@@ -1643,6 +1879,30 @@ class FelStreamObserver:
 
                         # Extract content
                         self._add_text(delta.get("content", ""))
+
+                # Gemini SSE: candidates[].content.parts[]
+                if "candidates" in obj and isinstance(obj["candidates"], list):
+                    for cand in obj["candidates"]:
+                        if not isinstance(cand, dict):
+                            continue
+                        content = cand.get("content")
+                        if isinstance(content, dict) and isinstance(content.get("parts"), list):
+                            for part in content["parts"]:
+                                if not isinstance(part, dict):
+                                    continue
+                                if part.get("functionCall") or part.get("function_call"):
+                                    self._had_tools = True
+                                elif not part.get("thought") and isinstance(part.get("text"), str):
+                                    self._add_text(part["text"])
+
+                # OpenAI Responses API SSE: response.output_text.delta / function_call
+                ev_type = obj.get("type")
+                if ev_type == "response.output_text.delta" and isinstance(obj.get("delta"), str):
+                    self._add_text(obj["delta"])
+                elif ev_type in ("response.function_call_arguments.delta", "response.output_item.added"):
+                    item = obj.get("item") if isinstance(obj.get("item"), dict) else {}
+                    if ev_type == "response.function_call_arguments.delta" or item.get("type") == "function_call":
+                        self._had_tools = True
 
         except Exception:
             self._dead = True

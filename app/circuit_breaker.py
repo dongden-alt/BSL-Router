@@ -24,7 +24,9 @@ Taxonomy (non-penalizing events NEVER increment failure count):
 All operations are fail-open: any exception in the breaker itself must never
 break the proxy path. The breaker is an optimization, not a gate.
 """
+import re
 import time
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Tuple, List
 
 # ── Dim-triggering error types ────────────────────────────────────────────
@@ -54,6 +56,9 @@ NON_PENALIZING_MARKERS = (
 RATE_LIMIT_MARKERS = (
     "429", "rate limit", "rate_limit", "too many requests",
     "quota", "1302",
+    "usage_limit_reached", "limit_reached", "insufficient_quota",
+    "credit balance", "out of credits", "plan_limit", "monthly_limit",
+    "weekly_limit", "daily_limit", "quota_exceeded",
     "\u901f\u5ea6\u9650\u5236", "\u8bf7\u6c42\u9891\u7387",
 )
 
@@ -78,6 +83,8 @@ AUTH_MARKERS = (
     "insufficient balance", "insufficient_balance", "out of credit",
     "payment required", "billing", "unpaid", "account suspended",
     "account_disabled", "no credit",
+    "invalid_grant", "token_expired", "re-authorize",
+    "account_deactivated", "account_suspended", "organization_disabled",
 )
 
 SERVER_ERROR_MARKERS = (
@@ -99,12 +106,12 @@ def _classify_for_breaker(status_code: int, error_msg: Optional[str]) -> str:
     'unknown_error'.
 
     Precedence (highest first):
-      1. Hard status codes  — 429->rate_limit, 401/403->auth (outrank fuzzy text)
+      1. Hard status codes — 429->rate_limit, 401/402/403->auth
       2. client_disconnected — non-penalizing
       3. Token-rate co-occurrence — rate signal + token/quota/request words
-      4. Client-error markers — oversized prompt, malformed body (non-penalizing)
-      5. Generic rate-limit text — "quota" without 429 status
-      6. Auth / timeout / server-error text markers
+      4. Generic rate-limit and auth text markers
+      5. Client-error markers — oversized prompt, malformed body (non-penalizing)
+      6. Timeout / server-error text markers
       7. Status-code fallback — 5xx, 400/413/422, network(0), success(200)
     """
     msg = (error_msg or "").lower()
@@ -113,7 +120,7 @@ def _classify_for_breaker(status_code: int, error_msg: Optional[str]) -> str:
     #    A 429 is NEVER client-fixable; 401/403 are NEVER caused by prompt size.
     if status_code == 429:
         return "rate_limit"
-    if status_code in (401, 403):
+    if status_code in (401, 402, 403):
         return "auth"
 
     # 2. Non-penalizing: client disconnects are never the upstream's fault.
@@ -140,23 +147,16 @@ def _classify_for_breaker(status_code: int, error_msg: Optional[str]) -> str:
     if _has_rate_signal and _has_quota_subject:
         return "rate_limit"
 
-    # 4. Client-side request faults (oversized prompt, malformed body). Checked
-    #    after status gates and token-rate guard so only genuine client faults
-    #    land here. Non-penalizing: the caller must fix the request.
-    for marker in CLIENT_ERROR_MARKERS:
-        if marker in msg:
-            return "client_error"
-
-    # 5. Generic rate-limit text markers (no status-code twin — 429 handled
-    #    above). Covers "quota", "too many requests" without a 429 status.
     for marker in RATE_LIMIT_MARKERS:
         if marker in msg:
             return "rate_limit"
-
-    # 6. Auth text markers (non-401/403 fallback).
     for marker in AUTH_MARKERS:
         if marker in msg:
             return "auth"
+
+    for marker in CLIENT_ERROR_MARKERS:
+        if marker in msg:
+            return "client_error"
 
     # 7. Timeout.
     for marker in TIMEOUT_MARKERS:
@@ -422,13 +422,64 @@ class CircuitBreaker:
                 entry["last_error_type"] = classification
                 entry["state"] = "OPEN"
                 entry["opened_at"] = now
-                entry["open_until"] = now + self.recovery_timeout
+                _cooldown = float(self.recovery_timeout)
+                _explicit_reset = False
+                if classification == "rate_limit" and error_msg:
+                    _m_sec = re.search(
+                        r'"(?:resets_in_seconds|reset_after_seconds)"\s*:\s*(\d+(?:\.\d+)?)',
+                        str(error_msg),
+                    )
+                    if _m_sec:
+                        try:
+                            _s = float(_m_sec.group(1))
+                            if _s > _cooldown:
+                                _cooldown = min(_s, 18000.0)
+                                _explicit_reset = True
+                        except Exception:
+                            pass
+                    else:
+                        _m_ts = re.search(
+                            r'"(?:resets_at|reset_at)"\s*:\s*(\d{10,}(?:\.\d+)?)',
+                            str(error_msg),
+                        )
+                        if _m_ts:
+                            try:
+                                _s = float(_m_ts.group(1)) - now
+                                if _s > _cooldown:
+                                    _cooldown = min(_s, 18000.0)
+                                    _explicit_reset = True
+                            except Exception:
+                                pass
+                entry["open_until"] = now + _cooldown
+                if classification == "rate_limit" and (
+                    _explicit_reset or "usage_limit_reached" in str(error_msg or "").lower()
+                ):
+                    try:
+                        from app import main as _bsl_main
+                        _oq = getattr(_bsl_main, "_OAUTH_QUOTA", None)
+                        if isinstance(_oq, dict):
+                            _reset_sec = int(_cooldown)
+                            _reset_iso = datetime.fromtimestamp(
+                                now + _cooldown, tz=timezone.utc
+                            ).isoformat()
+                            _prov_q = _oq.setdefault(provider, {})
+                            _existing_q = dict(_prov_q.get(conn_index) or {})
+                            _existing_q["five_hour"] = {
+                                "label": "5h",
+                                "remaining_pct": 0.0,
+                                "reset_in_seconds": _reset_sec,
+                                "reset_at": _reset_iso,
+                            }
+                            _existing_q["captured_at"] = now
+                            _prov_q[conn_index] = _existing_q
+                    except Exception:
+                        pass
                 # Dim the key in the admin UI — the account is unusable, so
                 # the whole row should read as "set aside" until recovered.
                 self.dim.setdefault(self._dim_key(provider, conn_index), now)
                 print(
                     f"[CircuitBreaker] OPEN ({classification}) {key} for "
-                    f"{self.recovery_timeout}s",
+                    f"{_cooldown:.0f}s",
                     flush=True,
                 )
                 return

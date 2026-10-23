@@ -53,11 +53,12 @@ import certifi
 import httpcore
 import httpx
 
-try:  # dnspython is the external resolver; degrade gracefully if absent.
+try:  # dnspython is the external resolver; fall back to stdlib UDP DNS + safe getaddrinfo when absent.
     import dns.resolver
-    _HAS_DNS = True
-except Exception:  # pragma: no cover - exercised only on broken installs
-    _HAS_DNS = False
+    _HAS_DNSPYTHON = True
+except Exception:  # pragma: no cover - exercised when dnspython is not installed
+    _HAS_DNSPYTHON = False
+_HAS_DNS = True
 
 logger = logging.getLogger("bsl.google_egress")
 
@@ -96,7 +97,7 @@ _cache_lock = threading.Lock()
 
 # ── Upstream timeout (mirrors app/main.py:_UPSTREAM_TIMEOUT; duplicated here to
 # avoid importing main.py, which would be circular) ──────────────────────────
-_UPSTREAM_TIMEOUT = httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=60.0)
+_UPSTREAM_TIMEOUT = httpx.Timeout(connect=30.0, read=None, write=None, pool=15.0)
 _KEEPALIVE_EXPIRY = 30.0
 _POOL_RETRIES = 2
 
@@ -138,17 +139,98 @@ def _is_safe_real_upstream_ip(value: str) -> bool:
     )
 
 
+def _stdlib_udp_dns_resolve(host: str) -> List[str]:
+    """Pure-stdlib UDP DNS A-record lookup against _EXTERNAL_NAMESERVERS."""
+    import random
+    import socket
+    import struct
+
+    txid = random.randint(1, 65534)
+    header = struct.pack("!HHHHHH", txid, 0x0100, 1, 0, 0, 0)
+    qname = (
+        b"".join(
+            struct.pack("B", len(part)) + part.encode("ascii")
+            for part in host.strip(".").split(".")
+        )
+        + b"\x00"
+    )
+    packet = header + qname + struct.pack("!HH", 1, 1)
+
+    def _skip_name(buf: bytes, pos: int) -> int:
+        while pos < len(buf):
+            length = buf[pos]
+            if length == 0:
+                return pos + 1
+            if (length & 0xC0) == 0xC0:
+                return pos + 2
+            pos += 1 + length
+        return pos
+
+    for ns in _EXTERNAL_NAMESERVERS:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(min(2.5, _RESOLVE_LIFETIME))
+                s.sendto(packet, (ns, 53))
+                data, _ = s.recvfrom(1024)
+            if len(data) < 12:
+                continue
+            rx_txid, _flags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", data[:12])
+            if rx_txid != txid or ancount == 0:
+                continue
+            offset = 12
+            for _ in range(qdcount):
+                offset = _skip_name(data, offset) + 4
+            ips: List[str] = []
+            for _ in range(ancount):
+                offset = _skip_name(data, offset)
+                if offset + 10 > len(data):
+                    break
+                rtype, rclass, _ttl, rdlength = struct.unpack("!HHIH", data[offset : offset + 10])
+                offset += 10
+                if rtype == 1 and rclass == 1 and rdlength == 4 and offset + 4 <= len(data):
+                    ips.append(socket.inet_ntoa(data[offset : offset + 4]))
+                offset += rdlength
+            if ips:
+                return ips
+        except Exception:
+            continue
+    return []
+
+
 def _external_resolve(host: str) -> List[str]:
     """Raw external-DNS A-record lookup for ``host``.
 
     Returns the address strings in resolver order (unfiltered). Separated from
     :func:`resolve_google_ips` purely so tests can stub the network call.
     """
-    resolver = dns.resolver.Resolver(configure=False)
-    resolver.nameservers = list(_EXTERNAL_NAMESERVERS)
-    resolver.lifetime = _RESOLVE_LIFETIME
-    answer = resolver.resolve(host, "A")
-    return [record.address for record in answer]
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+        os_ips: List[str] = []
+        for info in infos:
+            ip = info[4][0]
+            if _is_safe_real_upstream_ip(ip) and ip not in os_ips:
+                os_ips.append(ip)
+        if os_ips:
+            return os_ips
+    except Exception:
+        pass
+
+    if _HAS_DNSPYTHON:
+        try:
+            resolver = dns.resolver.Resolver(configure=False)
+            resolver.nameservers = list(_EXTERNAL_NAMESERVERS)
+            resolver.lifetime = _RESOLVE_LIFETIME
+            answer = resolver.resolve(host, "A")
+            return [record.address for record in answer]
+        except Exception:
+            pass
+
+    ips = _stdlib_udp_dns_resolve(host)
+    if ips:
+        return ips
+    raise RuntimeError(f"external DNS lookup failed for {host}")
 
 
 def _cached_ips(host: str, now: float) -> Optional[List[str]]:
@@ -178,6 +260,17 @@ def _last_known_good_ips(host: str, now: float) -> List[str]:
     if not safe:
         _LAST_KNOWN_GOOD.pop(host, None)
     return list(safe)
+
+
+def rotate_google_ip_cache(host: Optional[str] = None) -> None:
+    """Rotate cached Google IP order so a post-connect TLS/HTTP2 failure tries the next edge IP."""
+    with _cache_lock:
+        targets = [host] if host else list(_RESOLVE_CACHE.keys())
+        for h in targets:
+            entry = _RESOLVE_CACHE.get(h)
+            if entry and isinstance(entry[0], list) and len(entry[0]) > 1:
+                ips, expiry = entry
+                _RESOLVE_CACHE[h] = (ips[1:] + ips[:1], expiry)
 
 
 def resolve_google_ips(host: str) -> List[str]:

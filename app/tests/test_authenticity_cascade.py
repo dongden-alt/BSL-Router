@@ -553,6 +553,7 @@ def _offline_client_factory():
 
 class TestHarvestCascadeCapture:
     def test_standards_gain_three_structural_keys(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("app.authenticity.standard_v2._MIN_INTERVAL", 0.0)
         captured = {}
 
         async def fake_boundary(client, ep, key, mid, timeout):
@@ -592,6 +593,7 @@ class TestHarvestCascadeCapture:
         assert tm.to_dict()["structural"]["logprob_profile"] == {}
 
     def test_harvest_fail_open_when_lanes_raise(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("app.authenticity.standard_v2._MIN_INTERVAL", 0.0)
         async def boom(*a, **k):
             raise RuntimeError("lane down")
 
@@ -615,6 +617,7 @@ class TestHarvestCascadeCapture:
     def test_harvested_standard_roundtrips_through_matcher(self, monkeypatch,
                                                            tmp_path):
         """End-to-end: harvested standard feeds match_submodel's new dims."""
+        monkeypatch.setattr("app.authenticity.standard_v2._MIN_INTERVAL", 0.0)
         async def fake_boundary(client, ep, key, mid, timeout):
             return {"stop_strict": True, "stop_echo": False,
                     "finish_reason": "stop", "json_strict": True,

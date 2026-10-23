@@ -240,28 +240,78 @@ def _expand_nested_combo(
     nested_entry: Any,
     config: dict,
     parent_thinking: Optional[str],
+    _depth: int = 0,
+    _visited: Optional[set[str]] = None,
 ) -> list[tuple[str, str, Optional[str]]]:
-    """Expand a nested combo's chain entries into concrete (model, provider, thinking) tuples."""
-    results = []
-    nested_model = nested_entry
-    nested_provider = None
-    nested_thinking = parent_thinking
+    """Expand a nested combo's chain entries recursively into concrete (model, provider, thinking) tuples."""
+    if _depth > 5:
+        return []
+    visited = set(_visited or ())
+    results: list[tuple[str, str, Optional[str]]] = []
+    chain_model, cm_target, cm_provider, cm_thinking = _parse_chain_entry(nested_entry, config)
+    effective_thinking = parent_thinking or cm_thinking
 
-    if isinstance(nested_entry, dict):
-        nested_provider = nested_entry.get("provider")
-        nested_model = nested_entry.get("model") or nested_entry.get("id")
-        nested_thinking = parent_thinking or nested_entry.get("thinking")
-    elif isinstance(nested_entry, str) and "/" in nested_entry:
-        mp, mm = nested_entry.split("/", 1)
-        if mp in config.get("providers", {}):
-            nested_provider = mp
-            nested_model = mm
+    if not cm_provider and isinstance(chain_model, str) and chain_model not in visited:
+        sub_combo = next(
+            (c for c in config.get("combos", []) if isinstance(c, dict) and c.get("alias") == chain_model),
+            None,
+        )
+        if sub_combo:
+            next_visited = visited | {chain_model}
+            for sub_entry in sub_combo.get("chain", []):
+                results.extend(
+                    _expand_nested_combo(
+                        sub_entry,
+                        config,
+                        effective_thinking,
+                        _depth=_depth + 1,
+                        _visited=next_visited,
+                    )
+                )
+            return results
 
-    if nested_provider:
-        if _validate_provider_model(config, nested_provider, nested_model):
-            results.append((nested_model, nested_provider, nested_thinking))
+    if cm_provider:
+        if _validate_provider_model(config, cm_provider, cm_target):
+            results.append((cm_target, cm_provider, effective_thinking))
+        return results
+
+    for prov_id, prov_data in config.get("providers", {}).items():
+        for m in prov_data.get("models", []):
+            if m.get("id") == chain_model and m.get("enabled", True):
+                active_c = [c for c in prov_data.get("connections", []) if c.get("enabled", True)]
+                if active_c:
+                    cm_provider = prov_id
+                    break
+        if cm_provider:
+            break
+    if cm_provider:
+        results.append((cm_target, cm_provider, effective_thinking))
 
     return results
+
+
+def _resolve_configured_combo_pairs(combo_alias: str, config: dict) -> Optional[set[tuple[str, str]]]:
+    """Return the set of live configured (model, provider) pairs for a combo alias, or None if not a combo.
+
+    Unlike resolve_combo(), this does NOT apply error_prevention ban pre-filtering
+    so that a leaf temporarily banned on connection #0 (while connection #1 is still
+    untried) is not mistaken for a leaf that the user removed from the combo config.
+    """
+    if not combo_alias or not isinstance(config, dict):
+        return None
+    combo = next(
+        (c for c in config.get("combos", []) if isinstance(c, dict) and c.get("alias") == combo_alias),
+        None,
+    )
+    if not combo:
+        return None
+    pairs: set[tuple[str, str]] = set()
+    for entry in combo.get("chain", []):
+        for cm_target, cm_provider, _ in _expand_nested_combo(
+            entry, config, None, _depth=0, _visited={combo_alias}
+        ):
+            pairs.add((cm_target, cm_provider))
+    return pairs if pairs else None
 
 
 def resolve_combo(
@@ -303,7 +353,13 @@ def resolve_combo(
                     # Expand nested combo chain entries recursively into this chain.
                     for nested_entry in nested_combo.get("chain", []):
                         active_chain.extend(
-                            _expand_nested_combo(nested_entry, config, cm_thinking)
+                            _expand_nested_combo(
+                                nested_entry,
+                                config,
+                                cm_thinking,
+                                _depth=1,
+                                _visited={model, chain_model},
+                            )
                         )
                     continue
 
@@ -464,8 +520,16 @@ def advance_combo_retry(
             return RetryAdvance(exhausted=True, active_chain=stable_chain)
 
     import app.error_prevention as _ep
+    _live_allowed = _resolve_configured_combo_pairs(combo_alias, config)
     while idx < len(stable_chain):
         cand_model, cand_provider, _cand_think = stable_chain[idx]
+        if _live_allowed is not None and (cand_model, cand_provider) not in _live_allowed:
+            print(
+                f"[Combo] {combo_alias} > skipping removed leaf {cand_provider}/{cand_model} [{idx+1}/{len(stable_chain)}]",
+                flush=True,
+            )
+            idx += 1
+            continue
         banned, _, _ = _ep.check_ban(config, cand_provider, cand_model)
         if not banned:
             break
@@ -478,7 +542,8 @@ def advance_combo_retry(
         # entirely (the "only the first key is ever used" regression). Leaves
         # banned by OTHER requests keep the historical skip.
         try:
-            _tried = (_retry_state.get("tried_conns") or {}).get(cand_provider) or ()
+            _tc_map = _retry_state.get("tried_conns") or {}
+            _tried = _tc_map.get(f"{cand_provider}/{cand_model}") or _tc_map.get(cand_provider) or ()
             if _tried:
                 from app.utils.model_resolver import untried_connection_count as _untried
                 if _untried(config, cand_provider, cand_model, set(_tried)) > 0:

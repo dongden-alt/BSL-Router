@@ -109,6 +109,8 @@ class StreamNormalizer:
         current_tool_index = 1  # Text is index 0
         input_tokens = 0
         output_tokens = 0
+        cached_tokens = 0
+        cache_write_tokens = 0
         stop_reason = "end_turn"
         reasoning_buffer = ""
         thinking_emitted = False  # a thinking block was flushed mid-stream
@@ -395,8 +397,11 @@ class StreamNormalizer:
                 # Extract usage
                 if "usage" in data and data["usage"]:
                     u = data["usage"]
-                    input_tokens = u.get("prompt_tokens", input_tokens)
-                    output_tokens = u.get("completion_tokens", output_tokens)
+                    input_tokens = u.get("prompt_tokens") or u.get("input_tokens") or input_tokens
+                    output_tokens = u.get("completion_tokens") or u.get("output_tokens") or output_tokens
+                    _ptd = u.get("prompt_tokens_details") if isinstance(u.get("prompt_tokens_details"), dict) else {}
+                    cached_tokens = int(_ptd.get("cached_tokens") or u.get("cache_read_input_tokens") or cached_tokens or 0)
+                    cache_write_tokens = int(_ptd.get("cache_write_tokens") or u.get("cache_creation_input_tokens") or cache_write_tokens or 0)
 
                 choices = data.get("choices") or []
                 if not choices:
@@ -535,8 +540,11 @@ class StreamNormalizer:
                     data = None
                 if data and data.get("usage"):
                     u = data["usage"]
-                    input_tokens = u.get("prompt_tokens", input_tokens)
-                    output_tokens = u.get("completion_tokens", output_tokens)
+                    input_tokens = u.get("prompt_tokens") or u.get("input_tokens") or input_tokens
+                    output_tokens = u.get("completion_tokens") or u.get("output_tokens") or output_tokens
+                    _ptd = u.get("prompt_tokens_details") if isinstance(u.get("prompt_tokens_details"), dict) else {}
+                    cached_tokens = int(_ptd.get("cached_tokens") or u.get("cache_read_input_tokens") or cached_tokens or 0)
+                    cache_write_tokens = int(_ptd.get("cache_write_tokens") or u.get("cache_creation_input_tokens") or cache_write_tokens or 0)
 
         # BUG A -- rescued text-form calls arrive under finish_reason "stop".
         # Anthropic clients only execute tools when stop_reason is "tool_use",
@@ -604,10 +612,18 @@ class StreamNormalizer:
             })
 
         # Emit message_delta with stop reason and usage
+        _delta_usage: Dict[str, Any] = {
+            "input_tokens": max(0, int(input_tokens or 0) - int(cached_tokens or 0) - int(cache_write_tokens or 0)),
+            "output_tokens": output_tokens,
+        }
+        if cached_tokens > 0:
+            _delta_usage["cache_read_input_tokens"] = cached_tokens
+        if cache_write_tokens > 0:
+            _delta_usage["cache_creation_input_tokens"] = cache_write_tokens
         yield self._encode_anthropic_event("message_delta", {
             "type": "message_delta",
             "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-            "usage": {"output_tokens": output_tokens},
+            "usage": _delta_usage,
         })
 
         # Emit message_stop
@@ -642,6 +658,9 @@ class StreamNormalizer:
         tool_args_buffer = ""
         _tool_id_counter: Dict[str, int] = {}  # per-tool-name counter for unique IDs
         input_tokens = 0
+        cache_read_tokens = 0
+        cache_write_tokens = 0
+        prompt_tokens_inclusive = 0
         output_tokens = 0
 
         async for chunk in anthropic_stream:
@@ -667,7 +686,14 @@ class StreamNormalizer:
                             _msg = _as_obj(data.get("message"))
                             _start_usage = _msg.get("usage") or {}
                             if _start_usage:
-                                input_tokens = _start_usage.get("input_tokens", input_tokens)
+                                if _start_usage.get("prompt_tokens"):
+                                    prompt_tokens_inclusive = int(_start_usage["prompt_tokens"])
+                                if _start_usage.get("input_tokens") is not None:
+                                    input_tokens = int(_start_usage.get("input_tokens") or 0)
+                                if _start_usage.get("cache_read_input_tokens"):
+                                    cache_read_tokens = int(_start_usage["cache_read_input_tokens"])
+                                if _start_usage.get("cache_creation_input_tokens"):
+                                    cache_write_tokens = int(_start_usage["cache_creation_input_tokens"])
 
                         elif event_type == "content_block_delta":
                             delta = _as_obj(data.get("delta"))
@@ -788,8 +814,18 @@ class StreamNormalizer:
                             # Aggregate usage from message_start + message_delta
                             _usage = data.get("usage") or {}
                             if _usage:
-                                input_tokens = _usage.get("input_tokens", input_tokens)
-                                output_tokens = _usage.get("output_tokens", output_tokens)
+                                if _usage.get("prompt_tokens"):
+                                    prompt_tokens_inclusive = int(_usage["prompt_tokens"])
+                                if _usage.get("input_tokens"):
+                                    input_tokens = int(_usage["input_tokens"])
+                                if _usage.get("cache_read_input_tokens"):
+                                    cache_read_tokens = int(_usage["cache_read_input_tokens"])
+                                if _usage.get("cache_creation_input_tokens"):
+                                    cache_write_tokens = int(_usage["cache_creation_input_tokens"])
+                                if _usage.get("output_tokens") is not None:
+                                    output_tokens = int(_usage.get("output_tokens") or output_tokens)
+                                elif _usage.get("completion_tokens") is not None:
+                                    output_tokens = int(_usage.get("completion_tokens") or output_tokens)
                             _finish_payload: Dict[str, Any] = {
                                 "id": f"chatcmpl-bsl-{created}",
                                 "object": "chat.completion.chunk",
@@ -801,11 +837,23 @@ class StreamNormalizer:
                                     "finish_reason": finish,
                                 }],
                             }
-                            if input_tokens or output_tokens:
-                                _finish_payload["usage"] = {
-                                    "prompt_tokens": input_tokens,
+                            _final_prompt = (
+                                prompt_tokens_inclusive
+                                if prompt_tokens_inclusive > 0
+                                else (input_tokens + cache_read_tokens + cache_write_tokens)
+                            )
+                            if _final_prompt or output_tokens or cache_read_tokens or cache_write_tokens:
+                                _u_out: Dict[str, Any] = {
+                                    "prompt_tokens": _final_prompt,
                                     "completion_tokens": output_tokens,
+                                    "total_tokens": _final_prompt + output_tokens,
                                 }
+                                if cache_read_tokens > 0 or cache_write_tokens > 0:
+                                    _u_out["prompt_tokens_details"] = {
+                                        **({"cached_tokens": cache_read_tokens} if cache_read_tokens > 0 else {}),
+                                        **({"cache_write_tokens": cache_write_tokens} if cache_write_tokens > 0 else {}),
+                                    }
+                                _finish_payload["usage"] = _u_out
                             yield self._encode_openai_chunk(_finish_payload)
                             finished_emitted = True
 

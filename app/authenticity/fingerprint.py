@@ -242,19 +242,30 @@ def extract_features(results: list, family_ref: dict) -> FingerprintFeatures:
                 "may": 5, "june": 6, "july": 7, "august": 8,
                 "september": 9, "october": 10, "november": 11, "december": 12,
             }
-            for name, num in month_names.items():
-                if name in lower:
-                    features.cutoff_month = num
-                    break
+            names = "|".join(month_names)
+            named_month = re.search(
+                rf"\b({names})\s*,?\s*(?:of\s+)?(20\d{{2}})\b", content, re.IGNORECASE)
+            year_first = re.search(
+                rf"\b(20\d{{2}})\s*,?\s*({names})\b", content, re.IGNORECASE)
+            if named_month or year_first:
+                match = named_month or year_first
+                year = int(match.group(2 if named_month else 1))
+                if _lo <= year <= _hi:
+                    features.cutoff_year = year
+                    features.cutoff_month = month_names[match.group(1 if named_month else 2).lower()]
+            else:
+                for match in re.finditer(rf"\b({names})\b", content, re.IGNORECASE):
+                    name = match.group(1)
+                    if name.lower() != "may" or name == "May":
+                        features.cutoff_month = month_names[name.lower()]
+                        break
             # Also try numeric month (YYYY-MM / YYYY/MM).
-            month_match = re.search(r"(\d{4})[-/](\d{1,2})", content)
+            month_match = re.search(r"\b(20\d{2})[-/](0?[1-9]|1[0-2])\b", content)
             if month_match:
                 _y = int(month_match.group(1))
-                _m = int(month_match.group(2))
                 if _lo <= _y <= _hi:
                     features.cutoff_year = _y
-                    if 1 <= _m <= 12:
-                        features.cutoff_month = _m
+                    features.cutoff_month = int(month_match.group(2))
             # A month with no year is not a usable cutoff: drop it rather than
             # freeze a half-signal (the audit showed rows like 2007-0 / 0-2).
             if features.cutoff_month and not features.cutoff_year:

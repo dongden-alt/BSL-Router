@@ -378,8 +378,25 @@ class BSLRouterMitm:
           name is matched exactly against mapping keys.
         Returns the configured target (e.g. 'Deepseek-V4-Pro') or None.
         No prefix/fuzzy matching is performed — only exact key matches."""
-        if not model_id:
+        if model_id is None or model_id == "":
             return None
+        # Keep the MITM process lightweight: mirror the direct resolver without
+        # importing app.main (which starts the server's runtime infrastructure).
+        selector = str(model_id)
+        for prefix in ("models/custom/", "models/"):
+            if selector.startswith(prefix):
+                selector = selector[len(prefix):]
+                break
+        for entry in self.config.get("antigravity_integration", {}).get("custom_models", []):
+            if not entry.get("enabled", True):
+                continue
+            keys = {str(entry.get(k, "")) for k in ("target", "slug", "display_name")}
+            index = entry.get("placeholder_index")
+            if type(index) is int:
+                keys.update((f"MODEL_PLACEHOLDER_M{index}", str(1000 + index)))
+            if selector and selector in keys:
+                return entry["target"]
+        model_id = str(model_id)
         mappings = (
             self.config
             .get("antigravity_integration", {})
@@ -536,7 +553,12 @@ class BSLRouterMitm:
                 if body_bytes:
                     try:
                         body_data = json.loads(body_bytes)
-                        raw_model = body_data.get("model") or ""
+                        inner = body_data.get("request") if isinstance(body_data.get("request"), dict) else {}
+                        selectors = [body_data.get(k) for k in ("model", "modelId", "model_id")] + [inner.get(k) for k in ("model", "modelId", "model_id")]
+                        raw_model = next((v for v in selectors if v is not None and self._resolve_antigravity_alias(v)), None)
+                        if raw_model is None:
+                            raw_model = next((v for v in selectors if v is not None and v != ""), "")
+                        raw_model = str(raw_model)
                         _bsl_debug(f"extracted model from body: {raw_model!r}")
                     except Exception:
                         body_data = None

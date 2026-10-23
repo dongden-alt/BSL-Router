@@ -1026,6 +1026,36 @@ input:checked + .slider:before { transform: translateX(16px); }
 .ag-integration-kind.is-native { background:#ecfdf5; color:#047857; }
 @media (max-width:760px) { .ag-integration-hero,.ag-integration-control-card { flex-direction:column; align-items:stretch; } .ag-integration-map-card { grid-template-columns:1fr; gap:7px; } .ag-integration-map-flow { display:none; } }
 
+/* Unified App Integration tab (Antigravity + [CC]). */
+.app-integration-card { padding:22px 24px; margin-bottom:20px; }
+.app-integration-header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding-bottom:16px; margin-bottom:16px; border-bottom:1px solid var(--border-color); flex-wrap:wrap; }
+.app-integration-title-group { min-width:220px; flex:1; }
+.app-integration-title-group h2 { font-size:16px; font-weight:600; color:var(--text-main); margin:0 0 4px 0; display:flex; align-items:center; gap:8px; }
+.app-integration-subtitle { font-size:12px; color:var(--text-muted); line-height:1.45; margin:0; }
+.app-integration-header-right { display:flex; align-items:center; gap:10px; flex-shrink:0; flex-wrap:wrap; }
+.app-integration-status-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 11px; border-radius:999px; font-size:11px; font-weight:600; background:var(--bg-body); border:1px solid var(--border-color); color:var(--text-muted); white-space:nowrap; margin:0; }
+.app-integration-status-pill.is-active { background:#ecfdf5; border-color:#a7f3d0; color:#047857; }
+.app-integration-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px; background:var(--bg-body); border:1px solid var(--border-color); border-radius:10px; margin-bottom:16px; }
+.app-integration-toolbar-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.app-integration-toggle-label { display:inline-flex; align-items:center; gap:8px; font-size:13px; font-weight:500; color:var(--text-main); cursor:pointer; user-select:none; }
+.app-integration-tier-grid { display:grid; grid-template-columns:repeat(2, minmax(220px, 1fr)); gap:12px; margin-bottom:18px; padding:14px; background:var(--bg-body); border:1px solid var(--border-color); border-radius:10px; }
+.app-integration-tier-field { display:flex; flex-direction:column; gap:6px; margin:0; }
+.app-integration-tier-field > span { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted); }
+.app-integration-section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+.app-integration-section-title { font-size:13px; font-weight:600; color:var(--text-main); }
+.app-integration-model-list { display:flex; flex-direction:column; gap:8px; }
+.app-integration-model-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 14px; background:var(--bg-surface); border:1px solid var(--border-color); border-radius:10px; transition:border-color .15s ease, box-shadow .15s ease; flex-wrap:wrap; }
+.app-integration-model-row:hover { border-color:#cbd5e1; box-shadow:0 2px 8px rgba(15,23,42,.05); }
+.app-integration-model-left { display:flex; align-items:center; gap:10px; flex:1; min-width:240px; flex-wrap:wrap; }
+.app-integration-model-idx { width:24px; height:24px; border-radius:6px; background:var(--bg-body); border:1px solid var(--border-color); display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:var(--text-muted); flex-shrink:0; }
+.app-integration-model-name { width:210px; max-width:100%; padding:6px 10px; font-size:13px; font-weight:600; }
+.app-integration-target-pill { display:inline-flex; align-items:center; padding:3px 8px; border-radius:6px; background:var(--bg-body); border:1px solid var(--border-color); font-size:11px; color:var(--text-main); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+.app-integration-slot-pill { display:inline-flex; align-items:center; padding:3px 8px; border-radius:999px; background:#eef2ff; border:1px solid #c7d2fe; font-size:10px; font-weight:700; color:#4338ca; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+.app-integration-model-right { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+.app-integration-empty { padding:20px 16px; text-align:center; font-size:13px; color:var(--text-muted); background:var(--bg-body); border:1px dashed var(--border-color); border-radius:10px; margin:0; }
+.app-integration-details { margin-top:16px; padding-top:14px; border-top:1px solid var(--border-color); }
+.app-integration-details > summary { cursor:pointer; font-size:12px; font-weight:600; color:var(--text-muted); user-select:none; margin-bottom:12px; }
+
 /* ═══════════════════════════════════════════════════════════════════════════
    MOBILE RESPONSIVE LAYOUT — Hamburger Menu + Responsive Breakpoints
    ═══════════════════════════════════════════════════════════════════════════ */

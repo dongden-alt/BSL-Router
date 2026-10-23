@@ -881,6 +881,44 @@ class ResponseGuardObserver:
                                             self._add_tool_args(fn.get("name"))
                                         self._add_tool_args(fn.get("arguments"))
                         self._add_text(choice_delta.get("content", ""))
+
+                # Gemini dialect: candidates[].content.parts[]
+                candidates = obj.get("candidates")
+                if isinstance(candidates, list):
+                    for cand in candidates:
+                        if not isinstance(cand, dict):
+                            continue
+                        content = cand.get("content")
+                        if isinstance(content, dict) and isinstance(content.get("parts"), list):
+                            for part in content["parts"]:
+                                if not isinstance(part, dict):
+                                    continue
+                                fc = part.get("functionCall") or part.get("function_call")
+                                if fc:
+                                    self._had_tools = True
+                                    if isinstance(fc, dict):
+                                        if isinstance(fc.get("name"), str):
+                                            self._add_tool_args(fc.get("name"))
+                                        self._add_tool_args(fc.get("args"))
+                                elif not part.get("thought") and isinstance(part.get("text"), str):
+                                    self._add_text(part["text"])
+
+                # OpenAI Responses API dialect: response.output_text.delta / function_call
+                ev_type = obj.get("type")
+                if ev_type == "response.output_text.delta" and isinstance(obj.get("delta"), str):
+                    self._add_text(obj["delta"])
+                elif ev_type == "response.function_call_arguments.delta":
+                    self._had_tools = True
+                    if isinstance(obj.get("delta"), str):
+                        self._add_tool_args(obj["delta"])
+                elif ev_type == "response.output_item.added":
+                    item = obj.get("item") if isinstance(obj.get("item"), dict) else {}
+                    if item.get("type") == "function_call":
+                        self._had_tools = True
+                        if isinstance(item.get("name"), str):
+                            self._add_tool_args(item.get("name"))
+                        if "arguments" in item:
+                            self._add_tool_args(item.get("arguments"))
         except Exception:
             self._dead = True
 

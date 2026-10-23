@@ -109,6 +109,27 @@ def build_continuation_payload(
         return None
 
     new_payload = dict(original_payload)
+    continue_prompt = (
+        f"{_CONTINUE_MARKER} Continue your previous response exactly from "
+        f"where it was cut off. Do NOT repeat what you already wrote. "
+        f"Do NOT add preamble. Resume directly from the last word."
+    )
+    if "input" in original_payload and "messages" not in original_payload:
+        inp = list(original_payload.get("input") or [])
+        inp.append({
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": partial_text}],
+        })
+        inp.append({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": continue_prompt}],
+        })
+        new_payload["input"] = inp
+        new_payload["stream"] = True if original_payload.get("stream") else stream
+        return new_payload
+
     messages = list(original_payload.get("messages") or [])
 
     # Append the partial assistant output so the model sees what it already wrote
@@ -120,11 +141,7 @@ def build_continuation_payload(
     # Append the continue instruction
     messages.append({
         "role": "user",
-        "content": (
-            f"{_CONTINUE_MARKER} Continue your previous response exactly from "
-            f"where it was cut off. Do NOT repeat what you already wrote. "
-            f"Do NOT add preamble. Resume directly from the last word."
-        ),
+        "content": continue_prompt,
     })
 
     new_payload["messages"] = messages
@@ -354,6 +371,7 @@ class StreamTruncationDetector:
         # Total delivered chars (uncapped) so the usage estimate stays
         # representative even after the buffer hit the byte cap.
         self.partial_len = 0
+        self.tool_call_chars = 0
         self.truncated = False
         self._buf = ""
 
@@ -453,6 +471,17 @@ class StreamTruncationDetector:
             reasoning = delta.get("reasoning_content")
             if isinstance(reasoning, str) and self.accumulate:
                 self._append_text(reasoning)
+            elif isinstance(delta.get("reasoning"), str) and self.accumulate:
+                self._append_text(delta.get("reasoning"))
+            if self.accumulate and isinstance(delta.get("tool_calls"), list):
+                for _tc in delta["tool_calls"]:
+                    if isinstance(_tc, dict):
+                        _fn = _tc.get("function")
+                        if isinstance(_fn, dict):
+                            if isinstance(_fn.get("name"), str):
+                                self.tool_call_chars += len(_fn["name"])
+                            if isinstance(_fn.get("arguments"), str):
+                                self.tool_call_chars += len(_fn["arguments"])
             # `enabled` is the truncation/splice gate: with it off, a length
             # frame must NEVER set truncated (Qwen anti-stop stays scoped).
             if self.enabled and choice.get("finish_reason") == "length":
@@ -460,6 +489,12 @@ class StreamTruncationDetector:
             return
 
         # Anthropic Messages SSE
+        if data.get("type") == "content_block_start":
+            if self.accumulate:
+                _cb = data.get("content_block")
+                if isinstance(_cb, dict) and _cb.get("type") == "tool_use":
+                    self.tool_call_chars += len(str(_cb.get("name") or ""))
+            return
         if data.get("type") == "content_block_delta":
             delta = data.get("delta") or {}
             text = delta.get("text")
@@ -470,6 +505,8 @@ class StreamTruncationDetector:
             thinking = delta.get("thinking")
             if isinstance(thinking, str) and self.accumulate:
                 self._append_text(thinking)
+            if isinstance(delta.get("partial_json"), str) and self.accumulate:
+                self.tool_call_chars += len(delta["partial_json"])
             return
         # Anthropic also emits a standalone thinking_delta event type.
         if data.get("type") == "thinking_delta":
@@ -482,6 +519,41 @@ class StreamTruncationDetector:
             delta = data.get("delta") or {}
             if self.enabled and delta.get("stop_reason") == "max_tokens":
                 self.truncated = True
+            return
+
+        # OpenAI Responses SSE (Codex)
+        ev_type = data.get("type")
+        if ev_type in (
+            "response.output_text.delta",
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_text.delta",
+        ):
+            delta_str = data.get("delta")
+            if isinstance(delta_str, str) and self.accumulate:
+                self._append_text(delta_str)
+            return
+        if ev_type == "response.output_item.done":
+            if self.accumulate:
+                item = data.get("item")
+                if isinstance(item, dict) and item.get("type") == "function_call":
+                    name = item.get("name")
+                    args = item.get("arguments")
+                    if isinstance(name, str):
+                        self.tool_call_chars += len(name)
+                    if isinstance(args, str):
+                        self.tool_call_chars += len(args)
+                    elif args is not None:
+                        try:
+                            self.tool_call_chars += len(json.dumps(args, ensure_ascii=False))
+                        except Exception:
+                            pass
+            return
+        if ev_type == "response.incomplete":
+            if self.enabled:
+                resp_obj = data.get("response") if isinstance(data.get("response"), dict) else data
+                inc = resp_obj.get("incomplete_details") if isinstance(resp_obj, dict) else None
+                if isinstance(inc, dict) and inc.get("reason") in ("max_output_tokens", "length"):
+                    self.truncated = True
             return
 
         # Gemini native chunk: candidates[].content.parts + finishReason
@@ -499,6 +571,11 @@ class StreamTruncationDetector:
                         # thought:true -- both are continuable model output, so
                         # accumulate regardless of the thought flag.
                         self._append_text(text)
+                    if self.accumulate and isinstance(part.get("functionCall"), dict):
+                        try:
+                            self.tool_call_chars += len(json.dumps(part["functionCall"], ensure_ascii=False))
+                        except Exception:
+                            pass
 
 
 # ── Transport-death continuation trigger ────────────────────────────────

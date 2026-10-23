@@ -247,10 +247,14 @@ class ErrorPreventionManager:
         if not self.enabled:
             return
         
-        # Clear all error type streaks for this model
         keys_to_clear = [k for k in self.state.keys() if k.startswith(f"{provider}/{model}/")]
         for key in keys_to_clear:
-            self.state[key]['streak'] = 0
+            entry = self.state.get(key)
+            if entry:
+                entry['streak'] = 0
+                if entry.get('ban_state') == 'softban':
+                    entry['ban_state'] = None
+                    entry['ban_until'] = None
     
     def record_error(self, provider: str, model: str, status_code: int, error_msg: Optional[str]) -> Optional[Dict[str, Any]]:
         """

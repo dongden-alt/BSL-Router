@@ -139,7 +139,7 @@ def classify_family(features, families: dict) -> FamilyVerdict:
     elif injection_detected:
         final_family = "injection"
         confidence = behavior_confidence
-    elif behavior_family != "unknown" and behavior_confidence > surface_confidence:
+    elif behavior_family != "unknown" and (not claimed_family_name or behavior_family == claimed_family_name) and behavior_confidence > surface_confidence:
         final_family = "claimed"  # behavior consistent with claim
         confidence = (surface_confidence + behavior_confidence) / 2
     else:

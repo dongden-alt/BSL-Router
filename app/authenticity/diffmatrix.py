@@ -360,7 +360,7 @@ def detect_corruption(std):
     for section in ("known_facts", "post_cutoff_unknown"):
         entries = knowledge.get(section) or []
         needles = []
-        for e in entries:
+        for i, e in enumerate(entries):
             if not isinstance(e, dict):
                 continue
             fact = (e.get("fact") or "").strip()
@@ -370,8 +370,9 @@ def detect_corruption(std):
             if not fact or not needle:
                 flags.append(f"{section}: empty fact/needle entry")
             if needle:
-                needles.append(needle.lower())
-        dupes = sorted({n for n in needles if needles.count(n) > 1})
+                needles.append((i, needle.lower()))
+        values = [n for _, n in needles]
+        dupes = sorted({n for n in values if values.count(n) > 1})
         if dupes:
             flags.append(f"{section}: duplicate needles {dupes}")
         # cross-entry contamination: needle of one entry embedded in another's fact
@@ -379,7 +380,7 @@ def detect_corruption(std):
             if not isinstance(e, dict):
                 continue
             fact_l = (e.get("fact") or "").lower()
-            for j, n in enumerate(needles):
+            for j, n in needles:
                 if i != j and n and n in fact_l:
                     flags.append(f"{section}: needle of entry {j} embedded in fact of entry {i}")
                     break

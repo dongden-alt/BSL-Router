@@ -169,6 +169,25 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
     if instructions is not None:
         body["instructions"] = instructions
 
+    # Prompt caching affinity for Codex /responses: preserve explicit client key
+    # or derive a deterministic session key from (model, instructions, first user/dev anchor)
+    # so multi-turn agentic coding sessions with store=False still hit OpenAI's prompt cache.
+    explicit_cache_key = chat_body.get("prompt_cache_key")
+    if isinstance(explicit_cache_key, str) and explicit_cache_key.strip():
+        body["prompt_cache_key"] = explicit_cache_key.strip()
+    else:
+        first_anchor = ""
+        for part in input_parts:
+            if isinstance(part, dict) and part.get("role") in ("user", "developer") and part.get("content"):
+                first_anchor = str(part.get("content"))[:2048]
+                break
+        if instructions or first_anchor:
+            import hashlib
+            digest = hashlib.sha256(
+                f"{body['model']}|{instructions or ''}|{first_anchor}".encode("utf-8", errors="ignore")
+            ).hexdigest()[:24]
+            body["prompt_cache_key"] = f"bsl-codex-{digest}"
+
     # Reasoning effort
     effort = _resolve_effort(chat_body)
     body["reasoning"] = {"effort": effort}
@@ -208,6 +227,7 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
         "reasoning_effort",
         "thinking",
         "output_config",
+        "prompt_cache_key",
     ):
         chat_body.pop(key, None)
 
@@ -282,17 +302,24 @@ def responses_json_to_openai(resp: dict, model: str) -> dict[str, Any]:
     `resp` is the full response object found inside `response.completed`.
     """
     text_parts = []
+    reasoning_parts = []
     tool_calls_out: list[dict] = []
-    # Walk output items for text content AND function calls. The old
-    # message-only walk silently dropped every function_call from the
-    # non-stream lane; clients buffered on this path never saw a tool call.
     for item in resp.get("output", []):
         if not isinstance(item, dict):
             continue
         if item.get("type") == "message":
             for c in item.get("content", []):
-                if isinstance(c, dict) and c.get("type") == "output_text":
-                    text_parts.append(c.get("text", ""))
+                if isinstance(c, dict) and c.get("type") in ("output_text", "text"):
+                    t = c.get("text", "")
+                    if t:
+                        text_parts.append(t)
+        elif item.get("type") == "reasoning":
+            for s in item.get("summary") or []:
+                if isinstance(s, dict) and s.get("text"):
+                    reasoning_parts.append(str(s.get("text")))
+            for c in item.get("content") or []:
+                if isinstance(c, dict) and c.get("text"):
+                    reasoning_parts.append(str(c.get("text")))
         elif item.get("type") == "function_call" and item.get("name"):
             args = item.get("arguments", "")
             if not isinstance(args, str):
@@ -306,16 +333,38 @@ def responses_json_to_openai(resp: dict, model: str) -> dict[str, Any]:
                 tc["id"] = call_id
             tool_calls_out.append(tc)
 
-    usage = resp.get("usage", {})
+    usage = resp.get("usage", {}) or {}
+    out_details = usage.get("output_tokens_details") or {}
+    reasoning_tokens = int(out_details.get("reasoning_tokens", 0) or 0)
 
     message: dict[str, Any] = {
         "role": "assistant",
         "content": "".join(text_parts),
     }
+    if reasoning_parts:
+        message["reasoning_content"] = "\n".join(reasoning_parts)
     if tool_calls_out:
         message["tool_calls"] = tool_calls_out
 
-    return {
+    finish_reason = "tool_calls" if tool_calls_out else "stop"
+    if resp.get("status") == "incomplete":
+        finish_reason = "length"
+        if not message["content"] and not reasoning_parts and reasoning_tokens > 0:
+            message["reasoning_content"] = f"[reasoning_tokens={reasoning_tokens}]"
+
+    in_details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+    cached_tokens = int(in_details.get("cached_tokens", 0) or 0) if isinstance(in_details, dict) else 0
+    out_usage: dict[str, Any] = {
+        "prompt_tokens": usage.get("input_tokens", 0),
+        "completion_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+    }
+    if cached_tokens > 0:
+        out_usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+    if reasoning_tokens > 0:
+        out_usage["completion_tokens_details"] = {"reasoning_tokens": reasoning_tokens}
+
+    result: dict[str, Any] = {
         "id": resp.get("id", f"resp-codex-{id(resp)}"),
         "object": "chat.completion",
         "created": int(__import__("time").time()),
@@ -323,14 +372,13 @@ def responses_json_to_openai(resp: dict, model: str) -> dict[str, Any]:
         "choices": [{
             "index": 0,
             "message": message,
-            "finish_reason": "tool_calls" if tool_calls_out else "stop",
+            "finish_reason": finish_reason,
         }],
-        "usage": {
-            "prompt_tokens": usage.get("input_tokens", 0),
-            "completion_tokens": usage.get("output_tokens", 0),
-            "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
-        },
+        "usage": out_usage,
     }
+    if resp.get("error"):
+        result["error"] = resp.get("error")
+    return result
 
 
 # ── SSE Conversion ───────────────────────────────────────────────────────────
@@ -367,18 +415,22 @@ async def responses_sse_to_openai_sse(raw_iter):
             line = line.rstrip(b"\r")
             line_str = line.decode("utf-8", errors="replace")
 
-            if line_str.startswith("event: "):
-                current_event = line_str[7:]
-            elif line_str.startswith("data: "):
-                current_data_parts.append(line_str[6:])
+            if line_str.startswith("event:"):
+                current_event = line_str[6:].strip()
+            elif line_str.startswith("data:"):
+                d_part = line_str[5:]
+                if d_part.startswith(" "):
+                    d_part = d_part[1:]
+                current_data_parts.append(d_part)
             elif line_str == "":
-                if current_event and current_data_parts:
+                if current_data_parts:
                     d = "".join(current_data_parts)
                     try:
                         dj = json.loads(d)
                     except json.JSONDecodeError:
                         dj = {}
-                    converted = _codex_event_to_openai_chunk(current_event, dj, tc_state)
+                    ev_name = (current_event or (dj.get("type") if isinstance(dj, dict) else "") or "").strip()
+                    converted = _codex_event_to_openai_chunk(ev_name, dj, tc_state) if ev_name else None
                     for oai in (converted if isinstance(converted, list) else [converted]):
                         if oai is not None:
                             if first_delta:
@@ -389,13 +441,14 @@ async def responses_sse_to_openai_sse(raw_iter):
                 current_data_parts = []
 
     # flush remaining
-    if current_event and current_data_parts:
+    if current_data_parts:
         d = "".join(current_data_parts)
         try:
             dj = json.loads(d)
         except json.JSONDecodeError:
             dj = {}
-        converted = _codex_event_to_openai_chunk(current_event, dj, tc_state)
+        ev_name = (current_event or (dj.get("type") if isinstance(dj, dict) else "") or "").strip()
+        converted = _codex_event_to_openai_chunk(ev_name, dj, tc_state) if ev_name else None
         for oai in (converted if isinstance(converted, list) else [converted]):
             if oai is not None:
                 if first_delta:
@@ -469,6 +522,31 @@ def _codex_event_to_openai_chunk(event_name: str, data: dict, tc_state: dict | N
             }],
         }
 
+    elif event_name in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
+        delta_text = data.get("delta", "") if isinstance(data, dict) else ""
+        if not isinstance(delta_text, str) or not delta_text:
+            return None
+        return {
+            "id": rid,
+            "object": "chat.completion.chunk",
+            "created": ts,
+            "model": data.get("model", "codex"),
+            "choices": [{
+                "index": 0,
+                "delta": {"reasoning_content": delta_text},
+                "finish_reason": None,
+            }],
+        }
+
+    elif event_name == "error":
+        err_obj = data.get("error") if isinstance(data, dict) and isinstance(data.get("error"), dict) else data
+        message = (
+            (err_obj.get("message") or err_obj.get("code") or "error")
+            if isinstance(err_obj, dict)
+            else str(err_obj or "error")
+        )
+        return _error_chunks(rid, ts, data if isinstance(data, dict) else {}, str(message))
+
     elif event_name in ("response.failed", "response.incomplete"):
         resp_obj = data.get("response", data)
         if not isinstance(resp_obj, dict):
@@ -502,10 +580,13 @@ def _codex_event_to_openai_chunk(event_name: str, data: dict, tc_state: dict | N
             }],
         }
         if usage:
+            in_details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+            cached_tokens = int(in_details.get("cached_tokens", 0) or 0) if isinstance(in_details, dict) else 0
             chunk["usage"] = {
                 "prompt_tokens": usage.get("input_tokens", 0),
                 "completion_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+                **({"prompt_tokens_details": {"cached_tokens": cached_tokens}} if cached_tokens > 0 else {}),
             }
         return chunk
 
@@ -582,28 +663,86 @@ async def assemble_responses_from_sse(raw_iter) -> dict:
     graft it onto the completed object as a synthetic message item.
     """
     completed = None
+    last_response_obj = None
     delta_text_parts = []
+    done_text_parts = []
+    reasoning_text_parts = []
     function_call_items: list[dict] = []
+    stream_error = None
     buf = b""
     current_event = None
     current_data_parts = []
 
     def _consume(event_name: str, data_str: str):
-        nonlocal completed
+        nonlocal completed, last_response_obj, stream_error
         try:
             dj = json.loads(data_str) if data_str else {}
         except json.JSONDecodeError:
             dj = {}
-        if event_name == "response.output_text.delta":
+        ev = (event_name or (dj.get("type") if isinstance(dj, dict) else "") or "").strip()
+        if isinstance(dj, dict) and isinstance(dj.get("response"), dict):
+            last_response_obj = dj["response"]
+        if ev == "response.output_text.delta":
             d = dj.get("delta") if isinstance(dj, dict) else None
             if isinstance(d, str) and d:
                 delta_text_parts.append(d)
-        elif event_name == "response.output_item.done":
+        elif ev == "response.output_text.done":
+            t = dj.get("text") if isinstance(dj, dict) else None
+            if isinstance(t, str) and t:
+                done_text_parts.append(t)
+        elif ev == "response.content_part.done":
+            part = dj.get("part") if isinstance(dj, dict) else None
+            if isinstance(part, dict) and isinstance(part.get("text"), str) and part.get("text"):
+                done_text_parts.append(part["text"])
+        elif ev in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
+            d = dj.get("delta") if isinstance(dj, dict) else None
+            if isinstance(d, str) and d:
+                reasoning_text_parts.append(d)
+        elif ev in ("response.reasoning_summary_text.done", "response.reasoning_text.done"):
+            t = dj.get("text") if isinstance(dj, dict) else None
+            if isinstance(t, str) and t and not reasoning_text_parts:
+                reasoning_text_parts.append(t)
+        elif ev == "response.output_item.done":
             it = dj.get("item") if isinstance(dj, dict) else None
-            if isinstance(it, dict) and it.get("type") == "function_call" and it.get("name"):
-                function_call_items.append(dict(it))
-        elif event_name == "response.completed":
+            if isinstance(it, dict):
+                if it.get("type") == "function_call" and it.get("name"):
+                    function_call_items.append(dict(it))
+                elif it.get("type") == "message":
+                    for c in it.get("content") or []:
+                        if isinstance(c, dict) and isinstance(c.get("text"), str) and c.get("text"):
+                            done_text_parts.append(c["text"])
+                elif it.get("type") == "reasoning":
+                    for s in it.get("summary") or []:
+                        if isinstance(s, dict) and isinstance(s.get("text"), str) and s.get("text"):
+                            reasoning_text_parts.append(s["text"])
+        elif ev in ("response.completed", "response.done"):
             completed = (dj.get("response") if isinstance(dj, dict) else None) or (dj if isinstance(dj, dict) else {})
+        elif ev in ("response.failed", "response.incomplete"):
+            resp_obj = (dj.get("response") if isinstance(dj, dict) else None) or (dj if isinstance(dj, dict) else {})
+            if isinstance(resp_obj, dict):
+                completed = dict(resp_obj)
+                if ev == "response.failed" and not completed.get("status"):
+                    completed["status"] = "failed"
+                elif ev == "response.incomplete" and not completed.get("status"):
+                    completed["status"] = "incomplete"
+        elif ev == "error":
+            err_obj = (dj.get("error") if isinstance(dj, dict) else None) or dj
+            stream_error = err_obj
+
+    def _process_line(line_str: str):
+        nonlocal current_event, current_data_parts
+        if line_str.startswith("event:"):
+            current_event = line_str[6:].strip()
+        elif line_str.startswith("data:"):
+            d_part = line_str[5:]
+            if d_part.startswith(" "):
+                d_part = d_part[1:]
+            current_data_parts.append(d_part)
+        elif line_str == "":
+            if current_data_parts:
+                _consume(current_event or "", "".join(current_data_parts))
+            current_event = None
+            current_data_parts = []
 
     async for chunk in raw_iter:
         if not chunk:
@@ -614,25 +753,34 @@ async def assemble_responses_from_sse(raw_iter) -> dict:
             line = buf[:idx]
             buf = buf[idx + 1:]
             line = line.rstrip(b"\r")
-            line_str = line.decode("utf-8", errors="replace")
+            _process_line(line.decode("utf-8", errors="replace"))
 
-            if line_str.startswith("event: "):
-                current_event = line_str[7:]
-            elif line_str.startswith("data: "):
-                current_data_parts.append(line_str[6:])
-            elif line_str == "":
-                if current_event and current_data_parts:
-                    _consume(current_event, "".join(current_data_parts))
-                current_event = None
-                current_data_parts = []
-
+    if buf:
+        _process_line(buf.rstrip(b"\r").decode("utf-8", errors="replace"))
     # flush
-    if current_event and current_data_parts:
-        _consume(current_event, "".join(current_data_parts))
+    if current_data_parts:
+        _consume(current_event or "", "".join(current_data_parts))
 
     if completed is None:
-        # Synthesize an empty completed object so callers don't crash.
-        completed = {"id": "codex-empty", "output": [], "usage": {}, "status": "completed"}
+        if isinstance(last_response_obj, dict):
+            completed = dict(last_response_obj)
+        else:
+            completed = {"id": "codex-empty", "output": [], "usage": {}, "status": "completed"}
+    if stream_error and isinstance(completed, dict) and not completed.get("error"):
+        completed["error"] = stream_error
+        completed["status"] = "failed"
+    if not delta_text_parts and done_text_parts:
+        delta_text_parts = [done_text_parts[-1]]
+    if isinstance(completed, dict) and reasoning_text_parts:
+        output = completed.get("output")
+        if not isinstance(output, list):
+            output = []
+        if not any(isinstance(o, dict) and o.get("type") == "reasoning" for o in output):
+            output.append({
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "".join(reasoning_text_parts)}],
+            })
+            completed["output"] = output
     if isinstance(completed, dict) and delta_text_parts:
         text = "".join(delta_text_parts)
         output = completed.get("output")

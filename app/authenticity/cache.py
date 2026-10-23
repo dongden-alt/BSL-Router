@@ -15,11 +15,12 @@ class AuthenticityCache:
         self._cache: dict[str, CacheEntry] = {}
         self._ttl = ttl_seconds
 
-    def _key(self, endpoint_base: str, model_id: str) -> str:
-        return f"{endpoint_base}::{model_id}"
+    def _key(self, endpoint_base: str, model_id: str, reference_hint: str = "") -> str:
+        base = f"{endpoint_base}::{model_id}"
+        return f"{base}::{reference_hint.strip().lower()}" if reference_hint and reference_hint.strip() else base
 
-    def get(self, endpoint_base: str, model_id: str) -> Optional["RealityVerdict"]:
-        key = self._key(endpoint_base, model_id)
+    def get(self, endpoint_base: str, model_id: str, reference_hint: str = "") -> Optional["RealityVerdict"]:
+        key = self._key(endpoint_base, model_id, reference_hint)
         entry = self._cache.get(key)
         if entry is None:
             return None
@@ -28,17 +29,17 @@ class AuthenticityCache:
             return None
         return entry.verdict
 
-    def put(self, endpoint_base: str, model_id: str, verdict: "RealityVerdict") -> None:
+    def put(self, endpoint_base: str, model_id: str, verdict: "RealityVerdict", reference_hint: str = "") -> None:
         # Only cache stable outcomes. Transient/ambiguous verdicts
         # (unverifiable, error) are re-probed next time.
         if verdict.verdict in ("unverifiable", "error"):
             return
-        self._cache[self._key(endpoint_base, model_id)] = CacheEntry(
+        self._cache[self._key(endpoint_base, model_id, reference_hint)] = CacheEntry(
             verdict=verdict, stored_at=time.time()
         )
 
-    def invalidate(self, endpoint_base: str, model_id: str) -> None:
-        self._cache.pop(self._key(endpoint_base, model_id), None)
+    def invalidate(self, endpoint_base: str, model_id: str, reference_hint: str = "") -> None:
+        self._cache.pop(self._key(endpoint_base, model_id, reference_hint), None)
 
     def invalidate_all(self) -> None:
         self._cache.clear()

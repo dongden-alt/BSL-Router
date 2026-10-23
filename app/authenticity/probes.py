@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import time
 from collections import Counter
 
@@ -136,6 +137,8 @@ def _record_probe_telemetry(probe: dict, model_id: str, result: "ProbeResult",
     telemetry rows (probe retry policy) stay distinguishable. Fail-open:
     telemetry must NEVER abort a probe.
     """
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return result
     try:
         _latency_s = (result.latency_ms or 1) / 1000.0
         _client = "authenticity:" + str(probe.get("id", "probe"))
@@ -362,6 +365,10 @@ async def _run_probe_network(
                         continue
                     data_str = line[len("data:"):].strip()
                     if data_str == "[DONE]":
+                        try:
+                            await asyncio.wait_for(line_iter.__anext__(), 0.15)
+                        except Exception:
+                            pass
                         break
                     try:
                         obj = json.loads(data_str)
@@ -869,11 +876,16 @@ async def run_stream_probe(
                     latency_ms=int((time.monotonic() - t0) * 1000),
                     error=f"HTTP {resp.status_code}",
                 ))
-            async for line in resp.aiter_lines():
+            line_iter = resp.aiter_lines().__aiter__()
+            async for line in line_iter:
                 if not line or not line.startswith("data:"):
                     continue
                 data_str = line[len("data:"):].strip()
                 if data_str == "[DONE]":
+                    try:
+                        await asyncio.wait_for(line_iter.__anext__(), 0.15)
+                    except Exception:
+                        pass
                     break
                 try:
                     obj = json.loads(data_str)

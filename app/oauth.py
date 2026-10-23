@@ -2510,6 +2510,8 @@ def _update_connection_token(
     for conn in connections:
         if isinstance(conn, dict) and conn.get("id") == connection_id:
             conn["api_key"] = new_access_token
+            if "access_token" in conn:
+                conn["access_token"] = new_access_token
             if new_refresh_token:
                 conn["refresh_token"] = new_refresh_token
             if new_expires_at:
@@ -2603,7 +2605,7 @@ async def ensure_fresh_token(
     (which may still work if the upstream has grace). The caller's 401-retry
     will handle genuine failures.
     """
-    stored_token = connection.get("api_key", "")
+    stored_token = connection.get("api_key", "") or connection.get("access_token", "")
     expires_at = connection.get("expires_at")
 
     if not force and not _is_token_expired(expires_at):
@@ -2687,6 +2689,13 @@ async def ensure_fresh_token(
             new_expires_at,
             extra_pd,
         )
+        connection["api_key"] = new_access_token
+        if "access_token" in connection:
+            connection["access_token"] = new_access_token
+        if new_refresh:
+            connection["refresh_token"] = new_refresh
+        if new_expires_at:
+            connection["expires_at"] = new_expires_at
 
         print(
             f"[OAuth] Token refreshed for {provider_name} connection"

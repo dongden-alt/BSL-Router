@@ -151,6 +151,14 @@ _SCAFFOLDING_TYPES = (
     b'"type": "message_start"',
     b'"type":"content_block_start"',
     b'"type": "content_block_start"',
+    b'"type":"response.created"',
+    b'"type": "response.created"',
+    b'"type":"response.in_progress"',
+    b'"type": "response.in_progress"',
+    b'"type":"response.output_item.added"',
+    b'"type": "response.output_item.added"',
+    b'"type":"response.content_part.added"',
+    b'"type": "response.content_part.added"',
 )
 
 # Markers proving a chunk DOES carry renderable output. Checked first, so a
@@ -162,6 +170,8 @@ _CONTENT_MARKERS = (
     b'"tool_use"',
     b'"functionCall"',
     b'"inlineData"',
+    b'"output_text.delta"',
+    b'"function_call"',
 )
 
 

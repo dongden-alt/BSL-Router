@@ -163,7 +163,7 @@ def classify_needle_answers(answer_text: str, needles: list) -> dict:
 
         answers.append({"fact": n["fact"], "kind": n["kind"],
                         "answer": ans[:300], "needle_hit": needle_present,
-                        "is_unknown": is_unknown})
+                        "is_unknown": is_unknown, "answered": bool(ans.strip())})
 
     return {
         "known_hits": known_hits,

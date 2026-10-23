@@ -83,6 +83,84 @@ def _with_provider_meta(conn: dict, provider_config: dict) -> dict:
     return enriched
 
 
+def _filter_quota_exhausted_oauth(provider_name: str, eligible: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Skip OAuth connections whose known 5h or 7d quota is 0% (until window reset), when sibling accounts have quota."""
+    if not provider_name or len(eligible) <= 1:
+        return eligible
+    try:
+        from datetime import datetime
+        import time
+        from app import main as _bsl_main
+
+        now = time.time()
+        oq = (getattr(_bsl_main, "_OAUTH_QUOTA", None) or {}).get(provider_name) or {}
+        probe_cache = getattr(_bsl_main, "_OAUTH_PROBE_CACHE", None) or {}
+        cache_key_fn = getattr(_bsl_main, "_oauth_quota_cache_key", None)
+
+        def _window_exhausted(w: Any, captured_at: Optional[float]) -> bool:
+            if not isinstance(w, dict):
+                return False
+            rem = w.get("remaining_pct")
+            if rem is None or float(rem) > 0.0:
+                return False
+            reset_at = w.get("reset_at")
+            if reset_at is not None:
+                try:
+                    if isinstance(reset_at, (int, float)) and float(reset_at) > 1_000_000_000:
+                        return float(reset_at) > now
+                    if isinstance(reset_at, str) and reset_at.strip():
+                        dt = datetime.fromisoformat(reset_at.strip().replace("Z", "+00:00"))
+                        return dt.timestamp() > now
+                except Exception:
+                    pass
+            reset_sec = w.get("reset_in_seconds")
+            if reset_sec is not None:
+                try:
+                    sec = float(reset_sec)
+                    if captured_at is not None and float(captured_at) > 0:
+                        return (float(captured_at) + sec) > now
+                    return sec > 0
+                except Exception:
+                    pass
+            return True
+
+        def _is_conn_exhausted(entry: Dict[str, Any]) -> bool:
+            idx = entry.get("index")
+            conn = entry.get("conn") or {}
+            live = oq.get(idx)
+            if isinstance(live, dict):
+                cap_at = live.get("captured_at")
+                if _window_exhausted(live.get("five_hour"), cap_at) or _window_exhausted(live.get("weekly"), cap_at):
+                    return True
+            if callable(cache_key_fn):
+                ck = cache_key_fn(provider_name, idx, conn)
+                cached = probe_cache.get((provider_name, ck))
+                if isinstance(cached, tuple) and len(cached) == 2 and isinstance(cached[1], dict):
+                    c_ts, c_res = cached
+                    if _window_exhausted(c_res.get("five_hour"), c_ts) or _window_exhausted(c_res.get("weekly"), c_ts):
+                        return True
+            return False
+
+        exhausted_idxs = {e["index"] for e in eligible if _is_conn_exhausted(e)}
+        if not exhausted_idxs:
+            return eligible
+        non_exhausted = [e for e in eligible if e["index"] not in exhausted_idxs]
+        if non_exhausted:
+            try:
+                from app import oauth_antiban as _oab
+                sess_key = _oab.current_request_session_key()
+                if sess_key:
+                    bound = _oab.get_store().lookup(sess_key, provider_name)
+                    if bound in exhausted_idxs:
+                        _oab.get_store().release(sess_key, provider_name)
+            except Exception:
+                pass
+            return non_exhausted
+    except Exception:
+        pass
+    return eligible
+
+
 def _pick_connection(
     provider_config: dict,
     model_id: str,
@@ -159,6 +237,8 @@ def _pick_connection(
 
     if not eligible:
         return None, None
+
+    eligible = _filter_quota_exhausted_oauth(provider_name, eligible)
 
     # OAuth anti-ban: session-sticky account affinity pre-filter. Registered by
     # app.main at import; collapses `eligible` to the session's bound account so

@@ -144,6 +144,7 @@ THINKING_CONFIG_MAP: Dict[str, Dict[str, Any]] = {
 def detect_family(model_id: str, provider_name: str) -> str:
     """Detect model family from model ID and provider name."""
     model_lower = model_id.lower()
+    model_leaf = model_lower.rsplit("/", 1)[-1].strip()
 
     if "claude" in model_lower or provider_name in ("anthropic", "claude"):
         return "anthropic"
@@ -152,13 +153,19 @@ def detect_family(model_id: str, provider_name: str) -> str:
     if "glm-5.1" in model_lower or "glm" in model_lower:
         return "glm-5.1"
     # Kimi / Moonshot — check before generic OpenAI catch-all.
-    # Matches: kimi-k2.7-code, kimi-k2.6, kimi-k2.5, kimi-2.6-thinking,
-    #          moonshotai/kimi-k2.6, free/kimi-k2.6, etc.
-    if "kimi" in model_lower or "k2." in model_lower or "moonshot" in provider_name.lower():
+    # Matches: kimi-k3, kimi-k2.7-code, kimi-k2.6, kimi-k2.5, kimi-2.6-thinking,
+    #          moonshotai/kimi-k2.6, free/kimi-k2.6, k3-pro, etc.
+    if (
+        "kimi" in model_lower
+        or "k2." in model_lower
+        or model_leaf == "k3"
+        or model_leaf.startswith(("k3-", "k3.", "k3_"))
+        or "moonshot" in provider_name.lower()
+    ):
         return "kimi"
-    if "deepseek" in model_lower:
+    if "deepseek" in model_lower or model_leaf == "v4" or model_leaf.startswith(("v4-", "v4.", "v4_")):
         return "deepseek"
-    if "gemini" in model_lower or provider_name == "gemini":
+    if "gemini" in model_lower or "4-argon" in model_lower or provider_name == "gemini":
         return "gemini"
     if model_lower.startswith(("gpt-", "o1", "o3", "o4")) or provider_name == "openai":
         return "openai"

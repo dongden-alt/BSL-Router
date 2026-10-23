@@ -212,3 +212,90 @@ def test_key_bound_routing_is_not_disabled_by_static_sort_gate():
     )
 
     assert result.prompt_cache_key.startswith("bsl-cache-gpt-5.6-terra-")
+
+
+def test_gpt61_family_and_master_caching_enabled_switch():
+    sol61 = _cached("gpt-6.1-sol-pro20x")
+    assert sol61["prompt_cache_key"].startswith("bsl-cache-gpt-6.1-sol-")
+
+    master_off = _cached("gpt-6.1-sol", _payload(), {"caching_enabled": False})
+    assert "prompt_cache_key" not in master_off
+
+
+def test_anthropic_4_breakpoint_tools_system_and_rolling_history_injection():
+    payload = {
+        "tools": [
+            {"name": "read_file", "description": "Read file"},
+            {"name": "edit_file", "description": "Edit file"},
+        ],
+        "system": "You are a helpful coding assistant.",
+        "messages": [
+            {"role": "user", "content": "First user message in history"},
+            {"role": "assistant", "content": "First assistant reply"},
+            {"role": "user", "content": "Latest user turn"},
+        ],
+    }
+    res = PromptCachingAdapter.apply_provider_caching(payload, "claude", "claude-sonnet-4-6", tools_config={})
+    assert res["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert res["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert res["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_kimi_generates_prompt_cache_key_from_folded_messages_prefix():
+    payload = _payload("k" * 1200)
+    res = PromptCachingAdapter.apply_provider_caching(payload, "kimi", "kimi-k2.6", tools_config={})
+    assert isinstance(res.get("prompt_cache_key"), str) and len(res["prompt_cache_key"]) == 32
+
+
+def test_kimi_k3_family_matches_on_direct_and_relay_providers():
+    for prov, model in [("kimi", "kimi-k3"), ("vsllm-o", "kimi-k3-thinking"), ("a6api", "k3-pro")]:
+        obs = _Observability()
+        res = PromptCachingAdapter.apply_provider_caching(
+            _payload("k" * 1200),
+            prov,
+            model,
+            tools_config={"caching_tracker_enabled": True},
+            obs=obs,
+        )
+        assert obs.console_logs[-1]["strategy"] == "kimi-prefix-key-bound"
+        assert isinstance(res.get("prompt_cache_key"), str) and len(res["prompt_cache_key"]) == 32
+
+
+def test_minimax_m31_family_matches_implicit_and_anthropic_lanes():
+    for prov, model in [("minimax", "MiniMax-M3.1"), ("vsllm-o", "minimax-m3.1"), ("a6api", "m3.1")]:
+        obs = _Observability()
+        PromptCachingAdapter.apply_provider_caching(
+            _payload(),
+            prov,
+            model,
+            tools_config={"caching_tracker_enabled": True},
+            obs=obs,
+        )
+        assert obs.console_logs[-1]["strategy"] == "implicit-prefix"
+
+    anth_payload = {"system": "System instructions for M3.1", "messages": [{"role": "user", "content": "hi"}]}
+    res = PromptCachingAdapter.apply_provider_caching(anth_payload, "anthropic", "MiniMax-M3.1", tools_config={})
+    assert res["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_deepseek_v41_and_gemini_4_argon_wildcards_match_across_relays():
+    for prov, model in [
+        ("deepseek", "deepseek-v4.1"),
+        ("a6api", "deepseek-v4.1-flash"),
+        ("vsllm-o", "v4.1-pro"),
+        ("gemini", "gemini-4-argon"),
+        ("antigravity", "gemini-4-argon-high"),
+        ("vsllm-o", "gemini-4.0-pro"),
+    ]:
+        obs = _Observability()
+        PromptCachingAdapter.apply_provider_caching(
+            _payload(),
+            prov,
+            model,
+            tools_config={"caching_tracker_enabled": True},
+            obs=obs,
+        )
+        assert obs.console_logs[-1]["strategy"] == "implicit-prefix"
+        assert obs.console_logs[-1]["cache_hint"] == "static-first-sorted"
+
+

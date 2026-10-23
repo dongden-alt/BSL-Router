@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BSL Router Admin</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="/admin/style.css">
+    <link rel="stylesheet" href="/admin/style.css?v=20261022-app-integration-2">
     <!-- 2026-09-04: Google Fonts link removed — offline/proxied envs got ERR_CONNECTION_CLOSED.
          Inter is now the first entry of the system font stack in style.css (line 15); when
          the font is absent the UI falls back to system fonts with zero console errors. -->
@@ -59,9 +59,9 @@
                     <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"/><path d="M12 2v20M2 12h20"/></svg>
                     Swarm Settings
                 </a>
-                <a href="#" class="nav-item" data-tab="mitm">
+                <a href="#" class="nav-item" data-tab="mitm" title="App Integration">
                     <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none"><path d="M12 2C12 7.52 16.48 12 22 12C16.48 12 12 16.48 12 22C12 16.48 7.52 12 2 12C7.52 12 12 7.52 12 2Z"/></svg>
-                    Antigravity Integration
+                    App Integration
                 </a>
                 <a href="#" class="nav-item" data-tab="tools">
                     <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
@@ -360,6 +360,39 @@
                     </label>
                 </div>
 
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <div class="setting-title">Bilingual Reframe (EN + VI)</div>
+                        <div class="setting-desc">Rewrite tool-sensitive security terminology into neutral engineering equivalents before upstream inspection filters run.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="fel-reframe" onchange="felOnToggle(this, 'reframe.enabled')">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <div class="setting-title">Operator Attestation</div>
+                        <div class="setting-desc">Prepend an operator-owned infrastructure attestation line when bilingual reframe rewrites sensitive terminology.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="fel-attestation" onchange="felOnToggle(this, 'reframe.attestation')">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <div class="setting-title">Reframe Context Scope</div>
+                        <div class="setting-desc">Choose whether bilingual reframe scans only the latest user turn or the full conversation + tool history.</div>
+                    </div>
+                    <select id="fel-context-scope" class="input" style="max-width:210px; font-size:12px;" onchange="felOnScopeChange(this)">
+                        <option value="last_turn">Last Turn Only</option>
+                        <option value="full">Full Conversation &amp; Tools</option>
+                    </select>
+                </div>
+
                 <div class="setting-row" style="flex-direction:column; align-items:stretch; gap:8px;">
                     <div class="setting-info">
                         <div class="setting-title">Per-Family Overrides</div>
@@ -385,6 +418,28 @@
                     </div>
                 </div>
 
+                <div class="setting-row" style="flex-direction:column; align-items:stretch; gap:8px;">
+                    <div class="setting-info" style="display:flex; justify-content:space-between; align-items:center;">
+                        <div>
+                            <div class="setting-title">Live FEL Telemetry &amp; Dry-Run Preview</div>
+                            <div class="setting-desc">Inspect refusal/recovery rates and test how FEL clarity + bilingual reframe + directive injection transform a prompt.</div>
+                        </div>
+                        <button type="button" class="btn btn-secondary" style="font-size:11px; padding:4px 10px;" onclick="felLoadTelemetry()">Refresh Stats</button>
+                    </div>
+                    <div id="fel-telemetry-bar" style="display:flex; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--text-muted); padding:6px 8px; background:var(--bg-secondary, rgba(255,255,255,0.03)); border-radius:6px;">
+                        <span>Refusals: <strong id="fel-stat-refusals">0</strong></span>
+                        <span>Recovered: <strong id="fel-stat-recovered">0</strong></span>
+                        <span>Recovery Rate: <strong id="fel-stat-rate">0%</strong></span>
+                        <span>Events Logged: <strong id="fel-stat-events">0</strong></span>
+                    </div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <input type="text" id="fel-preview-input" class="input" style="flex:2; min-width:220px; font-size:12px;" placeholder="Enter a test prompt (e.g. Run a penetration test and exploit payload check)…">
+                        <input type="text" id="fel-preview-model" class="input" style="flex:1; min-width:140px; font-size:12px;" value="glm-5.1" placeholder="Model ID (e.g. glm-5.1)">
+                        <button type="button" class="btn btn-primary" style="font-size:12px; padding:6px 12px;" onclick="felRunPreview()">Dry-Run Preview</button>
+                    </div>
+                    <pre id="fel-preview-out" style="display:none; margin:0; padding:8px; font-size:11px; border-radius:6px; background:rgba(0,0,0,0.25); white-space:pre-wrap; word-break:break-word; max-height:220px; overflow:auto;"></pre>
+                </div>
+
                 <div class="setting-row" style="flex-direction:column; align-items:stretch; gap:4px;">
                     <div class="setting-info">
                         <div class="setting-title">Response Surface</div>
@@ -401,6 +456,6 @@
         </div>
     </template>
 
-    <script src="/admin/app.js?v=20261022-codex-import-json-3"></script>
+    <script src="/admin/app.js?v=20261023-oauth-tier-1"></script>
 </body>
 </html>

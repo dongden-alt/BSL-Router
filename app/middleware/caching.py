@@ -56,7 +56,14 @@ def _canonical_gpt56_family(model_id: Any) -> Optional[str]:
                 model = model[:-len(suffix)]
                 changed = True
                 break
-    if model in {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}:
+    if model in {
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-6.1-sol",
+        "gpt-6.1-terra",
+        "gpt-6.1-luna",
+    }:
         return model
     return None
 
@@ -118,7 +125,7 @@ def _apply_openai_gpt56_cache_key(
         if isinstance(existing, str) and existing.startswith("bsl-cache-"):
             return "bsl-generated"
         return "preserved"
-    if not tools_config.get("caching_openai_key_bound", True):
+    if not tools_config.get("caching_enabled", True) or not tools_config.get("caching_openai_key_bound", True):
         return "disabled"
 
     prefix = _stable_prefix_content(payload)
@@ -136,6 +143,47 @@ def _apply_openai_gpt56_cache_key(
     return "generated"
 
 
+def _normalize_model_leaf(model_id: Any) -> str:
+    if not isinstance(model_id, str):
+        return ""
+    return model_id.rsplit("/", 1)[-1].lower().strip()
+
+
+def _is_kimi_family(provider_name: Any, target_model: Any) -> bool:
+    """Match Moonshot Kimi K3* / K2* families across direct and relay providers."""
+    p = str(provider_name or "").lower().strip()
+    m = _normalize_model_leaf(target_model)
+    if p == "kimi" or "moonshot" in p:
+        return True
+    if m.startswith(("kimi", "moonshot", "k3-", "k3.", "k3_", "k2-", "k2.", "k2_")):
+        return True
+    if m in ("k3", "k2") or "kimi-k3" in m or "kimi k3" in m or "kimi-k2" in m or "kimi k2" in m:
+        return True
+    return False
+
+
+def _is_implicit_prefix_family(provider_name: Any, target_model: Any) -> bool:
+    """Match OpenAI / DeepSeek V4* (V4.1+) / GLM-5* / MiniMax M3* (M3.1+) / Qwen3* / Gemini 4* (Argon)."""
+    p = str(provider_name or "").lower().strip()
+    m = _normalize_model_leaf(target_model)
+    if p in ("openai", "deepseek", "glm", "zhipu", "minimax", "qwen", "dashscope", "gemini", "google", "vertex", "antigravity"):
+        return True
+    if m.startswith((
+        "gpt-", "o1", "o3", "o4", "chatgpt", "codex",
+        "deepseek", "v4-", "v4.", "v4_",
+        "glm",
+        "minimax", "m3-", "m3.", "m3_", "m2.",
+        "qwen",
+        "gemini", "4-argon",
+    )):
+        return True
+    if m in ("v4", "m3", "m3.1"):
+        return True
+    if any(sub in m for sub in ("deepseek-v4", "minimax-m3", "gemini-4", "gemini 4", "gemini-3", "gemini 3", "gemini-2.5")):
+        return True
+    return False
+
+
 class PromptCachingAdapter:
     @staticmethod
     def apply_provider_caching(
@@ -148,9 +196,9 @@ class PromptCachingAdapter:
         """
         Dynamically applies prompt caching strategies based on the specific model family.
         - Anthropic: Explicit cache_control tags (max 4). Gated by tools.caching_anthropic_explicit.
-        - OpenAI GPT-5.6: Deterministic key-bound routing for large static prefixes only.
-        - OpenAI / DeepSeek / GLM-5 / Minimax M3 / Qwen3.x: Implicit prefix matching.
-        - Kimi K2.6+: Implicit prefix matching with optional `prompt_cache_key`. Gated by tools.caching_kimi_key_bound.
+        - OpenAI GPT-5.6 & GPT-6.1: Deterministic key-bound routing for large static prefixes only.
+        - OpenAI / DeepSeek V4* (V4.1+) / GLM-5* / MiniMax M3* (M3.1+) / Qwen3* / Google Gemini 4* (Argon): Implicit prefix matching.
+        - Kimi K3* / K2.6+: Implicit prefix matching with optional `prompt_cache_key`. Gated by tools.caching_kimi_key_bound.
 
         tools_config: the config["tools"] dict. When None or key missing, defaults True
         (preserves backward-compatible always-on behavior for callers that don't pass config).
@@ -162,34 +210,116 @@ class PromptCachingAdapter:
             return payload
 
         t = tools_config or {}
+        caching_master = t.get("caching_enabled", True)
         tracker_enabled = t.get("caching_tracker_enabled", False)
 
         strategy = "none"
         cache_hint = ""
 
-        if provider_name == "anthropic":
+        if provider_name in ("anthropic", "claude", "claude_code", "claude-code", "claudecode"):
             # Gate: Anthropic explicit cache_control injection
-            if not t.get("caching_anthropic_explicit", True):
+            if not caching_master or not t.get("caching_anthropic_explicit", True):
                 strategy = "anthropic-disabled"
                 if tracker_enabled and obs:
                     _emit_tracker(obs, provider_name, target_model, strategy, "")
                 return payload
-            # Anthropic explicitly requires cache_control breakpoints
+            # Anthropic explicitly requires cache_control breakpoints (up to MAX_BREAKPOINTS = 4)
             strategy = "anthropic-explicit-ephemeral"
+            MAX_BREAKPOINTS = 4
+            tools_list = payload.get("tools")
             system_content = payload.get("system")
-            if system_content:
+            messages_list = payload.get("messages")
+
+            bp_count = 0
+            if isinstance(tools_list, list):
+                bp_count += sum(1 for tl in tools_list if isinstance(tl, dict) and tl.get("cache_control"))
+            if isinstance(system_content, list):
+                bp_count += sum(1 for b in system_content if isinstance(b, dict) and b.get("cache_control"))
+            msg_has_bp = False
+            if isinstance(messages_list, list):
+                for m in messages_list:
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("cache_control"):
+                        bp_count += 1
+                        msg_has_bp = True
+                    mc = m.get("content")
+                    if isinstance(mc, list):
+                        for b in mc:
+                            if isinstance(b, dict) and b.get("cache_control"):
+                                bp_count += 1
+                                msg_has_bp = True
+
+            # 1. Tools breakpoint (cache static tool schemas)
+            if (
+                isinstance(tools_list, list)
+                and tools_list
+                and isinstance(tools_list[-1], dict)
+                and "cache_control" not in tools_list[-1]
+                and bp_count < MAX_BREAKPOINTS
+            ):
+                tools_list[-1]["cache_control"] = {"type": "ephemeral"}
+                bp_count += 1
+
+            # 2. System breakpoint (cache static system prompt)
+            if system_content and bp_count < MAX_BREAKPOINTS:
                 if isinstance(system_content, str):
                     payload["system"] = [
                         {
                             "type": "text",
                             "text": system_content,
-                            "cache_control": {"type": "ephemeral"}
+                            "cache_control": {"type": "ephemeral"},
                         }
                     ]
+                    bp_count += 1
                     cache_hint = "system-prompt-cached"
-        elif provider_name == "kimi" or "moonshot" in provider_name:
+                elif (
+                    isinstance(system_content, list)
+                    and system_content
+                    and isinstance(system_content[-1], dict)
+                    and not any(isinstance(b, dict) and b.get("cache_control") for b in system_content)
+                ):
+                    system_content[-1]["cache_control"] = {"type": "ephemeral"}
+                    bp_count += 1
+                    cache_hint = "system-prompt-cached"
+
+            # 3. Rolling conversation prefix breakpoint (cache stable multi-turn history)
+            if (
+                isinstance(messages_list, list)
+                and len(messages_list) >= 2
+                and bp_count < MAX_BREAKPOINTS
+                and not msg_has_bp
+            ):
+                target_msg = None
+                for idx in range(len(messages_list) - 2, -1, -1):
+                    cand = messages_list[idx]
+                    if isinstance(cand, dict) and cand.get("role") in ("user", "tool"):
+                        target_msg = cand
+                        break
+                if target_msg is None and isinstance(messages_list[-2], dict):
+                    target_msg = messages_list[-2]
+                if isinstance(target_msg, dict):
+                    mc = target_msg.get("content")
+                    if isinstance(mc, str) and mc:
+                        target_msg["content"] = [
+                            {
+                                "type": "text",
+                                "text": mc,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ]
+                        bp_count += 1
+                    elif (
+                        isinstance(mc, list)
+                        and mc
+                        and isinstance(mc[-1], dict)
+                        and "cache_control" not in mc[-1]
+                    ):
+                        mc[-1]["cache_control"] = {"type": "ephemeral"}
+                        bp_count += 1
+        elif _is_kimi_family(provider_name, target_model):
             # Gate: Kimi prompt_cache_key injection
-            if not t.get("caching_kimi_key_bound", True):
+            if not caching_master or not t.get("caching_kimi_key_bound", True):
                 strategy = "kimi-disabled"
                 if tracker_enabled and obs:
                     _emit_tracker(obs, provider_name, target_model, strategy, "")
@@ -197,18 +327,23 @@ class PromptCachingAdapter:
             strategy = "kimi-prefix-key-bound"
             # Moonshot Kimi uses Longest Prefix Matching.
             # To optimize cache routing, Kimi accepts a `prompt_cache_key` scheduling hint.
-            # We hash the system prompt to guarantee consistent cluster routing.
-            system_content = payload.get("system") or ""
-            if isinstance(system_content, list):
-                 system_content = str(system_content)
-            if len(system_content) > 1024:
-                cache_key = hashlib.md5(system_content.encode()).hexdigest()
-                payload["prompt_cache_key"] = cache_key
-                cache_hint = f"key={cache_key[:8]}"
-        elif provider_name == "openai" and _canonical_gpt56_family(target_model):
+            # We hash the system prompt (or folded static prefix on OpenAI wire) to guarantee consistent cluster routing.
+            if not payload.get("prompt_cache_key"):
+                system_content = payload.get("system") or ""
+                if isinstance(system_content, list):
+                    system_content = str(system_content)
+                if not system_content:
+                    system_content = _stable_prefix_content(payload) or ""
+                if len(system_content) > 1024:
+                    cache_key = hashlib.md5(system_content.encode("utf-8")).hexdigest()
+                    payload["prompt_cache_key"] = cache_key
+                    cache_hint = f"key={cache_key[:8]}"
+            else:
+                cache_hint = "preserved"
+        elif _canonical_gpt56_family(target_model):
             strategy = "openai-gpt-5.6-key-bound"
             cache_hint = _apply_openai_gpt56_cache_key(payload, target_model, t)
-        elif provider_name in ["openai", "deepseek", "glm", "zhipu", "minimax", "qwen", "dashscope", "gemini"]:
+        elif _is_implicit_prefix_family(provider_name, target_model):
             strategy = "implicit-prefix"
             cache_hint = "static-first-sorted"
 
@@ -232,7 +367,7 @@ class PromptCachingAdapter:
         only hashes system/developer prefix content and fails open on invalid data.
         """
         t = tools_config or {}
-        if t.get("caching_static_sort", True):
+        if t.get("caching_enabled", True) and t.get("caching_static_sort", True):
             static_msgs = [m for m in request.messages if m.role in ("system", "developer")]
             other_msgs = [m for m in request.messages if m.role not in ("system", "developer")]
             request.messages = static_msgs + other_msgs
@@ -285,19 +420,45 @@ class CacheWarmthTracker:
         """Fold one usage sample; returns the post-update warmth (0.0 on no data)."""
         if not isinstance(usage, dict):
             return 0.0
-        cache_read = usage.get("cache_read_input_tokens", 0) or 0
-        details = usage.get("prompt_tokens_details")
-        cached = details.get("cached_tokens", 0) or 0 if isinstance(details, dict) else 0
-        cached = cached or cache_read
-        prompt = usage.get("prompt_tokens")
-        if prompt:
-            # OpenAI shape: prompt_tokens is already INCLUSIVE of cache.
-            total = prompt
+        cache_read = int(usage.get("cache_read_input_tokens") or 0)
+        ptd = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
+        itd = usage.get("input_tokens_details") if isinstance(usage.get("input_tokens_details"), dict) else {}
+        create = int(
+            usage.get("cache_creation_input_tokens")
+            or ptd.get("cache_write_tokens")
+            or ptd.get("cache_creation_tokens")
+            or itd.get("cache_write_tokens")
+            or itd.get("cache_creation_tokens")
+            or 0
+        )
+        detail_cached = int(
+            ptd.get("cached_tokens")
+            or itd.get("cached_tokens")
+            or usage.get("prompt_cache_hit_tokens")
+            or usage.get("cachedContentTokenCount")
+            or usage.get("cached_tokens")
+            or 0
+        )
+        cached = detail_cached or cache_read
+        prompt = int(usage.get("prompt_tokens") or usage.get("promptTokenCount") or 0)
+        inp = int(usage.get("input_tokens") or 0)
+        out = int(usage.get("completion_tokens") or usage.get("output_tokens") or usage.get("candidatesTokenCount") or 0)
+        tot_tok = int(usage.get("total_tokens") or usage.get("totalTokenCount") or 0)
+        if prompt > 0:
+            if prompt < cached and cache_read > 0:
+                total = prompt + cache_read + create
+            else:
+                total = prompt
+        elif usage.get("prompt_cache_miss_tokens") is not None:
+            total = int(usage.get("prompt_cache_miss_tokens") or 0) + cached + create
+        elif inp > 0:
+            is_inclusive = (
+                (detail_cached > 0 and cache_read == 0 and inp >= detail_cached)
+                or (tot_tok > 0 and (cache_read + create) > 0 and inp >= (cache_read + create) and abs(tot_tok - (inp + out)) <= 2)
+            )
+            total = inp if is_inclusive else (inp + cache_read + create)
         else:
-            # Anthropic shape: fold fresh + read + creation (EXCLUSIVE input).
-            fresh = usage.get("input_tokens", 0) or 0
-            create = usage.get("cache_creation_input_tokens", 0) or 0
-            total = fresh + cache_read + create
+            total = cache_read + create
         if not isinstance(total, (int, float)) or total <= 0:
             return 0.0
         sample = max(0.0, min(1.0, cached / total))

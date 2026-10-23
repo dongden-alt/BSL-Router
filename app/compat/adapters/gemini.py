@@ -620,10 +620,16 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _usage_metadata(usage: Dict[str, Any]) -> Dict[str, Any]:
-    """Map OpenAI usage → Gemini usageMetadata (§4a, §8.14)."""
+    """Map OpenAI/Anthropic usage → Gemini usageMetadata (§4a, §8.14)."""
     usage = usage or {}
-    p = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
-    q = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
+    p = int(usage.get("prompt_tokens") or 0)
+    if not p:
+        p = (
+            int(usage.get("input_tokens") or 0)
+            + int(usage.get("cache_read_input_tokens") or 0)
+            + int(usage.get("cache_creation_input_tokens") or 0)
+        )
+    q = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
     meta: Dict[str, Any] = {
         "promptTokenCount": p,
         "candidatesTokenCount": q,
@@ -633,9 +639,18 @@ def _usage_metadata(usage: Dict[str, Any]) -> Dict[str, Any]:
     details = usage.get("completion_tokens_details") or {}
     if isinstance(details, dict) and details.get("reasoning_tokens"):
         meta["thoughtsTokenCount"] = details["reasoning_tokens"]
-    pdetails = usage.get("prompt_tokens_details") or {}
-    if isinstance(pdetails, dict) and pdetails.get("cached_tokens"):
-        meta["cachedContentTokenCount"] = pdetails["cached_tokens"]
+    pdetails = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
+    idetails = usage.get("input_tokens_details") if isinstance(usage.get("input_tokens_details"), dict) else {}
+    cached = int(
+        pdetails.get("cached_tokens")
+        or idetails.get("cached_tokens")
+        or usage.get("cache_read_input_tokens")
+        or usage.get("cachedContentTokenCount")
+        or usage.get("prompt_cache_hit_tokens")
+        or 0
+    )
+    if cached > 0:
+        meta["cachedContentTokenCount"] = cached
     return meta
 
 

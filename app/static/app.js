@@ -883,8 +883,74 @@ async function refreshBreakerBadges() {
 // return null → we show a muted "no billing API" note instead of a bar.
 let _quotaBarTimer = null;
 
+function _fmtQuotaReset(w) {
+    if (!w || typeof w !== 'object') return '';
+    let sec = (typeof w.reset_in_seconds === 'number' && !isNaN(w.reset_in_seconds)) ? w.reset_in_seconds : null;
+    if (sec === null && w.reset_at) {
+        const dt = Date.parse(w.reset_at);
+        if (!isNaN(dt)) sec = Math.max(0, Math.round((dt - Date.now()) / 1000));
+    }
+    if (sec === null || sec <= 0) {
+        return (w.remaining_pct !== undefined && w.remaining_pct >= 99.9) ? '✓ Ready' : '';
+    }
+    if (sec >= 86400) {
+        const d = Math.floor(sec / 86400);
+        const h = Math.floor((sec % 86400) / 3600);
+        return `↻ ${d}d ${h}h`;
+    }
+    if (sec >= 3600) {
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        return `↻ ${h}h ${m}m`;
+    }
+    if (sec >= 60) {
+        return `↻ ${Math.ceil(sec / 60)}m`;
+    }
+    return `↻ ${sec}s`;
+}
+
+function _fmtSingleQuotaWindow(label, w) {
+    if (!w || typeof w !== 'object') return '';
+    const pct = Math.max(0, Math.min(100, Number(w.remaining_pct ?? 0)));
+    const fillClass = pct < 5 ? 'linear-gradient(90deg,#dc2626,#f87171)' : (pct < 20 ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#22c55e,#4ade80)');
+    const txtColor = pct < 5 ? 'var(--danger)' : (pct < 20 ? '#b45309' : 'var(--text-main)');
+    const resetTxt = _fmtQuotaReset(w);
+    const usedInfo = (w.used != null && w.total != null) ? ` (${w.used}/${w.total})` : '';
+    const title = `${label} remaining: ${pct.toFixed(1)}%${usedInfo}${w.reset_at ? ' • Resets: ' + w.reset_at : ''}`;
+    return `<div title="${title}" style="display:inline-flex; align-items:center; gap:4px; background:#f8fafc; border:1px solid var(--border); border-radius:6px; padding:2px 6px;">
+        <span style="font-size:10px; font-weight:700; color:var(--text-muted);">${label}</span>
+        <div style="width:46px; height:5px; background:#e2e8f0; border-radius:3px; overflow:hidden;">
+            <div style="height:100%; border-radius:3px; width:${pct}%; background:${fillClass};"></div>
+        </div>
+        <span style="font-size:10px; font-weight:700; color:${txtColor}; white-space:nowrap;">${pct.toFixed(0)}%</span>
+        ${resetTxt ? `<span style="font-size:10px; color:var(--text-muted); white-space:nowrap;">${resetTxt}</span>` : ''}
+    </div>`;
+}
+
 function _fmtQuotaBar(q) {
     if (!q) return '';
+    if (q.groups && (q.groups.google || q.groups.claude)) {
+        const renderGroup = (grpKey, fallbackLabel, accentColor, bgColor, borderColor) => {
+            const g = q.groups[grpKey];
+            if (!g || (!g.five_hour && !g.weekly)) return '';
+            const lbl = g.label || fallbackLabel;
+            return `<div style="display:inline-flex; align-items:center; gap:5px; background:${bgColor}; border:1px solid ${borderColor}; border-radius:7px; padding:2px 6px;">
+                <span style="font-size:10px; font-weight:800; color:${accentColor}; letter-spacing:0.2px; padding:0 2px;">${lbl}</span>
+                ${g.five_hour ? _fmtSingleQuotaWindow(g.five_hour.label || '5h', g.five_hour) : ''}
+                ${g.weekly ? _fmtSingleQuotaWindow(g.weekly.label || '7d', g.weekly) : ''}
+            </div>`;
+        };
+        return `<div data-quota-bar="1" style="display:inline-flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            ${renderGroup('google', 'Google', '#1d4ed8', '#eff6ff', '#bfdbfe')}
+            ${renderGroup('claude', 'Claude', '#b45309', '#fffbeb', '#fde68a')}
+        </div>`;
+    }
+    if (q.five_hour || q.weekly) {
+        return `<div data-quota-bar="1" style="display:inline-flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            ${q.five_hour ? _fmtSingleQuotaWindow(q.five_hour.label || '5h', q.five_hour) : ''}
+            ${q.weekly ? _fmtSingleQuotaWindow(q.weekly.label || '7d', q.weekly) : ''}
+        </div>`;
+    }
     const pct = Math.max(0, Math.min(100, q.remaining_pct || 0));
     const fillClass = pct < 5 ? 'linear-gradient(90deg,#dc2626,#f87171)' : (pct < 20 ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#22c55e,#4ade80)');
     const txtColor = pct < 5 ? 'var(--danger)' : (pct < 20 ? '#b45309' : 'var(--text-main)');
@@ -896,15 +962,81 @@ function _fmtQuotaBar(q) {
     </div>`;
 }
 
-async function refreshQuotaBars() {
+function _inferInitialConnTier(providerId, conn) {
+    if (!conn || typeof conn !== 'object') return null;
+    const pd = (conn.provider_data && typeof conn.provider_data === 'object') ? conn.provider_data : {};
+    const prov = String(providerId || '').toLowerCase();
+    const raw = String(pd.plan_type || pd.planType || pd.chatgptPlanType || pd.subscriptionTier || pd.subscriptionTitle || pd.tier || conn.plan || '').trim();
+    if (raw) {
+        const low = raw.toLowerCase();
+        if (low.includes('50x') || low.includes('x50')) return 'Pro x50';
+        if (low.includes('20x') || low.includes('x20')) return prov === 'claude' ? 'Max 20x' : 'Pro x20';
+        if (low.includes('5x') || low.includes('x5')) return prov === 'claude' ? 'Max 5x' : 'Pro x5';
+        if (low.includes('ultra')) return 'Ultra';
+        if (low.includes('pro') && low.includes('trial')) return 'Pro Trial';
+        if (low.includes('trial')) return 'Free Trial';
+        if (low.includes('pro+') || low.includes('pro_plus')) return 'Pro+';
+        if (low.includes('supergrok') && low.includes('heavy')) return 'SuperGrok Heavy';
+        if (low.includes('supergrok') && low.includes('lite')) return 'SuperGrok Lite';
+        if (low.includes('supergrok')) return 'SuperGrok';
+        if (low === 'plus') return 'Plus';
+        if (low === 'pro') return 'Pro';
+        if (low === 'go' || low === 'chatgpt_go') return 'Go';
+        if (low === 'k12' || low === 'k-12') return 'K12';
+        if (low === 'edu') return 'Edu';
+        if (low === 'team') return 'Team';
+        if (low === 'business') return 'Business';
+        if (low === 'enterprise') return 'Enterprise';
+        if (low === 'free') return 'Free';
+        return raw;
+    }
+    if (prov === 'grok-cli' && pd.hasGrokCodeAccess === true) return 'Grok Code';
+    return null;
+}
+
+function _renderTierBadgeHtml(plan) {
+    const label = String(plan || '').trim();
+    if (!label) return '';
+    const low = label.toLowerCase();
+    let bg = '#f3f4f6', color = '#4b5563', border = '#d1d5db';
+    if (low.includes('ultra') || low.includes('x50') || low.includes('x20') || low.includes('20x') || low.includes('heavy') || low.includes('vivace')) {
+        bg = 'linear-gradient(135deg,#f3e8ff,#ede9fe)';
+        color = '#6d28d9';
+        border = '#c4b5fd';
+    } else if (low.includes('pro') && !low.includes('trial') || low.includes('5x') || low.includes('max') || low.includes('supergrok') && !low.includes('lite') || low.includes('allegro') || low.includes('power')) {
+        bg = 'linear-gradient(135deg,#dbeafe,#e0e7ff)';
+        color = '#1d4ed8';
+        border = '#93c5fd';
+    } else if (low.includes('plus') || low.includes('allegretto') || low.includes('premium') || low.includes('grok code')) {
+        bg = '#ecfdf5';
+        color = '#047857';
+        border = '#6ee7b7';
+    } else if (low.includes('trial') || low === 'go' || low === 'k12' || low === 'edu' || low.includes('student') || low.includes('moderato') || low.includes('lite')) {
+        bg = '#fffbeb';
+        color = '#b45309';
+        border = '#fcd34d';
+    } else if (low.includes('team') || low.includes('business') || low.includes('enterprise')) {
+        bg = '#f0f9ff';
+        color = '#0369a1';
+        border = '#7dd3fc';
+    }
+    const safeLabel = label.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `<span data-tier-badge="1" title="Account Tier: ${safeLabel}" style="font-size:10px; font-weight:700; letter-spacing:0.02em; background:${bg}; color:${color}; border:1px solid ${border}; padding:1px 7px; border-radius:999px; line-height:1.4; white-space:nowrap;">${safeLabel}</span>`;
+}
+
+let _quotaFetchSeq = 0;
+
+async function refreshQuotaBars(force = false) {
     if (_quotaBarTimer) { clearInterval(_quotaBarTimer); _quotaBarTimer = null; }
     if (currentView !== 'detail' || !activeProviderId) return;
+    const reqSeq = ++_quotaFetchSeq;
+    const targetProvId = activeProviderId;
     try {
-        const res = await fetch(`/api/quota/status?provider=${encodeURIComponent(activeProviderId)}`);
+        const res = await fetch(`/api/quota/status?provider=${encodeURIComponent(targetProvId)}${force ? '&force=1' : ''}`);
         const data = await res.json();
-        if (currentView !== 'detail') return; // navigated away mid-fetch
+        if (currentView !== 'detail' || activeProviderId !== targetProvId || reqSeq !== _quotaFetchSeq) return;
         document.querySelectorAll('[data-quota-bar]').forEach(el => el.remove());
-        const prov = (data.providers || {})[activeProviderId];
+        const prov = (data.providers || {})[targetProvId];
         if (!Array.isArray(prov)) return;
         const rows = document.querySelectorAll('.connection-row');
         rows.forEach((row, idx) => {
@@ -913,13 +1045,64 @@ async function refreshQuotaBars() {
             if (!slot) return;
             if (q && typeof q === 'object') {
                 slot.insertAdjacentHTML('beforeend', _fmtQuotaBar(q));
+                if (q.plan) {
+                    const tierEl = row.querySelector(`[data-conn-tier="${idx}"]`);
+                    if (tierEl) {
+                        tierEl.innerHTML = _renderTierBadgeHtml(q.plan);
+                    }
+                    const pObj = globalConfig?.providers?.[targetProvId];
+                    if (pObj?.connections?.[idx]) {
+                        if (!pObj.connections[idx].provider_data || typeof pObj.connections[idx].provider_data !== 'object') {
+                            pObj.connections[idx].provider_data = {};
+                        }
+                        pObj.connections[idx].provider_data.plan_type = q.plan;
+                    }
+                }
+                if (q.expires_at) {
+                    const expEl = row.querySelector(`[data-conn-exp="${idx}"]`);
+                    if (expEl) {
+                        const dt = new Date(q.expires_at);
+                        if (!isNaN(dt.getTime())) {
+                            expEl.title = `Expires: ${dt.toLocaleString()}`;
+                            expEl.textContent = `Exp: ${dt.toLocaleDateString()}`;
+                        }
+                    }
+                    const pObj = globalConfig?.providers?.[targetProvId];
+                    if (pObj?.connections?.[idx]) {
+                        pObj.connections[idx].expires_at = q.expires_at;
+                    }
+                }
             } else {
                 slot.insertAdjacentHTML('beforeend', `<span data-quota-bar="1" style="font-size:10px; color:var(--text-muted); font-style:italic;">∤ no data</span>`);
             }
         });
     } catch { /* fail-open */ }
-    _quotaBarTimer = setInterval(refreshQuotaBars, 60000);
+    if (reqSeq === _quotaFetchSeq) {
+        _quotaBarTimer = setInterval(refreshQuotaBars, 60000);
+    }
 }
+window.refreshQuotaBars = refreshQuotaBars;
+
+window.forceRefreshOAuthConnections = async (btnEl) => {
+    if (!activeProviderId) return;
+    const origHtml = btnEl ? btnEl.innerHTML : '';
+    if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" style="animation:oauth-spin 0.8s linear infinite;"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Refreshing...`;
+    }
+    try {
+        await fetch(`/api/oauth/${encodeURIComponent(activeProviderId)}/force-refresh`, { method: 'POST' });
+        await fetchConfig();
+        await refreshQuotaBars(true);
+    } catch {
+        await refreshQuotaBars(true);
+    } finally {
+        if (btnEl && btnEl.isConnected) {
+            btnEl.disabled = false;
+            btnEl.innerHTML = origHtml;
+        }
+    }
+};
 
 window.backToList = () => {
     currentView = 'list';
@@ -1249,15 +1432,51 @@ function renderProviderDetail() {
 
 
     ${isOAuth ? `
-    <div class="detail-card">
-        <div class="detail-card-header">
-            <h2>${OAUTH_FLOW_TYPES[activeProviderId] === 'device_code' ? 'Device Code Authentication' : 'OAuth Integration'}</h2>
-            ${connCount > 0 ? `<span style="font-size:12px;font-weight:600;color:var(--success);">${oauthStatusText}</span>` : ''}
+    <div class="detail-card" style="border-radius:12px;border:1px solid var(--border-color);margin-bottom:24px;">
+        <div class="detail-card-header" style="display:flex; justify-content:space-between; align-items:center; padding-bottom:12px;">
+            <h2 style="font-size:15px;">Connections</h2>
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                <button class="btn btn-primary" style="padding:6px 12px;" onclick="openOAuthTokenModal()">${connCount > 0 ? '+ Add Account' : `+ Connect ${displayName}`}</button>
+                ${isCodexImportProvider(activeProviderId) ? `<button class="btn btn-outline" id="codex-import-json-btn" type="button" style="font-size:12px;font-weight:600;padding:4px 12px;" onclick="openCodexJsonImport()">Import JSON</button>` : ''}
+                <button class="btn btn-outline" style="font-size:12px;font-weight:600;padding:4px 12px;display:flex;align-items:center;gap:6px;" onclick="forceRefreshOAuthConnections(this)" title="Force-refresh OAuth tokens & 5h/7d quotas">
+                    <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    Force Refresh
+                </button>
+                <div style="display:flex;align-items:center;gap:6px;" title="Rotate requests evenly across all healthy OAuth accounts (Round-Robin). When off, uses primary account and auto-failovers on limit/error.">
+                    <span style="font-size:12px;font-weight:500;color:var(--text-muted);">Round Robin</span>
+                    <label class="switch"><input type="checkbox" ${p.round_robin ? 'checked' : ''} onchange="toggleProviderRoundRobin(this.checked)"><span class="slider" style="${p.round_robin ? 'background:var(--brand-color)' : ''}"></span></label>
+                </div>
+            </div>
         </div>
-        ${connCount > 0 ? p.connections.map((conn, idx) => `
+        ${connCount > 0 ? `
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+            <span style="font-size:12px; color:var(--text-muted); font-weight:500;">${connCount} account${connCount > 1 ? 's' : ''}</span>
+            ${connCount > 5 ? `<span style="font-size:11px; color:var(--text-muted); font-style:italic;">showing first 5 — scroll for more</span>` : ''}
+        </div>
+        <div style="max-height:372px; overflow-y:auto; ${connCount > 5 ? 'padding-right:4px;' : ''}">
+        ${p.connections.map((conn, idx) => `
         <div class="connection-row" style="padding:12px 16px; border:1px solid var(--border-color); border-radius:8px; display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
             <div style="display:flex; align-items:center; gap:12px;">
-                <div style="display:flex; flex-direction:column; gap:4px;">
+                <svg viewBox="0 0 24 24" width="16" height="16" stroke="var(--text-muted)" stroke-width="2" fill="none" style="transform:rotate(135deg);"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
+                <div style="display:flex; flex-direction:column;">
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span style="font-size:13px; font-weight:600;">${conn.name || conn.email || 'Account ' + (idx + 1)}</span>
+                        <span data-conn-tier="${idx}" style="display:inline-flex; align-items:center;">${_renderTierBadgeHtml(_inferInitialConnTier(activeProviderId, conn))}</span>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:8px; margin-top:4px; flex-wrap:wrap;">
+                        <span style="display:flex; align-items:center; gap:4px; font-size:11px; font-weight:600; color:${conn.enabled !== false ? 'var(--success)' : 'var(--text-muted)'}; background:${conn.enabled !== false ? '#ecfdf5' : '#f3f4f6'}; padding:2px 6px; border-radius:12px;">
+                            <div style="width:6px;height:6px;background:${conn.enabled !== false ? 'var(--success)' : 'var(--text-muted)'};border-radius:50%;"></div> ${conn.enabled !== false ? 'active' : 'disabled'}
+                        </span>
+                        <span style="font-size:11px; background:#f3f4f6; color:var(--text-muted); padding:2px 6px; border-radius:4px; font-weight:500;">${isOAuth ? 'OAuth' : 'Web'}</span>
+                        ${conn.expires_at ? `<span data-conn-exp="${idx}" style="font-size:11px; color:var(--text-muted);" title="Expires: ${new Date(conn.expires_at).toLocaleString()}">Exp: ${new Date(conn.expires_at).toLocaleDateString()}</span>` : ''}
+                        ${conn.proxy_url ? `<span style="font-size:11px; background:#fff7ed; color:#c2410c; padding:2px 6px; border-radius:4px; font-weight:500;" title="${conn.proxy_url}">Proxy</span>` : ''}
+                        <div data-quota-slot="${idx}" style="display:flex; align-items:center; gap:6px;"></div>
+                        <span style="font-size:11px; color:var(--text-muted);">#${idx + 1}</span>
+                    </div>
+                </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:16px;">
+                <div style="display:flex; flex-direction:column; gap:4px; margin-right:8px;">
                     <button class="btn btn-outline" style="padding:2px 6px; font-size:10px; line-height:1; display:flex; align-items:center; justify-content:center; border:none; background:transparent; cursor:pointer;" onclick="moveConnectionUp(${idx})" ${idx === 0 ? 'disabled style="opacity:0.3; cursor:not-allowed;"' : ''}>
                         <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none"><polyline points="18 15 12 9 6 15"/></svg>
                     </button>
@@ -1265,42 +1484,22 @@ function renderProviderDetail() {
                         <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none"><polyline points="6 9 12 15 18 15"/></svg>
                     </button>
                 </div>
-                <div>
-                    <div class="conn-name">${conn.name || 'Token ' + (idx + 1)}</div>
-                    <div class="conn-key" style="font-size:11px;color:var(--text-muted);">Expires: ${conn.expires_at ? new Date(conn.expires_at).toLocaleString() : 'Session-based'}</div>
-                    <div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
-                        <span style="display:flex; align-items:center; gap:4px; font-size:11px; font-weight:600; color:${conn.enabled !== false ? 'var(--success)' : 'var(--text-muted)'}; background:${conn.enabled !== false ? '#ecfdf5' : '#f3f4f6'}; padding:2px 6px; border-radius:12px;">
-                            <div style="width:6px;height:6px;background:${conn.enabled !== false ? 'var(--success)' : 'var(--text-muted)'};border-radius:50%;"></div> ${conn.enabled !== false ? 'active' : 'disabled'}
-                        </span>
-                        <span style="font-size:11px; background:#f3f4f6; color:var(--text-muted); padding:2px 6px; border-radius:4px; font-weight:500;">${isOAuth ? 'OAuth' : 'Web'}</span>
-                        <div data-quota-slot="${idx}" style="display:flex; align-items:center; gap:6px;"></div>
-
-                    </div>
-                </div>
-            </div>
-            <div style="display:flex; align-items:center; gap:16px;">
                 <div style="display:flex; align-items:center; gap:12px;">
                     <div style="display:flex; flex-direction:column; align-items:center; cursor:pointer; color:var(--danger);" onclick="deleteConnection(${idx})">
                         <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                        <span style="font-size:10px; margin-top:2px;">Revoke</span>
+                        <span style="font-size:10px; margin-top:2px;">Delete</span>
                     </div>
                 </div>
                 <label class="switch"><input type="checkbox" ${conn.enabled !== false ? 'checked' : ''} onchange="toggleConnection(${idx}, this.checked)"><span class="slider" style="${conn.enabled !== false ? 'background:var(--brand-color)' : ''}"></span></label>
             </div>
         </div>
-        `).join('') : ''}
-        <div style="padding: ${connCount > 0 ? '16px 0 8px' : '24px 0'}; display:flex; flex-direction:column; align-items:center; gap: 16px;">
-            ${connCount === 0 ? `<div style="width: 48px; height: 48px; color: var(--text-main);">${svgIcon}</div>
-            <div style="font-size: 14px; color: var(--text-muted); text-align:center;">
-                ${OAUTH_FLOW_TYPES[activeProviderId] === 'device_code' ? `Authenticate with ${displayName} using a device code — no API key needed.` : `Connect your ${displayName} account to import context securely without API keys.`}
-            </div>` : ''}
-            <div style="display:flex;gap:12px;">
-                <button class="btn btn-primary" onclick="openOAuthTokenModal()" style="font-size:14px; padding: 10px 24px;">
-                    ${connCount > 0 ? '+ Add Another Token' : `Connect with ${displayName}`}
-                </button>
-                ${isCodexImportProvider(activeProviderId) ? `<button class="btn btn-outline" id="codex-import-json-btn" type="button" onclick="openCodexJsonImport()" style="font-size:14px; padding: 10px 20px;">Import JSON</button>` : ''}
-            </div>
+        `).join('')}
         </div>
+        ` : `
+        <div class="empty-state">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="var(--text-muted)" stroke-width="2" fill="none"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
+            No connections yet
+        </div>`}
     </div>
     ` : `
     <div class="detail-card" style="border-radius:12px;border:1px solid var(--border-color);margin-bottom:24px;">
@@ -2250,6 +2449,9 @@ window.deleteConnection = async (idx) => {
             globalConfig._deleted_connection = {
                 provider: activeProviderId,
                 api_key: removed.api_key || '',
+                access_token: removed.access_token || '',
+                id: removed.id || '',
+                name: removed.name || '',
             };
         }
         prov.connections.splice(idx, 1);
@@ -2296,22 +2498,39 @@ window.toggleProviderRoundRobin = async (enabled) => {
     renderActiveTab();
 };
 
+function _swapModelConnectionIndexes(prov, idxA, idxB) {
+    if (!prov || !Array.isArray(prov.models)) return;
+    prov.models.forEach(m => {
+        if (m && Array.isArray(m.connection_indexes)) {
+            m.connection_indexes = m.connection_indexes.map(ci => {
+                if (ci === idxA) return idxB;
+                if (ci === idxB) return idxA;
+                return ci;
+            });
+        }
+    });
+}
+
 window.moveConnectionUp = async (idx) => {
     if (idx <= 0) return;
-    const conns = globalConfig.providers[activeProviderId].connections;
+    const prov = globalConfig.providers[activeProviderId];
+    const conns = prov.connections;
     const temp = conns[idx];
     conns[idx] = conns[idx - 1];
     conns[idx - 1] = temp;
+    _swapModelConnectionIndexes(prov, idx, idx - 1);
     await saveConfig();
     renderActiveTab();
 };
 
 window.moveConnectionDown = async (idx) => {
-    const conns = globalConfig.providers[activeProviderId].connections;
+    const prov = globalConfig.providers[activeProviderId];
+    const conns = prov.connections;
     if (idx >= conns.length - 1) return;
     const temp = conns[idx];
     conns[idx] = conns[idx + 1];
     conns[idx + 1] = temp;
+    _swapModelConnectionIndexes(prov, idx, idx + 1);
     await saveConfig();
     renderActiveTab();
 };
@@ -3566,25 +3785,170 @@ function renderEndpointTab() {
 }
 
 
+function appIntegrationConfig(context) {
+    const key = context === 'antigravity' ? 'antigravity_integration' : 'claude_code_integration';
+    const cfg = globalConfig[key] ||= context === 'antigravity' ? {enabled:false,mappings:{}} : {enabled:true,replace_builtin:true,tier_slots:{}};
+    cfg.custom_models ||= [];
+    return cfg;
+}
+function integrationModelTarget(ref) {
+    if (typeof ref === 'string') return ref;
+    return `${ref.provider}/${ref.model || ref.id}`;
+}
+async function appIntegrationRequest(path, body) {
+    const response = await fetch(path, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body || {})});
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw Error(data.error || 'Integration request failed');
+    return data;
+}
+async function saveAppIntegration(context) {
+    if (!await saveConfig()) { showToast('Integration configuration save failed', true); return false; }
+    // The backend allocates stable placeholder indices and safe Claude aliases.
+    // Pull those normalized entries back before another edit can drop identities.
+    try {
+        const response = await fetch('/api/config', {cache:'no-store'});
+        if (response.ok) {
+            const normalized = await response.json();
+            const key = context === 'antigravity' ? 'antigravity_integration' : 'claude_code_integration';
+            if (normalized[key]) globalConfig[key] = normalized[key];
+        }
+    } catch (error) { showToast(`Saved, but model identities could not refresh: ${error.message}`, true); }
+    if (context === 'claude_code') {
+        try { await appIntegrationRequest('/api/app-integration/claude-code/sync'); }
+        catch (error) { showToast(error.message, true); }
+    }
+    renderActiveTab();
+    return true;
+}
+window.editAppIntegration = async (context, index, action, value) => {
+    const cfg = appIntegrationConfig(context), models = cfg.custom_models;
+    if (action === 'remove') models.splice(index, 1);
+    else if (action === 'move') {
+        const next = index + value;
+        if (next < 0 || next >= models.length) return;
+        [models[index], models[next]] = [models[next], models[index]];
+    } else if (action === 'display_name' || action === 'enabled') models[index][action] = value;
+    else if (action === 'enabled_config') cfg.enabled = value;
+    else if (action === 'default_model') cfg.default_model = value;
+    else if (action === 'tier') (cfg.tier_slots ||= {})[index] = value;
+    else cfg[action] = value;
+    await saveAppIntegration(context);
+};
+window.patchAppIntegration = async action => {
+    try {
+        const data = await appIntegrationRequest('/api/app-integration/antigravity/patch', {action});
+        showToast(data.message || 'Staged archive applied');
+        await pollAppIntegrationStatus();
+    } catch (error) { showToast(error.message, true); }
+};
+window.syncClaudeCodeIntegration = async () => {
+    try { await appIntegrationRequest('/api/app-integration/claude-code/sync'); showToast('Claude Code settings synced'); }
+    catch (error) { showToast(error.message, true); }
+};
+async function pollAppIntegrationStatus() {
+    try {
+        const response = await fetch('/api/app-integration/status', {cache:'no-store'});
+        if (!response.ok) return;
+        const data = await response.json();
+        const ag = document.getElementById('app-ag-status'), cc = document.getElementById('app-cc-status'), restartBtn = document.getElementById('app-ag-restart-btn');
+        if (restartBtn) restartBtn.style.display = data.antigravity.desktop_status === 'staged_restart_required' ? 'inline-flex' : 'none';
+        if (ag) {
+            ag.textContent = `${data.antigravity.enabled ? 'Enabled' : 'Stopped'} · Desktop: ${data.antigravity.desktop_status} · IDE: ${data.antigravity.ide.some(p => p.patched) ? 'patched' : 'not patched'}`;
+            ag.classList.toggle('is-active', !!data.antigravity.enabled);
+        }
+        if (cc) {
+            cc.textContent = `${data.claude_code.enabled ? 'Enabled' : 'Disabled'} · ${data.claude_code.models} models`;
+            cc.classList.toggle('is-active', !!data.claude_code.enabled);
+        }
+    } catch (_) { /* Existing direct-inference diagnostics remain available. */ }
+}
+function appIntegrationModels(context) {
+    const cfg = appIntegrationConfig(context);
+    if (!cfg.custom_models.length) {
+        return '<p class="app-integration-empty">No custom models added. Click "+ Add Model" to select from your BSL Combos and Provider Models.</p>';
+    }
+    return `<div class="app-integration-model-list">${cfg.custom_models.map((model, index) => `<article class="app-integration-model-row">
+        <div class="app-integration-model-left">
+            <span class="app-integration-model-idx">${index + 1}</span>
+            <input class="input app-integration-model-name" aria-label="Display name" value="${agEsc(model.display_name || model.target)}" onchange="editAppIntegration('${context}',${index},'display_name',this.value)">
+            <code class="app-integration-target-pill">${agEsc(model.target)}</code>
+            <span class="app-integration-slot-pill">${agEsc(context === 'antigravity' ? `M${model.placeholder_index ?? 'auto'}` : model.alias_id || 'auto')}</span>
+        </div>
+        <div class="app-integration-model-right">
+            <label class="app-integration-toggle-label" style="font-size:12px;margin-right:4px;"><input type="checkbox" ${model.enabled !== false ? 'checked' : ''} onchange="editAppIntegration('${context}',${index},'enabled',this.checked)">Enabled</label>
+            <button class="btn btn-outline" style="padding:4px 8px;font-size:12px;" title="Move up" ${index === 0 ? 'disabled' : ''} onclick="editAppIntegration('${context}',${index},'move',-1)">↑</button>
+            <button class="btn btn-outline" style="padding:4px 8px;font-size:12px;" title="Move down" ${index === cfg.custom_models.length - 1 ? 'disabled' : ''} onclick="editAppIntegration('${context}',${index},'move',1)">↓</button>
+            <button class="btn btn-outline" style="padding:4px 10px;font-size:12px;color:var(--danger);border-color:rgba(239,68,68,0.35);" onclick="editAppIntegration('${context}',${index},'remove')">Remove</button>
+        </div>
+    </article>`).join('')}</div>`;
+}
+function renderMitmTab() {
+    const cc = appIntegrationConfig('claude_code');
+    appIntegrationConfig('antigravity');
+    setTimeout(pollAppIntegrationStatus, 0);
+    return `
+    <section class="detail-card app-integration-card">
+        <div class="app-integration-header">
+            <div class="app-integration-title-group">
+                <h2>Antigravity (App / IDE)</h2>
+                <p class="app-integration-subtitle">Direct local routing and custom model injection into Antigravity Desktop and IDE without an external proxy.</p>
+            </div>
+            <div class="app-integration-header-right">
+                <p id="app-ag-status" class="app-integration-status-pill ${agConfig().enabled ? 'is-active' : ''}">Checking runtime status…</p>
+                <button class="btn ${agConfig().enabled ? 'btn-danger' : 'btn-primary'}" onclick="toggleAntigravityIntegration(${!agConfig().enabled})">${agConfig().enabled ? 'Stop Integration' : 'Start Integration'}</button>
+            </div>
+        </div>
+        <div class="app-integration-toolbar">
+            <div class="app-integration-toolbar-actions">
+                <button id="app-ag-restart-btn" class="btn btn-outline" style="display:none;border-color:#f59e0b;color:#b45309;" onclick="patchAppIntegration('restart_and_apply')">Restart Antigravity to Apply</button>
+            </div>
+            <button class="btn btn-primary" onclick="openAddModelModal('antigravity')">+ Add Model</button>
+        </div>
+        <div class="app-integration-section-head">
+            <span class="app-integration-section-title">Custom Models (${appIntegrationConfig('antigravity').custom_models.length})</span>
+        </div>
+        ${appIntegrationModels('antigravity')}
+        <details class="app-integration-details"><summary>Native model slot mappings (advanced)</summary>${renderAntigravityLegacySlots()}</details>
+    </section>
+    <section class="detail-card app-integration-card">
+        <div class="app-integration-header">
+            <div class="app-integration-title-group">
+                <h2>Claude Code (Desktop / CLI)</h2>
+                <p class="app-integration-subtitle">Route Claude Code Desktop and CLI through BSL Router with custom model picker options and tier slot overrides.</p>
+            </div>
+            <div class="app-integration-header-right">
+                <p id="app-cc-status" class="app-integration-status-pill ${cc.enabled !== false ? 'is-active' : ''}">Checking settings…</p>
+                <button class="btn btn-primary" onclick="syncClaudeCodeIntegration()">Sync to Claude Code</button>
+            </div>
+        </div>
+        <div class="app-integration-toolbar">
+            <div class="app-integration-toolbar-actions" style="gap:18px;">
+                <label class="app-integration-toggle-label"><input type="checkbox" ${cc.enabled !== false ? 'checked' : ''} onchange="editAppIntegration('claude_code',0,'enabled_config',this.checked)">Enable Claude Code integration</label>
+                <label class="app-integration-toggle-label"><input type="checkbox" ${cc.replace_builtin !== false ? 'checked' : ''} onchange="editAppIntegration('claude_code',0,'replace_builtin',this.checked)">Hide built-in Claude models (replaceBuiltInOptions)</label>
+            </div>
+            <button class="btn btn-primary" onclick="openAddModelModal('claude_code')">+ Add Model</button>
+        </div>
+        <div class="app-integration-tier-grid">${['default','opus','sonnet','haiku'].map(tier => `<label class="app-integration-tier-field"><span>${tier === 'default' ? 'Default Model' : tier[0].toUpperCase() + tier.slice(1) + ' Tier'}</span><select class="input" onchange="editAppIntegration('claude_code','${tier}','${tier === 'default' ? 'default_model' : 'tier'}',this.value)">${agOptions(tier === 'default' ? cc.default_model : cc.tier_slots?.[tier]).replace('Use native Antigravity model (unmapped)', 'Automatic / first enabled custom model')}</select></label>`).join('')}</div>
+        <div class="app-integration-section-head">
+            <span class="app-integration-section-title">Custom Models (${cc.custom_models.length})</span>
+        </div>
+        ${appIntegrationModels('claude_code')}
+    </section>`;
+}
+
 const AG_SLOTS=[
-    {key:'gemini-3.6-flash-high',label:'Gemini 3.6 Flash (High)'},
-    {key:'gemini-3.6-flash-medium',label:'Gemini 3.6 Flash (Medium)'},
-    {key:'gemini-3.6-flash-low',label:'Gemini 3.6 Flash (Low)'},
-    {key:'gemini-3.1-pro-low',label:'Gemini 3.1 Pro (Low)'},
-    {key:'gemini-3.1-pro-high',label:'Gemini 3.1 Pro (High)'},
-    {key:'claude-opus-5-5-low',label:'Claude Opus 5.5 (Low)'},
-    {key:'claude-opus-5-5-medium',label:'Claude Opus 5.5 (Medium)'},
-    {key:'claude-opus-5-5-high',label:'Claude Opus 5.5 (High)'},
-    {key:'claude-sonnet-5-5-low',label:'Claude Sonnet 5.5 (Low)'},
-    {key:'claude-sonnet-5-5-medium',label:'Claude Sonnet 5.5 (Medium)'},
-    {key:'claude-sonnet-5-5-high',label:'Claude Sonnet 5.5 (High)'}
+    {key:'gemini-3.8-flash-tiered',label:'Gemini 3.8 Flash (Tiered)'},
+    {key:'gemini-4-argon-low',label:'Gemini 4 Argon (Low)'},
+    {key:'gemini-4-argon-medium',label:'Gemini 4 Argon (Medium)'},
+    {key:'gemini-4-argon-high',label:'Gemini 4 Argon (High)'},
+    {key:'gemini-2.5-pro',label:'Gemini 2.5 Pro'}
 ];
 function agConfig(){if(!globalConfig.antigravity_integration||typeof globalConfig.antigravity_integration!=='object')globalConfig.antigravity_integration={};let c=globalConfig.antigravity_integration;if(!c.mappings||typeof c.mappings!=='object')c.mappings={};if(typeof c.enabled!=='boolean')c.enabled=false;return c;}
 function agEsc(v){return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function agOptions(selected){let h='<option value="">Use native Antigravity model (unmapped)</option>',e=agEsc,cs=(globalConfig.combos||[]).filter(c=>c?.alias);if(cs.length)h+=`<optgroup label="BSL Combo aliases">${cs.map(c=>`<option value="${e(c.alias)}" ${c.alias===selected?'selected':''}>${e(c.alias)}</option>`).join('')}</optgroup>`;h+=_bslModelsOptgroupHTML(selected);Object.entries(globalConfig.providers||{}).forEach(([pid,p])=>{if(_isBlacksandProvider(pid))return;if(!isProviderSelectable(p))return;let ms=(p?.models||[]).filter(m=>m?.id&&m.enabled!==false);if(ms.length)h+=`<optgroup label="${e(getDisplayName(pid))}">${ms.map(m=>{let v=`${pid}/${m.id}`;return `<option value="${e(v)}" ${v===selected?'selected':''}>${e(m.name||m.id)}</option>`}).join('')}</optgroup>`});return h;}
-function renderMitmTab(){let c=agConfig(),url=`http://127.0.0.1:${globalConfig.server?.port||6969}`,rows=AG_SLOTS.map(({key:k,label:l},index)=>{let t=c.mappings[k]||'',kind=t?(t.includes('/')?'Provider model':'Combo alias'):'Native Antigravity inference';return `<article id="ag-slot-${k}" class="ag-integration-map-card" data-ag-slot="${k}" data-ag-slot-index="${index + 1}"><div class="ag-integration-map-source"><b>${t?'✦':'A'}</b><div><strong>${agEsc(l)}</strong><code>${agEsc(k)}</code></div></div><span class="ag-integration-map-flow" aria-hidden="true">→</span><div class="ag-integration-map-target"><select id="ag-target-${k}" class="input" data-ag-target-slot="${k}" aria-label="Target for ${agEsc(l)}" onchange="updateAntigravityIntegrationMapping('${k}',this.value)">${agOptions(t)}</select><span class="ag-integration-kind ${t?'is-routed':'is-native'}">${kind}</span></div></article>`}).join('');return `<section id="ag-integration-overview" class="ag-integration-hero" data-antigravity-menu-version="2.1.1"><div><span>DIRECT INFERENCE OVERLAY</span><h2>Antigravity Integration</h2><p>Mapped slots use BSL Router. Unmapped slots use native Google Cloud Code only when Antigravity forwards Google credentials.</p><small class="ag-integration-version" id="ag-menu-version">Antigravity IDE 2.1.1 model menu</small></div><strong id="ag-integration-runtime-label">${c.enabled?'CHECKING…':'STOPPED'}</strong></section><section class="detail-card ag-integration-control-card"><div><h3>BSL direct endpoint</h3><p>Configure Antigravity's language server here. No port 443, CA, hosts-file, or DNS interception is used.</p><code>${url}</code></div><button id="ag-integration-toggle" class="btn ${c.enabled?'btn-danger':'btn-primary'}" onclick="toggleAntigravityIntegration(${c.enabled?'false':'true'})">${c.enabled?'Stop Integration':'Start Integration'}</button></section><div class="ag-integration-diagnostics" id="ag-integration-diagnostics">Checking direct-inference readiness…</div><section id="ag-slot-mappings" class="detail-card" data-ag-slot-count="${AG_SLOTS.length}"><div class="detail-card-header"><div><h2>Model slot mappings</h2><p>Model selection changes apply to new Antigravity conversations; Retry/Continue can retain the original conversation model.</p><p>Unmapped direct-Overlay slots require Google credentials forwarded by Antigravity; otherwise map them to a BSL target.</p><p>Choosing a native Antigravity model clears only this dedicated mapping; global aliases are never consulted.</p></div><span id="ag-routed-count">${Object.keys(c.mappings).length} routed</span></div><div id="ag-integration-map-list" class="ag-integration-map-list">${rows}</div></section>`;}
+function renderAntigravityLegacySlots(){let c=agConfig(),url=`http://127.0.0.1:${globalConfig.server?.port||6969}`,rows=AG_SLOTS.map(({key:k,label:l},index)=>{let t=c.mappings[k]||'',kind=t?(t.includes('/')?'Provider model':'Combo alias'):'Native Antigravity inference';return `<article id="ag-slot-${k}" class="ag-integration-map-card" data-ag-slot="${k}" data-ag-slot-index="${index + 1}"><div class="ag-integration-map-source"><b>${t?'✦':'A'}</b><div><strong>${agEsc(l)}</strong><code>${agEsc(k)}</code></div></div><span class="ag-integration-map-flow" aria-hidden="true">→</span><div class="ag-integration-map-target"><select id="ag-target-${k}" class="input" data-ag-target-slot="${k}" aria-label="Target for ${agEsc(l)}" onchange="updateAntigravityIntegrationMapping('${k}',this.value)">${agOptions(t)}</select><span class="ag-integration-kind ${t?'is-routed':'is-native'}">${kind}</span></div></article>`}).join('');return `<section id="ag-integration-overview" class="ag-integration-hero" data-antigravity-menu-version="2.1.1"><div><span>DIRECT INFERENCE OVERLAY</span><h2>Antigravity Integration</h2><p>Mapped slots use BSL Router. Unmapped slots use native Google Cloud Code only when Antigravity forwards Google credentials.</p><small class="ag-integration-version" id="ag-menu-version">Antigravity IDE 2.1.1 model menu</small></div><strong id="ag-integration-runtime-label">${c.enabled?'CHECKING…':'STOPPED'}</strong></section><section class="detail-card ag-integration-control-card"><div><h3>BSL direct endpoint</h3><p>Configure Antigravity's language server here. No port 443, CA, hosts-file, or DNS interception is used.</p><code>${url}</code></div><button id="ag-integration-toggle" class="btn ${c.enabled?'btn-danger':'btn-primary'}" onclick="toggleAntigravityIntegration(${c.enabled?'false':'true'})">${c.enabled?'Stop Integration':'Start Integration'}</button></section><div class="ag-integration-diagnostics" id="ag-integration-diagnostics">Checking direct-inference readiness…</div><section id="ag-slot-mappings" class="detail-card" data-ag-slot-count="${AG_SLOTS.length}"><div class="detail-card-header"><div><h2>Model slot mappings</h2><p>Model selection changes apply to new Antigravity conversations; Retry/Continue can retain the original conversation model.</p><p>Unmapped direct-Overlay slots require Google credentials forwarded by Antigravity; otherwise map them to a BSL target.</p><p>Choosing a native Antigravity model clears only this dedicated mapping; global aliases are never consulted.</p></div><span id="ag-routed-count">${Object.keys(c.mappings).length} routed</span></div><div id="ag-integration-map-list" class="ag-integration-map-list">${rows}</div></section>`;}
 window.updateAntigravityIntegrationMapping=async(k,t)=>{let c=agConfig(),had=Object.prototype.hasOwnProperty.call(c.mappings,k),previous=c.mappings[k];if(t)c.mappings[k]=t;else delete c.mappings[k];try{if(!await saveConfig())throw Error('configuration save failed');renderActiveTab();showToast(t?`Mapped ${k} through BSL Router.`:`Using native Antigravity model for ${k}.`)}catch(e){if(had)c.mappings[k]=previous;else delete c.mappings[k];renderActiveTab();showToast(`Failed to save Antigravity mapping: ${e.message||'request failed'}`,true);};};
-window.toggleAntigravityIntegration=async(enabled)=>{let b=document.getElementById('ag-integration-toggle');if(b)b.disabled=true;try{let r=await fetch(enabled?'/api/antigravity-integration/start-full':'/api/antigravity-integration/stop-full',{method:'POST'}),d=await r.json().catch(()=>({}));if(!r.ok||d.ok!==true||d.enabled!==enabled)throw Error(d.error||'Backend state did not match the requested state.');agConfig().enabled=enabled;renderActiveTab();showToast(d.message||`Antigravity integration ${enabled?'started':'stopped'}.`)}catch(e){showToast(`Antigravity integration error: ${e.message}`,true);await pollAntigravityIntegrationStatus()}finally{if(b)b.disabled=false}};
+window.toggleAntigravityIntegration=async(enabled)=>{let b=document.getElementById('ag-integration-toggle');if(b)b.disabled=true;try{let r=await fetch(enabled?'/api/antigravity-integration/start-full':'/api/antigravity-integration/stop-full',{method:'POST'}),d=await r.json().catch(()=>({}));if(!r.ok||d.ok!==true||d.enabled!==enabled)throw Error(d.error||'Backend state did not match the requested state.');agConfig().enabled=enabled;renderActiveTab();await pollAppIntegrationStatus();showToast(d.message||`Antigravity integration ${enabled?'started':'stopped'}.`)}catch(e){showToast(`Antigravity integration error: ${e.message}`,true);await pollAntigravityIntegrationStatus();await pollAppIntegrationStatus()}finally{if(b)b.disabled=false}};
 let agPollTimer=null;function renderAntigravityIntegrationStatus(s){let on=s?.enabled===true,l=document.getElementById('ag-integration-runtime-label'),d=document.getElementById('ag-integration-diagnostics'),b=document.getElementById('ag-integration-toggle');if(l)l.textContent=on?'RUNNING':s?.state==='stopped'?'STOPPED':'STATUS UNKNOWN';if(d){d.textContent=s?.diagnostics||'Direct-inference status is unavailable. Confirm BSL Router is reachable.';d.classList.toggle('is-ready',on)}if(b&&!b.disabled){b.textContent=on?'Stop Integration':'Start Integration';b.className=`btn ${on?'btn-danger':'btn-primary'}`;b.setAttribute('onclick',`toggleAntigravityIntegration(${on?'false':'true'})`)}};
 async function pollAntigravityIntegrationStatus(){try{let r=await fetch('/api/antigravity-integration/status',{cache:'no-store'}),s=await r.json();if(!r.ok)throw Error(s.error||'status request failed');agConfig().enabled=!!s.enabled;renderAntigravityIntegrationStatus(s);return s}catch(e){renderAntigravityIntegrationStatus(null);return null}}
 function startAntigravityIntegrationPolling(){stopAntigravityIntegrationPolling();pollAntigravityIntegrationStatus();agPollTimer=setInterval(()=>{if(document.querySelector('.nav-item.active')?.dataset?.tab==='mitm')pollAntigravityIntegrationStatus()},4000)}
@@ -4518,7 +4882,7 @@ function _authStandardsHTML(list) {
             <td style="font-size:11px;color:var(--text-muted)">${_authEsc(s.judged_by || s.suggested_judge || '')}</td>
             <td>${_authEsc((s.collected_at || '').slice(0, 10))}</td>
             <td>${s.stale ? '<span class="auth-stale">stale</span>' : '<span style="color:#10b981">fresh</span>'}</td>
-            <td><button class="btn btn-outline" style="padding:2px 8px;font-size:11px" onclick="authDeleteStandard('${_authEsc(s.family)}','${_authEsc(s.sub_model)}')">Delete</button></td>
+            <td><button class="btn btn-outline" style="padding:2px 8px;font-size:11px" onclick="authDeleteStandard('${_authEsc(s.family)}','${_authEsc(s.sub_model)}','${_authEsc(s.source_tag || '')}')">Delete</button></td>
         </tr>`).join('');
     const table = arr => `<table class="auth-table"><thead><tr><th>Family</th><th>Sub-model</th><th>Quality</th><th>Judge</th><th>Collected</th><th>Stale</th><th></th></tr></thead><tbody>${rows(arr)}</tbody></table>`;
     const privBlock = priv.length
@@ -4625,15 +4989,24 @@ window.authRunTest = async function () {
     }
 };
 
-window.authCancelTest = function () {
+window.authCancelTest = async function () {
     const st = _authState;
     if (!st.running) return;
+    const runningId = st.runningId;
     try { st.abortCtl && st.abortCtl.abort(); } catch (e) {}
-    if (st.runningId) {
-        fetch('/api/authenticity/test/cancel/' + encodeURIComponent(st.runningId), { method: 'POST' }).catch(() => {});
-    }
-    st.running = false; st.runningId = ''; st.stepLabel = '';
+    st.report = { verdict: 'cancelled', headline: 'Test cancelled by user' };
+    st.running = false; st.runningId = ''; st.abortCtl = null; st.stepLabel = '';
     _authStopStepPolling(); renderAuthenticityTab();
+    if (runningId) {
+        try {
+            const res = await fetch('/api/authenticity/test/cancel/' + encodeURIComponent(runningId), { method: 'POST' });
+            const data = await res.json();
+            if (!st.running && !st.runningId && st.report.verdict === 'cancelled') {
+                st.report = data.verdict || { verdict: 'cancelled', headline: 'Test cancelled by user' };
+                renderAuthenticityTab();
+            }
+        } catch (e) { /* local cancellation is already visible */ }
+    }
 };
 
 // Live step indicator — poll the backend per-model step feed while a test runs.
@@ -4664,6 +5037,7 @@ function _authStartStepPolling(routerId) {
                 _authState.stepLabel = '';
                 _authStopStepPolling();
                 renderAuthenticityTab();
+                authLoadRecentResults();
             }
         } catch (e) { /* fail-open */ }
     }, 700);
@@ -4733,12 +5107,24 @@ window.authHarvest = async function () {
                 judge: judge ? { model: judge } : null,
             }),
         });
-        if (!resp.ok) { statusEl.textContent = 'Harvest failed to start'; return; }
+        if (!resp.ok) {
+            const data = await resp.json();
+            const currentStatusEl = document.getElementById('auth-h-status');
+            if (currentStatusEl) currentStatusEl.textContent = data.error || 'Harvest failed to start';
+            return;
+        }
         // Poll status until done/error.
         const poll = setInterval(async () => {
             try {
-                const st = await (await fetch('/api/authenticity/standards/harvest/status/' + encodeURIComponent(model_id))).json();
-                statusEl.textContent = 'Status: ' + st.status + (st.detail ? ' — ' + st.detail : '');
+                const res = await fetch('/api/authenticity/standards/harvest/status/' + encodeURIComponent(model_id));
+                const st = await res.json();
+                const currentStatusEl = document.getElementById('auth-h-status');
+                if (!res.ok) {
+                    if (currentStatusEl) currentStatusEl.textContent = st.error || 'Harvest status failed';
+                    clearInterval(poll);
+                    return;
+                }
+                if (currentStatusEl) currentStatusEl.textContent = 'Status: ' + st.status + (st.detail ? ' — ' + st.detail : '');
                 if (st.status === 'done' || st.status === 'error') {
                     clearInterval(poll);
                     authLoadStandards();
@@ -4746,14 +5132,15 @@ window.authHarvest = async function () {
             } catch (e) { clearInterval(poll); }
         }, 2000);
     } catch (e) {
-        statusEl.textContent = 'Harvest error: ' + e.message;
+        const currentStatusEl = document.getElementById('auth-h-status');
+        if (currentStatusEl) currentStatusEl.textContent = 'Harvest error: ' + e.message;
     }
 };
 
-window.authDeleteStandard = async function (family, sub) {
+window.authDeleteStandard = async function (family, sub, sourceTag = '') {
     if (!confirm(`Delete standard ${family}/${sub}? This persists to git (canonical standards only).`)) return;
     try {
-        await fetch(`/api/authenticity/standards/${encodeURIComponent(family)}/${encodeURIComponent(sub)}?persist=true`, { method: 'DELETE' });
+        await fetch(`/api/authenticity/standards/${encodeURIComponent(family)}/${encodeURIComponent(sub)}?persist=true&source_tag=${encodeURIComponent(sourceTag)}`, { method: 'DELETE' });
         authLoadStandards();
     } catch (e) { showToast('Delete failed: ' + e.message, true); }
 };
@@ -4835,8 +5222,8 @@ function renderActiveTab() {
     } else if (activeTab === 'mitm') {
         document.getElementById('topbar-breadcrumb').innerHTML = `
             <svg viewBox="0 0 24 24" width="20" height="20" stroke="var(--brand-color)" stroke-width="2" fill="none" style="margin-right:8px;flex-shrink:0"><path d="M12 2C12 7.52 16.48 12 22 12C16.48 12 12 16.48 12 22C12 16.48 7.52 12 2 12C7.52 12 12 7.52 12 2Z"/></svg>
-            <span>Antigravity Integration</span>
-            <div class="topbar-subtitle">Direct BSL inference routing with native Google fallback</div>`;
+            <span>App Integration</span>
+            <div class="topbar-subtitle">Direct BSL inference routing &amp; custom model injection for Antigravity and Claude Code</div>`;
         content.innerHTML = renderMitmTab();
         startAntigravityIntegrationPolling();
         
@@ -6837,55 +7224,22 @@ function renderToolsTab() {
 
         <div class="settings-section">
             <h2 class="section-title">Prompt Caching & Compaction (Context Policy)</h2>
-            
-            <div class="setting-row">
-                <div class="setting-info">
-                    <div class="setting-title">Anthropic Explicit Caching</div>
-                    <div class="setting-desc">Inject <span class="badge" style="font-family:monospace;font-size:10px">cache_control: ephemeral</span> on system prompt blocks.</div>
-                </div>
-                <label class="switch">
-                    <input type="checkbox" onchange="globalConfig.tools.caching_anthropic_explicit = this.checked" ${t.caching_anthropic_explicit ? 'checked' : ''}>
-                    <span class="slider"></span>
-                </label>
-            </div>
 
-            <div class="setting-row">
-                <div class="setting-info">
-                    <div class="setting-title">Kimi Key-Bound Caching</div>
-                    <div class="setting-desc">Inject hashed <span class="badge" style="font-family:monospace;font-size:10px">prompt_cache_key</span> on system prompt blocks for Kimi/Moonshot.</div>
-                </div>
-                <label class="switch">
-                    <input type="checkbox" onchange="globalConfig.tools.caching_kimi_key_bound = this.checked" ${t.caching_kimi_key_bound ? 'checked' : ''}>
-                    <span class="slider"></span>
-                </label>
-            </div>
-            
-            <div class="setting-row">
-                <div class="setting-info">
-                    <div class="setting-title">Static-First Sorting (DeepSeek / Gemini / OpenAI)</div>
-                    <div class="setting-desc">Reorder the messages array to anchor system blocks at the absolute top for implicit caching.</div>
-                </div>
-                <label class="switch">
-                    <input type="checkbox" onchange="globalConfig.tools.caching_static_sort = this.checked" ${t.caching_static_sort ? 'checked' : ''}>
-                    <span class="slider"></span>
-                </label>
-            </div>
-
-            <div class="setting-row" id="cache-key-routing-row" style="flex-direction:column; align-items:stretch; gap:0;">
+            <div class="setting-row" id="smart-prompt-caching-row" style="flex-direction:column; align-items:stretch; gap:0;">
                 <div style="display:flex; align-items:center; justify-content:space-between; width:100%;">
-                    <div class="setting-info">
-                        <div class="setting-title">OpenAI Cache-Key Routing (GPT-5.6)</div>
-                        <div class="setting-desc">Inject a hashed <span class="badge" style="font-family:monospace;font-size:10px">prompt_cache_key</span> for GPT-5.6 Sol / Terra / Luna static system prefixes (&ge;1024 chars). Caller-supplied keys are never overwritten.</div>
+                    <div class="setting-info" style="min-width:0;">
+                        <div class="setting-title">Smart Prompt Caching (All Model Families)</div>
+                        <div class="setting-desc" style="line-height:1.55; max-width:760px;">Unified adaptive caching across all families: auto-injects 4-point <span class="badge" style="font-family:monospace;font-size:10px">cache_control: ephemeral</span> breakpoints (tools, system, rolling history) on Anthropic Claude / GLM-5* / MiniMax M3* (M3.1) lanes, deterministic <span class="badge" style="font-family:monospace;font-size:10px">prompt_cache_key</span> session routing on OpenAI GPT-5.6 &amp; 6.1 / Codex &amp; Moonshot Kimi K3*, Static-First prefix anchoring for DeepSeek V4* (V4.1+) / Google Gemini 4* (Argon) / Qwen3*, and Cache-Warmth connection tie-breaking.</div>
                     </div>
-                    <label class="switch">
-                        <input type="checkbox" onchange="globalConfig.tools.caching_openai_key_bound = this.checked; scheduleAutoSave();" ${t.caching_openai_key_bound !== false ? 'checked' : ''}>
+                    <label class="switch" style="flex:0 0 auto;">
+                        <input type="checkbox" onchange="window.toggleSmartPromptCaching(this.checked)" ${(t.caching_enabled !== false && (t.caching_anthropic_explicit !== false || t.caching_static_sort !== false || t.caching_openai_key_bound !== false)) ? 'checked' : ''}>
                         <span class="slider"></span>
                     </label>
                 </div>
-                <div style="margin-left:24px; margin-top:8px; padding-left:16px; border-left:2px solid var(--border-color);">
-                    <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; background: rgba(255, 193, 7, 0.05); border: 1px solid rgba(255, 193, 7, 0.25); border-radius:8px; padding:10px 16px;">
+                <div style="margin-left:24px; margin-top:10px; padding-left:16px; border-left:2px solid var(--border-color); display:flex; flex-direction:column; gap:8px;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; background: rgba(255, 193, 7, 0.05); border: 1px solid rgba(255, 193, 7, 0.25); border-radius:8px; padding:10px 16px;">
                         <div class="setting-info">
-                            <div class="setting-title" style="font-size:13px;">↳ 24h Cache Retention <span class="badge" style="background:rgba(255,193,7,0.2);color:#b28600;font-size:10px;">Experimental</span></div>
+                            <div class="setting-title" style="font-size:13px;">↳ 24h Cache Retention (OpenAI) <span class="badge" style="background:rgba(255,193,7,0.2);color:#b28600;font-size:10px;">Experimental</span></div>
                             <div class="setting-desc" style="font-size:12px;">Auto-inject <span class="badge" style="font-family:monospace;font-size:10px">prompt_cache_retention: 24h</span> for long-lived sessions. <strong style="color:#b28600;">May incur extra storage fees.</strong></div>
                         </div>
                         <label class="switch">
@@ -6893,18 +7247,17 @@ function renderToolsTab() {
                             <span class="slider"></span>
                         </label>
                     </div>
+                    <div style="display:flex; align-items:center; justify-content:space-between; border: 1px solid var(--border-color); border-radius:8px; padding:10px 16px;">
+                        <div class="setting-info">
+                            <div class="setting-title" style="font-size:13px;">↳ Caching Tracker Diagnostics</div>
+                            <div class="setting-desc" style="font-size:12px;">Emit <span class="badge" style="font-family:monospace;font-size:10px">cache_tracker</span> hit/miss strategy logs into the Logs tab for real-time cache observability.</div>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" onchange="globalConfig.tools.caching_tracker_enabled = this.checked; scheduleAutoSave();" ${t.caching_tracker_enabled ? 'checked' : ''}>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
                 </div>
-            </div>
-
-            <div class="setting-row">
-                <div class="setting-info">
-                    <div class="setting-title">Caching Tracker Diagnostics</div>
-                    <div class="setting-desc">Emit <span class="badge" style="font-family:monospace;font-size:10px">cache_tracker</span> hit/miss strategy logs into the Logs tab for real-time cache observability.</div>
-                </div>
-                <label class="switch">
-                    <input type="checkbox" onchange="globalConfig.tools.caching_tracker_enabled = this.checked" ${t.caching_tracker_enabled ? 'checked' : ''}>
-                    <span class="slider"></span>
-                </label>
             </div>
 
             <div class="setting-row">
@@ -7012,6 +7365,17 @@ function renderToolsTab() {
     `;
 }
 
+window.toggleSmartPromptCaching = function(enabled) {
+    if (!globalConfig.tools) globalConfig.tools = {};
+    globalConfig.tools.caching_enabled = enabled;
+    globalConfig.tools.caching_anthropic_explicit = enabled;
+    globalConfig.tools.caching_kimi_key_bound = enabled;
+    globalConfig.tools.caching_static_sort = enabled;
+    globalConfig.tools.caching_openai_key_bound = enabled;
+    globalConfig.tools.cache_aware_routing = enabled;
+    scheduleAutoSave();
+};
+
 
 // ── FEL (Faithful Execution Layer) Tools-tab block ─────────────────────
 // The markup lives in index.html as <template id="fel-block-template">;
@@ -7025,11 +7389,18 @@ function renderToolsTab() {
 // (_fel_family_enabled in app/main.py) treats absent keys as enabled too.
 function _felConfig() {
     const fel = (globalConfig.tools && globalConfig.tools.fel) || {};
+    const engRaw = fel.engagement || {};
+    const engDefault = (engRaw.default && typeof engRaw.default === 'object') ? engRaw.default : {};
     return {
         enabled: !!fel.enabled,
         refusal_recovery: Object.assign({ enabled: true }, fel.refusal_recovery || {}),
         clarity: Object.assign({ enabled: true }, fel.clarity || {}),
-        engagement: Object.assign({ context: '', client_ref: '', scope: '' }, fel.engagement || {}),
+        reframe: Object.assign({ enabled: false, attestation: true, context_scope: 'last_turn' }, fel.reframe || {}),
+        engagement: {
+            context: engRaw.context || engDefault.context || '',
+            client_ref: engRaw.client_ref || engDefault.client_ref || '',
+            scope: engRaw.scope || engDefault.scope || '',
+        },
         families: Object.assign({ cn: true, gpt: true, claude: true, gemini: true }, fel.families || {}),
         research: Object.assign({ content: false, coding: false }, fel.research || {}),
     };
@@ -7048,6 +7419,20 @@ function felBlockHTML() {
     if (rec) rec.setAttribute('checked', cfg.refusal_recovery.enabled ? 'checked' : null);
     const cl = wrap.querySelector('#fel-clarity');
     if (cl) cl.setAttribute('checked', cfg.clarity.enabled ? 'checked' : null);
+    const rf = wrap.querySelector('#fel-reframe');
+    if (rf) rf.setAttribute('checked', cfg.reframe.enabled ? 'checked' : null);
+    const att = wrap.querySelector('#fel-attestation');
+    if (att) att.setAttribute('checked', cfg.reframe.attestation !== false ? 'checked' : null);
+    const cscope = wrap.querySelector('#fel-context-scope');
+    if (cscope) {
+        cscope.querySelectorAll('option').forEach(opt => {
+            if (opt.getAttribute('value') === (cfg.reframe.context_scope || 'last_turn')) {
+                opt.setAttribute('selected', 'selected');
+            } else {
+                opt.removeAttribute('selected');
+            }
+        });
+    }
     const ctx = wrap.querySelector('#fel-ctx');
     if (ctx) ctx.textContent = cfg.engagement.context || '';
     const cref = wrap.querySelector('#fel-clientref');
@@ -7075,9 +7460,10 @@ function felBlockHTML() {
     if (body) {
         const on = cfg.enabled;
         body.style.opacity = on ? '1' : '0.5';
-        body.querySelectorAll('#fel-recovery, #fel-clarity, #fel-ctx, #fel-clientref, #fel-scope, #fel-fam-cn, #fel-fam-gpt, #fel-fam-claude, #fel-fam-gemini, #fel-research-content, #fel-research-coding')
+        body.querySelectorAll('#fel-recovery, #fel-clarity, #fel-reframe, #fel-attestation, #fel-context-scope, #fel-ctx, #fel-clientref, #fel-scope, #fel-fam-cn, #fel-fam-gpt, #fel-fam-claude, #fel-fam-gemini, #fel-research-content, #fel-research-coding')
             .forEach(el => { el.toggleAttribute('disabled', !on); });
     }
+    setTimeout(felLoadTelemetry, 50);
     return wrap.innerHTML;
 }
 
@@ -7095,13 +7481,14 @@ function felOnMaster(cb) {
     const body = document.getElementById('fel-body');
     if (body) {
         body.style.opacity = cb.checked ? '1' : '0.5';
-        body.querySelectorAll('#fel-recovery, #fel-clarity, #fel-ctx, #fel-clientref, #fel-scope, #fel-fam-cn, #fel-fam-gpt, #fel-fam-claude, #fel-fam-gemini, #fel-research-content, #fel-research-coding')
+        body.querySelectorAll('#fel-recovery, #fel-clarity, #fel-reframe, #fel-attestation, #fel-context-scope, #fel-ctx, #fel-clientref, #fel-scope, #fel-fam-cn, #fel-fam-gpt, #fel-fam-claude, #fel-fam-gemini, #fel-research-content, #fel-research-coding')
             .forEach(el => { el.toggleAttribute('disabled', !cb.checked); });
     }
     scheduleAutoSave();
 }
 
-// key is one of the two boolean sub-toggles: 'refusal_recovery.enabled' | 'clarity.enabled'
+// key is one of the boolean sub-toggles:
+// 'refusal_recovery.enabled' | 'clarity.enabled' | 'reframe.enabled' | 'reframe.attestation'
 function felOnToggle(cb, key) {
     const fel = _felEnsure();
     if (key === 'refusal_recovery.enabled') {
@@ -7110,7 +7497,20 @@ function felOnToggle(cb, key) {
     } else if (key === 'clarity.enabled') {
         if (!fel.clarity) fel.clarity = {};
         fel.clarity.enabled = cb.checked;
+    } else if (key === 'reframe.enabled') {
+        if (!fel.reframe) fel.reframe = {};
+        fel.reframe.enabled = cb.checked;
+    } else if (key === 'reframe.attestation') {
+        if (!fel.reframe) fel.reframe = {};
+        fel.reframe.attestation = cb.checked;
     }
+    scheduleAutoSave();
+}
+
+function felOnScopeChange(sel) {
+    const fel = _felEnsure();
+    if (!fel.reframe) fel.reframe = {};
+    fel.reframe.context_scope = sel.value === 'full' ? 'full' : 'last_turn';
     scheduleAutoSave();
 }
 
@@ -7132,17 +7532,78 @@ function felOnResearch(cb, lane) {
     scheduleAutoSave();
 }
 
-// key is one of the engagement text fields; debounced persist.
+// key is one of the engagement text fields; debounced persist to both flat and nested default.
 const _felFieldDebounced = _debounce(function(key, value) {
     const fel = _felEnsure();
     if (!fel.engagement) fel.engagement = {};
     fel.engagement[key] = value;
+    if (!fel.engagement.default || typeof fel.engagement.default !== 'object') {
+        fel.engagement.default = {};
+    }
+    fel.engagement.default[key] = value;
     scheduleAutoSave();
 }, 400);
 
 function felOnField(el, key) {
     const field = key.split('.').pop(); // 'engagement.context' -> 'context'
     _felFieldDebounced(field, el.value);
+}
+
+async function felLoadTelemetry() {
+    try {
+        const uRes = await fetch('/api/observability/usage/summary?timeframe=7D');
+        if (uRes.ok) {
+            const uData = await uRes.json();
+            const felStats = uData.fel || (uData.summary && uData.summary.totals && uData.summary.totals.fel) || {};
+            let refusalsTotal = 0;
+            if (typeof felStats.refusals_total === 'number') {
+                refusalsTotal = felStats.refusals_total;
+            } else if (felStats.refusals && typeof felStats.refusals === 'object') {
+                refusalsTotal = (felStats.refusals.refusal || 0)
+                    + (felStats.refusals.tos_lecture || 0)
+                    + (felStats.refusals.filter_block || 0)
+                    + (felStats.refusals.blocked || 0);
+            }
+            const recoveredTotal = felStats.recovered ?? felStats.recoveries_succeeded ?? 0;
+            const recoveryRate = typeof felStats.recovery_rate === 'number'
+                ? felStats.recovery_rate
+                : (refusalsTotal > 0 ? (recoveredTotal / refusalsTotal) : 0);
+            const appliedTotal = felStats.applied ?? 0;
+            const refEl = document.getElementById('fel-stat-refusals');
+            const recEl = document.getElementById('fel-stat-recovered');
+            const rateEl = document.getElementById('fel-stat-rate');
+            const evEl = document.getElementById('fel-stat-events');
+            if (refEl) refEl.textContent = String(refusalsTotal);
+            if (recEl) recEl.textContent = String(recoveredTotal);
+            if (rateEl) rateEl.textContent = (recoveryRate * 100).toFixed(1) + '%';
+            if (evEl) evEl.textContent = String(appliedTotal);
+        }
+    } catch (_) {
+        // non-blocking telemetry load
+    }
+}
+
+async function felRunPreview() {
+    const inp = document.getElementById('fel-preview-input');
+    const mod = document.getElementById('fel-preview-model');
+    const out = document.getElementById('fel-preview-out');
+    if (!out) return;
+    out.style.display = 'block';
+    out.textContent = 'Running preview...';
+    try {
+        const res = await fetch('/admin/fel/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text: inp ? inp.value : '',
+                model: (mod && mod.value) ? mod.value : 'glm-5.1',
+            }),
+        });
+        const data = await res.json();
+        out.textContent = JSON.stringify(data, null, 2);
+    } catch (err) {
+        out.textContent = 'Preview error: ' + err;
+    }
 }
 
 
@@ -9873,7 +10334,12 @@ window.updateComboModelThinking = function(idx, value) {
     }
 };
 
-window.openAddModelModal = function() {
+let addModelContext = 'combo';
+window.openAddModelModal = function(context = 'combo') {
+    addModelContext = context;
+    if (!document.getElementById('add-model-modal')) renderCombosTab();
+    const modal = document.getElementById('add-model-modal');
+    modal.querySelector('span[style*="margin-left: 12px"]').textContent = context === 'combo' ? 'Add Model to Combo' : 'Add Integration Model';
     const searchInput = document.getElementById('add-model-search');
     if (searchInput) searchInput.value = '';
     renderAddModelList();
@@ -9884,7 +10350,16 @@ window.closeAddModelModal = function() {
     document.getElementById('add-model-modal').style.display = 'none';
 };
 
-window.toggleModelInCombo = function(modelRef) {
+window.toggleModelInCombo = async function(modelRef) {
+    if (addModelContext !== 'combo') {
+        const cfg = appIntegrationConfig(addModelContext), target = integrationModelTarget(modelRef);
+        const index = cfg.custom_models.findIndex(m => m.target === target);
+        if (index < 0) cfg.custom_models.push({target, display_name: target, enabled: true});
+        else cfg.custom_models.splice(index, 1);
+        await saveAppIntegration(addModelContext);
+        renderAddModelList();
+        return;
+    }
     const idx = findComboRefIndex(tempComboModels, modelRef);
     if (idx === -1) {
         tempComboModels.push(modelRef);
@@ -9901,10 +10376,12 @@ window.renderAddModelList = function() {
     if (!container) return;
 
     const groups = [];
-    const currentAlias = document.getElementById('combo-modal-alias').value.trim();
-    const currentIdx = parseInt(document.getElementById('combo-modal-idx').value, 10);
+    // Opened from App Integration there is no combo editor state to read, so both
+    // lookups must be optional rather than dereferencing a missing element.
+    const currentAlias = document.getElementById('combo-modal-alias')?.value?.trim() || '';
+    const currentIdx = parseInt(document.getElementById('combo-modal-idx')?.value ?? '-1', 10);
 
-    const availableCombos = (globalConfig.combos || []).filter((c, i) => i !== currentIdx && c.alias !== currentAlias);
+    const availableCombos = (globalConfig.combos || []).filter((c, i) => addModelContext !== 'combo' || (i !== currentIdx && c.alias !== currentAlias));
     if (availableCombos.length > 0) {
         groups.push({
             name: 'Combo Models',
@@ -9955,7 +10432,7 @@ window.renderAddModelList = function() {
                 </div>
                 <div style="display: flex; flex-direction: column; gap: 4px;">
                     ${filteredModels.map(m => {
-                        const isSelected = findComboRefIndex(tempComboModels, m.ref) !== -1;
+                        const isSelected = addModelContext === 'combo' ? findComboRefIndex(tempComboModels, m.ref) !== -1 : appIntegrationConfig(addModelContext).custom_models.some(item => item.target === integrationModelTarget(m.ref));
                         const bg = isSelected ? 'var(--brand-light)' : 'var(--bg-body)';
                         const border = isSelected ? 'var(--brand-color)' : 'var(--border-color)';
                         const color = isSelected ? 'var(--brand-color)' : 'var(--text-main)';

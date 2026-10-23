@@ -281,3 +281,18 @@ def test_build_client_wires_custom_backend():
         assert client._trust_env is False
     finally:
         asyncio.run(client.aclose())
+
+
+def test_rotate_google_ip_cache_rotates_edge_candidates(monkeypatch):
+    """Post-connect TLS/HTTP2 failure can rotate cached Google edge IPs so the next attempt tries the next candidate."""
+    monkeypatch.setattr(
+        egress,
+        "_external_resolve",
+        lambda host: ["172.217.113.4", "172.217.118.4", "172.217.119.4"],
+    )
+    assert egress.resolve_google_ips(CLOUDCODE) == ["172.217.113.4", "172.217.118.4", "172.217.119.4"]
+    egress.rotate_google_ip_cache(CLOUDCODE)
+    assert egress.resolve_google_ips(CLOUDCODE) == ["172.217.118.4", "172.217.119.4", "172.217.113.4"]
+    egress.rotate_google_ip_cache()
+    assert egress.resolve_google_ips(CLOUDCODE) == ["172.217.119.4", "172.217.113.4", "172.217.118.4"]
+

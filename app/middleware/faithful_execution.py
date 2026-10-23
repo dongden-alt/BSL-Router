@@ -40,6 +40,7 @@ Fail-open by contract: NEVER raises.
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -185,25 +186,87 @@ _RESEARCH_CODING_DIRECTIVE = (
 # matches, so `glm-5.2-anthropic` resolves to "cn" (leading token) even when
 # the provider lane says anthropic. All matching is case-insensitive.
 _FAMILY_MODEL_PREFIXES: Dict[str, Tuple[str, ...]] = {
-    "cn": ("glm", "qwen", "deepseek", "kimi", "minimax"),
+    "cn": (
+        "glm", "qwen", "deepseek", "v4-", "v4.", "kimi", "k3", "k2.",
+        "moonshot", "minimax", "m3-", "m3.", "abab", "doubao",
+        "hy3", "hy4", "hunyuan", "mimo", "step-", "stepfun",
+        "yi-", "baichuan", "ernie", "spark", "muse-spark", "seed-", "internlm",
+    ),
     "gpt": ("gpt", "chatgpt", "o1", "o3", "o4", "codex"),
     "claude": ("claude", "opus", "sonnet", "haiku"),
-    "gemini": ("gemini", "vertex"),
+    "gemini": ("gemini", "palm", "bard", "vertex", "4-argon", "argon"),
 }
 
 # Provider-name SUBSTRING matches (vendor aliases included for CN labs).
 _FAMILY_PROVIDER_SUBSTRINGS: Dict[str, Tuple[str, ...]] = {
-    "cn": ("glm", "zai", "qwen", "dashscope", "alibaba", "deepseek",
-           "moonshot", "kimi", "minimax"),
+    "cn": (
+        "glm", "zai", "z-ai", "zhipu", "qwen", "dashscope", "alibaba",
+        "deepseek", "moonshot", "kimi", "minimax", "tencent", "hunyuan",
+        "stepfun", "baichuan", "siliconflow", "volcengine", "mimo",
+    ),
     "gpt": ("openai", "codex", "azure"),
     "claude": ("anthropic", "claude"),
-    "gemini": ("gemini", "vertex"),
+    "gemini": ("gemini", "vertex", "google", "antigravity", "cloudcode"),
 }
 
 _FAMILY_ORDER: Tuple[str, ...] = ("cn", "gpt", "claude", "gemini")
 
+_LEADING_BRACKET_RE = re.compile(r"^(?:\[[^\]]*\]\s*)+")
 
-def detect_family(model_id: str, provider_name: str) -> str:
+
+def _normalize_model_candidates(model_id: str) -> Tuple[List[str], str]:
+    """Extract normalized model leaf candidates and any vendor prefix before '/'."""
+    raw = str(model_id or "").strip().lower()
+    if not raw:
+        return ([], "")
+    stripped = _LEADING_BRACKET_RE.sub("", raw).strip()
+    candidates: List[str] = []
+    vendor_hints: List[str] = []
+
+    def _add_candidate(val: str) -> None:
+        v = _LEADING_BRACKET_RE.sub("", val.strip()).strip()
+        if v and v not in candidates:
+            candidates.append(v)
+
+    _add_candidate(raw)
+    _add_candidate(stripped)
+
+    if "/" in stripped:
+        parts = [p.strip() for p in stripped.split("/") if p.strip()]
+        if len(parts) >= 2:
+            vendor_hints.extend(parts[:-1])
+        for p in reversed(parts):
+            _add_candidate(p)
+            if ":" in p:
+                _add_candidate(p.split(":", 1)[0])
+
+    if ":" in stripped:
+        _add_candidate(stripped.split(":", 1)[0])
+
+    for _c in list(candidates):
+        if "." in _c:
+            _v_prefix, _v_rest = _c.split(".", 1)
+            if _v_prefix in ("anthropic", "google", "openai", "zhipu", "qwen", "deepseek", "moonshot", "minimax", "us", "eu", "apac"):
+                vendor_hints.append(_v_prefix)
+                _add_candidate(_v_rest)
+                if ":" in _v_rest:
+                    _add_candidate(_v_rest.split(":", 1)[0])
+
+    # Move leaf-first candidates to the front when a slash-prefixed ID is passed
+    # so `z-ai/glm-5.3-free` or `vsllm/claude-sonnet-4-6` checks `glm-5.3-free` / `claude-sonnet-4-6` first.
+    if "/" in stripped:
+        leaf = _LEADING_BRACKET_RE.sub("", stripped.rsplit("/", 1)[-1]).strip()
+        leaf_base = leaf.split(":", 1)[0].strip() if ":" in leaf else leaf
+        ordered: List[str] = []
+        for item in (leaf, leaf_base, *candidates):
+            if item and item not in ordered:
+                ordered.append(item)
+        candidates = ordered
+
+    return (candidates, " ".join(vendor_hints))
+
+
+def detect_family(model_id: str, provider_name: str = "") -> str:
     """Map (model_id, provider_name) to a family tag.
 
     Returns one of "cn", "gpt", "claude", "gemini", "other".
@@ -211,16 +274,20 @@ def detect_family(model_id: str, provider_name: str) -> str:
     everything is lowercased first. Never raises; unknown input -> "other".
     """
     try:
-        model = str(model_id or "").strip().lower()
+        candidates, vendor_hint = _normalize_model_candidates(model_id)
         provider = str(provider_name or "").strip().lower()
-        for family in _FAMILY_ORDER:
-            for prefix in _FAMILY_MODEL_PREFIXES[family]:
-                if model.startswith(prefix):
-                    return family
-        for family in _FAMILY_ORDER:
-            for needle in _FAMILY_PROVIDER_SUBSTRINGS[family]:
-                if needle and needle in provider:
-                    return family
+        for cand in candidates:
+            for family in _FAMILY_ORDER:
+                for prefix in _FAMILY_MODEL_PREFIXES[family]:
+                    if cand.startswith(prefix):
+                        return family
+        for probe in (provider, vendor_hint):
+            if not probe:
+                continue
+            for family in _FAMILY_ORDER:
+                for needle in _FAMILY_PROVIDER_SUBSTRINGS[family]:
+                    if needle and needle in probe:
+                        return family
     except Exception:
         pass
     return "other"
@@ -347,7 +414,19 @@ def merge_directives(system: Any, directives: List[str]) -> Any:
             return system + "\n\n" + body
         if isinstance(system, list):
             merged = list(system)
-            merged.append(_tail_block(system, body))
+            tail = _tail_block(system, body)
+            if (
+                merged
+                and isinstance(merged[-1], dict)
+                and "cache_control" in merged[-1]
+                and isinstance(tail, dict)
+            ):
+                prev_last = dict(merged[-1])
+                cc = prev_last.pop("cache_control")
+                merged[-1] = prev_last
+                tail = dict(tail)
+                tail["cache_control"] = copy.deepcopy(cc)
+            merged.append(tail)
             return merged
         return system
     except Exception:

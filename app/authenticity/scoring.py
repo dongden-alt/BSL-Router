@@ -358,8 +358,16 @@ def canonical_submodel(name: str) -> str:
     '.' and '_' unified to '-'."""
     n = (name or "").strip().lower()
     n = n.rsplit("/", 1)[-1]
-    n = n.rsplit("_", 1)[-1] if "_" in n else n
-    return n.replace(".", "-").strip("-")
+    if "_" in n:
+        tail = n.rsplit("_", 1)[-1]
+        if "-" in tail or "." in tail:
+            n = tail
+        else:
+            family, rest = n.split("_", 1)
+            if (rest == family or rest.startswith((family + "_", family + "-"))
+                    or (rest.startswith(family) and rest[len(family):len(family) + 1].isdigit())):
+                n = rest
+    return n.replace(".", "-").replace("_", "-").strip("-")
 
 
 def same_submodel(a: str, b: str) -> bool:
@@ -432,9 +440,13 @@ def compute_reality(
         return v.finalize()
 
     # Compute fused score
-    fam_score = getattr(family_verdict, "confidence", 0.0) \
-        if getattr(family_verdict, "family", "") in ("claimed", scope_info.get("family")) \
-        else getattr(family_verdict, "confidence", 0.0)
+    _fam_tag = getattr(family_verdict, "family", "")
+    if _fam_tag in ("claimed", scope_info.get("family")):
+        fam_score = getattr(family_verdict, "confidence", 0.0)
+    elif _fam_tag in ("impostor", "injection"):
+        fam_score = max(0.0, 1.0 - getattr(family_verdict, "confidence", 0.0))
+    else:
+        fam_score = getattr(family_verdict, "confidence", 0.0)
     # Bind defaults BEFORE the match block: when match_result is None (no
     # baselines on disk, or Tier 2 skipped in normal mode with max_tier=1),
     # the REAL_THRESHOLD branch below used to hit `matched` unbound
@@ -519,7 +531,9 @@ def compute_reality(
         # actual "is this the model it claims to be" answer. Downgrade check:
         # matched a different sub-model than the claimed/focus one.
         v.identified_as = matched
-        if _focus and not same_submodel(_focus, matched):
+        if (_focus and not same_submodel(_focus, matched)
+                and not any(same_submodel(_focus, a)
+                            for a in (getattr(match_result, "alias_group", None) or []))):
             v.verdict = "downgrade"
         else:
             v.verdict = "real"
@@ -539,7 +553,8 @@ def compute_reality(
     elif scope_info.get("verdict_scope") == "family":
         v.verdict = "family_match"
         v.identified_as = behavior_family or claimed_family
-    elif total <= SUBSTITUTION_THRESHOLD:
+    elif total < SUBSTITUTION_THRESHOLD or (total <= SUBSTITUTION_THRESHOLD
+            and behavior_family and behavior_family not in ("unknown", "claimed", claimed_family)):
         v.verdict = "substitution"
         v.identified_as = behavior_family or "unknown"
         _fev = getattr(family_verdict, "evidence", {}) or {}

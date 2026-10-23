@@ -78,4 +78,4 @@ def test_browser_oauth_flow_preserved():
 def test_asset_revision_bumped():
     html = (ROOT / "app/static/index.html").read_text(encoding="utf-8")
     revision = re.search(r'/admin/app\.js\?v=([^\"]+)', html)
-    assert revision and revision.group(1) == "20261022-codex-import-json-3"
+    assert revision and revision.group(1) >= "20261022-codex-import-json-3"

@@ -35,14 +35,14 @@ TRUSTED_ANCHORS = {
 SCOPE = {
     "claude":   ["fable", "opus-4", "opus 4", "opus-5", "sonnet-4", "sonnet 4",
                  "sonnet-5", "haiku-4", "haiku 4", "haiku-5"],
-    "gemini":   ["2.5", "flash-2.5", "pro-2.5", "flash-3", "pro-3", "pro 3",
-                 "gemini-3", "gemini 3"],
+    "gemini":   ["gemini-2.5", "gemini 2.5", "2.5-pro", "2.5-flash", "flash-2.5", "pro-2.5", "flash-3", "pro-3", "pro 3",
+                 "gemini-3", "gemini 3", "gemini-4", "gemini 4", "gemini-4-argon", "4-argon"],
     "gpt":      ["gpt-5", "gpt5", "gpt-6", "gpt6", "gpt-6.1", "gpt6.1",
-                 "sol", "terra", "luna", "astra", "o4"],
+                 "-sol", "gpt-sol", "sol-", "terra", "luna", "astra", "o4"],
     "glm":      ["glm-4.6", "glm-4.7", "glm-5", "glm4.6", "glm5"],
-    "kimi":     ["kimi-k2", "kimi k2", "kimi-k3", "kimi k3", "k2.5", "k2.6"],
-    "deepseek": ["deepseek-r1", "r1", "deepseek-v4", "v4-flash", "v4-pro",
-                 "v4.1", "v4-1-flash"],
+    "kimi":     ["kimi-k2", "kimi k2", "kimi-k3", "kimi k3", "k2.5", "k2.6", "k2.7", "k3", "k3-", "k3."],
+    "deepseek": ["deepseek-r1", "-r1", "r1-", "/r1", "deepseek-v4", "v4-flash", "v4-pro",
+                 "v4.1", "v4-1-flash", "v4.", "v4-"],
     "qwen":     ["qwen3", "qwen-3", "3.5-397", "3.6-plus", "3.6-max",
                  "qwen3-max", "qwen3.5", "qwen3.6", "qwen3.7", "qwen3.8",
                  "3.8-max", "3.8-max-0902"],
@@ -126,12 +126,12 @@ def detect_family(model_name: str) -> Optional[str]:
     n = normalize(model_name)
     if not n:
         return None
+    # Explicit family names take precedence over shared version substrings.
+    for family in SCOPE:
+        if family in n:
+            return family
     for family, patterns in SCOPE.items():
         if any(p in n for p in patterns):
-            return family
-    # bare-family fallback (e.g. hint is just "claude" or "glm")
-    for family in SCOPE.keys():
-        if family in n:
             return family
     return None
 

@@ -565,8 +565,24 @@ class UniversalNormalizer:
         }.get(finish, "end_turn")
 
         usage = openai_resp.get("usage", {}) or {}
-        in_tokens = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
-        out_tokens = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
+        _ptd = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
+        _itd = usage.get("input_tokens_details") if isinstance(usage.get("input_tokens_details"), dict) else {}
+        _cached = int(_ptd.get("cached_tokens") or _itd.get("cached_tokens") or usage.get("cache_read_input_tokens") or 0)
+        _cache_write = int(_ptd.get("cache_write_tokens") or usage.get("cache_creation_input_tokens") or 0)
+        _prompt = int(usage.get("prompt_tokens") or 0)
+        if _prompt > 0:
+            in_tokens = max(0, _prompt - _cached - _cache_write)
+        else:
+            in_tokens = int(usage.get("input_tokens") or 0)
+        out_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        usage_dict: Dict[str, Any] = {
+            "input_tokens": in_tokens,
+            "output_tokens": out_tokens,
+        }
+        if _cached > 0:
+            usage_dict["cache_read_input_tokens"] = _cached
+        if _cache_write > 0:
+            usage_dict["cache_creation_input_tokens"] = _cache_write
 
         return {
             "id": openai_resp.get("id") or f"msg_{_uuid.uuid4().hex[:24]}",
@@ -576,10 +592,7 @@ class UniversalNormalizer:
             "content": content_blocks,
             "stop_reason": stop_reason,
             "stop_sequence": None,
-            "usage": {
-                "input_tokens": in_tokens,
-                "output_tokens": out_tokens,
-            },
+            "usage": usage_dict,
         }
 
     @staticmethod
@@ -634,8 +647,22 @@ class UniversalNormalizer:
             message["tool_calls"] = tool_calls
 
         usage = anthropic_resp.get("usage", {}) or {}
-        in_tokens = usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0)
-        out_tokens = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0)
+        _cache_read = int(usage.get("cache_read_input_tokens") or 0)
+        _cache_create = int(usage.get("cache_creation_input_tokens") or 0)
+        _prompt = int(usage.get("prompt_tokens") or 0)
+        _input = int(usage.get("input_tokens") or 0)
+        in_tokens = _prompt if _prompt > 0 else (_input + _cache_read + _cache_create)
+        out_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+        usage_dict_oai: Dict[str, Any] = {
+            "prompt_tokens": in_tokens,
+            "completion_tokens": out_tokens,
+            "total_tokens": in_tokens + out_tokens,
+        }
+        if _cache_read > 0 or _cache_create > 0:
+            usage_dict_oai["prompt_tokens_details"] = {
+                **({"cached_tokens": _cache_read} if _cache_read > 0 else {}),
+                **({"cache_write_tokens": _cache_create} if _cache_create > 0 else {}),
+            }
 
         return {
             "id": anthropic_resp.get("id") or f"chatcmpl-bsl-{_uuid.uuid4().hex[:24]}",
@@ -647,9 +674,5 @@ class UniversalNormalizer:
                 "message": message,
                 "finish_reason": finish_reason,
             }],
-            "usage": {
-                "prompt_tokens": in_tokens,
-                "completion_tokens": out_tokens,
-                "total_tokens": in_tokens + out_tokens,
-            },
+            "usage": usage_dict_oai,
         }
