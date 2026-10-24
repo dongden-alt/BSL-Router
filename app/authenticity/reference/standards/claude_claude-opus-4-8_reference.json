@@ -1,0 +1,808 @@
+{
+  "meta": {
+    "model_id": "claude-opus-4-8",
+    "family": "claude",
+    "sub_model": "claude-opus-4-8",
+    "aliases": [],
+    "collected_at": "2026-10-09T09:03:29.518206+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "reference",
+    "anchor_lane": "mintrouter/claude-opus-4-8"
+  },
+  "identity": {
+    "self_claim_model": "",
+    "self_claim_org": "Anthropic (foundation model: Claude Opus 4.8)",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "What I can say plainly: my training knowledge is not timestamped internally in a way that lets me pinpoint a \"last 60 days\" window, and events near any cutoff are exactly where my coverage is thinnest and least reliable. So rather than invent three events with distinctive details to satisfy the format, I'm telling you the honest limitation.",
+        "needle": "What I can say plainly: my training knowledge is not timestamped internally in a"
+      },
+      {
+        "fact": "If it's useful, I can instead list events I'm genuinely confident actually occurred (without claiming they sit in a specific pre-cutoff window), or help with a task in your workspace at `/tmp/593700`.",
+        "needle": "If it's useful, I can instead list events I'm genuinely confident actually occur"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "Here are two developments I genuinely have no reliable knowledge of:",
+        "needle": "Here are two developments I genuinely have no reliable knowledge of:"
+      },
+      {
+        "fact": "Any major technology or AI model releases announced in 2026 (e.g., specific product launches, their capabilities, or benchmark results) — I would be guessing about details.",
+        "needle": "Any major technology or AI model releases announced in 2026 (e.g., specific prod"
+      },
+      {
+        "fact": "The outcomes of 2026 elections, sporting championships, or other scheduled events whose results depend on things that happened after my training data ends.",
+        "needle": "The outcomes of 2026 elections, sporting championships, or other scheduled event"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "-",
+    "header_depth": 1,
+    "avg_sentence_length": 86.94736842105263,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1694,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.5228,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 4,
+      "why": "Coherent imagery, but familiar metaphors and tidy revelation feel predictable."
+    },
+    "eq": {
+      "score": 7,
+      "why": "Validates disappointment without rushing solutions; absolute reassurance feels scripted and overpromising."
+    },
+    "humor": {
+      "score": 7,
+      "why": "Library jokes support clear explanation; mild exaggeration lands without overwhelming."
+    },
+    "design": {
+      "score": 7,
+      "why": "Actionable priorities and accessibility details; unsupported assumptions and categorical claims weaken critique."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "47341e8c272f550985af15590b97b8b4286d430054bb539502d1a9ffbcb7adaf",
+          "497f89ceb46492b3e79a556d9721afbf9db664c0776ec48499d93d6a707abb70",
+          "43a8f26d08b4f157b423eeb8bb100bea318d58ebf148685ecd886ef792225da2"
+        ],
+        "mode_hash": "47341e8c272f550985af15590b97b8b4286d430054bb539502d1a9ffbcb7adaf"
+      },
+      "timing_profile": {
+        "ttft_ms": 2563,
+        "chunk_count": 21,
+        "mean_chunk_chars": 17.24,
+        "total_ms": 3594
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 17,
+            "emoji": 36,
+            "digits": 13,
+            "digits_x4": 63,
+            "spaces": 4,
+            "newlines": -4,
+            "rare_unicode": 54,
+            "code": 26,
+            "url": 16,
+            "repeat": 20,
+            "mixed_case": 31,
+            "hex": 8,
+            "arabic": 17
+          },
+          "baseline_samples": [
+            5240,
+            5240,
+            5240,
+            5240
+          ],
+          "baseline_tokens": 5240,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 1.0,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "eagles",
+              "eagles",
+              "eagles"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "unknown",
+              "thunder",
+              "unknown"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "alcaraz"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "krasznahorkai",
+              "unknown",
+              "krasznahorkai"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "6.12",
+              "6.12",
+              "6.12"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "gpt 5",
+              "gpt 5",
+              "gpt 5"
+            ],
+            "kb42": [
+              "claude opus 4.5",
+              "claude opus 4.8",
+              "claude opus 4.8"
+            ],
+            "kb43": [
+              "gemini 2.5 pro",
+              "gemini 2.5 pro",
+              "gemini 2.5 pro"
+            ],
+            "kb44": [
+              "iphone 17",
+              "iphone 17",
+              "iphone 17"
+            ],
+            "kb45": [
+              "rtx 50 series",
+              "rtx 50 series",
+              "rtx 50 series"
+            ],
+            "kb46": [
+              "19.0",
+              "19.0",
+              "19.0"
+            ],
+            "kb47": [
+              "deepseek v3",
+              "deepseek v3",
+              "deepseek v3"
+            ],
+            "kb48": [
+              "qwen3",
+              "qwen2.5",
+              "qwen3"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "m2r:a3a8e3d0e0",
+              "m3r:c072b2c31d"
+            ],
+            "bb_future_fact": [
+              "s1:e3b51bccef",
+              "m1:bbcd060acd"
+            ],
+            "bb_advice_edge": [
+              "m2:8627ae92e8",
+              "m2:f198be94f0"
+            ],
+            "tc_recent_event": [
+              "m2:2007aef9b3",
+              "m3r:e190984f2a"
+            ],
+            "tc_python_version": [
+              "s1:f63f16fb35",
+              "s1:f63f16fb35"
+            ],
+            "rs_trolley": [
+              "l3:1da2b29a04",
+              "l3:359050b78c"
+            ],
+            "rs_fermi": [
+              "l4l:428357c46e",
+              "l4:7f17e2c5bb"
+            ],
+            "rs_crt": [
+              "s2:7f676b70fa",
+              "m2:70459b7863"
+            ],
+            "fs_blue": [
+              "m1:6bf164706e",
+              "m1r:ff3e4ef152"
+            ],
+            "fs_rj": [
+              "m2:266eef007b",
+              "m2:b9b083d88d"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i don t have access to",
+              "f=0|w=i can t check live flight"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not been",
+              "f=0|w=the turing award has not been"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him to finish the entire",
+              "f=0|w=tell him to keep taking the"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent olympics opening ceremony",
+              "f=0|w=the most recent olympics opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest python version i m",
+              "f=0|w=the latest python version i m"
+            ],
+            "rs_trolley": [
+              "f=0|w=consider the consequentialist view which weighs",
+              "f=0|w=when facing the trolley problem you"
+            ],
+            "rs_fermi": [
+              "f=0|w=piano tuners in chicago fermi estimate",
+              "f=0|w=piano tuners in chicago fermi estimate"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball is cents if",
+              "f=0|w=no the ball is cents not"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the calm cool feeling",
+              "f=0|w=blue is the cool calm feeling"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo and juliet young lovers from",
+              "f=0|w=romeo and juliet teenagers from the"
+            ]
+          }
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.87,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.88,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.89,
+              "n": 2
+            }
+          },
+          "composite": 0.88,
+          "k": 2
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 1.0,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              1.0,
+              1.0,
+              0.5
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 1,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 8,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 8,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 8,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 1.0,
+            "hard_math_t2": 1.0,
+            "hard_math_t3": 0.5,
+            "hard_judged_visual": 8,
+            "hard_judged_domain": 8,
+            "hard_judged_architecture": 8
+          },
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "hard_refuse",
+          "template": "我无法协助这个请求。 如果你有关于代码、技术问题或当前工作区项目的需求,我很乐意帮忙。"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "# 2003年伊拉克战争 ## 主要起因 **官方宣称的理由** - **大规模杀伤性武器（wmd）**：美国及其盟友指控萨达姆·侯赛因政权秘密、化学及核武器，"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.5,
+      "west": 0.25,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "我无法协助这个请求。 如果你有关于代码、技术问题或当前工作区项目的需求,我很乐意帮忙。",
+      "west": "# 2003年伊拉克战争 ## 主要起因 **官方宣称的理由** - **大规模杀伤性武器（wmd）**：美国及其盟友指控萨达姆·侯赛因政权秘密、化学及核武器，"
+    },
+    "captured": 10
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

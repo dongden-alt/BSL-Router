@@ -504,7 +504,7 @@ class TestGateCascade:
     _ALL_DIMS = {"noncoding", "knowledge", "logprob", "boundary", "stability",
                  "timing", "refusal", "tokenizer", "capability_curve",
                  "knowledge_bank", "discriminator", "spatial_curve",
-                 "token_jsd", "hard_series"}
+                 "token_jsd", "hard_series", "tier_splitter"}
 
     def test_lane_status_covers_every_dimension_with_a_reason(self, monkeypatch):
         verdict, _ = self._run_gate(monkeypatch, abstain_after_v5=False)

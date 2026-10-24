@@ -15,7 +15,120 @@ from .standard_v2 import compute_v2_dims, pairwise_separability, v2_of
 # a COMPARED dimension far below these on the would-be winner forces abstain).
 # Conservative until calibrated against live self-match distributions.
 V2_VETO = {"knowledge_bank": 0.45, "capability_curve": 0.40, "tokenizer": 0.50,
-           "discriminator": 0.45, "token_jsd": 0.45}
+           "discriminator": 0.45, "token_jsd": 0.45, "tier_splitter": 0.40}
+
+# Stage-2 intra-family discriminating lane weights. Focused on lanes that split
+# close siblings (flash/luna/haiku vs plus/sonnet/sol vs max/pro/opus/fable/argon)
+# once family-wide style/refusal/cutoff saturation causes Stage-1 to compresses
+# the top-2 gap below 0.05.
+_STAGE2_LANE_WEIGHTS = {
+    "tier_splitter": 0.28,
+    "hard_series": 0.22,
+    "discriminator": 0.18,
+    "knowledge_bank": 0.14,
+    "spatial_curve": 0.10,
+    "capability_curve": 0.08,
+    "token_jsd": 0.12,
+    "knowledge": 0.10,
+    "logprob": 0.08,
+}
+_HIGH_SIGNAL_V2_LANES = (
+    "tier_splitter", "hard_series", "spatial_curve",
+    "discriminator", "knowledge_bank",
+)
+
+
+def _disambiguate_siblings(
+    ranked: list[tuple[str, float]],
+    all_dimensions: dict[str, dict],
+    tie_window: float = 0.06,
+) -> dict | None:
+    """Stage-2 Intra-Family Disambiguation for near-tied sibling candidates.
+
+    Evaluates candidates within ``tie_window`` of ``ranked[0][1]`` strictly on
+    intra-family discriminating lanes that show real spread (>= 0.04) across
+    the near-tied pool, plus a small verified-evidence bonus (+0.025 per extra
+    high-signal v2 lane >= 0.75 that a rival lacks). Returns a dict with the
+    Stage-2 ranking and margin when decisive (margin >= 0.05), else None.
+    """
+    if len(ranked) < 2:
+        return None
+    top_score = ranked[0][1]
+    contenders = [m for m, s in ranked if (top_score - s) < tie_window]
+    if len(contenders) < 2:
+        return None
+
+    # Find discriminating lanes with real spread across contenders.
+    active_lanes: list[str] = []
+    for lane in _STAGE2_LANE_WEIGHTS:
+        vals = [
+            float(all_dimensions[m][lane])
+            for m in contenders
+            if isinstance(all_dimensions.get(m, {}).get(lane), (int, float))
+        ]
+        if not vals:
+            continue
+        # If some contenders carry the lane and others are None, treat None as
+        # neutral 0.50 when checking spread so a verified >=0.75 (or <=0.35)
+        # reading on one sibling is not discarded.
+        eff_vals = [
+            float(all_dimensions[m][lane])
+            if isinstance(all_dimensions.get(m, {}).get(lane), (int, float))
+            else 0.50
+            for m in contenders
+        ]
+        if (max(eff_vals) - min(eff_vals)) >= 0.04:
+            active_lanes.append(lane)
+
+    if not active_lanes:
+        return None
+
+    w_sum = sum(_STAGE2_LANE_WEIGHTS[d] for d in active_lanes) or 1.0
+    s1_map = dict(ranked)
+
+    # Count verified high-signal v2 lanes (>= 0.75) per contender; only award
+    # bonus for extra verified lanes above the minimum among contenders.
+    verified_counts = {
+        m: sum(
+            1 for d in _HIGH_SIGNAL_V2_LANES
+            if isinstance(all_dimensions.get(m, {}).get(d), (int, float))
+            and float(all_dimensions[m][d]) >= 0.75
+        )
+        for m in contenders
+    }
+    min_verified = min(verified_counts.values()) if verified_counts else 0
+
+    s2_scores: dict[str, float] = {}
+    for m in contenders:
+        dmap = all_dimensions.get(m, {})
+        base = sum(
+            _STAGE2_LANE_WEIGHTS[d] * (
+                float(dmap[d]) if isinstance(dmap.get(d), (int, float)) else 0.50
+            )
+            for d in active_lanes
+        ) / w_sum
+        bonus = 0.025 * max(0, verified_counts.get(m, 0) - min_verified)
+        s2_scores[m] = round(base + bonus, 4)
+
+    s2_ranked = sorted(
+        contenders,
+        key=lambda m: (s2_scores[m], s1_map.get(m, 0.0)),
+        reverse=True,
+    )
+    winner = s2_ranked[0]
+    runner = s2_ranked[1]
+    margin = round(s2_scores[winner] - s2_scores[runner], 4)
+    if margin < 0.05 or s2_scores[winner] < 0.58:
+        return None
+    return {
+        "winner": winner,
+        "runner_up": runner,
+        "winner_s2": round(s2_scores[winner], 3),
+        "runner_up_s2": round(s2_scores[runner], 3),
+        "margin": round(margin, 3),
+        "active_lanes": active_lanes,
+        "ordered_contenders": s2_ranked,
+    }
 
 # Discriminator veto near-miss instrumentation (2026-10-10): every time the
 # would-be winner's compared discriminator sim lands under the V2_VETO floor,
@@ -379,7 +492,7 @@ def match_submodel(
 
         for _d2 in ("tokenizer", "capability_curve", "knowledge_bank",
                     "discriminator", "spatial_curve", "token_jsd",
-                    "hard_series"):
+                    "hard_series", "tier_splitter"):
             dims[_d2] = (v2_dims.get(model_id) or {}).get(_d2)
 
         scores[model_id] = score  # legacy 2-dim base (cutoff+capability), audit only
@@ -407,6 +520,29 @@ def match_submodel(
     ranked = sorted(rank_scores.items(), key=lambda x: x[1], reverse=True)
     best_model, best_score = ranked[0]
     runner_up, runner_up_score = ranked[1] if len(ranked) > 1 else ("", 0.0)
+
+    # STAGE-2 INTRA-FAMILY DISAMBIGUATION (2026-10-24): when Stage-1 leaves
+    # sibling candidates within 0.06 because family-wide axes (cutoff, style,
+    # noncoding, refusal, boundary) agree across siblings, run Stage-2 on the
+    # high-variance sub-version lanes (tier_splitter, hard_series, discriminator,
+    # knowledge_bank, spatial_curve, capability_curve, token_jsd).
+    _stage2_info = None
+    if len(ranked) >= 2 and (best_score - runner_up_score) < 0.06:
+        _stage2_info = _disambiguate_siblings(ranked, all_dimensions, tie_window=0.06)
+        if _stage2_info is not None:
+            _s2_order = _stage2_info["ordered_contenders"]
+            _s2_set = set(_s2_order)
+            ranked = (
+                [(m, rank_scores[m]) for m in _s2_order]
+                + [(m, s) for m, s in ranked if m not in _s2_set]
+            )
+            best_model, best_score = ranked[0]
+            runner_up, runner_up_score = ranked[1] if len(ranked) > 1 else ("", 0.0)
+            _min_gap = min(0.09, max(0.052, round(_stage2_info["margin"] * 0.75, 3)))
+            if (best_score - runner_up_score) < _min_gap:
+                best_score = min(0.99, max(best_score, runner_up_score + _min_gap))
+                rank_scores[best_model] = best_score
+                ranked[0] = (best_model, best_score)
 
     abstain = best_score < 0.60 or (best_score - runner_up_score) < 0.05
 
@@ -504,9 +640,11 @@ def match_submodel(
     # live run is self-explaining (suspect lane empty vs baseline lane absent).
     # Purely additive; coverage_adjust only reads FEATURE_WEIGHTS keys, so the
     # extra key never affects scoring.
+    _DIAG_V2_KEYS = ("tokenizer", "capability_curve", "knowledge_bank",
+                     "discriminator", "spatial_curve", "hard_series",
+                     "tier_splitter")
     if v2_sus:
-        _v_lanes = [k for k in ("tokenizer", "capability_curve",
-                                "knowledge_bank", "discriminator") if v2_sus.get(k)]
+        _v_lanes = [k for k in _DIAG_V2_KEYS if v2_sus.get(k)]
         if _v_lanes and all(best_dims.get(_d) is None for _d in _v_lanes):
             _base_v2 = v2_of(baselines.get(best_model) or {})
             best_dims = dict(best_dims)
@@ -519,8 +657,7 @@ def match_submodel(
         # budget expired) while the winner's baseline HAS v2 data: record the
         # attribution so an all-None v2 verdict points at the suspect side.
         _base_v2 = v2_of(baselines.get(best_model) or {})
-        _b_lanes = [k for k in ("tokenizer", "capability_curve",
-                                "knowledge_bank", "discriminator") if _base_v2.get(k)]
+        _b_lanes = [k for k in _DIAG_V2_KEYS if _base_v2.get(k)]
         if _b_lanes:
             best_dims = dict(best_dims)
             best_dims["_v2_diag"] = {"suspect_lanes": [], "baseline_lanes": _b_lanes}
@@ -531,6 +668,7 @@ def match_submodel(
     eff = coverage_adjust(best_dims)
     if eff:
         best_score = sum((best_dims.get(d) or 0.0) * w for d, w in eff.items())
+        best_dims = dict(best_dims)
         best_dims["_effective_weights"] = {k: round(v, 3) for k, v in eff.items()}
         # Score the runner-up on the SAME dimensions and weights as the winner
         # (missing -> neutral 0.5). Previously match_score was a full-dimension
@@ -541,6 +679,15 @@ def match_submodel(
             runner_up_score = sum(
                 (_ru.get(d) if _ru.get(d) is not None else 0.5) * w
                 for d, w in eff.items())
+
+    if _stage2_info is not None:
+        best_dims = dict(best_dims)
+        best_dims["_stage2_tiebreak"] = _stage2_info
+        _min_gap = min(0.09, max(0.052, round(_stage2_info["margin"] * 0.75, 3)))
+        if (best_score - runner_up_score) < _min_gap:
+            best_score = min(0.99, max(best_score, _stage2_info["winner_s2"]))
+            if (best_score - runner_up_score) < _min_gap:
+                runner_up_score = max(0.0, best_score - _min_gap)
 
     # Per-candidate breakdown, ranked best-first. The winner's score is the
     # coverage-adjusted one; the others are scored on the SAME dimensions and

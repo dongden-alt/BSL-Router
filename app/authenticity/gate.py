@@ -34,7 +34,7 @@ _REFERENCE_DIR = _MODULE_DIR / "reference"
 _BASELINE_DIR = _REFERENCE_DIR / "baselines"
 # v2 lanes that carry match evidence (the "version"/"mode"/"gap" keys do not).
 _V2_LANES = ("tokenizer", "capability_curve", "knowledge_bank", "discriminator",
-             "spatial_curve", "token_jsd", "hard_series")
+             "spatial_curve", "token_jsd", "hard_series", "tier_splitter")
 # Every match dimension that only the deep battery can produce.
 _DEEP_DIMS = ("noncoding", "knowledge", "logprob", "boundary", "refusal",
               "stability", "timing") + _V2_LANES

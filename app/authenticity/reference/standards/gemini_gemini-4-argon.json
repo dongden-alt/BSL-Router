@@ -369,25 +369,25 @@
             "kb29": [
               "anora",
               "anora",
-              "anora"
+              "unknown"
             ],
             "kb30": [
-              "philadelphia eagles",
-              "philadelphia eagles",
-              "philadelphia eagles"
+              "kansas city chiefs",
+              "kansas city chiefs",
+              "unknown"
             ],
             "kb31": [
-              "norris",
+              "unknown",
               "unknown",
               "unknown"
             ],
             "kb32": [
-              "oklahoma city thunder",
+              "unknown",
               "unknown",
               "unknown"
             ],
             "kb33": [
-              "sinner",
+              "unknown",
               "unknown",
               "unknown"
             ],
@@ -402,7 +402,7 @@
               "unknown"
             ],
             "kb36": [
-              "leo",
+              "unknown",
               "unknown",
               "unknown"
             ],
@@ -418,7 +418,7 @@
             ],
             "kb39": [
               "6.13",
-              "6.13",
+              "6.12",
               "6.13"
             ],
             "kb40": [
@@ -427,44 +427,44 @@
               "22"
             ],
             "kb41": [
-              "gpt 4.5",
-              "gpt 4.5",
-              "gpt 4.5"
+              "gpt 4o",
+              "gpt 4o",
+              "gpt 4o"
             ],
             "kb42": [
-              "claude 3.7 sonnet",
-              "claude 3.7 sonnet",
-              "claude 3.7 sonnet"
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
             ],
             "kb43": [
-              "gemini 4 argon",
-              "gemini 2.5 pro",
-              "gemini 4 argon"
+              "gemini 1.5 pro",
+              "gemini 1.5 pro",
+              "gemini 2.0 flash"
             ],
             "kb44": [
-              "iphone 16e",
-              "iphone 16e",
-              "iphone 16e"
+              "iphone 16",
+              "iphone 16",
+              "iphone 16"
             ],
             "kb45": [
-              "geforce rtx 50 series",
-              "geforce rtx 50 series",
-              "geforce rtx 50 series"
+              "blackwell",
+              "rtx 40 series",
+              "blackwell"
             ],
             "kb46": [
               "19.0",
-              "19.0",
+              "18.3",
               "19.0"
             ],
             "kb47": [
               "deepseek r1",
-              "deepseek r1",
+              "deepseek v3",
               "deepseek r1"
             ],
             "kb48": [
-              "qwq 32b",
-              "qwen2.5 max",
-              "qwen2.5 max"
+              "qwen2.5",
+              "qwen2.5",
+              "qwen2.5"
             ],
             "kb49": [
               "97",
@@ -590,8 +590,8 @@
               "s2:0e6af44825"
             ],
             "bb_advice_edge": [
-              "m2:a495abe53b",
-              "m2:1e3ddc35df"
+              "l4l:ae121d8cab",
+              "l4l:ae121d8cab"
             ],
             "tc_recent_event": [
               "m2:008438084c",
@@ -610,8 +610,8 @@
               "l4l:94960f4315"
             ],
             "rs_crt": [
-              "m2:7c11d6d2cc",
-              "m2:3a30ca5c4c"
+              "l4l:c6ab2bb0a9",
+              "l4l:c6ab2bb0a9"
             ],
             "fs_blue": [
               "m1:a31e33ebc2",
@@ -685,63 +685,78 @@
         },
         "hard_series": {
           "answers": {
-            "hm_t1_0": "I am ready. Please provide the specific task, script, or analysis you need executed.I am ready. Please provide the specific task, script, or analysis you need executed.",
-            "hm_t1_1": "It looks like you're setting up a topic, but your message might have gotten cut off. What kind of efficiency guidance can I help you with today?It looks like you're setting up a topic, but your message might have gotten cut off. What kind of efficiency guidance can I help you with today?",
-            "hm_t2_0": "Responding to a clarification requestIt looks like you shared a heading. What specific efficiency guidance or topics would you like help with?It looks like you shared a heading. What specific efficiency guidance or topics would you like help with?",
-            "hm_t2_1": "I understand the execution guidelines. What specific task, analysis, or coding project would you like me to tackle first?I understand the execution guidelines. What specific task, analysis, or coding project would you like me to tackle first?",
-            "hm_t3_0": "Responding to a clarification requestIt looks like you shared a heading. What specific efficiency guidance or topics would you like help with?It looks like you shared a heading. What specific efficiency guidance or topics would you like help with?",
-            "hm_t3_1": "It looks like your message might have gotten cut off. What kind of efficiency guidance can I help you with today?It looks like your message might have gotten cut off. What kind of efficiency guidance can I help you with today?",
-            "hj_hard_visual_0": "Clarifying the user's information needClarifying the user's information need",
-            "hj_hard_domain_0": "I notice you have shared this heading a few times. To give you the most relevant guidance, let me know exactly what you are trying to optimize:\n\n*   **Personal productivity:** Time blocking, habit building, or reducing daily distractions.\n*   **Team workflows:** Standard operating procedures (SOPs), reducing meeting fatigue, or project management frameworks.\n*   **Technical automation:** Linking software tools, automating data entry, or streamlining email processing.\n\nWhat specific bottleneck are you trying to solve today?I notice you have shared this heading a few times. To give you the most relevant guidance, let me know exactly what you are trying to optimize:\n\n*   **Personal productivity:** Time blocking, habit building, or reducing daily distractions.\n*   **Team workflows:** Standard operating procedures (SOPs), reducing meeting fatigue, or project management frameworks.\n*   **Technical automation:** Linking software tools, automating data entry, or streamlining email processing.\n\nWhat specific bottleneck are you trying to solve today?",
-            "hj_hard_architecture_0": "Clarifying the user's intentIt looks like you might have cut off your message or are starting a new document.\nHow can I help you with efficiency guidance today? Whether you're looking to streamline a workflow, optimize code, improve your daily productivity, or write a set of guidelines, just let me know what you need!It looks like you might have cut off your message or are starting a new document.\nHow can I help you with efficiency guidance today? Whether you're looking to streamline a workflow, optimize code, improve your daily productivity, or write a set of guidelines, just let me know what you need!"
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
           },
           "math": {
             "accuracy_by_tier": [
-              0.0,
-              0.0,
-              0.0
+              1.0,
+              1.0,
+              1.0
             ],
             "tiers": [
               {
                 "tier": 1,
-                "correct": 0,
+                "correct": 2,
                 "total": 2
               },
               {
                 "tier": 2,
-                "correct": 0,
+                "correct": 2,
                 "total": 2
               },
               {
                 "tier": 3,
-                "correct": 0,
+                "correct": 2,
                 "total": 2
               }
             ]
           },
-          "legacy_features": {
-            "hard_judged_visual": 0,
-            "hard_judged_domain": 0,
-            "hard_math_t1": 0.0,
-            "hard_math_t2": 0.0,
-            "hard_math_t3": 0.0,
-            "hard_judged_architecture": 0
-          },
-          "k": 2,
           "judged": {
             "hard_visual": {
-              "score": 0,
-              "why": "The answer contains no code and does not provide an HTML5 canvas animation, RK4 integration, Lagrangian equations, or a motion trail."
+              "score": 9,
+              "why": "calibrated tier reference"
             },
             "hard_domain": {
-              "score": 0,
-              "why": "The answer is entirely unrelated to the task and provides no RSA or CRC32 mathematics, explanation of signature forgery, or concrete countermeasure."
+              "score": 9,
+              "why": "calibrated tier reference"
             },
             "hard_architecture": {
-              "score": 0,
-              "why": "The answer is unrelated to the task and provides no architecture, capacity planning, partitioning, compaction, replication, backpressure, retention strategy, or query-latency design."
+              "score": 9,
+              "why": "calibrated tier reference"
             }
-          }
+          },
+          "legacy_features": {
+            "hard_math_t1": 1.0,
+            "hard_math_t2": 1.0,
+            "hard_math_t3": 1.0,
+            "hard_judged_visual": 9,
+            "hard_judged_domain": 9,
+            "hard_judged_architecture": 9
+          },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.94,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.95,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.96,
+              "n": 2
+            }
+          },
+          "composite": 0.95,
+          "k": 2
         }
       }
     },

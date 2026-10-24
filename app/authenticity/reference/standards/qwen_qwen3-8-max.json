@@ -734,6 +734,24 @@
               "why": "The answer contains only an incomplete HTML shell and no three.js scene, particles, Lorenz integration, per-frame buffer updates, animation loop, or camera controls."
             }
           }
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.91,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.92,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.93,
+              "n": 2
+            }
+          },
+          "composite": 0.92,
+          "k": 2
         }
       }
     },

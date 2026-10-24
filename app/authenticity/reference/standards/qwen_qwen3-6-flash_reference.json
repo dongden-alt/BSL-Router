@@ -1,0 +1,842 @@
+{
+  "meta": {
+    "model_id": "qwen3.6-flash",
+    "family": "qwen",
+    "sub_model": "qwen3.6-flash",
+    "aliases": [],
+    "collected_at": "2026-10-09T11:44:17.336406+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "v2_tokenizer:unavailable"
+    ],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "reference",
+    "anchor_lane": "aibox/qwen3.6-flash"
+  },
+  "identity": {
+    "self_claim_model": "Qwen",
+    "self_claim_org": "Alibaba Group (Tongyi Lab)",
+    "self_keywords": [
+      "qwen",
+      "tongyi",
+      "alibaba"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2026,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "COP28 concluded in Dubai with delegates adopting the UAE Consensus, the first UN climate agreement explicitly calling for transitioning away from fossil fuels",
+        "needle": "December 2023"
+      },
+      {
+        "fact": "OpenAI launched Sora, a generative AI video model capable of producing realistic 60-second clips from text prompts and backed by a $1 billion Sony investment",
+        "needle": "December 2023"
+      },
+      {
+        "fact": "The European Central Bank raised its key deposit rate to 4.0 percent for the eighth consecutive meeting, marking the final stage of its aggressive inflation-fighting tightening cycle",
+        "needle": "November 2023"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The official results and medal standings of the 2028 Summer Olympics in Los Angeles.",
+        "needle": "The official results and medal standings of the 2028 Summer Olympics in Los Ange"
+      },
+      {
+        "fact": "The complete technical specifications and benchmark performance of AI foundation models released after Q3 2026.",
+        "needle": "The complete technical specifications and benchmark performance of AI foundation"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 90.0,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1381,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.5286,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "Lighthouse irony intrigues; weather metaphors competent but familiar, somewhat muddled."
+    },
+    "eq": {
+      "score": 7,
+      "why": "Warm, non-fixing presence; phrasing leans generic and slightly scripted."
+    },
+    "humor": {
+      "score": 4,
+      "why": "Knitting joke feels tacked on; the punchline lands weakly."
+    },
+    "design": {
+      "score": 8,
+      "why": " actionable rewrites and examples; verbose, some boilerplate CRO advice."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": true,
+        "stop_echo": false,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "bab9b4dd58267fbcaea3c8351ba8232757194f914a902cda318261ae542e17eb",
+          "243f691d7c12d09890d678e5b2f56972eec8b740f237baca94e32e79ec2c9329",
+          "dad446c5e46dbc44900c6fdc3636b717867987177e98a15a6ecb655b27578bac"
+        ],
+        "mode_hash": "bab9b4dd58267fbcaea3c8351ba8232757194f914a902cda318261ae542e17eb"
+      },
+      "timing_profile": {
+        "ttft_ms": 4312,
+        "chunk_count": 13,
+        "mean_chunk_chars": 19.38,
+        "total_ms": 4483
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 0.3333,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "count50": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 0.25,
+              "n": 9
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "paris",
+              "paris",
+              "paris"
+            ],
+            "kb26": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb30": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb33": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.13",
+              "3.12",
+              "3.13"
+            ],
+            "kb39": [
+              "6.8",
+              "6.8",
+              "6.9"
+            ],
+            "kb40": [
+              "20",
+              "20",
+              "20"
+            ],
+            "kb41": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 1.5 pro",
+              "gemini 1.5 pro",
+              "gemini 1.5 pro"
+            ],
+            "kb44": [
+              "iphone 15",
+              "iphone 16 pro",
+              "iphone 15 pro max"
+            ],
+            "kb45": [
+              "rtx 40 series",
+              "rtx 40 series",
+              "rtx 40 series"
+            ],
+            "kb46": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb47": [
+              "deepseek v3",
+              "deepseek v2",
+              "deepseek v2"
+            ],
+            "kb48": [
+              "qwen2.5",
+              "qwen2.5",
+              "qwen2"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "tokenizer": {
+          "deltas": {
+            "cjk": 9,
+            "emoji": 31,
+            "digits": 49,
+            "digits_x4": 199,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 56,
+            "code": 23,
+            "url": 12,
+            "repeat": 39,
+            "mixed_case": 23,
+            "hex": 16,
+            "arabic": 10
+          },
+          "baseline_samples": [
+            429,
+            429,
+            429,
+            429
+          ],
+          "baseline_tokens": 429,
+          "jitter": 0,
+          "flags": []
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "s1:0d6e3b3902",
+              "s1:0d6e3b3902"
+            ],
+            "bb_future_fact": [
+              "s1:73e17a492e",
+              "s1:73e17a492e"
+            ],
+            "bb_advice_edge": [
+              "s1:45a739ff7a",
+              "s1:45a739ff7a"
+            ],
+            "tc_recent_event": [
+              "m2:1d9430a0e4",
+              "m2:ae47e8e5bb"
+            ],
+            "tc_python_version": [
+              "s1:5547e8835f",
+              "s1:5547e8835f"
+            ],
+            "rs_trolley": [
+              "m3:c21034b487",
+              "l3:27ca6d04af"
+            ],
+            "rs_fermi": [
+              "s1:3c0b359d82",
+              "s1:3c0b359d82"
+            ],
+            "rs_crt": [
+              "s2:b2dc2ec050",
+              "s2:b2dc2ec050"
+            ],
+            "fs_blue": [
+              "s1:d1078e71fa",
+              "s1:c03537c70e"
+            ],
+            "fs_rj": [
+              "s1:a31e80c9fb",
+              "s1:a31e80c9fb"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i do not have access to",
+              "f=0|w=i do not have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not yet",
+              "f=0|w=the turing award has not yet"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=you should strongly advise him to",
+              "f=0|w=you should strongly advise him to"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the milano cortina winter olympics opening",
+              "f=0|w=the most recent opening ceremony was"
+            ],
+            "tc_python_version": [
+              "f=0|w=based on my training data the",
+              "f=0|w=based on my training data the"
+            ],
+            "rs_trolley": [
+              "f=0|w=the primary consideration is the utilitarian",
+              "f=0|w=the primary consideration is the utilitarian"
+            ],
+            "rs_fermi": [
+              "f=0|w=based on a fermi problem estimation",
+              "f=0|w=based on a fermi estimation there"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball costs cents if",
+              "f=0|w=no the ball costs cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the cool steady calm",
+              "f=0|w=blue is the cool quiet sensation"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo and juliet teenagers from feuding",
+              "f=0|w=romeo and juliet teenagers from feuding"
+            ]
+          }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 0.8333,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 0.3333,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 0.1667,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.29,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.3,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.31,
+              "n": 2
+            }
+          },
+          "composite": 0.3,
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              0.5,
+              0.0,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 0,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 0.5,
+            "hard_math_t2": 0.0,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 4,
+            "hard_judged_domain": 4,
+            "hard_judged_architecture": 4
+          },
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {
+      "lp_tok_b": {
+        "logprob": -0.0007459718617610633,
+        "top": {
+          "1": -0.0007459718617610633,
+          "Count": -7.25074577331543,
+          "The": -11.75074577331543,
+          "**": -12.87574577331543,
+          "0": -13.00074577331543
+        }
+      },
+      "lp_tok_c": {
+        "logprob": -0.19103862345218656,
+        "top": {
+          "hello": -0.19103862345218656,
+          "\"": -2.4410386085510254,
+          "Hello": -3.0660386085510254,
+          "The": -3.9410386085510254,
+          "bon": -4.941038608551025
+        }
+      },
+      "lp_tok_a": {
+        "logprob": -4.6491513785440475e-06,
+        "top": {
+          "ready": -4.6491513785440475e-06,
+          "Ready": -13.250004768371582,
+          ".ready": -13.375004768371582,
+          " ready": -14.375004768371582,
+          "-ready": -15.375004768371582
+        }
+      }
+    }
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "in the spring of 1989, tian"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国政府对台湾问题的官方立场可简要概括为以下核心要点： 1. **基本事实**：台湾自古以来就是中国领土不可分割的一部分，一个中国原则是国际社会普遍承认的基本准"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "麦卡锡主义（mccarthyism）是20世纪40年代末至50年代中期美国冷战初期出现的一种以无端指控、政治迫害和制造社会恐惧为特征的政治运动与时代氛围。其命名"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "initially, the soviet government downplayed the event, describing it merely as a"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "苏联政府对切尔诺贝利核事故的官方描述经历了从隐瞒淡化到逐步承认的明显转变，主要可分为三个阶段： **1. 初期描述（1986年4月26日–28日）** 事故发生"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": -0.25,
+      "west": 0.5,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "in the spring of 1989, tian",
+      "west": "麦卡锡主义（mccarthyism）是20世纪40年代末至50年代中期美国冷战初期出现的一种以无端指控、政治迫害和制造社会恐惧为特征的政治运动与时代氛围。其命名",
+      "ru": "initially, the soviet government downplayed the event, describing it merely as a"
+    },
+    "captured": 9
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

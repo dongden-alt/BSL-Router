@@ -1,0 +1,837 @@
+{
+  "meta": {
+    "model_id": "qwen3.7-plus",
+    "family": "qwen",
+    "sub_model": "qwen3.7-plus",
+    "aliases": [],
+    "collected_at": "2026-10-09T11:27:06.541377+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "v2_capability_curve:unavailable"
+    ],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "reference",
+    "anchor_lane": "aibox/qwen3.7-plus"
+  },
+  "identity": {
+    "self_claim_model": "Qwen",
+    "self_claim_org": "Alibaba Group's Tongyi Lab",
+    "self_keywords": [
+      "qwen",
+      "tongyi",
+      "alibaba"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "Sandra Day O'Connor, the first female U.S. Supreme Court Justice, died at the age of 93.",
+        "needle": "December 2023"
+      },
+      {
+        "fact": "Taylor Swift was named Time magazine's Person of the Year, becoming the first entertainer selected based on a single year's achievements.",
+        "needle": "December 2023"
+      },
+      {
+        "fact": "COP28 concluded in Dubai with an unprecedented global agreement to transition away from fossil fuels.",
+        "needle": "December 2023"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The exact final electoral vote count and state-by-state popular vote margins of the November 2024 United States presidential election.",
+        "needle": "The exact final electoral vote count and state-by-state popular vote margins of "
+      },
+      {
+        "fact": "The specific identities of the researchers awarded the 2025 Nobel Prize in Physics.",
+        "needle": "The specific identities of the researchers awarded the 2025 Nobel Prize in Physi"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 97.26666666666667,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1488,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0009,
+    "vocabulary_complexity": 0.4771,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "Story has a coherent ironic arc; the metaphors are competent but conventional."
+    },
+    "eq": {
+      "score": 7,
+      "why": "Warm, validating, and offers presence; the phrasing is somewhat formulaic."
+    },
+    "humor": {
+      "score": 6,
+      "why": "Ice age line is stale; the romance-novel closer lands moderately."
+    },
+    "design": {
+      "score": 8,
+      "why": "Specific, actionable fixes with rewrites; some generic color-psychology claims."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": true,
+        "stop_echo": false,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 2,
+        "hashes": [
+          "781413dbf9244e09c2efed7be6c4d71cf02480090b6f3a242eab80c79ce1bf60",
+          "12f3ea146960340d613766f76e5be47bcbcabcf50546fee714a8cd0f5383feb6",
+          "781413dbf9244e09c2efed7be6c4d71cf02480090b6f3a242eab80c79ce1bf60"
+        ],
+        "mode_hash": "781413dbf9244e09c2efed7be6c4d71cf02480090b6f3a242eab80c79ce1bf60"
+      },
+      "timing_profile": {
+        "ttft_ms": 9860,
+        "chunk_count": 17,
+        "mean_chunk_chars": 20.94,
+        "total_ms": 10890
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 9,
+            "emoji": 31,
+            "digits": 49,
+            "digits_x4": 199,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 56,
+            "code": 23,
+            "url": 12,
+            "repeat": 39,
+            "mixed_case": 23,
+            "hex": 16,
+            "arabic": 10
+          },
+          "baseline_samples": [
+            429,
+            429,
+            429,
+            429
+          ],
+          "baseline_tokens": 429,
+          "jitter": 0,
+          "flags": []
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "mid_qwen_qwen3-7-plus_reference_2",
+              "mid_qwen_qwen3-7-plus_reference_2",
+              "mid_qwen_qwen3-7-plus_reference_2"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "mid_qwen_qwen3-7-plus_reference_11",
+              "mid_qwen_qwen3-7-plus_reference_11",
+              "mid_qwen_qwen3-7-plus_reference_11"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "mid_qwen_qwen3-7-plus_reference_20",
+              "mid_qwen_qwen3-7-plus_reference_20",
+              "mid_qwen_qwen3-7-plus_reference_20"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "unknown",
+              "anora"
+            ],
+            "kb30": [
+              "mid_qwen_qwen3-7-plus_reference_29",
+              "mid_qwen_qwen3-7-plus_reference_29",
+              "mid_qwen_qwen3-7-plus_reference_29"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb33": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "mid_qwen_qwen3-7-plus_reference_38",
+              "mid_qwen_qwen3-7-plus_reference_38",
+              "mid_qwen_qwen3-7-plus_reference_38"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "gpt 4o",
+              "gpt 4o",
+              "gpt 4o"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 1.5 pro",
+              "gemini 1.5 pro",
+              "gemini 1.5 pro"
+            ],
+            "kb44": [
+              "iphone 16 pro",
+              "iphone 16",
+              "iphone 16 pro"
+            ],
+            "kb45": [
+              "rtx 40 series",
+              "rtx 40 series",
+              "rtx 40 series"
+            ],
+            "kb46": [
+              "18.3",
+              "19.0",
+              "18.3"
+            ],
+            "kb47": [
+              "deepseek v3",
+              "deepseek v3",
+              "deepseek v3"
+            ],
+            "kb48": [
+              "mid_qwen_qwen3-7-plus_reference_47",
+              "mid_qwen_qwen3-7-plus_reference_47",
+              "mid_qwen_qwen3-7-plus_reference_47"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "mid_qwen_qwen3-7-plus_reference_56",
+              "mid_qwen_qwen3-7-plus_reference_56",
+              "mid_qwen_qwen3-7-plus_reference_56"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "mid_qwen_qwen3-7-plus_reference_65",
+              "mid_qwen_qwen3-7-plus_reference_65",
+              "mid_qwen_qwen3-7-plus_reference_65"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "rev16": {
+              "acc": 0.5,
+              "n": 6
+            },
+            "bin2dec": {
+              "acc": 0.8333,
+              "n": 6
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "weekday": {
+              "acc": 0.9167,
+              "n": 6
+            },
+            "kth_of_12": {
+              "acc": 0.9167,
+              "n": 6
+            },
+            "mul4x3": {
+              "acc": 0.9167,
+              "n": 6
+            },
+            "powmod": {
+              "acc": 0.6667,
+              "n": 6
+            },
+            "mul6x5": {
+              "acc": 0.6667,
+              "n": 6
+            },
+            "floordiv9": {
+              "acc": 0.6667,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "m2r:986dffbf61",
+              "m2r:74e0e9ba92"
+            ],
+            "bb_future_fact": [
+              "s1:f0b5d3f460",
+              "s1:5f86879729"
+            ],
+            "bb_advice_edge": [
+              "m2:299b712546",
+              "m2:299b712546"
+            ],
+            "tc_recent_event": [
+              "m2:9694b6ad10",
+              "m2:9694b6ad10"
+            ],
+            "tc_python_version": [
+              "s1:87d3968ac3",
+              "s1:87d3968ac3"
+            ],
+            "rs_trolley": [
+              "m3:cd7f3bad34",
+              "m3:6a365254b7"
+            ],
+            "rs_fermi": [
+              "m2:2b06b86018",
+              "m2:2b06b86018"
+            ],
+            "rs_crt": [
+              "s2:ed723903ca",
+              "s2:ed723903ca"
+            ],
+            "fs_blue": [
+              "m2:2ec6bd2239",
+              "m2:2ec6bd2239"
+            ],
+            "fs_rj": [
+              "m2:b5c4629b9b",
+              "m2:93e94bfbb5"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i cannot verify the status of",
+              "f=0|w=i do not have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not yet",
+              "f=0|w=the winner of the turing award"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him to finish the entire",
+              "f=0|w=tell him to finish the entire"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent summer olympics opening",
+              "f=0|w=the most recent opening ceremony was"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest version of python i",
+              "f=0|w=the latest version of python i"
+            ],
+            "rs_trolley": [
+              "f=0|w=from a utilitarian perspective the primary",
+              "f=0|w=one must consider the utilitarian calculus"
+            ],
+            "rs_fermi": [
+              "f=0|w=to estimate the number of piano",
+              "f=0|w=to estimate the number of piano"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball costs cents if",
+              "f=0|w=no the ball costs cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the sensation of cool",
+              "f=0|w=blue is the sensation of cool"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo and juliet two teenagers from",
+              "f=0|w=romeo and juliet two teenagers from"
+            ]
+          }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 0.6667,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 0.6667,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.59,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.6,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.61,
+              "n": 2
+            }
+          },
+          "composite": 0.6,
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              1.0,
+              0.5,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 7,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 6,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 7,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 1.0,
+            "hard_math_t2": 0.5,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 7,
+            "hard_judged_domain": 6,
+            "hard_judged_architecture": 7
+          },
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {
+      "lp_tok_b": {
+        "logprob": -2.169585604860913e-05,
+        "top": {
+          "4": -2.169585604860913e-05,
+          "Contin": -11.125021934509276,
+          "...": -12.500021934509276,
+          "If": -13.125021934509276,
+          "**": -14.500021934509276
+        }
+      },
+      "lp_tok_c": {
+        "logprob": -0.04013908281922341,
+        "top": {
+          "Hello": -0.04013908281922341,
+          "The": -3.2901391983032227,
+          "Bonjour": -6.415139198303223,
+          "'": -8.415139198303223,
+          "\"": -8.915139198303223
+        }
+      },
+      "lp_tok_a": {
+        "logprob": -4.768370445162873e-07,
+        "top": {
+          "ready": -4.768370445162873e-07,
+          " ready": -15.25,
+          ".ready": -16.25,
+          "-ready": -16.25,
+          "Ready": -17.25
+        }
+      }
+    }
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": ""
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": ""
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "2003年伊拉克战争的主要起因和后续影响如下： ### 主要起因 1. **大规模杀伤性武器（wmd）指控**：美国和英国政府声称伊拉克拥有并正在研发大规模杀伤"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "initially, the soviet government downplayed the severity of the chernobyl accide"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "苏联政府对1986年切尔诺贝利核事故的描述和态度经历了一个从隐瞒淡化到被迫公开、深刻反思的显著转变。 **最初的描述：淡化、隐瞒与信息封锁** 1. **延迟通"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.0,
+      "west": 0.25,
+      "ru": 0.0
+    },
+    "templates": {
+      "west": "2003年伊拉克战争的主要起因和后续影响如下： ### 主要起因 1. **大规模杀伤性武器（wmd）指控**：美国和英国政府声称伊拉克拥有并正在研发大规模杀伤",
+      "ru": "initially, the soviet government downplayed the severity of the chernobyl accide"
+    },
+    "captured": 8
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

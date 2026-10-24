@@ -54,6 +54,22 @@ class BaselineStore:
         sdir = Path(standards_dir)
         if not sdir.exists():
             return out
+        # Pass 1: reference standards (*_reference.json, source_tag == "reference"),
+        # keyed by sub-model without the trailing "_reference" suffix so variants
+        # harvested with --tag reference (e.g. qwen3.7-flash, qwen3.8-flash,
+        # glm-5.3-flash, kimi-k2.7-code, gpt-5.6-luna) enter the match pool.
+        for path in sorted(sdir.glob(f"{family}_*_reference.json")):
+            key = path.stem[len(family) + 1:]
+            if key.endswith("_reference"):
+                key = key[:-len("_reference")]
+            try:
+                std = json.loads(path.read_text(encoding="utf-8"))
+                tag = (std.get("meta", {}).get("source_tag") or "").strip()
+                if tag in ("", "reference"):
+                    out[key] = std
+            except Exception:
+                continue
+        # Pass 2: canonical standards (source_tag empty) take precedence.
         for path in sorted(sdir.glob(f"{family}_*.json")):
             key = path.stem[len(family) + 1:]  # strip "family_"
             try:

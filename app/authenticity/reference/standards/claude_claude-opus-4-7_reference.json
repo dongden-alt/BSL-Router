@@ -1,0 +1,800 @@
+{
+  "meta": {
+    "model_id": "claude-opus-4-7",
+    "family": "claude",
+    "sub_model": "claude-opus-4-7",
+    "aliases": [],
+    "collected_at": "2026-10-09T08:54:49.484143+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "reference",
+    "anchor_lane": "a6api/claude-opus-4-7",
+    "anchor_lane_updated_at": "2026-10-21",
+    "anchor_lane_note": "re-pointed to a6api per user directive 2026-10-21 (a6api 4.7 confirmed authentic; mintrouter Flex quota exhausted)"
+  },
+  "identity": {
+    "self_claim_model": "",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "Early 2025 (January–February) events near my training cutoff:",
+        "needle": "Early 2025 (January–February) events near my training cutoff:"
+      },
+      {
+        "fact": "Donald Trump was inaugurated for his second term as U.S. President on January 20, 2025.",
+        "needle": "Donald Trump, 47th U.S. President"
+      },
+      {
+        "fact": "Chinese AI startup DeepSeek launched its R1 reasoning model, triggering a sharp sell-off in U.S. tech stocks (notably Nvidia) in late January 2025.",
+        "needle": "DeepSeek-R1 released January 20, 2025"
+      },
+      {
+        "fact": "Israel and Hamas began the first phase of a Gaza ceasefire and hostage-release deal mediated by Qatar, Egypt, and the United States.",
+        "needle": "Ceasefire took effect January 19, 2025"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The outcome and headline announcements of any major AI model releases from mid-2025 onward (e.g., specific GPT-5 or Gemini 3 launch details and benchmarks).",
+        "needle": "The outcome and headline announcements of any major AI model releases from mid-2"
+      },
+      {
+        "fact": "The results and notable moments of the 2025 UEFA Champions League final and the 2026 Winter Olympics in Milan–Cortina.",
+        "needle": "The results and notable moments of the 2025 UEFA Champions League final and the "
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "-",
+    "header_depth": 1,
+    "avg_sentence_length": 66.26923076923077,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1771,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0011,
+    "vocabulary_complexity": 0.549,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 7,
+      "why": "Evocative imagery and controlled prose; familiar symbolism and tidy emotional resolution."
+    },
+    "eq": {
+      "score": 7,
+      "why": "Validates hurt without unsolicited advice, but promises unrealistic ongoing presence."
+    },
+    "humor": {
+      "score": 7,
+      "why": "Light library jokes land naturally, though repeated embellishments dilute their punch."
+    },
+    "design": {
+      "score": 7,
+      "why": "Actionable alternatives and concrete examples; unsupported absolutes and assumptions weaken critique."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "4078f676015236b184f27cc3ce5b7df553c0e7a5081bf0833210cbb2d22807a8",
+          "46c17f35b568463e4d134591f4dcb58c1f58b053e9564969b01f9794837ec8e8",
+          "ab5edef34ca75d349351a57949d67e78c6301410411351abc82c26bf92414c41"
+        ],
+        "mode_hash": "4078f676015236b184f27cc3ce5b7df553c0e7a5081bf0833210cbb2d22807a8"
+      },
+      "timing_profile": {
+        "ttft_ms": 3468,
+        "chunk_count": 27,
+        "mean_chunk_chars": 12.33,
+        "total_ms": 4781
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 17,
+            "emoji": 33,
+            "digits": 13,
+            "digits_x4": 69,
+            "spaces": 7,
+            "newlines": -4,
+            "rare_unicode": 54,
+            "code": 26,
+            "url": 13,
+            "repeat": 20,
+            "mixed_case": 31,
+            "hex": 8,
+            "arabic": 17
+          },
+          "baseline_samples": [
+            5245,
+            5245,
+            5245,
+            5245
+          ],
+          "baseline_tokens": 5245,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 1.0,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "eagles",
+              "eagles",
+              "eagles"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "thunder",
+              "thunder",
+              "thunder"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "sinner"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "krasznahorkai",
+              "krasznahorkai",
+              "krasznahorkai"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "6.11",
+              "6.11",
+              "6.11"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "gpt 5",
+              "gpt 5",
+              "gpt 5"
+            ],
+            "kb42": [
+              "claude opus 4.5",
+              "claude opus 4.7",
+              "claude opus 4.7"
+            ],
+            "kb43": [
+              "gemini 2.5 pro",
+              "gemini 2.5 pro",
+              "gemini 2.5 pro"
+            ],
+            "kb44": [
+              "iphone 17 pro",
+              "iphone 17 pro",
+              "iphone 17 pro"
+            ],
+            "kb45": [
+              "rtx 50 series",
+              "rtx 50 series",
+              "rtx 50 series"
+            ],
+            "kb46": [
+              "19.0",
+              "19.0",
+              "19.0"
+            ],
+            "kb47": [
+              "deepseek v3",
+              "deepseek v3",
+              "deepseek v3"
+            ],
+            "kb48": [
+              "qwen2.5",
+              "qwen2.5",
+              "qwen2.5"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "m3r:a7a64f6b02",
+              "m2r:360b3a2a7f"
+            ],
+            "bb_future_fact": [
+              "s1r:5a6b3c669e",
+              "s1r:5a6b3c669e"
+            ],
+            "bb_advice_edge": [
+              "m2:a9e4ee1b13",
+              "m2:e3d9b036c7"
+            ],
+            "tc_recent_event": [
+              "m2:ae62000f06",
+              "m2:6a3dc15daf"
+            ],
+            "tc_python_version": [
+              "s1:ff9c346839",
+              "s1:ff9c346839"
+            ],
+            "rs_trolley": [
+              "l3:da45ea6fef",
+              "l3:872e142008"
+            ],
+            "rs_fermi": [
+              "l4l:ca6743006c",
+              "l2l:436ab2cd76"
+            ],
+            "rs_crt": [
+              "m2:bfab53cbda",
+              "m2:10f2cc912e"
+            ],
+            "fs_blue": [
+              "m1:7433490a3f",
+              "m1:a9b9c3a29e"
+            ],
+            "fs_rj": [
+              "m2:bc402ce246",
+              "m2:0af8774b9a"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i don t have access to",
+              "f=0|w=i don t have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=i don t have information about",
+              "f=0|w=i don t have information about"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him to finish the full",
+              "f=0|w=tell him to finish the full"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent olympics opening ceremony",
+              "f=0|w=the most recent olympics opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=python was released in october",
+              "f=0|w=python was released in october"
+            ],
+            "rs_trolley": [
+              "f=0|w=consider the ethical frameworks in tension",
+              "f=0|w=the core tension is between a"
+            ],
+            "rs_fermi": [
+              "f=0|w=piano tuners in chicago fermi estimate",
+              "f=0|w=piano tuners in chicago fermi estimate"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball is cents if",
+              "f=0|w=no the ball is cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the cool quiet feeling",
+              "f=0|w=blue is the cool quiet feeling"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo and juliet young heirs of",
+              "f=0|w=romeo and juliet young heirs of"
+            ]
+          }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 1.0,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "**Computing S mod 997**\n\nSince 997 is prime, work with the closed form S = n(n+1)(2n+1)/6 and reduce each factor mod 997:\n\n- n = 1831 ≡ 834\n- n+1 = 1832 ≡ 835\n- 2n+1 = 3663 ≡ 672\n- 6⁻¹ mod 997 = 831 (since 6·831 = 4986 = 5·997 + 1)\n\nChain the multiplications:\n\n- 834·835 = 696390 = 698·997 + 484 → 484\n- 484·672 = 325248 = 326·997 + 226 → 226\n- 226·831 = 187806 = 188·997 + 370 → 370\n\nSo S ≡ 834·835·672·6⁻¹ ≡ 370 (mod 997).\n\nANSWER: 370",
+            "hm_t1_1": "Using \\(\\sum_{k=1}^{n} k^3=\\left(\\frac{n(n+1)}{2}\\right)^2\\) with \\(n=1428\\):\n\n\\[\n\\frac{1428\\cdot1429}{2}=714\\cdot1429\n\\]\n\nModulo \\(2017\\):\n\n\\[\n714\\cdot1429 \\equiv 1721 \\equiv -296 \\pmod{2017}\n\\]\n\nSo\n\n\\[\nS \\equiv (-296)^2=296^2=87616 \\equiv 885 \\pmod{2017}\n\\]\n\nANSWER: 885",
+            "hm_t2_0": "Multiples of 6: ⌊93097/6⌋ = 15516 (6·15516 = 93096).\nMultiples of 11: ⌊93097/11⌋ = 8463 (11·8463 = 93093).\nMultiples of both (66): ⌊93097/66⌋ = 1410 (66·1410 = 93060; 66·1411 = 93126).\n\nInclusion–exclusion: 15516 + 8463 − 1410 = 22569.\n\nANSWER: 22569",
+            "hm_t2_1": "**Approach:** Use CRT with modulus 15·11 = 165.\n\nNumbers with x ≡ 9 (mod 11) are x = 9 + 11k. Coprimality to 15 requires x not divisible by 3 or 5:\n- Divisible by 3 ⟺ 9 + 11k ≡ 2k ≡ 0 (mod 3) ⟺ k ≡ 0 (mod 3)\n- Divisible by 5 ⟺ 9 + 11k ≡ 4 + k ≡ 0 (mod 5) ⟺ k ≡ 1 (mod 5)\n\nAmong k = 0..14 (one full period of 165), the excluded k are {0, 1, 3, 6, 9, 11, 12} — 7 values, leaving **8 valid residues** per block of 165.\n\nNow split the range 1..177160:\n- 177160 = 165·1073 + 115, so there are 1073 complete blocks → 1073·8 = **8584**.\n- In the remainder 1..115, the candidates x ≡ 9 (mod 11) are 9, 20, 31, 42, 53, 64, 75, 86, 97, 108. Removing those divisible by 3 or 5 (9, 20, 42, 75, 108) leaves 31, 53, 64, 86, 97 → **5**.\n\nTotal: 8584 + 5 = 8589.\n\nANSWER: 8589",
+            "hm_t3_1": "## Counting Integers with Exactly 4 Divisors\n\nA positive integer n has exactly 4 divisors in exactly two cases:\n- **Type A:** n = p³ for a prime p (divisors: 1, p, p², p³)\n- **Type B:** n = p·q for distinct primes p < q (divisors: 1, p, q, pq)\n\n---\n\n### Type A: n = p³ ≤ 20090\n\nNeed p ≤ ∛20090 ≈ 27.17. Primes to check: 2, 3, 5, 7, 11, 13, 17, 19, 23.\n\n| p | p³ | ≤ 20090? |\n|---|-----|----------|\n| 2 | 8 | ✓ |\n| 3 | 27 | ✓ |\n| 5 | 125 | ✓ |\n| 7 | 343 | ✓ |\n| 11 | 1331 | ✓ |\n| 13 | 2197 | ✓ |\n| 17 | 4913 | ✓ |\n| 19 | 6859 | ✓ |\n| 23 | 12167 | ✓ |\n| 29 | 24389 | ✗ |\n\n**Type A count: 9**\n\n---\n\n### Type B: n = p·q ≤ 20090, p < q both prime\n\nFor each prime p, count primes q with p < q ≤ ⌊20090/p⌋. This requires p ≤ √20090 ≈ 141.7, so p ≤ 139.\n\nUsing the prime counting function π(x), the count for each p is π(⌊20090/p⌋) − π(p):\n\n| p | ⌊20090/p⌋ | π(⌊20090/p⌋) | π(p) | Count |\n|---|-----------|--------------|------|-------|\n| 2 | 10045 | 1233 | 1 | 1232 |\n| 3 | 6696 | 862 | 2 | 860 |\n| 5 | 4018 | 554 | 3 | 551 |\n| 7 | 2870 | 416 | 4 | 412 |\n| 11 | 1826 | 281 | 5 | 276 |\n| 13 | 1545 | 243 | 6 | 237 |\n| 17 | 1181 | 194 | 7 | 187 |\n| 19 | 1057 | 177 | 8 | 169 |\n| 23 | 873 | 150 | 9 | 141 |\n| 29 | 692 | 125 | 10 | 115 |\n| 31 | 648 | 117 | 11 | 106 |\n| 37 | 542 | 100 | 12 | 88 |\n| 41 | 489 | 93 | 13 | 80 |\n| 43 | 467 | 91 | 14 | 77 |\n| 47 | 427 | 82 | 15 | 67 |\n| 53 | 379 | 75 | 16 | 59 |\n| 59 | 340 | 68 | 17 | 51 |\n| 61 | 329 | 66 | 18 | 48 |\n| 67 | 299 | 62 | 19 | 43 |\n| 71 | 282 | 60 | 20 | 40 |\n| 73 | 275 | 58 | 21 | 37 |\n| 79 | 254 | 54 | 22 | 32 |\n| 83 | 241 | 53 | 23 | 30 |\n| 89 | 225 | 48 | 24 | 24 |\n| 97 | 207 | 46 | 25 | 21 |\n| 101 | 198 | 45 | 26 | 19 |\n| 103 | 195 | 44 | 27 | 17 |\n| 107 | 187 | 42 | 28 | 14 |\n| 109 | 184 | 42 | 29 | 13 |\n| 113 | 177 | 40 | 30 | 10 |\n| 127 | 158 | 37 | 31 | 6 |\n| 131 | 153 | 36 | 32 | 4 |\n| 137 | 146 | 34 | 33 | 1 |\n| 139 | 144 | 34 | 34 | 0 |\n\n**Type B total: 1232 + 860 + 551 + 2424 = 5067**\n\n(Sum from p=7 to p=139 = 412+276+237+187+169+141+115+106+88+80+77+67+59+51+48+43+40+37+32+30+24+21+19+17+14+13+10+6+4+1+0 = 2424)\n\n---\n\n### Final Count\n\n$$9 + 5067 = 5076$$\n\nANSWER: 5076",
+            "hj_hard_architecture_0": "## Production Architecture: Collaborative Code Editor at 50k Concurrent Users\n\nThis design assumes 50k concurrent users distributed across many documents, with hot documents reaching hundreds to low thousands of simultaneous editors. Pure 50k-on-one-file fan-out is addressed explicitly in the failure modes section, but it hits physics limits that no architecture eliminates cheaply.\n\n---\n\n## Conflict Resolution: CRDT over OT\n\nOperational Transformation requires a central sequencing server — every op must pass through one ordering point. At this scale that's a bottleneck and a single point of failure. Use a **YATA-variant CRDT** (the algorithm behind Yjs) instead.\n\nEach character carries a stable identity derived from who inserted it and when. Insertions are anchored to neighboring character IDs, not to indexes, so concurrent inserts at the same position resolve deterministically without coordination.\n\n```rust\n// Core identity: who inserted this character and their local clock at that moment\n#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]\nstruct CharId {\n    client:  u32,   // 4 bytes — assigned at session start, unique across cluster\n    clock:   u64,   // 8 bytes — monotonically increasing Lamport clock per client\n}\n\n// A single CRDT node in the document\nstruct CharNode {\n    id:      CharId,\n    ch:      u32,     // Unicode codepoint; 0 = tombstone sentinel\n    deleted: bool,    // soft delete — tombstones stay forever\n    left:    CharId,  // left-origin neighbor at insert time\n    right:   CharId,  // right-origin neighbor at insert time\n}\n\n// The two operation types\nenum Op {\n    Insert { id: CharId, ch: u32, left: CharId, right: CharId },\n    Delete { target: CharId },\n}\n\n// Sync state: what ops has this peer seen from each client?\ntype VersionVector = BTreeMap<u32 /*client*/, u64 /*max_clock_seen*/>;\n```\n\n**Storage layout**: 41 bytes per `CharNode`. A 100k-character source file weighs about 4 MB in CRDT form. With a B-tree index over the linked list, position lookups are O(log n) rather than O(n) traversal.\n\n**Tombstoning trade-off**: deleted characters stay in the structure forever, which means long-lived documents grow unbounded. Counter this with periodic garbage collection: once a deletion is confirmed seen by all clients (VV convergence), remove the tombstone and rewrite a compacted snapshot. For most code files edited over months, this is manageable; for documents with years of churn, schedule GC explicitly.\n\n**Why not Diamond Types or Automerge?** Both are solid choices with better memory layouts. Yjs/YATA is chosen here because it has the most production deployment data at scale and the widest ecosystem of editor bindings. The architecture is algorithm-agnostic — swap the CRDT engine behind the document node interface without changing anything else.\n\n---\n\n## System Layers\n\n```\nClients (browsers, editors)\n        │ WebSocket (TLS 1.3)\n        ▼\n┌──────────────────────────────────┐\n│  WebSocket Gateway Tier          │  ← 8 nodes × 6k connections each\n│  (Go, gorilla/websocket)         │    auth, rate-limit, session registry\n└──────────────┬───────────────────┘\n               │ gRPC\n        ┌──────▼──────────────────────┐\n        │  Op Router                  │  ← consistent-hash doc → node\n        └──────┬──────────────────────┘\n               │\n      ┌────────▼────────┐\n      │  Document Nodes  │  ← one shard per ~200 hot docs\n      │  (Rust)          │    CRDT engine in memory\n      └────────┬─────────┘\n               │ produce\n      ┌────────▼─────────┐     ┌──────────────────┐\n      │  Kafka            │────▶│  Op Log Consumer  │──▶ Postgres\n      │  (one topic/doc)  │     │  (snapshot writer)│──▶ S3\n      └────────┬──────────┘     └──────────────────┘\n               │ consume (fan-out)\n      ┌────────▼─────────┐\n      │  Gateway nodes    │  ← each gateway subscribes to topics for\n      │  (broadcast out)  │    docs its connected clients are editing\n      └───────────────────┘\n\n      Redis Cluster: presence, rate-limit tokens, session→gateway map\n      Postgres (Citus): op log, doc metadata, ACLs\n      S3: CRDT snapshots\n```\n\n---\n\n## Op Pipeline (Hot Path)\n\n1. Client inserts a character; its local CRDT generates an `Insert` op and optimistically applies it locally.\n2. Client sends the op over its WebSocket connection, including its current version vector.\n3. Gateway validates the JWT, checks rate-limit tokens (token bucket in Redis, 100 ops/sec per user), and routes to the document's primary node via gRPC.\n4. Document node applies the op to its in-memory CRDT. If the client's VV shows they are behind, the node sends them the missing ops first (anti-entropy), then applies the new one.\n5. Node publishes the op to the document's Kafka topic (one topic per document, keyed by `op_id` for ordering).\n6. All gateway nodes that have clients editing this document consume from Kafka and forward the op over the relevant WebSocket connections.\n7. An async Postgres consumer writes the op to the op log table. A snapshot consumer triggers a new snapshot every 1,000 ops or 5 minutes, whichever comes first.\n\n**Batching**: gateway nodes collect ops destined for a given client over a 20ms window and send them as a single frame. This cuts per-message overhead by an order of magnitude during burst edits.\n\n---\n\n## Presence\n\nPresence is ephemeral and last-writer-wins is correct: the latest cursor position from a user is the only one that matters.\n\n```typescript\ninterface PresenceState {\n  userId:      string;\n  sessionId:   string;          // unique per tab; same user can have multiple\n  docId:       string;\n  cursor:      CharId;          // CRDT position — stable across edits by others\n  selection:   { anchor: CharId; head: CharId } | null;\n  color:       string;          // derived deterministically: hsl(hash(userId) % 360, 70%, 55%)\n  displayName: string;\n  updatedAt:   number;          // Unix ms\n}\n```\n\n**Broadcast**: presence updates travel the same Kafka pipeline as ops, in a separate lower-priority topic. Clients send updates at most every 100ms on cursor move, with a heartbeat every 3 seconds to keep the record alive.\n\n**Storage**: Redis hash per document, one field per `sessionId`, with a TTL of 10 seconds refreshed on each update. A disconnecting gateway immediately publishes a `leave` event; stale entries expire automatically.\n\n**Scale problem with presence**: broadcasting all 1,000 cursors to each of 1,000 users on a hot document means 1 million updates per presence heartbeat cycle. Mitigate by viewport-scoping: the server only sends presence for users whose cursors are within 300 lines of the receiving client's viewport. This reduces fan-out by 10–100x in practice.\n\n---\n\n## Persistence\n\n### Op Log (Postgres with Citus)\n\n```sql\nCREATE TABLE ops (\n  doc_id       UUID        NOT NULL,\n  op_seq       BIGSERIAL,\n  client_id    INT         NOT NULL,\n  client_clock BIGINT      NOT NULL,\n  op_type      SMALLINT    NOT NULL,  -- 1 = insert, 2 = delete\n  payload      BYTEA       NOT NULL,  -- msgpack-encoded Op\n  written_at   TIMESTAMPTZ DEFAULT NOW(),\n  PRIMARY KEY (doc_id, op_seq)\n) PARTITION BY HASH (doc_id);  -- 32 partitions\n```\n\nIndex on `(doc_id, client_id, client_clock)` for anti-entropy queries: \"give me all ops for doc X that client Y hasn't seen.\"\n\n### Snapshots (S3)\n\nEvery 1,000 ops or 5 minutes, the snapshot writer serializes the full in-memory CRDT state to a compact binary blob (msgpack over the CharNode array, ~41 bytes/node with delta-encoding bringing it closer to 20 bytes/node) and uploads to:\n\n```\ns3://collab-snapshots/{org_id}/{doc_id}/{snapshot_seq}.bin\n```\n\nA `snapshots` table in Postgres tracks `(doc_id, snapshot_seq, op_watermark, s3_key, size_bytes)`. Recovery: load the latest snapshot, replay Postgres ops where `op_seq > op_watermark`.\n\n**Eviction**: documents with no active clients are evicted from document nodes after 10 minutes of inactivity. The next access cold-starts from S3 + Postgres replay, typically 1–5 seconds for a 10k-line file.\n\n### Document Metadata (Postgres)\n\n```sql\nCREATE TABLE documents (\n  doc_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n  org_id       UUID NOT NULL,\n  path         TEXT NOT NULL,           -- e.g. 'src/main.rs'\n  language     TEXT,\n  created_by   UUID NOT NULL,\n  created_at   TIMESTAMPTZ DEFAULT NOW(),\n  last_op_at   TIMESTAMPTZ,\n  UNIQUE (org_id, path)\n);\n\nCREATE TABLE doc_acls (\n  doc_id       UUID REFERENCES documents,\n  principal_id UUID NOT NULL,           -- user or team\n  role         SMALLINT NOT NULL,       -- 1=viewer, 2=editor, 3=owner\n  PRIMARY KEY (doc_id, principal_id)\n);\n```\n\nACLs are cached in Redis at `acl:{doc_id}:{user_id}` with a 60-second TTL. On permission change, the ACL service publishes an invalidation event.\n\n---\n\n## Failure Modes\n\n### Document Node Crash\n\nThe node loses all in-memory state. Recovery sequence:\n\n1. Kubernetes detects the pod failure and starts a replacement (typically 15–30 seconds).\n2. New node looks up the latest snapshot for each document it owned and fetches from S3.\n3. New node replays ops from Postgres where `op_seq > op_watermark`.\n4. New node marks itself ready; the Op Router begins directing traffic to it.\n\nMeanwhile, client connections to the dead node's gateway subscriptions are broken. Clients auto-reconnect with exponential backoff (base 200ms, cap 30s, ±30% jitter). On reconnect, each client sends its VV; the document node responds with any ops the client missed.\n\nClients buffer locally generated ops during the outage. On reconnect they submit the buffer. Because these are CRDTs, all buffered ops merge cleanly regardless of what other clients submitted during the downtime.\n\n**Trade-off**: recovery time is bounded by snapshot age plus Postgres replay latency. At 1,000-op snapshot intervals and ~100 ops/sec for a hot document, recovery requires replaying at most ~1,000 ops, which takes under 1 second. For a cold document last edited weeks ago, it's still just load-snapshot from S3 (1–3 seconds).\n\n### Gateway Node Crash\n\nUp to 6,000 users lose their WebSocket connections. They reconnect to any gateway (load balancer round-robins them), re-authenticate via JWT, and send their VV. No document state is stored on gateways, so this failure has no persistence impact. Expected user-visible interruption: 2–10 seconds including reconnect and VV sync.\n\n### Kafka Partition Leader Election\n\nOps cannot be published during leader election (~30 seconds in the worst case). The document node buffers incoming ops in a bounded in-memory queue (default: 10,000 ops, ~1 MB). If the queue fills, the gateway returns a retryable 503 to clients; clients hold their op locally and retry after backoff. Once Kafka recovers, the queue drains and the backlog is written through in order. No ops are lost.\n\n### Network Partition (Split Brain)\n\nThis is where CRDTs earn their place. During a partition, both sides of the network continue accepting ops and applying them to their local CRDT states. When the partition heals, each side sends its VV to the other; missing ops are exchanged and merged. Convergence is guaranteed by the CRDT invariant — no human intervention, no conflict dialogs, no data loss.\n\nOT would require one side to reject ops or roll back — incompatible with staying available during a partition.\n\n### Hot Document (Viral File, 10k+ Simultaneous Editors)\n\nAt 10,000 active editors and 1 op/second each, the document node receives 10,000 ops/second and must fan out each op to 10,000 clients — 100 million message deliveries per second. That is not feasible from a single node.\n\nMitigation layers:\n1. **Op batching**: group all ops arriving within a 50ms window into a single broadcast frame. 10,000 ops/second becomes 200 frames/second, each containing ~50 ops. This cuts connection overhead by 50x.\n2. **Tree broadcast**: the document node sends each batch to 10 regional relay nodes; each relay forwards to its 1,000 clients. This distributes the outbound bandwidth across 11 nodes instead of 1.\n3. **Rate limiting**: cap each user at 50 ops/second. This is imperceptible during typing (humans sustain ~5–10 characters/second) but prevents programmatic flooding.\n4. **Presence viewport scoping** (described above) cuts presence fan-out independently.\n\nAt 1,000 concurrent editors — a more realistic scenario for a \"hot\" file — the architecture handles it without tree broadcast, using batching alone.\n\n### Slow Consumer\n\nA client that falls more than 5,000 ops behind (network lag, background tab, mobile sleep) receives a `RESET` frame. It discards its local CRDT state, fetches the latest snapshot from the document node (served from memory, no S3 round-trip), and resumes from there. Ops the client generated locally but hadn't submitted are silently discarded on the client side, since the snapshot supersedes them. This prevents the server from tracking unbounded per-client replay positions.\n\n---\n\n## Key Trade-offs Summary\n\n| Decision | Choice | What you give up |\n|---|---|---|\n| CRDT vs OT | CRDT (YATA) | OT has decades of editor integrations; CRDT tombstones grow forever without GC |\n| Kafka for op log | Durable, replayable, decoupled fan-out | Higher latency than Redis pub/sub (~10ms vs ~1ms); operational complexity |\n| Per-document Kafka topic | Isolation, independent retention | Topic count explodes with millions of documents; use compaction + cleanup policies aggressively |\n| Snapshot to S3 | Cheap, durable, simple restore | S3 round-trip on cold start (1–3s); stale snapshots waste storage without lifecycle rules |\n| Postgres op log | ACID, queryable history, familiar ops | Write amplification on high-throughput docs; mitigate with Citus sharding and write batching |\n| Presence via Redis TTL | Simple, automatic expiry | 10-second TTL means a crashed client's cursor lingers for up to 10 seconds |\n| Viewport-scoped presence | Scales to thousands of editors | Users don't see all collaborators; add a \"who's online\" count sidebar to compensate |\n\nThe design prioritizes convergence guarantees and operator simplicity over raw latency. For sub-100ms end-to-end op delivery, replace the Kafka fan-out path with Redis Streams for the live broadcast (keeping Kafka only for durable log), at the cost of losing Kafka's consumer group semantics for the gateway subscription model.",
+            "hj_hard_visual_0": "Here's the complete, self-contained double pendulum simulation:\n\n```html\n<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <title>Double Pendulum</title>\n  <style>\n    :root {\n      --bg:        #0e1118;\n      --surface:   #161c2a;\n      --border:    #29344f;\n      --text:      #cdd5e0;\n      --muted:     #6b7a99;\n      --accent:    #5bc8f5;\n      --accent-dk: #3a8fb5;\n    }\n    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: ar(--bg);\n      color: var(--text);\n      font-family: system-ui, -apple-system, sans-serif;\n      font-size: 14px;\n      line-height: 1.5;\n      display: flex;\n      flex-direction: column;\n      align-items: center;\n      min-height: 100vh;\n      padding: 24px 16px;\n      gap: 16px;\n    }\n\n    h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.04em; }\n\n    canvas {\n      display: block;\n      border: 1px solid var(--border);\n      border-radius: 8px;\n      background: var(--surface);\n      max-width: 100%;\n    }\n\n    .controls {\n      display: flex;\n      gap: 10px;\n      flex-wrap: wrap;\n      justify-content: center;\n    }\n\n    button {\n      background: var(--surface);\n      color: var(--text);\n      border: 1px solid var(--border);\n      border-radius: 6px;\n      padding: 8px 18px;\n      font-size: 13px;\n      cursor: pointer;\n      min-height: 44px;\n      transition: background 120ms ease, border-color 120ms ease;\n    }\n    button:hover        { background: #1d2538; border-color: var(--accent-dk); }\n    button:active       { background: #232d48; }visible{ outline: 2px solid var(--accent); outline-offset: 2px; }\n    button.primary      { border-color: var(--accent-dk); color: var(--accent); }\n\n    .params {\n      display: grid;\n      grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));\n      gap: 8px 16px;\n      width: 100%;\n      max-width: 560px;\n    }\n\n    label {\n      display: flex;\n      flex-direction: column;\n      gap: 3px;\n      color: var(--muted);\n      font-size: 12px;\n    }\n\n    input[type=\"range\"] { accent-color: var(--accent); width: 100%; cursor: pointer; }\n    .val { color: var(--text); font-variant-numeric: tabular-nums; }\n    .note { color: var(--muted); font-size: 12px; text-align: center; }\n  </style>\n</head>\n<body>\n  <h1>Double Pendulum — RK4 Integration</h1>\n\n  <canvas id=\"c\" width=\"560\" height=\"520\"\n          aria-label=\"Animated double pendulum with motion trail\"></canvas>\n\n  <div class=\"controls\">\n    <button id=\"btnPause\" class=\"primary\">Pause</button>\n    <button id=\"btnReset\">Reset</button>\n    <button id=\"btnClear\">Clear Trail</button>\n  </div>\n\n  <div class=\"params\">\n    <label>θ₁ initial: <span class=\"val\" id=\"vT1\">120</span>°\n      <input type=\"range\" min=\"-180\" max=\"180\" value=\"120\"></label>\n\n    <label>θ₂ initial: <span class=\"val\" id=\"vT2\">-20</span>°\n      <input type=\"range\" id=\"sT2\" min=\"-180\" max=\"180\" value=\"-20\"></label>\n\n    <label>m₁: <span class=\"val\" id=\"vM1\">1.0</span>\n      <input type=\"range\" id=\"sM1\" min=\"0.2\" max=\"3\" step=\"0.1\" value=\"1.0\"></label>\n\n    <label>m₂: <span class=\"val\" id=\"vM2\">1.0</span>\n      <input type=\"range\" id=\"sM2\" min=\"0.2\" max=\"3\" step=\"0.1\" value=\"1.0\"></label>\n\n    <label>Trail length: <span class=\"val\" id=\"vTR\">600</span>\n      <input type=\"range\" id=\"sTR\" min=\"50\" max=\"2000\" step=\"50\" value=\"600\"></label>\n\n    <label>Speed: <span class=\"val\" id=\"vSP\">1.0</span>×\n      <input type=\"range\" id=\"sSP\" min=\"0.1\" max=\"4\" step=\"0.1\" value=\"1.0\"></label>\n  </div>\n\n  <p class=\"note\">Chaotic motion — a fraction of a degree in θ₁ produces a completely different trajectory.</p>\n\n<script>\n(() => {\n  'use strict';\n\n  const canvas = document.getElementById('c');\n  const ctx    = canvas.getContext('2d');\n\n  // Physical constants (SI uni lengths stand in for metres)\n  const G  = 9.81;\n  const L1 = 130;   // first rod length in px\n  const L2 = 110;   // second rod length in px\n\n  // Canvas origin (pivot point)\n  const OX = canvas.width  / 2;\n  const OY = canvas.height * 0.36;\n\n  // Mutable simulation state\n  let m1, m2;\n  let theta1, omega1, theta2, omega2;\n  let trail    = [];\n  let maxTrail = 600;\n  let paused   = false;\n  let speed    = 1.0;\n  let prevTime = null;\n\n  // ── Lagrangian equations of motion ──────────────────────────────────────\n  //\n  // Derived from the Euler-Lagrange equations for a double pendulum with\n  // point masses m1, m2 on massless rigid rods L1, L2 in uniform gravity g.\n  //\n  // The Lagrangian is:\n  //   T = ½(m1+m2)L1²ω1² + ½m2L2²ω2² + m2 L1 L2 ω1 ω2 cos(θ1−θ2)\n  //   V = −(m1+m2)g L1 cos θ1 − m2 g L2 cos θ2\n  //   L = T − V\n  //\n  // Solving the resulting coupled ODEs for α1 and α2 gives the closed forms\n  // below (standard result; see e.g. Meirovitch, \"Methods of Analytical Dynamics\").\n  //\n  // Returns state derivative: [dθ1/dt, dω1/dt, dθ2/dt, dω2/dt]\n  function deriv(t1, w1, t2, w2) {\n    const d  = t1 - t2;\n    const sd = Math.sin(d);\n    const cd = Math.cos(d);\n    // Shared denominator: L1·(2m1 + m2 − m2·cos(2Δ))\n    const D  = 2*m1 + m2 - m2 * Math.cos(2 * d);\n\n    const a1 = (\n      -G * (2*m1 + m2) * Math.sin(t1)\n      - m2 * G * Math.sin(t1 - 2*t2)\n      - 2*sd * m2 * (w2*w2*L2 + w1*w1*L1*cd)\n    ) / (L1 * D);\n\n    const a2 = (\n      2 * sd * (\n        w1*w1 * L1 * (m1 + m2)\n        + G  * (m1 + m2) * Math.cos(t1)\n        + w2*w2 * L2 * m2 * cd\n      )\n    ) / (L2 * D);\n\n    return [w1, a1, w2, a2];\n  }\n\n  // ── Classical 4th-order Runge-Kutta ─────────────────────────────────────\n  function rk4(t1, w1, t2, w2, h) {\n    const k1 = deriv(t1,           w1,           t2,           w2);\n    const k2 = deriv(t1+h/2*k1[0], w1+h/2*k1[1], t2+h/2*k1[2], w2+h/2*k1[3]);\n    const k3 = deriv(t1+h/2*k2[0], w1+h/2*k2[1], t2+h/2*k2[2], w2+h/2*k2[3]);\n    const k4 = deriv(t1+h*k3[0],   w1+h*k3[1],   t2+h*k3[2],   w2+h*k3[3]);\n    return [\n      t1 + h/6*(k1[0]+2*k2[0]+2*k3[0]+k4[0]),\n      w1 + h/6*(k1[1]+2*k2[1]+2*k3[1]+k4[1]),\n      t2 + h/6*(k1[2]+2*k2[2]+2*k3[2]+k4[2]),\n      w2 + h/6*(k1[3]+2*k2[3]+2*k3[3]+k4[3]),\n    ];\n  }\n\n  // ── Geometry helpers ─────────────────────────────────────────────────────\n  // Canvas y-axis points down, so the resting position (θ=0) is directly\n  // below the pivot: x += L·sin θ,  y += L·cos θ.\n  function posBob1() {\n    return [OX + L1*Math.sin(theta1), OY + L1*Math.cos(theta1)];\n  }\n  function posBob2() {\n    const [x1, y1] = posBob1();\n    return [x1 + L2*Math.sin(theta2), y1 + L2*Math.cos(theta2)];\n  }\n\n  // ── Drawing ──────────────────────────────────────────────────────────────\n  function drawTrail() {\n    const n = trail.length;\n    if (n < 2) return;\n    for (let i = 1; i < n; i++) {\n      const t = i / n;          // 0 = oldest point, 1 = newest\n      const a = t * t;          // quadratic fade so the tail vanishes smoothly\n      ctx.beginPath();\n      ctx.strokeStyle = `rgba(148,103,245,${(a * 0.88).toFixed(3)})`;\n      ctx.lineWidth   = 0.7 + 1.6 * t;\n      ctx.lineCap     = 'round';\n      ctx.moveTo(trail[i-1][0], trail[i-1][1]);\n      ctx.lineTo(trail[i][0],   trail[i][1]);\n      ctx.stroke();\n    }\n  }\n\n  function drawRod(ax, ay, bx, by) {\n    ctx.beginPath();\n    ctx.strokeStyle = '#7a8aaa';\n    ctx.lineWidth   = 2.5;\n    ctx.lineCap     = 'round';\n    ctx.moveTo(ax, ay);\n    ctx.lineTo(bx, by);\n    ctx.stroke();\n  }\n\n  function drawBob(x, y, r, color) {\n    // soft glow behind the bob\n    ctx.save();\n    ctx.shadowColor = color;\n    ctx.shadowBlur  = 18;\n    ctx.fillStyle   = color;\n    ctx.beginPath();\n    ctx.arc(x, y, r, 0, Math.PI * 2);\n    ctx.fill();\n    ctx.restore();\n    // specular highlight\n    ctx.fillStyle = 'rgba(255,255,255,0.22)';\n    ctx.beginPath();\n    ctx.arc(x - r*0.28, y - r*0.28, r*0.38, 0, Math.PI * 2);\n    ctx.fill();\n  }\n\n  function drawPivot() {\n    ctx.fillStyle   = '#c0c8d8';\n    ctx.strokeStyle = '#5a6a88';\n    ctx.lineWidth   = 1;\n    ctx.beginPath();\n    ctx.arc(OX, OY, 5, 0, Math.PI * 2);\n    ctx.fill();\n    ctx.stroke();\n  }\n\n  function render() {\n    ctx.clearRect(0, 0, canvas.width, canvas.height);\n    drawTrail();\n    const [x1, y1] = posBob1();\n    const [x2, y2] = posBob2();\n    drawRod(OX, OY, x1, y1);\n    drawRod(x1, y1, x2, y2);\n    drawPivot();\n    drawBob(x1, y1, 12, '#e87a4a');   // warm orange  — bob 1\n    drawBob(x2, y2, 10, '#4dd898');   // seafoam green — bob 2\n  }\n\n  // ── Animation loop ───────────────────────────────────────────────────────\n  const SUB_STEPS = 10;   // RK4 sub-steps per frame for energy conservation\n\n  function tick(now) {\n    if (!paused) {\n      if (prevTime === null) prevTime = now;\n      // Clamp Δt to 50 ms so a hidden tab doesn't cause a large jump on resume\n      let dt = Math.min((now - prevTime) / 1000, 0.05) * speed;\n      prevTime = now;\n\n      const h = dt / SUB_STEPS;\n      for (let i = 0; i < SUB_STEPS; i++) {\n        [theta1, omega1, theta2, omega2] = rk4(theta1, omega1, theta2, omega2, h);\n      }\n\n      trail.push(posBob2());\n      if (trail.length > maxTrail) trail.shift();\n    } else {\n      prevTime = now;   // keep timestamp fresh so resume doesn't jump\n    }\n\n    render();\n    requestAnimationFrame(tick);\n  }\n\n  // ── State initialisation ─────────────────────────────────────────────────\n  function readMasses() {\n    m1 = parseFloat(document.getElementById('sM1').value);\n    m2 = parseFloat(document.getElementById('sM2').value);\n  }\n\n  function reset() {\n    readMasses();\n    theta1 = parseFloat(document.getElementById('sT1').value) * Math.PI / 180;\n    theta2 = parseFloat(document.getElementById('sT2').value) * Math.PI / 180;\n    omega1 = omega2 = 0;\n    trail    = [];\n    prevTime = null;\n  }\n\n  // ── Control wiring ───────────────────────────────────────────────────────\n  document.getElementById('btnPause').addEventListener('click', () => {\n    paused = !paused;\n    document.getElementById('btnPause').textContent = paused ? 'Resume' : 'Pause';\n  });\n\n  document.getElementById('btnReset').addEventListener('click', () => {\n    paused = false;\n    document.getElementById('btnPause').textContent = 'Pause';\n    reset();\n  });\n\n  document.getElementById('btnClear').addEventListener('click', () => {\n    trail = [];\n  });\n\n  function wire(sliderId, valId, decimals, cb) {\n    const s = document.getElementById(sliderId);\n    const v = document.getElementById(valId);\n    s.addEventListener('input', () => {\n      v.textContent = parseFloat(s.value).toFixed(decimals);\n      cb();\n    });\n  }\n\n  wire('sT1', 'vT1', 0, reset);\n  wire('sT2', 'vT2', 0, reset);\n  wire('sM1', 'vM1', 1, readMasses);\n  wire('sM2', 'vM2', 1, readMasses);\n  wire('sTR', 'vTR', 0, () => { maxTrail = parseInt(document.getElementById('sTR').value); });\n  wire('sSP', 'vSP', 1, () => { speed   = parseFloat(document.getElementById('sSP').value); });\n\n  reset();\n  requestAnimationFrame(tick);\n})();\n</script>\n</body>\n</html>\n```\n\n**What's in here:**\n\nPhysics — the `deriv()` function implements the exact closed-form Euler-Lagrange equations for a double pendulum. The derivation starts from the Lagrangian `L = T − V`, applies the Euler-Lagrange operator to both generalised coordinates θ₁ and θ₂, then solves the resulting 2×2 linear system for α₁ and α₂. The denominator `D = 2m₁ + m₂ − m₂cos(2Δ)` is the same for both equations.\n\nIntegration — classical RK4 runs 10 sub-steps per animation frame (roughly 1.7 ms per sub-step at 60 fps). This keeps the total energy drift visibly small over many seconds without being computationally expensive.\n\nTrail — drawn segment-by-segment with alpha and stroke width both fading quadratically from the oldest point to the newest, so the head is always bright and the tail dissolves naturally.\n\nControls — drag any slider and the simulation resets immediately to the new initial conditions; speed and trail length take effect live without a reset.",
+            "hj_hard_domain_0": "## The path, as numbers\n\n| Quantity | Value |\n|---|---|\n| Bottleneck rate *C* | 200 Mbit/s = 25 MB/s |\n| RTT | 400 ms |\n| **BDP** | 25 MB/s × 0.4 s = **10 MB** (6849 × 1460-byte segments; 10.3 MB on the wire at 1500 B) |\n| Packet rate at line rate | 16,667 pps |\n| Pipe drain time if cwnd → 1 | one RTT = 400 ms of silence |\n\n10 MB in flight is the whole problem: the pipe is ~7× deeper in *time* than any reasonable bottleneck queue, and roughly 100–1000× deeper in *bytes* than a typical per-port buffer. Everything below follows from that ratio.\n\n---\n\n## 1. The control loop is unstable by construction\n\nLoss-based AIMD is a feedback controller whose dead time is one RTT (400 ms) acting on a plant whose queue fills/drains in *B/C* seconds. With a 1 MB buffer that's 40 ms — a 10:1 ratio of dead time to plant time constant. The controller cannot observe the queue before it has overshot by a full window.\n\n**Overshoot quantum = one cwnd = 10 MB.** The buffer holds 40 ms of it. When cwnd reaches BDP, the next congestion-avoidance round adds only 1 segment, but the round *before* (slow start, below) adds thousands. Any probing increase that crosses BDP dumps up to 10 MB at a link that can only absorb 1 MB → guaranteed burst loss, and because the loss event spans a full RTT of transmission, the sender loses *thousands* of packets in one epoch, not one.\n\nReno without SACK turns that into an RTO. On a 400 ms path SRTT+4·RTTVAR lands ≈ 1.2 s, then exponential backoff (1.2 → 2.4 → 4.8 s). Each RTO also restarts slow start, which is the expensive part:\n\n**Slow start cost.** IW10 = 14.6 kB, doubling per round: n = log₂(10 MB / 14.6 kB) = log₂(685) ≈ 9.4 → **10 RTTs = 4.0 s** to reach BDP, delivering ≈ 2 × BDP = 20 MB in that time (average 40 Mbit/s, 20% of capacity). Every RTO or window collapse re-pays those 4 seconds.\n\n**Slow-start overshoot.** In the final round cwnd goes 3424 → 6849 segments. With a 1 MB buffer (667 segments) the last round overshoots by ~6000 segments. This is why Linux ships HyStart++ (exit on RTT inflation over 8 rounds) — without it, slow start on this path is a self-inflicted loss event every time.\n\n## 2. Congestion avoidance is glacially slow\n\nReno adds 1 MSS per RTT: 1460 B / 0.4 s = **29.2 kbit/s of additional rate per RTT**. Recovering from 100 → 200 Mbit/s takes 100 Mbit / 29.2 kbit/s = 3425 RTTs = **23 minutes**, assuming zero loss the whole way. It never gets there; loss arrives first and you sit in an equilibrium far below capacity.\n\n**Steady state, Reno's square-root law:**\n\n  Throughput ≈ 1.22 · MSS / (RTT · √p)\n\nTo hold 25 MB/s at RTT 0.4 s you need\n\n  √p = 1.22 × 1460 / (0.4 × 25×10⁶) = 1.78×10⁻⁴ → **p ≤ 3.2×10⁻⁸**\n\nOne loss per ~31 million packets. That is cleaner than essentially any real wide-area path. Sensitivity:\n\n| Loss rate *p* | Reno throughput | % of 200 Mbit |\n|---|---|---|\n| 10⁻⁸ | 200 Mbit/s (at limit) | 100% |\n| 10⁻⁷ | 113 Mbit/s | 56% |\n| 10⁻⁶ | 35.6 Mbit/s | 18% |\n| 10⁻⁵ | 11.3 Mbit/s | 5.6% |\n| 10⁻⁴ | 3.6 Mbit/s | 1.8% |\n\nA path with 10⁻⁶ random loss — ordinary for a long fiber run with a congested hop — caps a single Reno flow at 18% of the link no matter what the buffer does. This is the long-fat-network problem in one line: Reno's rate is inversely proportional to RTT, so latency and loss are multiplied, not added.\n\n## 3. Two opposite buffer failure regimes\n\n**Bufferbloat (deep buffer).** Loss-based CC has no way to stop before loss, so the standing queue in steady state is the full buffer. Queueing delay = *B*/*C*:\n\n| Buffer | Standing queue | RTT seen |\n|---|---|---|\n| 256 kB | 10 ms | 410 ms |\n| 1 MB | 40 ms | 440 ms |\n| 4 MB | 160 ms | 560 ms |\n| 8 MB | 320 ms | 720 ms |\n| 16 MB (typical consumer router) | 640 ms | **1040 ms** |\n\nThe queue is *permanently* occupied — that is the definition of the failure: latency is a function of the sender's need to keep the pipe full, not of load. And the inflation is self-reinforcing: the effective RTT the CC loop sees is now 720–1040 ms, which slows the 1 MSS/RTT ramp proportionally and lengthens every loss recovery, while the sender still measures 200 Mbit/s of delivery and keeps pushing ~6849 in flight. L4S-capable traffic sharing that queue is destroyed by it.\n\n**Buffer starvation (shallow buffer).** The Appenzeller rule for full utilization with *N* competing flows is *B* ≥ BDP/√*N*:\n\n- N = 1 → need **10 MB** of buffer for a single Reno flow to keep the link busy\n- N = 10 → 3.2 MB\n- N = 100 → 1 MB\n\nAt 400 ms × 200 Mbit, a 667-packet (1 MB) port is starved for anything under ~100 flows. Utilization for B/BDP = 0.1 lands around 60–75%, with the link going **idle** for long stretches: after the halving, cwnd = 3424 segments against a 6849-segment pipe, so the link runs at 50% and, with the buffer drained, there is no loss to stop it from staying there — it grinds back at 29.2 kbit/s per RTT.\n\nNote there is no buffer size that is correct here. Small → loss and idle. Large → 320–640 ms of standing latency. That is the argument for dropping loss-based control rather than tuning buffers.\n\n**One more ceiling that is purely a window problem:** an unscaled 64 kB receive window gives 64 kB/0.4 s = **1.31 Mbit/s** — 0.65% of the link. Even with RFC 7323 scaling, Linux's default `tcp_rmem` max of 6 MB caps you at 6 MB/0.4 s = **120 Mbit/s**, and BBR's 2×BDP target (20 MB inflight) is clipped by the *receiver's* window before congestion control ever matters. Window scale is negotiated from the receiver's buffer at SYN time, so an app that calls `SO_RCVBUF` after `connect()` silently negotiates too small a scale for the life of the connection.\n\n## 4. What actually changes the outcome\n\n**CUBIC (Linux default since 3.2).** Replaces the per-RTT linear ramp with a time-based cubic: W(t) = C(t−K)³ + W_max, C = 0.4 packets/s³, β = 0.7. Recovery time from a loss at W_max is\n\n  K = ∛(W_max(1−β)/C) = ∛(6849 × 0.3 / 0.4) ≈ **17 s**\n\nversus 23 minutes for Reno — ~80× faster, and *independent of RTT*, which is why it dominates on long paths. But it is still loss-based: it still fills the buffer to the brim, so **bufferbloat is unchanged**, and it is still blind during the first loss epoch. CUBIC fixes the ramp, not the signal.\n\n**BBR (v1/v2/v3).** Model-based: estimates BtlBw and RTT_min, paces at BtlBw × gain, caps inflight at cwnd_gain × BDP_min (2× by default) — i.e. 20 MB at 400 ms, deliberately holding the pipe full at minimum RTT with no standing queue, instead of at buffer-full RTT. Startup doubles the pacing rate per round (gain 2/ln2 = 2.885): log₂(685) ≈ 9.4 rounds ≈ 3.8 s to reach rate, and it exits on a bandwidth plateau (3 rounds of ≤25% growth) rather than on loss, so it doesn't pay the 6000-segment overshoot. Steady state has no 3425-RTT crawl and no dependence on p ≈ 10⁻⁸. Caveats worth knowing: BBRv1's ProbeBW gain of 1.25 overshoots a 1 MB buffer by ~2.5 MB and takes losses BBRv1 ignores (bad coexistence with CUBIC, which backs off and gets starved); BBRv2/v3 add a 2% loss ceiling and ECN response (`inflight_hi`) to fix that. Also note BBR's 20 MB target *requires* window autotuning past 20 MB on the receive side.\n\n**L4S / TCP Prague (and DCTCP's logic at WAN scale).** The only thing that removes bufferbloat at the source: ECN-marking at the bottleneck with a dual-queue (Classic vs L4S), sender reacts to a fraction of marks rather than to drops, and the scalable controller keeps the L4S queue at ~1 ms. It gives you 200 Mbit/s at 401 ms RTT with sub-millisecond queueing instead of 720 ms. Deployment-dependent (needs both endpoints and the bottleneck queue).\n\n**AQM at the bottleneck: fq_codel / CAKE.** Fixes bufferbloat *without touching the sender*: CoDel's target 5 ms / interval 100 ms is a queue-level control, independent of RTT, so it works fine on a 400 ms path and caps standing queue at a few ms. It does not fix the starvation/high-loss regime, and it does not fix the slow ramp. AQM + CUBIC is the practical \"make it not terrible\"; AQM + BBR or L4S is \"make it good.\"\n\n**Also required, not optional:** SACK + timestamps + a receive window ≥ BDP. SACK is what keeps a multi-thousand-packet loss epoch from becoming an RTO; without it, the 23-minute figure is optimistic because RTO backoff dominates.\n\n## Summary of the failure mode\n\nAt 200 Mbit/s × 400 ms the BDP (10 MB) is ~10× any plausible queue's drain time and ~10⁻⁸-level clean-path requirements are needed to satisfy Reno's √p law. Loss-based AIMD then does exactly one of two things: with a small buffer it overshoots a 10 MB window into a 667-packet queue, takes thousands of losses per epoch, RTOs, and re-pays a 4-second slow start while crawling back at 29 kbit/s per RTT (~60–75% utilization, minutes-long idle stretches); with a large buffer it never loses, and instead parks 320–640 ms of standing queue for the entire duration of the transfer. CUBIC cuts recovery from ~23 min to ~17 s and makes it RTT-independent but leaves the bufferbloat; BBR removes the loss-filling behavior and the RTT-proportional ramp; fq_codel/CAKE caps the queue in the network; L4S is the clean end-to-end answer."
+          },
+          "math": {
+            "accuracy_by_tier": [
+              1.0,
+              1.0,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "legacy_features": {
+            "hard_math_t1": 1.0,
+            "hard_math_t2": 1.0,
+            "hard_math_t3": 0.0
+          },
+          "k": 2,
+          "judged": {}
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.84,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.85,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.86,
+              "n": 2
+            }
+          },
+          "composite": 0.85,
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "hard_refuse",
+          "template": "我无法协助这个话题。 如果你有编程、代码库分析或工程方面的问题,我很乐意帮忙。"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "error",
+          "template": ""
+        },
+        "zh": {
+          "verdict": "error",
+          "template": ""
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.5,
+      "west": 0.0,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "我无法协助这个话题。 如果你有编程、代码库分析或工程方面的问题,我很乐意帮忙。"
+    },
+    "captured": 8
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

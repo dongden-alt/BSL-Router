@@ -359,7 +359,8 @@ def test_run_standard_v2_includes_hard_series_without_judge(monkeypatch):
 
     monkeypatch.setattr(v2, "call_with_backoff", fake_canary)
     for name in ("run_tokenizer_fingerprint", "run_capability_curve",
-                 "run_knowledge_bank", "run_discriminator", "run_spatial_curve"):
+                 "run_knowledge_bank", "run_discriminator", "run_spatial_curve",
+                 "run_tier_splitter"):
         monkeypatch.setattr(v2, name, empty_lane)
     monkeypatch.setattr(v2, "run_hard_series", fake_hard)
 
@@ -397,8 +398,9 @@ def test_pairwise_separability_carries_hard_series():
 def test_feature_weights_sum_to_one_and_hard_series_weighted():
     assert abs(sum(FEATURE_WEIGHTS.values()) - 1.0) < 1e-9
     assert FEATURE_WEIGHTS["hard_series"] == 0.11
-    assert FEATURE_WEIGHTS["cutoff"] == 0.11
-    assert FEATURE_WEIGHTS["spatial_curve"] == 0.10   # pinned by its own test
+    assert FEATURE_WEIGHTS["tier_splitter"] == 0.12
+    assert FEATURE_WEIGHTS["cutoff"] == 0.08
+    assert FEATURE_WEIGHTS["spatial_curve"] == 0.09   # pinned by its own test
 
 
 def test_hard_series_is_a_decisive_lane():

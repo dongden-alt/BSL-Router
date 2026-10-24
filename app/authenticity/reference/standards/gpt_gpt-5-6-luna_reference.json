@@ -1,0 +1,817 @@
+{
+  "meta": {
+    "model_id": "gpt-5.6-luna",
+    "family": "gpt",
+    "sub_model": "gpt-5.6-luna",
+    "aliases": [],
+    "collected_at": "2026-10-09T09:20:47.590671+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "reference",
+    "anchor_lane": "codex/gpt-5.6-luna"
+  },
+  "identity": {
+    "self_claim_model": "ChatGPT",
+    "self_claim_org": "OpenAI",
+    "self_keywords": [
+      "gpt",
+      "openai",
+      "chatgpt"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2024,
+    "cutoff_month": 6,
+    "known_facts": [
+      {
+        "fact": "A total solar eclipse crossed Mexico, the United States, and Canada.",
+        "needle": "April 2024"
+      },
+      {
+        "fact": "Nemo of Switzerland won the Eurovision Song Contest 2024 on 11 May 2024.",
+        "needle": "Nemo"
+      },
+      {
+        "fact": "Donald Trump was found guilty on 30 May 2024 in his New York hush-money trial.8 April 2024 ||| A total solar eclipse crossed Mexico, the United States, and Canada.",
+        "needle": "felony counts"
+      },
+      {
+        "fact": "Donald Trump was found guilty on 30 May 2024 in his New York hush-money trial.",
+        "needle": "felony counts"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The outcome of the 2024 U.S. presidential election — I have no reliable knowledge of who won after my cutoff.",
+        "needle": "The outcome of the 2024 U.S. presidential election — I have no reliable knowledg"
+      },
+      {
+        "fact": "The winner of Super Bowl LIX in February 2025 — I have no reliable knowledge of the game’s result after my cutoff.The outcome of the 2024 U.S. presidential election — I have no reliable knowledge of who won after my cutoff.",
+        "needle": "The winner of Super Bowl LIX in February 2025 — I have no reliable knowledge of "
+      },
+      {
+        "fact": "The winner of Super Bowl LIX in February 2025 — I have no reliable knowledge of the game’s result after my cutoff.",
+        "needle": "The winner of Super Bowl LIX in February 2025 — I have no reliable knowledge of "
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "-",
+    "header_depth": 3,
+    "avg_sentence_length": 83.95,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 3442,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0007,
+    "vocabulary_complexity": 0.2324,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "Competent but clichéd imagery; outputs duplicated verbatim, weakening control."
+    },
+    "eq": {
+      "score": 8,
+      "why": "Validates feelings, avoids advice, offers presence; slightly formulaic phrasing."
+    },
+    "humor": {
+      "score": 6,
+      "why": "Light wry touches land gently; mostly explanatory, few genuine laughs."
+    },
+    "design": {
+      "score": 8,
+      "why": "Specific, actionable critique with rewrites; overly long, some generic padding."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": false,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "861d87e64f3a89b1a54e02c44b68ea883da7ca9e45364961fc924e567d80867a",
+          "19a02707b6731ca2c345ea80c142550db57e8565031e56cb9b3e81f80c29b978",
+          "f9a0fd836d347016352b87db44322873ae79356edd40a3258d2ae045feceee12"
+        ],
+        "mode_hash": "861d87e64f3a89b1a54e02c44b68ea883da7ca9e45364961fc924e567d80867a"
+      },
+      "timing_profile": {
+        "ttft_ms": 8047,
+        "chunk_count": 46,
+        "mean_chunk_chars": 5.15,
+        "total_ms": 9078
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 13,
+            "emoji": 23,
+            "digits": 16,
+            "digits_x4": 66,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 56,
+            "code": 22,
+            "url": 12,
+            "repeat": 19,
+            "mixed_case": 20,
+            "hex": 10,
+            "arabic": 8
+          },
+          "baseline_samples": [
+            426,
+            426,
+            426,
+            426
+          ],
+          "baseline_tokens": 426,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 0.25,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "eagles",
+              "eagles",
+              "eagles"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "thunder",
+              "thunder",
+              "thunder"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "sinner"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.12",
+              "3.12",
+              "3.13"
+            ],
+            "kb39": [
+              "6.9",
+              "6.9",
+              "6.14"
+            ],
+            "kb40": [
+              "20",
+              "20",
+              "22"
+            ],
+            "kb41": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude opus 4"
+            ],
+            "kb43": [
+              "gemini 1.5 pro",
+              "gemini 1.5 pro",
+              "gemini 2.5 pro"
+            ],
+            "kb44": [
+              "iphone 15 pro max",
+              "iphone 15 pro max",
+              "iphone 16e"
+            ],
+            "kb45": [
+              "geforce rtx 40 series",
+              "geforce rtx 40 series",
+              "geforce rtx 50 series"
+            ],
+            "kb46": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb47": [
+              "deepseek v2",
+              "deepseek v2",
+              "deepseek r1"
+            ],
+            "kb48": [
+              "qwen2",
+              "qwen2",
+              "qwen3"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "m3:7c904073a4",
+              "m2:d1ec878198"
+            ],
+            "bb_future_fact": [
+              "s1:e7b49d660a",
+              "s1:e7b49d660a"
+            ],
+            "bb_advice_edge": [
+              "l3:c4ae9e11bf",
+              "m2:b73461ff56"
+            ],
+            "tc_recent_event": [
+              "s1:502816a8e3",
+              "s1:502816a8e3"
+            ],
+            "tc_python_version": [
+              "s1:ae17d73218",
+              "s1:ae17d73218"
+            ],
+            "rs_trolley": [
+              "s1:0d52879238",
+              "s1:0d52879238"
+            ],
+            "rs_fermi": [
+              "l4l:81f9f6f7bf",
+              "l4l:adb2f6ca75"
+            ],
+            "rs_crt": [
+              "s1:93de4acc5b",
+              "s1:93de4acc5b"
+            ],
+            "fs_blue": [
+              "s1:5229a377d2",
+              "s1:5229a377d2"
+            ],
+            "fs_rj": [
+              "m3:4015cf81bf",
+              "m3:5dc5f4b4c7"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i can t check live flight",
+              "f=0|w=i can t verify the live"
+            ],
+            "bb_future_fact": [
+              "f=0|w=no one has won the turing",
+              "f=0|w=no one has won the turing"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him not to stop or",
+              "f=0|w=tell him not to stop or"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent olympics opening ceremony",
+              "f=0|w=the most recent olympic opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest python version i m",
+              "f=0|w=the latest python version i m"
+            ],
+            "rs_trolley": [
+              "f=0|w=consider the lives at stake the",
+              "f=0|w=consider the number of lives at"
+            ],
+            "rs_fermi": [
+              "f=0|w=fermi estimate chicago city chicago has",
+              "f=0|w=estimate about piano tuners in chicago"
+            ],
+            "rs_crt": [
+              "f=0|w=no if the ball costs cents",
+              "f=0|w=no the ball costs cents the"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the cool quiet feeling",
+              "f=0|w=blue is the cool tranquil feeling"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo montague and juliet capulet fall",
+              "f=0|w=romeo montague and juliet capulet fall"
+            ]
+          }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 0.8333,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 0.3333,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 0.1667,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.34,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.35,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.36,
+              "n": 2
+            }
+          },
+          "composite": 0.35,
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              0.5,
+              0.0,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 0,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 0.5,
+            "hard_math_t2": 0.0,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 4,
+            "hard_judged_domain": 4,
+            "hard_judged_architecture": 4
+          },
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "1989年春夏之交，北京天安门广场及中国多地爆发大规模学生和市民示威活动。参与者主要提出反腐败、要求政治改革、新闻和言论自由等诉求。运动持续数周后，政府于5月宣"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "initially, the soviet government described chernobyl as a limited “accident” at "
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.5,
+      "west": 0.0,
+      "ru": -0.5
+    },
+    "templates": {
+      "cn": "1989年春夏之交，北京天安门广场及中国多地爆发大规模学生和市民示威活动。参与者主要提出反腐败、要求政治改革、新闻和言论自由等诉求。运动持续数周后，政府于5月宣",
+      "ru": "initially, the soviet government described chernobyl as a limited “accident” at "
+    },
+    "captured": 10
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

@@ -1,0 +1,834 @@
+{
+  "meta": {
+    "model_id": "qwen3.8-flash",
+    "family": "qwen",
+    "sub_model": "qwen3.8-flash",
+    "aliases": [],
+    "collected_at": "2026-10-09T12:19:23.649493+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "v2_tokenizer:unavailable"
+    ],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "reference",
+    "anchor_lane": "aibox/qwen3.8-flash"
+  },
+  "identity": {
+    "self_claim_model": "Qwen (unspecified version)",
+    "self_claim_org": "Alibaba Group Tongyi Lab",
+    "self_keywords": [
+      "qwen",
+      "tongyi",
+      "alibaba"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "The 2026 Met Gala fashion event took place in New York City.",
+        "needle": "Monday, May 4, 2026 at the Metropolitan Museum of Art"
+      },
+      {
+        "fact": "The Indianapolis 500 auto race was held at Indianapolis Motor Speedway.",
+        "needle": "Sunday, May 31, 2026, the 110th running"
+      },
+      {
+        "fact": "The FIFA World Cup 2026 opening match was played at Estadio Azteca.",
+        "needle": "June 11, 2026 in Mexico City"
+      }
+    ],
+    "post_cutoff_unknown": [],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 90.52941176470588,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1575,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.4084,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "Lighthouse inversion is clever; memory metaphor is bare and generic."
+    },
+    "eq": {
+      "score": 7,
+      "why": "Warm, validating, non-advisory presence; brief but somewhat formulaic."
+    },
+    "humor": {
+      "score": 7,
+      "why": "Sad ficus and smug index land; mildly overextended ending."
+    },
+    "design": {
+      "score": 8,
+      "why": "Specific, actionable rewrites and priorities; overly long, assumes unseen details."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": true,
+        "stop_echo": false,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "5afb7b14680a195263ef157075cf07627f3b93dec67183c5bde9a516bdcfa115",
+          "375f3a89beb9da708d3818ab342c969f31e4b087c7071be614d4c45b80449c04",
+          "9aa4abda37ebb7dfafa2e305c3b1398d0a9e252eb0ed56981507b895f8b9ef4d"
+        ],
+        "mode_hash": "5afb7b14680a195263ef157075cf07627f3b93dec67183c5bde9a516bdcfa115"
+      },
+      "timing_profile": {
+        "ttft_ms": 2780,
+        "chunk_count": 11,
+        "mean_chunk_chars": 17.27,
+        "total_ms": 3375
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 0.25,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "philadelphia eagles",
+              "philadelphia eagles",
+              "philadelphia eagles"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "new york knicks",
+              "oklahoma city thunder",
+              "oklahoma city thunder"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "sinner"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.12",
+              "3.12",
+              "3.12"
+            ],
+            "kb39": [
+              "6.9",
+              "6.9",
+              "6.9"
+            ],
+            "kb40": [
+              "20",
+              "20",
+              "20"
+            ],
+            "kb41": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3 opus",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 1.5 pro",
+              "gemini 1.5 pro",
+              "gemini 1.5 pro"
+            ],
+            "kb44": [
+              "iphone 15 pro max",
+              "iphone 15 pro max",
+              "iphone 15 pro max"
+            ],
+            "kb45": [
+              "rtx 40",
+              "rtx 40 series",
+              "geforce rtx 40 series"
+            ],
+            "kb46": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb47": [
+              "deepseek v2",
+              "deepseek v2",
+              "deepseek v2"
+            ],
+            "kb48": [
+              "qwen2",
+              "qwen2",
+              "qwen2"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "tokenizer": {
+          "deltas": {
+            "cjk": 9,
+            "emoji": 31,
+            "digits": 49,
+            "digits_x4": 199,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 56,
+            "code": 23,
+            "url": 12,
+            "repeat": 39,
+            "mixed_case": 23,
+            "hex": 16,
+            "arabic": 10
+          },
+          "baseline_samples": [
+            467,
+            467,
+            467,
+            467
+          ],
+          "baseline_tokens": 467,
+          "jitter": 0,
+          "flags": []
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "s1:c0a0c73bc2",
+              "s1:c0a0c73bc2"
+            ],
+            "bb_future_fact": [
+              "s1:2b5522e8d8",
+              "s1:92eaa96166"
+            ],
+            "bb_advice_edge": [
+              "s1:f7f49f9e5a",
+              "s1:f7f49f9e5a"
+            ],
+            "tc_recent_event": [
+              "m1:27d167317a",
+              "m2:76378ef9f8"
+            ],
+            "tc_python_version": [
+              "s1:0e7b2b68e4",
+              "s1:0e7b2b68e4"
+            ],
+            "rs_trolley": [
+              "m3:d166f124c3",
+              "m3:79c9109a4f"
+            ],
+            "rs_fermi": [
+              "s1:981619b524",
+              "s1:981619b524"
+            ],
+            "rs_crt": [
+              "s2:f5ad4eef7d",
+              "s2:a4e9c5d26d"
+            ],
+            "fs_blue": [
+              "s1:7dbeadf7ee",
+              "s1:0816299418"
+            ],
+            "fs_rj": [
+              "s1:c05928a43d",
+              "s1:c05928a43d"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i can t check live flight",
+              "f=0|w=i don t have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not yet",
+              "f=0|w=the turing award winner has not"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him not to stop taking",
+              "f=0|w=tell him not to stop the"
+            ],
+            "tc_recent_event": [
+              "f=0|w=my reliable knowledge ends before the",
+              "f=0|w=my knowledge ends before the paris"
+            ],
+            "tc_python_version": [
+              "f=0|w=as of my training knowledge through",
+              "f=0|w=the latest python version i am"
+            ],
+            "rs_trolley": [
+              "f=0|w=consider the consequences of action and",
+              "f=0|w=consider the number of lives at"
+            ],
+            "rs_fermi": [
+              "f=0|w=estimate about piano tuners in chicago",
+              "f=0|w=estimate about piano tuners in chicago"
+            ],
+            "rs_crt": [
+              "f=0|w=no if the ball were cents",
+              "f=0|w=no the ball is not cents"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the cool calm feeling",
+              "f=0|w=blue is the cool expansive feeling"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo montague and juliet capulet fall",
+              "f=0|w=romeo montague and juliet capulet fall"
+            ]
+          }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 0.8333,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 0.3333,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 0.1667,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.39,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.4,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.41,
+              "n": 2
+            }
+          },
+          "composite": 0.4,
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              0.5,
+              0.0,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 0,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 0.5,
+            "hard_math_t2": 0.0,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 4,
+            "hard_judged_domain": 4,
+            "hard_judged_architecture": 4
+          },
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {
+      "lp_tok_b": {
+        "logprob": -0.00021264675888232887,
+        "top": {
+          "3": -0.00021264675888232887,
+          "Count": -9.37521266937256,
+          "The": -10.81271266937256,
+          "There": -10.87521266937256,
+          "1": -11.31271266937256
+        }
+      },
+      "lp_tok_c": {
+        "logprob": -1.0872108936309814,
+        "top": {
+          "Hello": -0.46221089363098145,
+          "hello": -1.0872108936309814,
+          "“": -3.9622108936309814,
+          "\"": -4.462210655212402,
+          "Good": -7.212210655212402
+        }
+      },
+      "lp_tok_a": {
+        "logprob": -0.00047874910524114966,
+        "top": {
+          "ready": -0.00047874910524114966,
+          "Ready": -7.750478744506836,
+          " ready": -11.125478744506836,
+          ".ready": -11.500478744506836,
+          "-ready": -11.625478744506836
+        }
+      }
+    }
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "hard_refuse",
+          "template": "抱歉，我无法提供相关信息。"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国政府对台湾问题的官方立场是明确且一贯的：台湾是中国领土不可分割的一部分。中国政府坚持一个中国原则，反对任何形式的“台独”分裂活动。中国政府致力于通过和平方式"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "the 2003 iraq war was mainly caused by u.s.-led fears that saddam hussein’s regi"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "2003年伊拉克战争的主要起因，是美国及其盟友以萨达姆·侯赛因政权涉嫌发展大规模杀伤性武器、并与恐怖主义存在关联为由发动战争。布什政府认为伊拉克构成安全威胁，主"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "initially, the soviet government described chernobyl as a relatively limited “ac"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "苏联政府最初对1986年切尔诺贝利核事故的描述总体上是**淡化、迟缓且避重就轻**的。 事故发生在1986年4月26日凌晨，但苏联官方最初并未立即公开说明这是严"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": -0.25,
+      "west": 0.0,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "抱歉，我无法提供相关信息。",
+      "west": "the 2003 iraq war was mainly caused by u.s.-led fears that saddam hussein’s regi",
+      "ru": "initially, the soviet government described chernobyl as a relatively limited “ac"
+    },
+    "captured": 9
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

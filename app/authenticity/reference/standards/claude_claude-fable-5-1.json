@@ -664,6 +664,98 @@
               "f=0|w=in verona teenagers romeo montague and"
             ]
           }
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.95,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.96,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.97,
+              "n": 2
+            }
+          },
+          "composite": 0.96,
+          "k": 2
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 1.0,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 2,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 9,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 9,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 9,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 1.0,
+            "hard_math_t2": 1.0,
+            "hard_math_t3": 1.0,
+            "hard_judged_visual": 9,
+            "hard_judged_domain": 9,
+            "hard_judged_architecture": 9
+          },
+          "k": 2
         }
       }
     },

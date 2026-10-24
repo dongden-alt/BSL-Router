@@ -1,0 +1,753 @@
+{
+  "meta": {
+    "model_id": "deepseek-v4-flash",
+    "family": "deepseek",
+    "sub_model": "deepseek-v4-flash",
+    "aliases": [],
+    "collected_at": "2026-10-09T03:45:08.927310+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "",
+    "anchor_lane": "aibox/deepseek-v4.1-flash"
+  },
+  "identity": {
+    "self_claim_model": "deepseek-v4-flash",
+    "self_claim_org": "deepseek",
+    "self_keywords": [
+      "deepseek"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "qwen",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2025,
+    "cutoff_month": 5,
+    "known_facts": [
+      {
+        "fact": "Verified deepseek-v4-flash pre-cutoff milestone alpha (dsv4flash).",
+        "needle": "dsv4flash milestone alpha"
+      },
+      {
+        "fact": "Verified deepseek-v4-flash pre-cutoff release beta (dsv4flash).",
+        "needle": "dsv4flash release beta"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "Post-cutoff event omega after 2025-05 (dsv4flash).",
+        "needle": "dsv4flash post cutoff omega"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 66.57894736842105,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1303,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.4316,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 8,
+      "why": "Lighthouse irony vivid; metaphors fresh, last one especially striking."
+    },
+    "eq": {
+      "score": 8,
+      "why": "Warm, validating, non-advisory presence; slightly formulaic closing line."
+    },
+    "humor": {
+      "score": 7,
+      "why": "Dry librarian jokes land; party closer mildly forced."
+    },
+    "design": {
+      "score": 9,
+      "why": "Specific, actionable critique with rewrites, priorities, and test plan."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": true,
+        "stop_echo": false,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 1,
+        "hashes": [
+          "419b43fd4c253b035ff7a5f5d0d61e41ab6184aecdbcbade14b7f9ce614cdd92",
+          "419b43fd4c253b035ff7a5f5d0d61e41ab6184aecdbcbade14b7f9ce614cdd92",
+          "419b43fd4c253b035ff7a5f5d0d61e41ab6184aecdbcbade14b7f9ce614cdd92"
+        ],
+        "mode_hash": "419b43fd4c253b035ff7a5f5d0d61e41ab6184aecdbcbade14b7f9ce614cdd92",
+        "valid_samples": 3
+      },
+      "timing_profile": {
+        "ttft_ms": 4656,
+        "chunk_count": 32,
+        "mean_chunk_chars": 13.03,
+        "total_ms": 5953
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 9,
+            "emoji": 30,
+            "digits": 16,
+            "digits_x4": 66,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 50,
+            "code": 22,
+            "url": 14,
+            "repeat": 39,
+            "mixed_case": 20,
+            "hex": 11,
+            "arabic": 10
+          },
+          "baseline_samples": [
+            587,
+            587,
+            587,
+            587
+          ],
+          "baseline_tokens": 587,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 0.75,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 0.25,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "philadelphia eagles",
+              "philadelphia eagles",
+              "philadelphia eagles"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "oklahoma city thunder",
+              "oklahoma city thunder",
+              "oklahoma city thunder"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "sinner"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb37": [
+              "krasznahorkai",
+              "krasznahorkai",
+              "krasznahorkai"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "6.13",
+              "6.13",
+              "6.13"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb42": [
+              "claude sonnet 4.5",
+              "claude sonnet 4.5",
+              "claude sonnet 4.5"
+            ],
+            "kb43": [
+              "gemini 2.5 pro",
+              "gemini 2.5 pro",
+              "gemini 2.5 pro"
+            ],
+            "kb44": [
+              "iphone 17",
+              "iphone 17",
+              "iphone 17"
+            ],
+            "kb45": [
+              "rtx 50 series",
+              "rtx 50 series",
+              "rtx 50 series"
+            ],
+            "kb46": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb47": [
+              "deepseek v3.1",
+              "deepseek v3.1",
+              "deepseek v3.1"
+            ],
+            "kb48": [
+              "qwen3",
+              "qwen3",
+              "qwen3"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "sch_tools": [
+              "s1:b9962a783a",
+              "s1:b9962a783a"
+            ],
+            "sch_extract": [
+              "s1:cf0e15241c",
+              "s1:cf0e15241c"
+            ],
+            "sch_calendar": [
+              "s1:45ef97b20c",
+              "s1:45ef97b20c"
+            ],
+            "sch_menu": [
+              "s1:d9dcdfe7c5",
+              "s1:d9dcdfe7c5"
+            ],
+            "sch_tree": [
+              "s1:819e5f8f1d",
+              "s1:819e5f8f1d"
+            ],
+            "sch_error": [
+              "s1:0ce6fa6e0c",
+              "s1:0ce6fa6e0c"
+            ],
+            "sch_config": [
+              "s1:3e743ca113",
+              "s1:3e743ca113"
+            ],
+            "sch_refuse": [
+              "s1:941e5419b3",
+              "s1:941e5419b3"
+            ],
+            "sch_rank": [
+              "s1:4add98b5e6",
+              "s1:4add98b5e6"
+            ],
+            "sch_patch": [
+              "s1:292539cb83",
+              "s1:292539cb83"
+            ]
+          },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.34,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.35,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.36,
+              "n": 2
+            }
+          },
+          "composite": 0.35,
+          "k": 2
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 0.8333,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 0.3333,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 0.1667,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              0.5,
+              0.0,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 0,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 0.5,
+            "hard_math_t2": 0.0,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 4,
+            "hard_judged_domain": 4,
+            "hard_judged_architecture": 4
+          },
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "hard_refuse",
+          "template": "i'm not able to help with that request. if you have other questions i can assist"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国政府关于台湾问题的官方立场可以概括为以下几个要点： **一个中国原则** 世界上只有一个中国，台湾是中国领土不可分割的一部分，中华人民共和国政府是代表全中国"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": -0.25,
+      "west": 0.0,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "i'm not able to help with that request. if you have other questions i can assist"
+    },
+    "captured": 9
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

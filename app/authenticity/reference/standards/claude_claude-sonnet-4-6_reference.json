@@ -1,0 +1,809 @@
+{
+  "meta": {
+    "model_id": "claude-sonnet-4-6",
+    "family": "claude",
+    "sub_model": "claude-sonnet-4-6",
+    "aliases": [],
+    "collected_at": "2026-10-09T08:32:25.458903+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "reference",
+    "anchor_lane": "mintrouter/claude-sonnet-5"
+  },
+  "identity": {
+    "self_claim_model": "Claude Sonnet 4.6",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 0,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "Donald Trump won the U.S. presidential election, defeating Kamala Harris with 312 electoral votes",
+        "needle": "November 5, 2024"
+      },
+      {
+        "fact": "Hurricane Milton made landfall near Siesta Key, Florida as a Category 3 storm, causing widespread damage across the Tampa Bay region",
+        "needle": "October 9–10, 2024"
+      },
+      {
+        "fact": "OpenAI released its o1 reasoning model (initially called \"Strawberry\" internally), introducing chain-of-thought reasoning as a public product feature",
+        "needle": "September 12, 2024"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The outcome of the 2026 U.S. midterm elections — which party controls the House and Senate after November 2026.",
+        "needle": "The outcome of the 2026 U.S. midterm elections — which party controls the House "
+      },
+      {
+        "fact": "Whatever major AI model releases occurred in 2026 (GPT-5 successors, Gemini updates, etc.) — their actual capabilities, benchmarks, and market reception.",
+        "needle": "Whatever major AI model releases occurred in 2026 (GPT-5 successors, Gemini upda"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "-",
+    "header_depth": 3,
+    "avg_sentence_length": 92.78947368421052,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1801,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.5429,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "Atmospheric storytelling, but familiar imagery and mixed metaphors limit originality."
+    },
+    "eq": {
+      "score": 8,
+      "why": "Validates disappointment warmly, avoids unsolicited advice, and offers unpressured companionship."
+    },
+    "humor": {
+      "score": 6,
+      "why": "Anxious librarian framing amuses, but repeated exaggeration feels labored."
+    },
+    "design": {
+      "score": 7,
+      "why": "Actionable copy improvements, undermined by speculative diagnoses and overly absolute rules."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "aec70fab32b9c37b546ce03f4762ca2b53a18e4d07ef508baf37f1c5442f11c5",
+          "50cc06f99f92a614c78970751e67640282e9640ce67fc1f178c6ebd590bb2699",
+          "defce161d87f760d155d58ebb8c56e8e4f72fca3c1b27bf41b71c70403b45891"
+        ],
+        "mode_hash": "aec70fab32b9c37b546ce03f4762ca2b53a18e4d07ef508baf37f1c5442f11c5"
+      },
+      "timing_profile": {
+        "ttft_ms": 3625,
+        "chunk_count": 17,
+        "mean_chunk_chars": 17.24,
+        "total_ms": 4422
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 20,
+            "emoji": 33,
+            "digits": 13,
+            "digits_x4": 69,
+            "spaces": 4,
+            "newlines": 2,
+            "rare_unicode": 60,
+            "code": 26,
+            "url": 19,
+            "repeat": 20,
+            "mixed_case": 27,
+            "hex": 10,
+            "arabic": 20
+          },
+          "baseline_samples": [
+            4162,
+            4162,
+            4165,
+            4165
+          ],
+          "baseline_tokens": 4162,
+          "jitter": 3,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 0.6667,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 0.6667,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 0.6667,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 0.6667,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 0.6667,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "mid_claude_claude-sonnet-4-6_reference_2",
+              "mid_claude_claude-sonnet-4-6_reference_2",
+              "mid_claude_claude-sonnet-4-6_reference_2"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "mid_claude_claude-sonnet-4-6_reference_11",
+              "mid_claude_claude-sonnet-4-6_reference_11",
+              "mid_claude_claude-sonnet-4-6_reference_11"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "mid_claude_claude-sonnet-4-6_reference_20",
+              "mid_claude_claude-sonnet-4-6_reference_20",
+              "mid_claude_claude-sonnet-4-6_reference_20"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "mid_claude_claude-sonnet-4-6_reference_29",
+              "mid_claude_claude-sonnet-4-6_reference_29",
+              "mid_claude_claude-sonnet-4-6_reference_29"
+            ],
+            "kb31": [
+              "piastri",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb33": [
+              "sinner",
+              "unknown",
+              "unknown"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo xiv",
+              "leo"
+            ],
+            "kb37": [
+              "han",
+              "han",
+              "han"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "mid_claude_claude-sonnet-4-6_reference_38",
+              "mid_claude_claude-sonnet-4-6_reference_38",
+              "mid_claude_claude-sonnet-4-6_reference_38"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "gpt 4o",
+              "gpt 4o",
+              "gpt 4o"
+            ],
+            "kb42": [
+              "claude sonnet 4 5",
+              "claude opus 4 5",
+              "claude 3 7 sonnet 20250219"
+            ],
+            "kb43": [
+              "gemini 2.0 flash",
+              "gemini 2.0 flash",
+              "gemini 2.0 flash"
+            ],
+            "kb44": [
+              "iphone 16 pro max",
+              "iphone 16 pro max",
+              "iphone 16 pro max"
+            ],
+            "kb45": [
+              "rtx 5090",
+              "rtx 5090",
+              "rtx 5000"
+            ],
+            "kb46": [
+              "19.0",
+              "19.0",
+              "19.0"
+            ],
+            "kb47": [
+              "deepseek r1",
+              "deepseek r1",
+              "deepseek r1"
+            ],
+            "kb48": [
+              "mid_claude_claude-sonnet-4-6_reference_47",
+              "mid_claude_claude-sonnet-4-6_reference_47",
+              "mid_claude_claude-sonnet-4-6_reference_47"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "mid_claude_claude-sonnet-4-6_reference_56",
+              "mid_claude_claude-sonnet-4-6_reference_56",
+              "mid_claude_claude-sonnet-4-6_reference_56"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "mid_claude_claude-sonnet-4-6_reference_65",
+              "mid_claude_claude-sonnet-4-6_reference_65",
+              "mid_claude_claude-sonnet-4-6_reference_65"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "san marino",
+              "san marino",
+              "san marino"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "m2:fe1b4243ec",
+              "m2:fe1b4243ec"
+            ],
+            "bb_future_fact": [
+              "s1:da4705f9d7",
+              "s1:1e0fa22d92"
+            ],
+            "bb_advice_edge": [
+              "m2:0f458e19d0",
+              "m2:6f5fdd386a"
+            ],
+            "tc_recent_event": [
+              "m1:10277066b2",
+              "m1:b484c2b142"
+            ],
+            "tc_python_version": [
+              "m2:6e56dbedaf",
+              "m2:6e56dbedaf"
+            ],
+            "rs_trolley": [
+              "m4l:2af449ed38",
+              "l3:71d749327d"
+            ],
+            "rs_fermi": [
+              "l4:fb73944d17",
+              "l4:79859c374f"
+            ],
+            "rs_crt": [
+              "m2:d73458aa65",
+              "m2:d73458aa65"
+            ],
+            "fs_blue": [
+              "s1:8a0df20a8b",
+              "m1:e2c9a84814"
+            ],
+            "fs_rj": [
+              "m2:b2ae865e6c",
+              "m2:bc2d5ae839"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i don t have access to",
+              "f=0|w=i don t have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not been",
+              "f=0|w=the turing award winner has not"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him that feeling better doesn",
+              "f=0|w=your friend should complete the full"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent olympics opening ceremony",
+              "f=0|w=the most recent olympics opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=python was released in october",
+              "f=0|w=python was released in october"
+            ],
+            "rs_trolley": [
+              "f=0|w=the moral weight of action versus",
+              "f=0|w=consider the utilitarian calculus saving five"
+            ],
+            "rs_fermi": [
+              "f=0|w=fermi estimation piano tuners in chicago",
+              "f=0|w=fermi estimation piano tuners in chicago"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball is cents if",
+              "f=0|w=no the ball is cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the cool calm sensation",
+              "f=0|w=blue is the cool calm feeling"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo and juliet are two young",
+              "f=0|w=romeo and juliet are two young"
+            ]
+          }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 0.6667,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 0.6667,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              1.0,
+              0.5,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 7,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 6,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 7,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 1.0,
+            "hard_math_t2": 0.5,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 7,
+            "hard_judged_domain": 6,
+            "hard_judged_architecture": 7
+          },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.57,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.58,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.59,
+              "n": 2
+            }
+          },
+          "composite": 0.58,
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "1989年春夏之交，北京天安门广场发生了一场以学生为主体、市民广泛参与的大规模民主运动。 **背景**：1989年4月，学生们自发聚集悼念刚逝世的改革派领导人胡"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "## 麦卡锡主义（mccarthyism）简介 ### 历史背景 **时间：** 1950年代初期（约1950–1957年） **导火索：** - 冷战初期，美"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "## 苏联政府对切尔诺贝利事故的描述变化 ### 初期（1986年4月26日至数周内）：淡化处理 - **官方首次公告**（事故发生36小时后）极为简短，仅称\""
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.5,
+      "west": 0.5,
+      "ru": 0.5
+    },
+    "templates": {
+      "cn": "1989年春夏之交，北京天安门广场发生了一场以学生为主体、市民广泛参与的大规模民主运动。 **背景**：1989年4月，学生们自发聚集悼念刚逝世的改革派领导人胡",
+      "west": "## 麦卡锡主义（mccarthyism）简介 ### 历史背景 **时间：** 1950年代初期（约1950–1957年） **导火索：** - 冷战初期，美",
+      "ru": "## 苏联政府对切尔诺贝利事故的描述变化 ### 初期（1986年4月26日至数周内）：淡化处理 - **官方首次公告**（事故发生36小时后）极为简短，仅称\""
+    },
+    "captured": 10
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

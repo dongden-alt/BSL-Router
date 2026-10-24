@@ -1675,13 +1675,23 @@ async def run_standard_v2(client, endpoint, api_key, model_id,
                                 judge=judge),
                 jobs=len(HARD_MATH_TIERS) * _hs_k
                      + (len(HARD_JUDGED_PROBES) if judge else 0))
+    # tier_splitter (2026-10-24): 3-prong judge-free cross-family capability
+    # ceiling lane (svg_compiler + constraint_sat + state_trace). Splits
+    # budget/flash/luna/haiku vs mid/plus/sonnet/sol vs flagship/max/pro/opus
+    # across all 7 families without any external judge call.
+    _ts_k = 1 if live else 2
+    await _lane("tier_splitter",
+                run_tier_splitter(client, endpoint, api_key, model_id,
+                                  timeout_s, k=_ts_k, rng=rng,
+                                  concurrency=concurrency, gaps=gaps),
+                jobs=len(TIER_SPLITTER_PRONGS) * _ts_k)
     if _lane_gaps:
         out["lane_gaps"] = _lane_gaps
     return out
 
 
 def compute_v2_dims(sus_v2: dict, candidates: dict) -> dict:
-    """{key: {"tokenizer","capability_curve","knowledge_bank"}} (None=not compared)."""
+    """{key: {"tokenizer","capability_curve","knowledge_bank",...}} (None=not compared)."""
     sus_v2 = sus_v2 or {}
     cand_v2 = {k: v2_of(s) for k, s in candidates.items()}
     inf = informative_items({k: (v.get("knowledge_bank") or {}) for k, v in cand_v2.items()})
@@ -1723,6 +1733,12 @@ def compute_v2_dims(sus_v2: dict, candidates: dict) -> dict:
             # needs 3 shared components total (see similarity_hard_series).
             "hard_series": similarity_hard_series(sus_v2.get("hard_series"),
                                                   b.get("hard_series")),
+            # tier_splitter compares the 3-prong capability curve + composite
+            # ceiling (with fallback to MODEL_TIER_EXPECTATIONS when a candidate
+            # standard predates the lane).
+            "tier_splitter": similarity_tier_splitter(
+                sus_v2.get("tier_splitter"), b.get("tier_splitter"),
+                candidate_model_id=k),
         }
     return out
 
@@ -1753,6 +1769,9 @@ def pairwise_separability(a_std: dict, b_std: dict) -> dict:
                                           _logprob_profile_of(b_std)),
         "hard_series": similarity_hard_series(va.get("hard_series"),
                                               vb.get("hard_series")),
+        "tier_splitter": similarity_tier_splitter(
+            va.get("tier_splitter"), vb.get("tier_splitter"),
+            candidate_model_id=str(b_std.get("sub_model") or "")),
     }
     got = [v for v in sims.values() if v is not None]
     if not got:
@@ -1889,4 +1908,452 @@ def similarity_token_jsd(sus_profile: dict, base_profile: dict,
     if len(dists) < min_shared:
         return None
     return round(1.0 - sum(dists) / len(dists), 3)
+
+
+# ------------------------------------------------------------- tier_splitter
+# (2026-10-24) 3-Prong Cross-Family Tier-Splitter.
+# Splits budget (Flash/Luna/Haiku/K2.6/5.3-Flash) vs mid (Plus/Sonnet/Sol/
+# Terra/5.2/K2.7-Code/3.1-Pro) vs flagship (Max/Pro/Opus/Fable/Astra/Argon/K3)
+# across all 7 model families without an external LLM judge:
+#   1. svg_compiler   — Parametric SVG Blueprint Compiler (8 geometric/topological
+#                       constraints graded deterministically in Python).
+#   2. constraint_sat — Coupled 4x4 Integer Grid Constraint Satisfaction (row
+#                       sums + diagonal sum + modulo class + strict col-0 order).
+#   3. state_trace    — Deep 8-Step Symbolic Register & Array Trace (MID after
+#                       step 4 + FINAL after step 8).
+
+
+def _build_svg_compiler_prompt(rng: random.Random) -> tuple[str, dict]:
+    """Generate a randomized SVG blueprint spec and prompt."""
+    fx = rng.randint(20, 40) * 1
+    fy = rng.randint(20, 40) * 1
+    fw = rng.randint(76, 96) * 2   # even width so cx is exact integer
+    fh = rng.randint(76, 96) * 2   # even height so cy is exact integer
+    cx = fx + fw // 2
+    cy = fy + fh // 2
+    hr = rng.randint(28, 40)
+    token = f"TS-{rng.randint(100, 999)}"
+    spec = {
+        "viewBox": "0 0 240 240",
+        "fx": fx, "fy": fy, "fw": fw, "fh": fh,
+        "cx": cx, "cy": cy, "hr": hr, "token": token,
+    }
+    prompt = (
+        "Output ONLY a valid SVG snippet (`<svg ...>...</svg>`) satisfying ALL "
+        "8 geometric and topological constraints below. No prose, no markdown explanation.\n"
+        f"1. Root `<svg>` has `viewBox=\"0 0 240 240\"`.\n"
+        f"2. `<rect id=\"frame\" x=\"{fx}\" y=\"{fy}\" width=\"{fw}\" height=\"{fh}\"/>`.\n"
+        f"3. `<circle id=\"hub\" cx=\"{cx}\" cy=\"{cy}\" r=\"{hr}\"/>` (centered inside `frame`).\n"
+        f"4. Two `<polygon>` elements with `id=\"fin_l\"` and `id=\"fin_r\"`, each having at least 3 `x,y` vertices in its `points` attribute.\n"
+        f"5. All vertices of `fin_l` must have `x < {cx}` and all vertices of `fin_r` must have `x > {cx}`.\n"
+        f"6. `fin_r` must be the exact horizontal reflection of `fin_l` across the vertical axis `x = {cx}` (for each vertex `(xl, yl)` in `fin_l`, the corresponding vertex `(xr, yr)` in `fin_r` satisfies `xl + xr = {2 * cx}` and `yl = yr`).\n"
+        f"7. `<line id=\"needle\" x1=\"{cx}\" y1=\"{cy}\" x2=\"...\" y2=\"...\"/>` starting at `({cx}, {cy})` and ending strictly inside the upper-right quadrant of `hub` (`x2 > {cx}`, `y2 < {cy}`, and distance from `({cx}, {cy})` to `(x2, y2)` <= `{hr}`).\n"
+        f"8. `<text id=\"tag\" x=\"{cx}\" y=\"...\">{token}</text>` positioned strictly below `hub` (`y > {cy + hr}`) and inside `frame` (`y < {fy + fh}`)."
+    )
+    return prompt, spec
+
+
+def _svg_attr_float(tag_text: str, attr: str) -> float | None:
+    m = re.search(rf'\b{re.escape(attr)}\s*=\s*["\']\s*(-?\d+(?:\.\d+)?)', tag_text, re.I)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _svg_find_tag_by_id(svg_text: str, tag: str, elem_id: str) -> str | None:
+    for m in re.finditer(rf'<{tag}\b[^>]*>', svg_text, re.I | re.S):
+        chunk = m.group(0)
+        if re.search(rf'\bid\s*=\s*["\']{re.escape(elem_id)}["\']', chunk, re.I):
+            return chunk
+    return None
+
+
+def _parse_svg_points(tag_text: str) -> list[tuple[float, float]]:
+    if not tag_text:
+        return []
+    m = re.search(r'\bpoints\s*=\s*["\']([^"\']+)["\']', tag_text, re.I | re.S)
+    if not m:
+        return []
+    nums = [float(x) for x in re.findall(r'-?\d+(?:\.\d+)?', m.group(1))]
+    if len(nums) < 6 or len(nums) % 2 != 0:
+        return []
+    return [(nums[i], nums[i + 1]) for i in range(0, len(nums), 2)]
+
+
+def score_svg_compiler(text: str, spec: dict) -> float:
+    """Deterministically grade the 8 geometric/topological constraints -> [0.0, 1.0]."""
+    if not isinstance(text, str) or not isinstance(spec, dict):
+        return 0.0
+    m_svg = re.search(r'<svg\b[^>]*>.*?</svg>', text, re.I | re.S)
+    if not m_svg:
+        return 0.0
+    svg = m_svg.group(0)
+    fx = float(spec.get("fx", 30))
+    fy = float(spec.get("fy", 30))
+    fw = float(spec.get("fw", 180))
+    fh = float(spec.get("fh", 180))
+    cx = float(spec.get("cx", fx + fw / 2.0))
+    cy = float(spec.get("cy", fy + fh / 2.0))
+    hr = float(spec.get("hr", 32))
+    token = str(spec.get("token", "TS-000"))
+
+    passed = 0
+    # 1. Root <svg> with viewBox="0 0 240 240"
+    if re.search(r'<svg\b[^>]*\bviewBox\s*=\s*["\']\s*0[\s,]+0[\s,]+240[\s,]+240\s*["\']', svg, re.I):
+        passed += 1
+
+    # 2. <rect id="frame" x=fx y=fy width=fw height=fh>
+    rect_tag = _svg_find_tag_by_id(svg, "rect", "frame")
+    if rect_tag:
+        rx, ry = _svg_attr_float(rect_tag, "x"), _svg_attr_float(rect_tag, "y")
+        rw, rh = _svg_attr_float(rect_tag, "width"), _svg_attr_float(rect_tag, "height")
+        if (rx is not None and ry is not None and rw is not None and rh is not None
+                and abs(rx - fx) <= 1.0 and abs(ry - fy) <= 1.0
+                and abs(rw - fw) <= 1.0 and abs(rh - fh) <= 1.0):
+            passed += 1
+
+    # 3. <circle id="hub" cx=cx cy=cy r=hr> centered inside frame
+    hub_tag = _svg_find_tag_by_id(svg, "circle", "hub")
+    if hub_tag:
+        hcx, hcy, hrad = (_svg_attr_float(hub_tag, "cx"),
+                          _svg_attr_float(hub_tag, "cy"),
+                          _svg_attr_float(hub_tag, "r"))
+        if (hcx is not None and hcy is not None and hrad is not None
+                and abs(hcx - cx) <= 1.0 and abs(hcy - cy) <= 1.0
+                and abs(hrad - hr) <= 1.0
+                and (hcx - hrad) >= fx and (hcx + hrad) <= (fx + fw)
+                and (hcy - hrad) >= fy and (hcy + hrad) <= (fy + fh)):
+            passed += 1
+
+    # 4. Both <polygon id="fin_l"> and <polygon id="fin_r"> with >= 3 vertices
+    fin_l_tag = _svg_find_tag_by_id(svg, "polygon", "fin_l")
+    fin_r_tag = _svg_find_tag_by_id(svg, "polygon", "fin_r")
+    pts_l = _parse_svg_points(fin_l_tag or "")
+    pts_r = _parse_svg_points(fin_r_tag or "")
+    if len(pts_l) >= 3 and len(pts_r) >= 3:
+        passed += 1
+
+    # 5. fin_l strictly left of cx and fin_r strictly right of cx
+    if (len(pts_l) >= 3 and len(pts_r) >= 3
+            and all(x < cx for x, _ in pts_l)
+            and all(x > cx for x, _ in pts_r)):
+        passed += 1
+
+    # 6. Exact horizontal reflection symmetry across x = cx
+    if len(pts_l) >= 3 and len(pts_l) == len(pts_r):
+        # Allow either matching order or reversed vertex winding order
+        direct_ok = all(
+            abs((xl + xr) - 2.0 * cx) <= 1.5 and abs(yl - yr) <= 1.5
+            for (xl, yl), (xr, yr) in zip(pts_l, pts_r)
+        )
+        rev_ok = all(
+            abs((xl + xr) - 2.0 * cx) <= 1.5 and abs(yl - yr) <= 1.5
+            for (xl, yl), (xr, yr) in zip(pts_l, reversed(pts_r))
+        )
+        if direct_ok or rev_ok:
+            passed += 1
+
+    # 7. <line id="needle"> from (cx, cy) into upper-right quadrant of hub
+    needle_tag = _svg_find_tag_by_id(svg, "line", "needle")
+    if needle_tag:
+        x1, y1 = _svg_attr_float(needle_tag, "x1"), _svg_attr_float(needle_tag, "y1")
+        x2, y2 = _svg_attr_float(needle_tag, "x2"), _svg_attr_float(needle_tag, "y2")
+        if (x1 is not None and y1 is not None and x2 is not None and y2 is not None
+                and abs(x1 - cx) <= 1.0 and abs(y1 - cy) <= 1.0
+                and x2 > cx and y2 < cy
+                and math.hypot(x2 - cx, y2 - cy) <= hr + 1.0):
+            passed += 1
+
+    # 8. <text id="tag"> contains token and sits below hub inside frame
+    m_text = re.search(
+        r'<text\b([^>]*\bid\s*=\s*["\']tag["\'][^>]*)>(.*?)</text>',
+        svg, re.I | re.S)
+    if m_text:
+        t_attrs, t_body = m_text.group(1), m_text.group(2)
+        ty = _svg_attr_float("<text " + t_attrs + ">", "y")
+        if token in (t_body or "") and ty is not None and (cy + hr) < ty < (fy + fh):
+            passed += 1
+
+    return round(passed / 8.0, 4)
+
+
+def _build_constraint_sat_prompt(rng: random.Random) -> tuple[str, dict]:
+    """Generate a guaranteed-solvable 4x4 coupled integer constraint grid."""
+    rem = rng.choice([1, 2])
+    # Construct a witness 4x4 matrix of positive integers x % 3 == rem
+    # with strictly increasing column 0.
+    col0_steps = [rng.randint(1, 3) for _ in range(4)]
+    c0_vals = []
+    cur = rem
+    for s in col0_steps:
+        cur = cur + 3 * s
+        c0_vals.append(cur)
+    grid = []
+    for r in range(4):
+        row = [c0_vals[r]]
+        for _ in range(3):
+            row.append(rem + 3 * rng.randint(0, 7))
+        grid.append(row)
+    row_sums = [sum(row) for row in grid]
+    diag_sum = sum(grid[i][i] for i in range(4))
+    spec = {
+        "row_sums": row_sums,
+        "diag_sum": diag_sum,
+        "rem": rem,
+        "witness": grid,
+    }
+    prompt = (
+        "Find a 4x4 matrix `grid` of positive integers (every entry >= 1) that "
+        "simultaneously satisfies ALL of the following coupled constraints:\n"
+        f"1. Row sums: sum(grid[0]) = {row_sums[0]}, sum(grid[1]) = {row_sums[1]}, "
+        f"sum(grid[2]) = {row_sums[2]}, sum(grid[3]) = {row_sums[3]}.\n"
+        f"2. Main diagonal sum: grid[0][0] + grid[1][1] + grid[2][2] + grid[3][3] = {diag_sum}.\n"
+        "3. Strictly increasing first column: grid[0][0] < grid[1][0] < grid[2][0] < grid[3][0].\n"
+        f"4. Modulo invariant: every integer x in all 16 cells satisfies `x mod 3 == {rem}`.\n"
+        'Return ONLY a JSON object of the form {"grid": [[...],[...],[...],[...]]} with no extra prose.'
+    )
+    return prompt, spec
+
+
+def score_constraint_sat(text: str, spec: dict) -> float:
+    """Deterministically grade the 8 coupled constraints -> [0.0, 1.0]."""
+    if not isinstance(text, str) or not isinstance(spec, dict):
+        return 0.0
+    row_sums = spec.get("row_sums") or [0, 0, 0, 0]
+    diag_sum = spec.get("diag_sum", 0)
+    rem = spec.get("rem", 1)
+
+    # Extract JSON object containing "grid"
+    grid = None
+    for m in re.finditer(r'\{[^{}]*"grid"\s*:\s*\[.*?\]\s*\}', text, re.S):
+        try:
+            obj = json.loads(m.group(0))
+            if isinstance(obj, dict) and isinstance(obj.get("grid"), list):
+                grid = obj["grid"]
+                break
+        except Exception:
+            continue
+    if grid is None:
+        start, end = text.find("{"), text.rfind("}")
+        if 0 <= start < end:
+            try:
+                obj = json.loads(text[start:end + 1])
+                if isinstance(obj, dict) and isinstance(obj.get("grid"), list):
+                    grid = obj["grid"]
+            except Exception:
+                grid = None
+    if not isinstance(grid, list) or len(grid) != 4:
+        return 0.0
+    for row in grid:
+        if not isinstance(row, list) or len(row) != 4:
+            return 0.0
+        for x in row:
+            if not isinstance(x, int) or isinstance(x, bool) or x < 1:
+                return 0.0
+
+    passed = 1  # Constraint 1: valid 4x4 positive integer matrix
+    # Constraints 2..5: 4 row sums
+    for i in range(4):
+        if sum(grid[i]) == row_sums[i]:
+            passed += 1
+    # Constraint 6: main diagonal sum
+    if sum(grid[i][i] for i in range(4)) == diag_sum:
+        passed += 1
+    # Constraint 7: strictly increasing column 0
+    if grid[0][0] < grid[1][0] < grid[2][0] < grid[3][0]:
+        passed += 1
+    # Constraint 8: all 16 cells satisfy x % 3 == rem
+    if all(x % 3 == rem for row in grid for x in row):
+        passed += 1
+
+    return round(passed / 8.0, 4)
+
+
+def _build_state_trace_prompt(rng: random.Random) -> tuple[str, dict]:
+    """Generate an 8-step deterministic register/array state trace."""
+    init_a = [rng.randint(3, 18) for _ in range(5)]
+    c1 = rng.randint(2, 5)
+    m1 = rng.choice([17, 19, 23, 29])
+    m2 = rng.choice([13, 17, 19, 23])
+    c2 = rng.randint(3, 9)
+    c3 = rng.randint(2, 7)
+    m3 = rng.choice([19, 23, 29, 31])
+
+    a = list(init_a)
+    # Step 1
+    a[0] = (a[0] + a[2] * c1) % m1
+    # Step 2
+    a[1], a[4] = a[4], a[1]
+    # Step 3
+    if a[0] > a[3]:
+        a[2] = a[2] + a[1]
+    else:
+        a[2] = a[3] - a[1]
+    # Step 4
+    a[3] = (a[0] + a[2] + a[4]) % m2
+    mid = list(a)
+    # Step 5
+    idx = a[3] % 5
+    a[idx] = a[idx] + c2
+    # Step 6: right-rotate by 1
+    a = [a[4], a[0], a[1], a[2], a[3]]
+    # Step 7
+    if (a[1] + a[4]) % 2 == 0:
+        a[0] = a[0] ^ c3
+    else:
+        a[0] = a[0] + c3
+    # Step 8
+    a[4] = (sum(a) - a[4]) % m3
+    final = list(a)
+
+    spec = {"init": init_a, "mid": mid, "final": final}
+    prompt = (
+        f"Trace the 0-indexed 5-element integer array A initialized to {init_a} "
+        "through these 8 exact sequential steps (using standard Python `/` `%` `^` semantics):\n"
+        f"Step 1: A[0] = (A[0] + A[2] * {c1}) % {m1}\n"
+        "Step 2: Swap A[1] and A[4]\n"
+        "Step 3: If A[0] > A[3], set A[2] = A[2] + A[1]; otherwise set A[2] = A[3] - A[1]\n"
+        f"Step 4: A[3] = (A[0] + A[2] + A[4]) % {m2}   <-- Record snapshot MID here\n"
+        f"Step 5: Let idx = A[3] % 5; set A[idx] = A[idx] + {c2}\n"
+        "Step 6: Right-rotate A by 1 position: A = [A[4], A[0], A[1], A[2], A[3]]\n"
+        f"Step 7: If (A[1] + A[4]) % 2 == 0, set A[0] = A[0] ^ {c3} (bitwise XOR); otherwise set A[0] = A[0] + {c3}\n"
+        f"Step 8: A[4] = (A[0] + A[1] + A[2] + A[3]) % {m3}   <-- Record snapshot FINAL here\n\n"
+        "End your response with these two exact lines:\n"
+        "MID: [a0, a1, a2, a3, a4]\n"
+        "FINAL: [b0, b1, b2, b3, b4]"
+    )
+    return prompt, spec
+
+
+def _parse_int_list_line(text: str, label: str) -> list[int] | None:
+    matches = list(re.finditer(rf'{re.escape(label)}\s*:\s*\[([^\]]+)\]', text, re.I))
+    if not matches:
+        return None
+    raw = matches[-1].group(1)
+    nums = [int(x) for x in re.findall(r'-?\d+', raw)]
+    return nums if len(nums) == 5 else None
+
+
+def score_state_trace(text: str, spec: dict) -> float:
+    """Grade element-wise accuracy at MID (0.4 weight) and FINAL (0.6 weight)."""
+    if not isinstance(text, str) or not isinstance(spec, dict):
+        return 0.0
+    exp_mid = spec.get("mid")
+    exp_final = spec.get("final")
+    if not (isinstance(exp_mid, list) and len(exp_mid) == 5
+            and isinstance(exp_final, list) and len(exp_final) == 5):
+        return 0.0
+    got_mid = _parse_int_list_line(text, "MID")
+    got_final = _parse_int_list_line(text, "FINAL")
+    mid_acc = (sum(1 for a, b in zip(got_mid, exp_mid) if a == b) / 5.0) if got_mid else 0.0
+    fin_acc = (sum(1 for a, b in zip(got_final, exp_final) if a == b) / 5.0) if got_final else 0.0
+    return round(0.4 * mid_acc + 0.6 * fin_acc, 4)
+
+
+TIER_SPLITTER_PRONGS = (
+    ("svg_compiler", _build_svg_compiler_prompt, score_svg_compiler),
+    ("constraint_sat", _build_constraint_sat_prompt, score_constraint_sat),
+    ("state_trace", _build_state_trace_prompt, score_state_trace),
+)
+
+
+async def run_tier_splitter(client, endpoint, api_key, model_id,
+                            timeout_s: int = 120, k: int = 1,
+                            rng: random.Random | None = None,
+                            concurrency: int = 4,
+                            gaps=_RETRY_GAPS) -> dict:
+    """Run the 3-prong judge-free tier splitter (svg_compiler, constraint_sat,
+    state_trace). Returns {"tiers": {name: {"acc": float, "n": int}},
+    "composite": float, "k": int}, or {} when all calls fail."""
+    rng = rng or random.Random()
+    sem = asyncio.Semaphore(concurrency)
+    jobs = []
+    for name, builder, scorer in TIER_SPLITTER_PRONGS:
+        for _ in range(max(1, k)):
+            prompt, spec = builder(rng)
+            jobs.append((name, prompt, spec, scorer))
+
+    async def one(name, prompt, spec, scorer):
+        async with sem:
+            try:
+                r = await call_with_backoff(
+                    client, endpoint, api_key, model_id,
+                    {"id": f"ts_{name}", "prompt": prompt, "max_tokens": 2048},
+                    timeout_s, extra={"temperature": 0}, gaps=gaps)
+            except Exception:
+                return name, None
+            content = getattr(r, "content", "") or ""
+            if getattr(r, "status_code", 0) != 200 or not content.strip():
+                return name, None
+            try:
+                return name, float(scorer(content, spec))
+            except Exception:
+                return name, None
+
+    try:
+        res = await asyncio.gather(*[one(*j) for j in jobs])
+    except Exception:
+        return {}
+    by_prong: dict[str, list[float]] = {}
+    for name, sc in res:
+        if sc is None:
+            continue
+        by_prong.setdefault(name, []).append(sc)
+    if not by_prong:
+        return {}
+    tiers = {
+        name: {"acc": round(sum(vals) / len(vals), 4), "n": len(vals)}
+        for name, vals in by_prong.items() if vals
+    }
+    if not tiers:
+        return {}
+    composite = round(sum(v["acc"] for v in tiers.values()) / len(tiers), 3)
+    return {"tiers": tiers, "composite": composite, "k": k}
+
+
+def _tier_splitter_composite(ts_block: dict | None) -> float | None:
+    if not isinstance(ts_block, dict) or not ts_block:
+        return None
+    comp = ts_block.get("composite")
+    if isinstance(comp, (int, float)) and not isinstance(comp, bool):
+        return float(comp)
+    tiers = ts_block.get("tiers")
+    if isinstance(tiers, dict) and tiers:
+        vals = [float(v["acc"]) for v in tiers.values()
+                if isinstance(v, dict) and isinstance(v.get("acc"), (int, float))]
+        if vals:
+            return sum(vals) / len(vals)
+    return None
+
+
+def similarity_tier_splitter(sus_ts: dict | None, base_ts: dict | None,
+                             candidate_model_id: str = "") -> float | None:
+    """Compare suspect vs candidate on the 3-prong tier_splitter lane.
+
+    - When both carry `tiers` (>= 2 shared prongs), blends per-prong curve
+      similarity (0.65 weight) with composite ceiling similarity (0.35 weight).
+    - When `sus_ts` has a reading but `base_ts` is absent/empty, falls back to
+      `get_model_tier_rank(candidate_model_id)` so standards harvested before
+      `tier_splitter` still benefit from tier-ceiling disambiguation.
+    """
+    sus_comp = _tier_splitter_composite(sus_ts)
+    if sus_comp is None:
+        return None
+    base_comp = _tier_splitter_composite(base_ts)
+    curve_sim = similarity_curve(sus_ts or {}, base_ts or {}, min_shared=2)
+    if curve_sim is not None and base_comp is not None:
+        comp_sim = max(0.0, 1.0 - abs(sus_comp - base_comp))
+        return round(0.65 * curve_sim + 0.35 * comp_sim, 3)
+    if base_comp is not None:
+        return round(max(0.0, 1.0 - abs(sus_comp - base_comp)), 3)
+    if candidate_model_id:
+        from .scope import get_model_tier_rank
+        expected = get_model_tier_rank(candidate_model_id)
+        if expected is not None:
+            return round(max(0.0, 1.0 - abs(sus_comp - expected)), 3)
+    return None
+
 

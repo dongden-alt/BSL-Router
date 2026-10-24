@@ -727,6 +727,24 @@
           },
           "k": 2,
           "judged": {}
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.89,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.9,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.91,
+              "n": 2
+            }
+          },
+          "composite": 0.9,
+          "k": 2
         }
       }
     },

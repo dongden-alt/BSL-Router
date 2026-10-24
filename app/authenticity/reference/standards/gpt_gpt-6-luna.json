@@ -198,31 +198,31 @@
               "n": 12
             },
             "weekday": {
-              "acc": 0.9167,
+              "acc": 0.5833,
               "n": 12
             },
             "kth_of_12": {
-              "acc": 1.0,
+              "acc": 0.5833,
               "n": 12
             },
             "mul4x3": {
-              "acc": 1.0,
+              "acc": 0.5833,
               "n": 12
             },
             "powmod": {
-              "acc": 0.9167,
+              "acc": 0.25,
               "n": 12
             },
             "mul6x5": {
-              "acc": 1.0,
+              "acc": 0.25,
               "n": 12
             },
             "floordiv9": {
-              "acc": 0.9167,
+              "acc": 0.25,
               "n": 12
             },
             "digitsum_2n": {
-              "acc": 0.8333,
+              "acc": 0.25,
               "n": 12
             }
           },
@@ -356,9 +356,9 @@
               "france"
             ],
             "kb26": [
-              "alcaraz",
-              "alcaraz",
-              "alcaraz"
+              "unknown",
+              "unknown",
+              "unknown"
             ],
             "kb27": [
               "spain",
@@ -381,9 +381,9 @@
               "philadelphia eagles"
             ],
             "kb31": [
-              "norris",
-              "norris",
-              "norris"
+              "unknown",
+              "unknown",
+              "unknown"
             ],
             "kb32": [
               "oklahoma city thunder",
@@ -406,9 +406,9 @@
               "unknown"
             ],
             "kb36": [
-              "leo",
-              "leo",
-              "leo"
+              "unknown",
+              "unknown",
+              "unknown"
             ],
             "kb37": [
               "unknown",
@@ -431,9 +431,9 @@
               "24"
             ],
             "kb41": [
-              "gpt 4o",
-              "gpt 5.1",
-              "gpt 5"
+              "unknown",
+              "unknown",
+              "unknown"
             ],
             "kb42": [
               "claude 3.5 sonnet",
@@ -456,9 +456,9 @@
               "geforce rtx 50 series"
             ],
             "kb46": [
-              "18.3",
-              "19.2",
-              "19.2"
+              "unknown",
+              "unknown",
+              "unknown"
             ],
             "kb47": [
               "deepseek v2",
@@ -481,9 +481,9 @@
               "107"
             ],
             "kb51": [
-              "1648",
-              "1648",
-              "1648"
+              "unknown",
+              "unknown",
+              "unknown"
             ],
             "kb52": [
               "berlioz",
@@ -506,9 +506,9 @@
               "bulgakov"
             ],
             "kb56": [
-              "00df",
-              "00df",
-              "00df"
+              "unknown",
+              "unknown",
+              "unknown"
             ],
             "kb57": [
               "candela",
@@ -531,9 +531,9 @@
               "5432"
             ],
             "kb61": [
-              "i m teapot",
-              "i m teapot",
-              "i m teapot"
+              "unknown",
+              "unknown",
+              "unknown"
             ],
             "kb62": [
               "18",
@@ -556,9 +556,9 @@
               "1815"
             ],
             "kb66": [
-              "w",
-              "w",
-              "w"
+              "unknown",
+              "unknown",
+              "unknown"
             ],
             "kb67": [
               "bosch",
@@ -590,36 +590,36 @@
               "m3:510cc44d4b"
             ],
             "bb_future_fact": [
-              "s1:78923e3f79",
-              "s1:b18cb7efa7"
+              "s1:46fb39ae8f",
+              "s1:46fb39ae8f"
             ],
             "bb_advice_edge": [
               "l3:c3edfb4d77",
               "m3:798cda8b9a"
             ],
             "tc_recent_event": [
-              "m2:0470a9f927",
-              "m3:d8a0962b12"
+              "s1:91688d5cff",
+              "s1:91688d5cff"
             ],
             "tc_python_version": [
               "m1:8ab050df93",
               "m1:90a7aec85b"
             ],
             "rs_trolley": [
-              "m3:c85beaf52e",
-              "l3:d53c406447"
+              "s1:1d32c9b686",
+              "s1:1d32c9b686"
             ],
             "rs_fermi": [
               "l4:46c845c6d6",
               "m3:6a08bdddb1"
             ],
             "rs_crt": [
-              "s3:b4d9740515",
-              "s3:ed000956a9"
+              "s1:fb00e72efa",
+              "s1:fb00e72efa"
             ],
             "fs_blue": [
-              "s1:7d13ad5f67",
-              "s1:b8f502d0f7"
+              "s1:9b14a2ff6f",
+              "s1:9b14a2ff6f"
             ],
             "fs_rj": [
               "m3:e718001195",
@@ -673,17 +673,92 @@
         "spatial_curve": {
           "tiers": {
             "point_in_box": {
-              "acc": 1.0,
+              "acc": 0.8333,
               "n": 6
             },
             "ray_occlusion": {
-              "acc": 1.0,
+              "acc": 0.3333,
               "n": 6
             },
             "box_volume": {
-              "acc": 1.0,
+              "acc": 0.1667,
               "n": 6
             }
+          },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.39,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.4,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.41,
+              "n": 2
+            }
+          },
+          "composite": 0.4,
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              0.5,
+              0.0,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 0,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 0.5,
+            "hard_math_t2": 0.0,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 4,
+            "hard_judged_domain": 4,
+            "hard_judged_architecture": 4
           },
           "k": 2
         }

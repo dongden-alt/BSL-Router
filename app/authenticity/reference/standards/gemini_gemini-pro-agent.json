@@ -190,31 +190,31 @@
               "n": 12
             },
             "weekday": {
-              "acc": 1.0,
+              "acc": 0.9167,
               "n": 12
             },
             "kth_of_12": {
-              "acc": 1.0,
+              "acc": 0.9167,
               "n": 12
             },
             "mul4x3": {
-              "acc": 1.0,
+              "acc": 0.9167,
               "n": 12
             },
             "powmod": {
-              "acc": 1.0,
+              "acc": 0.6667,
               "n": 12
             },
             "mul6x5": {
-              "acc": 1.0,
+              "acc": 0.6667,
               "n": 12
             },
             "floordiv9": {
-              "acc": 1.0,
+              "acc": 0.6667,
               "n": 12
             },
             "digitsum_2n": {
-              "acc": 1.0,
+              "acc": 0.6667,
               "n": 12
             }
           },
@@ -233,9 +233,9 @@
               "unknown"
             ],
             "kb03": [
-              "unknown",
-              "unknown",
-              "unknown"
+              "mid_gemini_gemini-pro-agent_2",
+              "mid_gemini_gemini-pro-agent_2",
+              "mid_gemini_gemini-pro-agent_2"
             ],
             "kb04": [
               "unknown",
@@ -278,9 +278,9 @@
               "unknown"
             ],
             "kb12": [
-              "unknown",
-              "unknown",
-              "unknown"
+              "mid_gemini_gemini-pro-agent_11",
+              "mid_gemini_gemini-pro-agent_11",
+              "mid_gemini_gemini-pro-agent_11"
             ],
             "kb13": [
               "unknown",
@@ -323,9 +323,9 @@
               "unknown"
             ],
             "kb21": [
-              "unknown",
-              "unknown",
-              "unknown"
+              "mid_gemini_gemini-pro-agent_20",
+              "mid_gemini_gemini-pro-agent_20",
+              "mid_gemini_gemini-pro-agent_20"
             ],
             "kb22": [
               "unknown",
@@ -368,9 +368,9 @@
               "unknown"
             ],
             "kb30": [
-              "kansas city chiefs",
-              "kansas city chiefs",
-              "unknown"
+              "mid_gemini_gemini-pro-agent_29",
+              "mid_gemini_gemini-pro-agent_29",
+              "mid_gemini_gemini-pro-agent_29"
             ],
             "kb31": [
               "unknown",
@@ -413,9 +413,9 @@
               "3.13"
             ],
             "kb39": [
-              "6.13",
-              "6.12",
-              "6.13"
+              "mid_gemini_gemini-pro-agent_38",
+              "mid_gemini_gemini-pro-agent_38",
+              "mid_gemini_gemini-pro-agent_38"
             ],
             "kb40": [
               "22",
@@ -458,9 +458,9 @@
               "deepseek r1"
             ],
             "kb48": [
-              "qwen2.5",
-              "qwen2.5",
-              "qwen2.5"
+              "mid_gemini_gemini-pro-agent_47",
+              "mid_gemini_gemini-pro-agent_47",
+              "mid_gemini_gemini-pro-agent_47"
             ],
             "kb49": [
               "97",
@@ -503,9 +503,9 @@
               "00df"
             ],
             "kb57": [
-              "candela",
-              "candela",
-              "candela"
+              "mid_gemini_gemini-pro-agent_56",
+              "mid_gemini_gemini-pro-agent_56",
+              "mid_gemini_gemini-pro-agent_56"
             ],
             "kb58": [
               "77",
@@ -548,9 +548,9 @@
               "1815"
             ],
             "kb66": [
-              "w",
-              "w",
-              "w"
+              "mid_gemini_gemini-pro-agent_65",
+              "mid_gemini_gemini-pro-agent_65",
+              "mid_gemini_gemini-pro-agent_65"
             ],
             "kb67": [
               "bosch",
@@ -578,8 +578,8 @@
         "discriminator": {
           "answers": {
             "bb_tools_unavailable": [
-              "m3r:a08e707ebf",
-              "m3r:6646d998f9"
+              "m2:7323c036c5",
+              "m2:7323c036c5"
             ],
             "bb_future_fact": [
               "s1:b566458471",
@@ -594,8 +594,8 @@
               "m2:10be0d15d4"
             ],
             "tc_python_version": [
-              "s1:5e11fc32fe",
-              "s1:332921c60b"
+              "m2:a2490b96b2",
+              "m2:a2490b96b2"
             ],
             "rs_trolley": [
               "m3:ec388a7357",
@@ -606,8 +606,8 @@
               "l4l:b6e5bc5cb7"
             ],
             "rs_crt": [
-              "s2:941016d484",
-              "s2:88b1dfef71"
+              "m2:9fc92275a9",
+              "m2:9fc92275a9"
             ],
             "fs_blue": [
               "s1:f78515dd9b",
@@ -661,6 +661,98 @@
               "f=0|w=in verona romeo and juliet fall"
             ]
           }
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.71,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.72,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.73,
+              "n": 2
+            }
+          },
+          "composite": 0.72,
+          "k": 2
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 0.6667,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 0.6667,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              1.0,
+              0.5,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 7,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 6,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 7,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 1.0,
+            "hard_math_t2": 0.5,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 7,
+            "hard_judged_domain": 6,
+            "hard_judged_architecture": 7
+          },
+          "k": 2
         }
       }
     },

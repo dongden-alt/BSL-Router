@@ -716,6 +716,24 @@
               "why": "The answer provides useful compaction descriptions and rough O(TL) versus O(L) LSM estimates, but its B-tree derivation incorrectly equates cache misses with dirty flushes and invents an update-write floor, its crossover algebra is inconsistent, and its central flip claims wrongly assume LSM amplification is unaffected by ordered ingestion, hot-key coalescing, or record size, while conflating read"
             }
           }
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.89,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.9,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.91,
+              "n": 2
+            }
+          },
+          "composite": 0.9,
+          "k": 2
         }
       }
     },

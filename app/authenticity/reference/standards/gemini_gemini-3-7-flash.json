@@ -1,0 +1,797 @@
+{
+  "meta": {
+    "model_id": "gemini-3.7-flash",
+    "family": "gemini",
+    "sub_model": "gemini-3.7-flash",
+    "aliases": [],
+    "collected_at": "2026-10-09T06:39:52.260865+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "",
+    "anchor_lane": "antigravity/gemini-pro-agent"
+  },
+  "identity": {
+    "self_claim_model": "gemini-3.7-flash",
+    "self_claim_org": "gemini",
+    "self_keywords": [
+      "gemini",
+      "google",
+      "bard"
+    ],
+    "impostor_keywords": [
+      "claude",
+      "anthropic",
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2025,
+    "cutoff_month": 9,
+    "known_facts": [
+      {
+        "fact": "Verified gemini-3.7-flash pre-cutoff milestone alpha (gem37flash).",
+        "needle": "gem37flash milestone alpha"
+      },
+      {
+        "fact": "Verified gemini-3.7-flash pre-cutoff release beta (gem37flash).",
+        "needle": "gem37flash release beta"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "Post-cutoff event omega after 2025-09 (gem37flash).",
+        "needle": "gem37flash post cutoff omega"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": false,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 109.0,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1669,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0011,
+    "vocabulary_complexity": 0.5279,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 5,
+      "why": "Vivid atmosphere, but familiar darkness imagery and overwritten metaphors limit originality."
+    },
+    "eq": {
+      "score": 6,
+      "why": "Warm and supportive, but formulaic reassurance assumes feelings and unfairness."
+    },
+    "humor": {
+      "score": 6,
+      "why": "Librarian analogy lands; exaggerated suffering and familiar tech jokes feel forced."
+    },
+    "design": {
+      "score": 6,
+      "why": "Actionable recommendations, undermined by categorical claims, assumptions, and generic conversion prescriptions."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 1,
+        "hashes": [
+          "c8f1a445406f98484e0d11523ec4c00b797dac01ce49ff5762013cc1453059dc",
+          "c8f1a445406f98484e0d11523ec4c00b797dac01ce49ff5762013cc1453059dc",
+          "c8f1a445406f98484e0d11523ec4c00b797dac01ce49ff5762013cc1453059dc"
+        ],
+        "mode_hash": "c8f1a445406f98484e0d11523ec4c00b797dac01ce49ff5762013cc1453059dc",
+        "valid_samples": 3
+      },
+      "timing_profile": {
+        "ttft_ms": 5358,
+        "chunk_count": 3,
+        "mean_chunk_chars": 95.67,
+        "total_ms": 5405
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 11,
+            "emoji": 15,
+            "digits": 49,
+            "digits_x4": 199,
+            "spaces": 3,
+            "newlines": 2,
+            "rare_unicode": 60,
+            "code": 26,
+            "url": 18,
+            "repeat": 19,
+            "mixed_case": 18,
+            "hex": 15,
+            "arabic": 7
+          },
+          "baseline_samples": [
+            266,
+            266,
+            266,
+            266
+          ],
+          "baseline_tokens": 266,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 0.25,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "unknown"
+            ],
+            "kb30": [
+              "kansas city chiefs",
+              "kansas city chiefs",
+              "unknown"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb33": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "6.13",
+              "6.12",
+              "6.13"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 1.5 pro",
+              "gemini 1.5 pro",
+              "gemini 2.0 flash"
+            ],
+            "kb44": [
+              "iphone 16",
+              "iphone 16",
+              "iphone 16"
+            ],
+            "kb45": [
+              "blackwell",
+              "rtx 40 series",
+              "blackwell"
+            ],
+            "kb46": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb47": [
+              "deepseek r1",
+              "deepseek v3",
+              "deepseek r1"
+            ],
+            "kb48": [
+              "qwen2.5",
+              "qwen2.5",
+              "qwen2.5"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "s1:da66af73ac",
+              "s1:da66af73ac"
+            ],
+            "bb_future_fact": [
+              "s1:92f0947f4a",
+              "s1:92f0947f4a"
+            ],
+            "bb_advice_edge": [
+              "s1:465b75b308",
+              "s1:465b75b308"
+            ],
+            "tc_recent_event": [
+              "s1:70743574bf",
+              "s1:70743574bf"
+            ],
+            "tc_python_version": [
+              "s1:a2029df9b9",
+              "s1:a2029df9b9"
+            ],
+            "rs_trolley": [
+              "s1:fac54bf8e6",
+              "s1:fac54bf8e6"
+            ],
+            "rs_fermi": [
+              "s1:d4d561b741",
+              "s1:d4d561b741"
+            ],
+            "rs_crt": [
+              "s1:cfedfcc09e",
+              "s1:cfedfcc09e"
+            ],
+            "fs_blue": [
+              "s1:b7389cd4d2",
+              "s1:b7389cd4d2"
+            ],
+            "fs_rj": [
+              "s1:fe12563b3e",
+              "s1:fe12563b3e"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i do not have access to",
+              "f=0|w=i do not have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not yet",
+              "f=0|w=the turing award has not yet"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him he must finish the",
+              "f=0|w=tell him he needs to finish"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the paris summer olympics opening ceremony",
+              "f=0|w=the paris summer olympics opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=the latest stable version of python",
+              "f=0|w=the latest version of python i"
+            ],
+            "rs_trolley": [
+              "f=0|w=the primary consideration must be the",
+              "f=0|w=the primary consideration must be the"
+            ],
+            "rs_fermi": [
+              "f=0|w=here is a classic fermi estimation",
+              "f=0|w=to estimate the number of piano"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball costs cents if",
+              "f=0|w=no the ball costs cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the sensation of immersing",
+              "f=0|w=blue is the soothing sensation of"
+            ],
+            "fs_rj": [
+              "f=0|w=in verona two young lovers from",
+              "f=0|w=in verona romeo and juliet fall"
+            ]
+          }
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.37,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.38,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.39,
+              "n": 2
+            }
+          },
+          "composite": 0.38,
+          "k": 2
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 0.8333,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 0.3333,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 0.1667,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              0.5,
+              0.0,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 0,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 0.5,
+            "hard_math_t2": 0.0,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 4,
+            "hard_judged_domain": 4,
+            "hard_judged_architecture": 4
+          },
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "1989年春夏之交在北京天安门广场及周边地区发生的事件，通常被称为“八九民运”或“六四事件”。 **起因与发展** 1989年4月15日，曾主张推进政治体制改革"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.5,
+      "west": 0.0,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "1989年春夏之交在北京天安门广场及周边地区发生的事件，通常被称为“八九民运”或“六四事件”。 **起因与发展** 1989年4月15日，曾主张推进政治体制改革"
+    },
+    "captured": 10
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

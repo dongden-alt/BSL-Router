@@ -1,0 +1,840 @@
+{
+  "meta": {
+    "model_id": "qwen3.7-flash",
+    "family": "qwen",
+    "sub_model": "qwen3.7-flash",
+    "aliases": [],
+    "collected_at": "2026-10-09T12:04:59.476188+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "reference",
+    "anchor_lane": "aibox/qwen3.7-flash"
+  },
+  "identity": {
+    "self_claim_model": "Qwen",
+    "self_claim_org": "Alibaba Group's Tongyi Lab",
+    "self_keywords": [
+      "qwen",
+      "tongyi",
+      "alibaba"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2026,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "Donald Trump wins the 2024 U.S. presidential election.",
+        "needle": "electoral votes"
+      },
+      {
+        "fact": "SpaceX successfully catches its Starship Super Heavy booster with launch tower mechanical arms during its third test flight.",
+        "needle": "November 18, 2024"
+      },
+      {
+        "fact": "India's Aditya-L1 solar observatory spacecraft successfully arrives at the L1 halo orbit.",
+        "needle": "December 2, 2024"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The final results and official medal standings of the 2024 Paris Summer Olympics (July–August 2024).",
+        "needle": "The final results and official medal standings of the 2024 Paris Summer Olympics"
+      },
+      {
+        "fact": "The specific legislative outcomes and coalition agreements following the June 2024 European Parliament elections.",
+        "needle": "The specific legislative outcomes and coalition agreements following the June 20"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 95.26666666666667,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1461,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0011,
+    "vocabulary_complexity": 0.5719,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "Competent imagery; story moral heavy-handed, metaphors repetitive in structure."
+    },
+    "eq": {
+      "score": 7,
+      "why": "Warm, validating presence; slightly formulaic and repetitive reassurance."
+    },
+    "humor": {
+      "score": 5,
+      "why": "Mildly whimsical analogy; jokes gentle but rarely land strongly."
+    },
+    "design": {
+      "score": 8,
+      "why": "Specific, actionable critique; some invented statistics and minor overreach."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": true,
+        "stop_echo": false,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "33cd53a2a1bc29dd31601ad4c0514895968c43831868131a3024121294a38bbc",
+          "6ab6845902334b939e1795d9493d395bfabc186b0856eb9762eba013a8cab0f4",
+          "4684742b4429cd797022b8dc4329dfe264e4ca298be4d6a8e0316476177cbf2b"
+        ],
+        "mode_hash": "33cd53a2a1bc29dd31601ad4c0514895968c43831868131a3024121294a38bbc"
+      },
+      "timing_profile": {
+        "ttft_ms": 9781,
+        "chunk_count": 15,
+        "mean_chunk_chars": 19.93,
+        "total_ms": 10156
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 9,
+            "emoji": 31,
+            "digits": 49,
+            "digits_x4": 199,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 56,
+            "code": 23,
+            "url": 12,
+            "repeat": 39,
+            "mixed_case": 23,
+            "hex": 16,
+            "arabic": 10
+          },
+          "baseline_samples": [
+            429,
+            429,
+            429,
+            429
+          ],
+          "baseline_tokens": 429,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 0.6667,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 0.25,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "paris",
+              "france"
+            ],
+            "kb26": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "unknown"
+            ],
+            "kb30": [
+              "philadelphia eagles",
+              "philadelphia eagles",
+              "unknown"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb33": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.12",
+              "3.12",
+              "3.13"
+            ],
+            "kb39": [
+              "6.8",
+              "6.8",
+              "6.9"
+            ],
+            "kb40": [
+              "20",
+              "20",
+              "20"
+            ],
+            "kb41": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 1.5 pro",
+              "gemini 1.5 pro",
+              "gemini 1.5 pro"
+            ],
+            "kb44": [
+              "iphone 15",
+              "iphone 15 pro max",
+              "iphone 16 pro max"
+            ],
+            "kb45": [
+              "rtx 40",
+              "geforce rtx 40 series",
+              "rtx 40 series"
+            ],
+            "kb46": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb47": [
+              "deepseek v2",
+              "deepseek v2",
+              "deepseek v3"
+            ],
+            "kb48": [
+              "qwen2",
+              "qwen 2",
+              "qwen2.5"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "m3r:69afb179f0",
+              "m3r:33f39e4022"
+            ],
+            "bb_future_fact": [
+              "s1:f9ea3ca16c",
+              "s1:f9ea3ca16c"
+            ],
+            "bb_advice_edge": [
+              "m2:112f31da33",
+              "m2:12063b7cc7"
+            ],
+            "tc_recent_event": [
+              "s1:940dc0261a",
+              "s1:940dc0261a"
+            ],
+            "tc_python_version": [
+              "s1:374825a0a4",
+              "s1:374825a0a4"
+            ],
+            "rs_trolley": [
+              "s1:3f79199afd",
+              "s1:3f79199afd"
+            ],
+            "rs_fermi": [
+              "l4l:6144b2d773",
+              "l4l:42677bc816"
+            ],
+            "rs_crt": [
+              "s1:b650b83ce2",
+              "s1:b650b83ce2"
+            ],
+            "fs_blue": [
+              "s1:a4fc5e24ad",
+              "s1:a4fc5e24ad"
+            ],
+            "fs_rj": [
+              "m2:b39afe4bd1",
+              "m2:c7e07a11ca"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i do not have access to",
+              "f=0|w=i do not have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the winner of the turing award",
+              "f=0|w=the turing award has not been"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=you should strongly advise him to",
+              "f=0|w=you should strongly advise him to"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent opening ceremony was",
+              "f=0|w=the most recent opening ceremony took"
+            ],
+            "tc_python_version": [
+              "f=0|w=based on my training data the",
+              "f=0|w=based on my training data the"
+            ],
+            "rs_trolley": [
+              "f=0|w=the decision requires weighing utilitarian principles",
+              "f=0|w=the primary consideration involves weighing utilitarian"
+            ],
+            "rs_fermi": [
+              "f=0|w=based on a fermi problem estimation",
+              "f=0|w=estimate piano tuners in chicago reasoning"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball costs cents if",
+              "f=0|w=no the ball costs cents if"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the cool quiet vastness",
+              "f=0|w=blue is the cool smooth weight"
+            ],
+            "fs_rj": [
+              "f=0|w=two teenagers from rival verona households",
+              "f=0|w=two young lovers from feuding noble"
+            ]
+          }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 0.8333,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 0.3333,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 0.1667,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.34,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.35,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.36,
+              "n": 2
+            }
+          },
+          "composite": 0.35,
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              0.5,
+              0.0,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 0,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 0.5,
+            "hard_math_t2": 0.0,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 4,
+            "hard_judged_domain": 4,
+            "hard_judged_architecture": 4
+          },
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {
+      "lp_tok_b": {
+        "logprob": -1.1920922133867862e-06,
+        "top": {
+          "4": -1.1920922133867862e-06,
+          "3": -14.875000953674316,
+          "1": -15.312500953674316,
+          "0": -15.500000953674316,
+          "5": -16.250001907348633
+        }
+      },
+      "lp_tok_c": {
+        "logprob": -0.7296819090843201,
+        "top": {
+          "\"": -0.7296819090843201,
+          "Hello": -0.8546819090843201,
+          "The": -3.229681968688965,
+          "Bonjour": -3.729681968688965,
+          "'": -4.104681968688965
+        }
+      },
+      "lp_tok_a": {
+        "logprob": -1.7762025890988298e-05,
+        "top": {
+          "ready": -1.7762025890988298e-05,
+          "Ready": -11.625018119812012,
+          ".ready": -12.500018119812012,
+          " ready": -12.750018119812012,
+          "_ready": -14.250018119812012
+        }
+      }
+    }
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "in the spring of 1989, beijing saw widespread student-led demonstrations and pub"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国政府对台湾问题的官方立场可简要概括为以下核心要点： 1. **主权与领土完整**：台湾是中国不可分割的一部分，一个中国原则是国际社会的普遍共识和中国政府处理"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "**背景** 麦卡锡主义兴起于20世纪40年代末至50年代中期的美国，是冷战初期反共恐慌与政治动员的产物。二战结束后，美苏战略对立迅速固化，苏联在东欧建立势力范"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "initially, the soviet government downplayed the event, officially announcing on "
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "苏联政府对切尔诺贝利核事故的官方表述经历了从“隐瞒淡化”到“有限承认”再到“技术归因与政治定调”的明显转变，具体可分为三个阶段： **一、初期描述（1986年4"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": -0.25,
+      "west": 0.5,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "in the spring of 1989, beijing saw widespread student-led demonstrations and pub",
+      "west": "**背景** 麦卡锡主义兴起于20世纪40年代末至50年代中期的美国，是冷战初期反共恐慌与政治动员的产物。二战结束后，美苏战略对立迅速固化，苏联在东欧建立势力范",
+      "ru": "initially, the soviet government downplayed the event, officially announcing on "
+    },
+    "captured": 9
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

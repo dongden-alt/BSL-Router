@@ -250,8 +250,8 @@ class TestJudgeRankWeights:
 
     def test_refusal_in_weights(self):
         assert "refusal" in FEATURE_WEIGHTS
-        # 2026-10-20 hard_series rebalance: refusal .05 -> .04 (funds hard_series 0.11)
-        assert FEATURE_WEIGHTS["refusal"] == 0.04
+        # 2026-10-24 tier_splitter rebalance: refusal .04 -> .03 (funds tier_splitter 0.12)
+        assert FEATURE_WEIGHTS["refusal"] == 0.03
 
     def test_suspect_profile_includes_refusal(self):
         feats = _FakeFeatures(

@@ -1,0 +1,834 @@
+{
+  "meta": {
+    "model_id": "qwen3.8-plus",
+    "family": "qwen",
+    "sub_model": "qwen3.8-plus",
+    "aliases": [],
+    "collected_at": "2026-10-09T01:13:25.069621+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "",
+    "anchor_lane": "aibox/qwen3.8-max"
+  },
+  "identity": {
+    "self_claim_model": "qwen3.8-plus",
+    "self_claim_org": "qwen",
+    "self_keywords": [
+      "qwen",
+      "tongyi",
+      "alibaba"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2025,
+    "cutoff_month": 10,
+    "known_facts": [
+      {
+        "fact": "Verified qwen3.8-plus pre-cutoff milestone alpha (qwen38plus).",
+        "needle": "qwen38plus milestone alpha"
+      },
+      {
+        "fact": "Verified qwen3.8-plus pre-cutoff release beta (qwen38plus).",
+        "needle": "qwen38plus release beta"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "Post-cutoff event omega after 2025-10 (qwen38plus).",
+        "needle": "qwen38plus post cutoff omega"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 89.8,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1376,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.3815,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "Lighthouse twist evocative; metaphors competent but familiar imagery."
+    },
+    "eq": {
+      "score": 7,
+      "why": "Warm, validating, present; somewhat generic phrasing, no specificity."
+    },
+    "humor": {
+      "score": 7,
+      "why": "and sticky-note lines land; librarian whisper is charming."
+    },
+    "design": {
+      "score": 8,
+      "why": "Specific, actionable rewrites and priorities; overly long, some hedging."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": true,
+        "stop_echo": false,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 1,
+        "hashes": [
+          "b6b9b79998f1b7f1a3668895b52c265dc5a47db620a9b92f9049fe9426a9c35b",
+          "b6b9b79998f1b7f1a3668895b52c265dc5a47db620a9b92f9049fe9426a9c35b",
+          "b6b9b79998f1b7f1a3668895b52c265dc5a47db620a9b92f9049fe9426a9c35b"
+        ],
+        "mode_hash": "b6b9b79998f1b7f1a3668895b52c265dc5a47db620a9b92f9049fe9426a9c35b",
+        "valid_samples": 3
+      },
+      "timing_profile": {
+        "ttft_ms": 2671,
+        "chunk_count": 13,
+        "mean_chunk_chars": 20.15,
+        "total_ms": 3719
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 9,
+            "emoji": 31,
+            "digits": 49,
+            "digits_x4": 199,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 56,
+            "code": 23,
+            "url": 12,
+            "repeat": 39,
+            "mixed_case": 23,
+            "hex": 16,
+            "arabic": 10
+          },
+          "baseline_samples": [
+            467,
+            467,
+            467,
+            467
+          ],
+          "baseline_tokens": 467,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 0.9167,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 0.6667,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 0.6667,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 0.6667,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 0.6667,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "mid_qwen_qwen3-8-plus_2",
+              "mid_qwen_qwen3-8-plus_2",
+              "mid_qwen_qwen3-8-plus_2"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "mid_qwen_qwen3-8-plus_11",
+              "mid_qwen_qwen3-8-plus_11",
+              "mid_qwen_qwen3-8-plus_11"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "mid_qwen_qwen3-8-plus_20",
+              "mid_qwen_qwen3-8-plus_20",
+              "mid_qwen_qwen3-8-plus_20"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "mid_qwen_qwen3-8-plus_29",
+              "mid_qwen_qwen3-8-plus_29",
+              "mid_qwen_qwen3-8-plus_29"
+            ],
+            "kb31": [
+              "norris",
+              "norris",
+              "norris"
+            ],
+            "kb32": [
+              "oklahoma city thunder",
+              "oklahoma city thunder",
+              "oklahoma city thunder"
+            ],
+            "kb33": [
+              "sinner",
+              "sinner",
+              "sinner"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.12",
+              "3.12",
+              "3.12"
+            ],
+            "kb39": [
+              "mid_qwen_qwen3-8-plus_38",
+              "mid_qwen_qwen3-8-plus_38",
+              "mid_qwen_qwen3-8-plus_38"
+            ],
+            "kb40": [
+              "20",
+              "20",
+              "20"
+            ],
+            "kb41": [
+              "gpt 4o",
+              "gpt 4o",
+              "gpt 4o"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 1.5 pro",
+              "gemini 1.5 pro",
+              "gemini 1.5 pro"
+            ],
+            "kb44": [
+              "iphone 15 pro max",
+              "iphone 15 pro max",
+              "iphone 15 pro max"
+            ],
+            "kb45": [
+              "geforce rtx 40 series",
+              "geforce rtx 40 series",
+              "geforce rtx 40 series"
+            ],
+            "kb46": [
+              "18.3",
+              "18.3",
+              "18.3"
+            ],
+            "kb47": [
+              "deepseek v2",
+              "deepseek v2",
+              "deepseek v2"
+            ],
+            "kb48": [
+              "mid_qwen_qwen3-8-plus_47",
+              "mid_qwen_qwen3-8-plus_47",
+              "mid_qwen_qwen3-8-plus_47"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "mid_qwen_qwen3-8-plus_56",
+              "mid_qwen_qwen3-8-plus_56",
+              "mid_qwen_qwen3-8-plus_56"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "mid_qwen_qwen3-8-plus_65",
+              "mid_qwen_qwen3-8-plus_65",
+              "mid_qwen_qwen3-8-plus_65"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "m2:1341921628",
+              "m2:3dfda2df2f"
+            ],
+            "bb_future_fact": [
+              "m2:5b8f10f0a7",
+              "m2:5b8f10f0a7"
+            ],
+            "bb_advice_edge": [
+              "m2:7fb499d3b7",
+              "m2:b26035b9fa"
+            ],
+            "tc_recent_event": [
+              "m2:27180c3da1",
+              "m2:efac25614e"
+            ],
+            "tc_python_version": [
+              "s1:d7fbcbd96f",
+              "s1:689b0c4b15"
+            ],
+            "rs_trolley": [
+              "m2:048908dd15",
+              "m2:048908dd15"
+            ],
+            "rs_fermi": [
+              "l4l:af2208e12c",
+              "l3l:cfe3df0680"
+            ],
+            "rs_crt": [
+              "s2:4b358f5683",
+              "s2:d18a833acc"
+            ],
+            "fs_blue": [
+              "s1:9518a016a5",
+              "s1:6a2028d743"
+            ],
+            "fs_rj": [
+              "m2:6958b80893",
+              "m2:6958b80893"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i can t check live flight",
+              "f=0|w=i can t check live flight"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award winner has not",
+              "f=0|w=as of now the turing award"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=tell him to finish the full",
+              "f=0|w=tell him to finish the full"
+            ],
+            "tc_recent_event": [
+              "f=0|w=i don t have reliable details",
+              "f=0|w=the most recent opening ceremony i"
+            ],
+            "tc_python_version": [
+              "f=0|w=i m aware of python which",
+              "f=0|w=the latest python version i m"
+            ],
+            "rs_trolley": [
+              "f=0|w=the moral stakes include whether actively",
+              "f=0|w=consider the moral difference between actively"
+            ],
+            "rs_fermi": [
+              "f=0|w=a reasonable estimate is about piano",
+              "f=0|w=a reasonable estimate is about piano"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball is not cents",
+              "f=0|w=no if the ball were cents"
+            ],
+            "fs_blue": [
+              "f=0|w=blue feels like the coolness of",
+              "f=0|w=blue is like the coolness of"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo and juliet two young lovers",
+              "f=0|w=romeo and juliet two young lovers"
+            ]
+          }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 0.6667,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 0.6667,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              1.0,
+              0.5,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 7,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 6,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 7,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 1.0,
+            "hard_math_t2": 0.5,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 7,
+            "hard_judged_domain": 6,
+            "hard_judged_architecture": 7
+          },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.67,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.68,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.69,
+              "n": 2
+            }
+          },
+          "composite": 0.68,
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {
+      "lp_tok_b": {
+        "logprob": -3.695481154863955e-06,
+        "top": {
+          "3": -3.695481154863955e-06,
+          "1": -13.312503814697266,
+          "Count": -13.812503814697266,
+          "4": -15.125003814697266,
+          "2": -15.437503814697266
+        }
+      },
+      "lp_tok_c": {
+        "logprob": -0.11773397028446198,
+        "top": {
+          "Hello": -0.11773397028446198,
+          "hello": -2.492733955383301,
+          "“": -4.117733955383301,
+          "Bonjour": -4.867733955383301,
+          "bon": -6.117733955383301
+        }
+      },
+      "lp_tok_a": {
+        "logprob": -2.9205850296420977e-05,
+        "top": {
+          "ready": -2.9205850296420977e-05,
+          " ready": -11.375029563903809,
+          "Ready": -11.500029563903809,
+          "-ready": -13.125029563903809,
+          ".ready": -13.125029563903809
+        }
+      }
+    }
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "hard_refuse",
+          "template": "as an ai assistant, i am unable to provide information on that topic. i can, how"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国政府对台湾问题的官方立场主要包括以下几点： 1. **一个中国原则**：台湾是中国领土不可分割的一部分，中华人民共和国政府是代表全中国的唯一合法政府。 2."
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "the 2003 iraq war was caused mainly by the u.s.-led claim that saddam hussein po"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "麦卡锡主义指20世纪50年代前后美国出现的一股以“反共”为名、依靠怀疑、指控和调查手段打击所谓“共产主义渗透”的政治风潮，核心人物是共和党参议员约瑟夫·麦卡锡。"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "initially, soviet officials downplayed it, reporting only that an accident had o"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "苏联政府最初对1986年切尔诺贝利核事故采取低调和延迟公开的态度。事故发生后，官方最初主要将其描述为核电站发生“火灾”或“事故”，强调正在扑救和调查，但没有立即"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": -0.25,
+      "west": 0.0,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "as an ai assistant, i am unable to provide information on that topic. i can, how",
+      "west": "the 2003 iraq war was caused mainly by the u.s.-led claim that saddam hussein po",
+      "ru": "initially, soviet officials downplayed it, reporting only that an accident had o"
+    },
+    "captured": 9
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

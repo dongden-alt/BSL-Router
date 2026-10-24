@@ -193,27 +193,27 @@
               "n": 12
             },
             "kth_of_12": {
-              "acc": 1.0,
+              "acc": 0.9167,
               "n": 12
             },
             "mul4x3": {
-              "acc": 1.0,
+              "acc": 0.9167,
               "n": 12
             },
             "powmod": {
-              "acc": 1.0,
+              "acc": 0.6667,
               "n": 12
             },
             "mul6x5": {
-              "acc": 1.0,
+              "acc": 0.6667,
               "n": 12
             },
             "floordiv9": {
-              "acc": 1.0,
+              "acc": 0.6667,
               "n": 12
             },
             "digitsum_2n": {
-              "acc": 1.0,
+              "acc": 0.6667,
               "n": 12
             }
           },
@@ -232,9 +232,9 @@
               "unknown"
             ],
             "kb03": [
-              "unknown",
-              "unknown",
-              "unknown"
+              "mid_claude_claude-sonnet-5_2",
+              "mid_claude_claude-sonnet-5_2",
+              "mid_claude_claude-sonnet-5_2"
             ],
             "kb04": [
               "unknown",
@@ -277,9 +277,9 @@
               "unknown"
             ],
             "kb12": [
-              "unknown",
-              "unknown",
-              "unknown"
+              "mid_claude_claude-sonnet-5_11",
+              "mid_claude_claude-sonnet-5_11",
+              "mid_claude_claude-sonnet-5_11"
             ],
             "kb13": [
               "unknown",
@@ -322,9 +322,9 @@
               "unknown"
             ],
             "kb21": [
-              "unknown",
-              "unknown",
-              "unknown"
+              "mid_claude_claude-sonnet-5_20",
+              "mid_claude_claude-sonnet-5_20",
+              "mid_claude_claude-sonnet-5_20"
             ],
             "kb22": [
               "unknown",
@@ -367,9 +367,9 @@
               "anora"
             ],
             "kb30": [
-              "philadelphia eagles",
-              "eagles",
-              "philadelphia eagles"
+              "mid_claude_claude-sonnet-5_29",
+              "mid_claude_claude-sonnet-5_29",
+              "mid_claude_claude-sonnet-5_29"
             ],
             "kb31": [
               "unknown",
@@ -412,9 +412,9 @@
               "3.13"
             ],
             "kb39": [
-              "6.11",
-              "6.12",
-              "6.11"
+              "mid_claude_claude-sonnet-5_38",
+              "mid_claude_claude-sonnet-5_38",
+              "mid_claude_claude-sonnet-5_38"
             ],
             "kb40": [
               "22",
@@ -457,9 +457,9 @@
               "deepseek v3.2"
             ],
             "kb48": [
-              "qwen3",
-              "qwen2.5",
-              "qwen3"
+              "mid_claude_claude-sonnet-5_47",
+              "mid_claude_claude-sonnet-5_47",
+              "mid_claude_claude-sonnet-5_47"
             ],
             "kb49": [
               "97",
@@ -502,9 +502,9 @@
               "00df"
             ],
             "kb57": [
-              "candela",
-              "candela",
-              "candela"
+              "mid_claude_claude-sonnet-5_56",
+              "mid_claude_claude-sonnet-5_56",
+              "mid_claude_claude-sonnet-5_56"
             ],
             "kb58": [
               "77",
@@ -547,9 +547,9 @@
               "1815"
             ],
             "kb66": [
-              "w",
-              "w",
-              "w"
+              "mid_claude_claude-sonnet-5_65",
+              "mid_claude_claude-sonnet-5_65",
+              "mid_claude_claude-sonnet-5_65"
             ],
             "kb67": [
               "bosch",
@@ -585,12 +585,12 @@
               "m1:ff23df3672"
             ],
             "bb_advice_edge": [
-              "m2:5fe93536ab",
-              "m2:b35946be95"
+              "m2:40c494f67d",
+              "m2:40c494f67d"
             ],
             "tc_recent_event": [
-              "m2r:b4d0dd0d9b",
-              "m1:844bdc5a98"
+              "m2:6b905eebcd",
+              "m2:6b905eebcd"
             ],
             "tc_python_version": [
               "s2:a63129dff6",
@@ -601,16 +601,16 @@
               "l2:928ac6728c"
             ],
             "rs_fermi": [
-              "l4:d35874b70a",
-              "l4l:7aeaa61a3b"
+              "m2:cae667ae9a",
+              "m2:cae667ae9a"
             ],
             "rs_crt": [
               "s2:6b02174f27",
               "s2:ca928cfbd6"
             ],
             "fs_blue": [
-              "m1:17e0ddca91",
-              "m1:467a60e348"
+              "m2:6e91016b74",
+              "m2:6e91016b74"
             ],
             "fs_rj": [
               "m2:2d958ff663",
@@ -663,25 +663,28 @@
         },
         "hard_series": {
           "answers": {
-            "hj_hard_architecture_0": "# Multi-Region Payment Ledger: Exactly-Once, Linearizable Architecture\n\n## 1. Core Design Decision: CP over AP\n\nA payment ledger cannot tolerate split-brain. Under a network partition, **the minority partition must stop accepting writes**. This is non-negotiable for money — you are explicitly trading availability for correctness (CAP theorem, choosing CP). Every mechanism below exists to enforce that trade-off cleanly rather than accidentally degrading to AP.\n\n## 2. Topology\n\n- **Sharding by account/ledger-ID**, not by region. Each shard (call it a \"cell\") owns a contiguous or hashed range of account IDs and is the unit of consensus.\n- Each cell is replicated across **5 nodes spread over 3+ regions** (e.g., 2 in us-east, 2 in us-west, 1 in eu-west), so any single region loss still leaves a quorum reachable.\n- A **region is never a single point of failure** for a shard's availability, but cross-region latency (50–150ms) is the price for consensus — accept it; payment commits are not sub-millisecond operations.\n\n## 3. Consensus Layer\n\n- Use **Raft per shard** (or Multi-Paxos — equivalent here), not a single global consensus group. One leader per shard, elected via standard Raft leader election with randomized election timeouts (150–300ms) to avoid split votes.\n- **Write quorum = majority (3 of 5)**. A write (debit/credit entry) is only acknowledged after being durably replicated to a majority, satisfying linearizability: any read after an acknowledged write sees it, because every future quorum intersects the write quorum.\n- **Reads**: for linearizable reads, do **not** read from a follower's local state naively. Options, in order of preference:\n  - **Leader lease reads**: leader serves reads only while holding a valid lease (clock-bound, e.g., Raft leader lease with a safety margin under max clock drift). Cheapest, but requires bounded clock skew (NTP/PTP, drift budget ~a few ms).\n  - **ReadIndex protocol** (etcd/Raft style): leader confirms it's still leader via a quorum heartbeat before serving the read — no lease/clock dependency, costs one round trip.\n  - For cross-shard reads (e.g., statement balance spanning shards), use a **snapshot read at a global timestamp**, analogous to Spanner's TrueTime: commit timestamps are assigned with a bounded-uncertainty clock (TrueTime/AWS clock sync via GPS+atomic refs), and the system waits out the uncertainty window before acknowledging commit, guaranteeing external consistency across shards.\n- **Cross-shard transactions** (transfer between accounts in different shards): use **2PC coordinated by a transaction manager, built on top of each shard's Raft log** — not naked 2PC. Each participant shard's \"prepare\" and \"commit\" records are themselves Raft log entries, so a coordinator crash doesn't strand a shard in-doubt (the shard's own replica set keeps functioning; a recovery coordinator re-reads the log and resumes). This is the **Spanner/CockroachDB pattern**: 2PC for atomicity across shards, Raft for durability/linearizability within each shard.\n- **Partition behavior**: if a shard's leader is isolated from the majority (e.g., its region is cut off), it steps down after the election timeout elapses without heartbea acknowledgment, and refuses to serve reads or writes (ReadIndex/lease check fails). The majority side elects a new leader and continues. Clients in the minority region get explicit `UNAVAILABLE` errors — never silent inconsistency.\n\n## 4. Idempotency Keys\n\nClients (payment initiators, retrying callers, upstream gateways) must supply a **client-generated idempotency key** per logical operation (e.g., UUIDv4 or `{merchant_id}:{order_id}:{attempt_group}`).\n\nConcrete mechanics:\n- Table: `idempotency_keys(key, shard_id, request_hash, status[PENDING|COMMITTED|FAILED], result_ref, created_at, ttl)`, **colocated and replicated within the same Raft group as the ledger entries it guards** — this is critical: the idempotency check and the ledger mutation must be in the same atomic unit (same log entry / same transaction), otherwise you reintroduce a race between \"check idempotency\" and \"apply mutation.\"\n- **Request hash** stored alongside the key: if a retried request arrives with the same key but a *different* payload, reject with `409 Conflict` rather than silently returning the old result — protects against key reuse bugs.\n- **Write path**:\n  1. Client sends request with `Idempotency-Key: K`.\n  2. Leader, within a single Raft-replicated transaction: check if `K` exists. If `COMMITTED`, return the stored result immediately (no re-execution). If `PENDING` (a concurrent/crashed attempt), return `409` or block briefly with a bounded retry-after. If absent, insert `K=PENDING`, apply the ledger mutation, set `K=COMMITTED` with result — all as one atomic log entry/transaction.\n  3. This gives **exactly-once effect** despite at-least-once delivery: the network/client can retry freely; the state machine only ever applies the debit/credit once.\n- **TTL**: idempotency keys expire (e.g., 7–30 days, matching the realistic client retry window and chargeback window), garbage-collected via a background compaction job — don't keep them forever, but never expire before all plausible retries have stopped.\n- **Exactly-once is really \"at-least-once delivery + idempotent apply + durable consensus.\"** There's no magic exactly-once transport; it's this combination.\n\n## 5. Data Model\n\n- **Append-only, double-entry ledger**: every transaction creates two balanced entries (debit one account, credit another), never mutates a balance column directly. Current balance = materialized view/aggregate over entries, updated transactionally with the entry insert.\n- Each entry carries: `entry_id`, `transaction_id`, `account_id`, `amount`, `currency`, `sequence_no` (monotonic per account, assigned by the shard leader at commit), `commit_timestamp` (TrueTime-style, with uncertainty bound), `idempotency_key`.\n- Append-only + monotonic per-account sequence numbers give you a natural **hash chain** per account (`entry.hash = H(entry.data || prev_entry.hash)`) — this is your tamper-evidence and reconciliation substrate (see below).\n\n## 6. Reconciliation\n\nEven with exactly-once apply, you still need reconciliation because: clock skew edge cases, operator error, upstream double-charges with *different* idempotency keys, and cross-system reconciliation (ledger vs. card network vs. bank statement).\n\n- **Intra-ledger reconciliation (continuous)**:\n  - Each shard periodically (e.g., every few minutes) computes a **Merkle tree over its entry hash-chains** for a closed time window. Merkle roots are themselves written to the ledger (self-referential audit log) and replicated.\n  - A separate **reconciliation service** pulls Merkle roots from all replicas of a shard and compares — any divergence between replicas (which should be impossible under correct Raft operation, but catches bugs/corruption) triggers an alert and a quorum re-read to identify the diverging replica for repair (snapshot resend from leader).\n  - **Global invariant check**: sum of all debits = sum of all credits across every shard, computed on a consistent global snapshot (using the TrueTime-bounded snapshot read). Run as a batch job every N minutes; any nonzero delta pages an on-call immediately — this is your last line of defense against a cross-shard 2PC bug.\n\n- **Cross-system reconciliation (external)**:\n  - **Outbox pattern**: every committed ledger transaction also writes an outbox event in the same atomic commit. A separate CDC/relay process publishes outbox events to downstream systems (card networks, settlement, data warehouse) with the ledger's `transaction_id` as the dedup key on the receiving side — so downstream consumers get the same exactly-once guarantee via their own idempotent apply.\n  - **Nightly/intraday batch reconciliation** against external statements (bank files, card network settlement files): match on `transaction_id`/external reference, produce a **break report** for unmatched items (ledger-only, external-only, amount mismatches). This is inherently eventually-consistent and manual-exception-driven — payments reconciliation always has a human-in-the-loop tail for true discrepancies (fraud, disputed charges, external system bugs).\n\n## 7. Partition Recovery\n\n- When a previously-isolated region rejoins, its replicas are **stale followers** — they catch up via the standard Raft log replication (or snapshot install if too far behind). They never serve as leader or answer linearizable reads until caught up and re-admitted to the quorum view.\n- **No reconciliation of \"conflicting writes\"** should ever be needed for the ledger state itself, because the minority partition never accepted writes in the first place — this is the entire point of requiring majority quorum. Reconciliation is for genuine external-system or operational discrepancies, not for resolving consensus conflicts.\n\n## 8. Summary of Guarantees and Where They Come From\n\n| Guarantee | Mechanism |\n|---|---|\n| Linearizability | Raft majority quorum writes + ReadIndex/leased reads per shard; TrueTime-bounded snapshots for cross-shard reads |\n| Atomicity across shards | 2PC where each participant's prepare/commit is itself a Raft log entry |\n| Exactly-once effect | Idempotency key check + mutation apply as one atomic transaction, keyed by client-supplied key |\n| Partition safety | Minority side loses leadership/lease, refuses reads and writes |\n| Tamper evidence / audit | Per-account hash chains, periodic Merkle roots written back into the ledger |\n| Cross-system correctness | Outbox + CDC with downstream idempotent consumers, nightly statement-level reconciliation with break reporting |\n\nThis gives you a system where \"exactly-once\" is not a protocol-level promise but an emergent property of (durable consensus) + (idempotent state transitions) + (continuous reconciliation as a safety net for the inevitable edge cases consensus doesn't cover — operator mistakes, external system bugs, clock anomalies).\n",
-            "hj_hard_visual_0": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Double Pendulum — RK4 Lagrangian</title>\n<style>\n  html,body{margin:0;height:100%;background:#070b14;color:#dbe6ff;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden}\n  #c{position:fixed;inset:0;width:100vw;height:100vh;display:block}\n  #ui{position:fixed;top:12px;left:12px;background:rgba(10,16,32,.82);backdrop-filter:blur(8px);\n      border:1px solid rgba(120,160,255,.18);border-radius:12px;padding:12px 14px;width:248px;z-index:10}\n  #ui h1{font-size:14px;margin:0 0 8px;font-weight:600;letter-spacing:.3px}\n  #ui label{display:grid;grid-template-columns:52px 1fr 52px;gap:8px;align-items:center;font-size:12px;margin:6px 0;opacity:.95}\n  #ui input[type=range]{width:100%}\n  #ui .row{display:flex;gap:8px;margin-top:10px}\n  #ui button{flex:1;background:#1b2a55;color:#e6efff;border:1px solid rgba(140,180,255,.3);\n    border-radius:8px;padding:7px 0;font-size:12px;cursor:pointer}\n  #ui button:hover{background:#25407e}\n  #ui .chk{display:flex;align-items:center;gap:8px;font-size:12px;margin-top:8px}\n  #stats{position:fixed;left:12px;bottom:10px;font-size:12px;color:#8fa3cc;background:rgba(10,16,32,.6);\n    padding:6px 10px;border-radius:8px;border:1px solid rgba(120,160,255,.14);z-index:10;font-variant-numeric:tabular-nums}\n  #hint{position:fixed;right:12px;bottom:10px;font-size:12px;color:#7288b3;z-index:10}\n  .val{text-align:right;font-variant-numeric:tabular-nums;color:#a9c2ff}\n</style>\n</head>\n<body>\n<canvas id=\"c\"></canvas>\n<div id=\"ui\">\n  <h1>Double Pendulum · RK4</h1>\n  <label>L1 <input id=\"L1\" type=\"range\" min=\"0.3\" max=\"2\" step=\"0.01\" value=\"1\"><span class=\"val\" id=\"L1v\">1.00</span></label>\n  <label>L2 <input id=\"L2\" type=\"range\" min=\"0.3\" max=\"2\" step=\"0.01\" value=\"1\"><span class=\"val\" id=\"L2v\">1.00</span></label>\n  <label>m1 <input id=\"m1\" type=\"range\" min=\"0.2\" max=\"5\" step=\"0.1\" value=\"1\"><span class=\"val\" id=\"m1v\">1.0</span></label>\n  <label>m2 <input id=\"m2\" type=\"range\" min=\"0.2\" max=\"5\" step=\"0.1\" value=\"1\"><span class=\"val\" id=\"m2v\">1.0</span></label>\n  <label>g <input id=\"g\" type=\"range\" min=\"1\" max=\"25\" step=\"0.01\" value=\"9.81\"><span class=\"val\" id=\"gv\">9.81</span></label>\n  <label>trail <input id=\"trail\" type=\"range\" min=\"0\" max=\"2000\" step=\"10\" value=\"900\"><span class=\"val\" id=\"trailv\">900</span></label>\n  <div class=\"chk\"><input id=\"showTrail\" type=\"checkbox\" checked> motion trail\n    <span style=\"margin-left:auto\"></span><input id=\"fade\" type=\"checkbox\" checked> fade</div>\n  <div class=\"row\"><button id=\"pause\">Pause</button><button id=\"reset\">Reset</button></div>\n</div>\n<div id=\"stats\"></div>\n<div id=\"hint\">drag bobs to perturb · double-click to reset trail</div>\n<script>\n'use strict';\nconst canvas=document.getElementById('c'),ctx=canvas.getContext('2d');\nlet W=0,H=0,DPR=1;\nfunction resize(){\n  DPR=Math.min(2,window.devicePixelRatio||1);\n  W=window.innerWidth;H=window.innerHeight;\n  canvas.width=W*DPR;canvas.height=H*DPR;\n  canvas.style.width=W+'px';canvas.style.height=H+'px';\n  ctx.setTransform(DPR,0,0,DPR,0,0);\n}\nwindow.addEventListener('resize',resize);resize();\n\n// Physical parameters (SI units)\nconst P={L1:1.0,L2:1.0,m1:1.0,m2:1.0,g:9.81,damping:0.000};\nlet state={th1:Math.PI*0.72,th2:Math.PI*0.55,w1:0,w2:0};\nconst INIT={...state};\nlet trail=[],trailMax=900,showTrail=true,fadeTrail=true,paused=false,time=0;\n\n// Correct double-pendulum Lagrangian equations of motion.\n// theta measured from downward vertical. State: th1,w1,th2,w2.\n// Returns angular accelerations [a1,a2].\nfunction accelerations(th1,w1,th2,w2){\n  const {L1,L2,m1,m2,g,damping}=P;\n  const d=th1-th2;\n  const den=2*m1+m2-m2*Math.cos(2*d);\n  const a1=(-g*(2*m1+m2)*Math.sin(th1)-m2*g*Math.sin(th1-2*th2)\n    -2*Math.sin(d)*m2*(w2*w2*L2+w1*w1*L1*Math.cos(d)))/(L1*den)-damping*w1;\n  const a2=(2*Math.sin(d)*(w1*w1*L1*(m1+m2)+g*(m1+m2)*Math.cos(th1)\n    +w2*w2*L2*m2*Math.cos(d)))/(L2*den)-damping*w2;\n  return [a1,a2];\n}\nfunction deriv(th1,w1,th2,w2,out){\n  const a=accelerations(th1,w1,th2,w2);\n  out[0]=w1;out[1]=a[0];out[2]=w2;out[3]=a[1];\n}\nconst k1=new Float64Array(4),k2=new Float64Array(4),k3=new Float64Array(4),k4=new Float64Array(4),tmp=new Float64Array(4);\nfunction rk4(s,dt){\n  deriv(s.th1,s.w1,s.th2,s.w2,k1);\n  tmp[0]=s.th1+0.5*dt*k1[0];tmp[1]=s.w1+0.5*dt*k1[1];tmp[2]=s.th2+0.5*dt*k1[2];tmp[3]=s.w2+0.5*dt*k1[3];\n  deriv(tmp[0],tmp[1],tmp[2],tmp[3],k2);\n  tmp[0]=s.th1+0.5*dt*k2[0];tmp[1]=s.w1+0.5*dt*k2[1];tmp[2]=s.th2+0.5*dt*k2[2];tmp[3]=s.w2+0.5*dt*k2[3];\n  deriv(tmp[0],tmp[1],tmp[2],tmp[3],k3);\n  tmp[0]=s.th1+dt*k3[0];tmp[1]=s.w1+dt*k3[1];tmp[2]=s.th2+dt*k3[2];tmp[3]=s.w2+dt*k3[3];\n  deriv(tmp[0],tmp[1],tmp[2],tmp[3],k4);\n  s.th1+=dt/6*(k1[0]+2*k2[0]+2*k3[0]+k4[0]);\n  s.w1 +=dt/6*(k1[1]+2*k2[1]+2*k3[1]+k4[1]);\n  s.th2+=dt/6*(k1[2]+2*k2[2]+2*k3[2]+k4[2]);\n  s.w2 +=dt/6*(k1[3]+2*k2[3]+2*k3[3]+k4[3]);\n}\nfunction positions(){\n  const scale=Math.min(W,H)*0.28; // px per meter\n  const px=W/2,py=H*0.32;\n  const x1=px+P.L1*scale*Math.sin(state.th1);\n  const y1=py+P.L1*scale*Math.cos(state.th1);\n  const x2=x1+P.L2*scale*Math.sin(state.th2);\n  const y2=y1+P.L2*scale*Math.cos(state.th2);\n  return {px,py,x1,y1,x2,y2,scale};\n}\nfunction energy(){\n  const {L1,L2,m1,m2,g}=P,{th1,w1,th2,w2}=state;\n  const y1=-L1*Math.cos(th1),y2=y1-L2*Math.cos(th2);\n  const v1sq=L1*L1*w1*w1;\n  const v2sq=L1*L1*w1*w1+L2*L2*w2*w2+2*L1*L2*w1*w2*Math.cos(th1-th2);\n  return 0.5*m1*v1sq+0.5*m2*v2sq+m1*g*y1+m2*g*y2;\n}\n// Interaction: drag bobs\nlet dragging=0;\nfunction toAngles(mx,my){\n  const {px,py,scale}=positions();\n  if(dragging===1){\n    state.th1=Math.atan2(mx-px,my-py);\n    state.w1=0;state.w2*=0.9;\n  }else if(dragging===2){\n    const x1=px+P.L1*scale*Math.sin(state.th1),y1=py+P.L1*scale*Math.cos(state.th1);\n    state.th2=Math.atan2(mx-x1,my-y1);\n    state.w2=0;\n  }\n}\ncanvas.addEventListener('pointerdown',e=>{\n  const {x1,y1,x2,y2}=positions();\n  const d1=Math.hypot(e.clientX-x1,e.clientY-y1),d2=Math.hypot(e.clientX-x2,e.clientY-y2);\n  if(d2<40)dragging=2;else if(d1<40)dragging=1;\n  if(dragging){canvas.setPointerCapture(e.pointerId);toAngles(e.clientX,e.clientY);}\n});\ncanvas.addEventListener('pointermove',e=>{if(dragging)toAngles(e.clientX,e.clientY);});\ncanvas.addEventListener('pointerup',()=>dragging=0);\ncanvas.addEventListener('dblclick',()=>trail.length=0);\n\n// UI\nconst $=id=>document.getElementById(id);\nfunction bind(id,key,fmt){\n  const el=$(id),v=$(id+'v');\n  el.addEventListener('input',()=>{P[key]=parseFloat(el.value);v.textContent=fmt(P[key]);});\n}\nbind('L1','L1',x=>x.toFixed(2));bind('L2','L2',x=>x.toFixed(2));\nbind('m1','m1',x=>x.toFixed(1));bind('m2','m2',x=>x.toFixed(1));\nbind('g','g',x=>x.toFixed(2));\n$('trail').addEventListener('input',e=>{trailMax=+e.target.value;$('trailv').textContent=trailMax;if(trail.length>trailMax)trail.splice(0,trail.length-trailMax);});\n$('showTrail').addEventListener('change',e=>showTrail=e.target.checked);\n$('fade').addEventListener('change',e=>fadeTrail=e.target.checked);\n$('pause').addEventListener('click',()=>{paused=!paused;$('pause').textContent=paused?'Resume':'Pause';});\n$('reset').addEventListener('click',()=>{state={...INIT};trail.length=0;time=0;});\nwindow.addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();$('pause').click();}});\n\nconst stats=$('stats');\nlet last=performance.now(),acc=0;\nconst STEP=1/240;\nfunction frame(now){\n  requestAnimationFrame(frame);\n  let dt=(now-last)/1000;last=now;\n  if(dt>0.05)dt=0.05;\n  if(!paused&&!dragging){\n    acc+=dt;time+=dt;\n    while(acc>STEP){rk4(state,STEP);acc-=STEP;}\n  }\n  const {px,py,x1,y1,x2,y2}=positions();\n  if(!paused){trail.push(x2,y2);if(trail.length/2>trailMax)trail.splice(0,2*(trail.length/2-trailMax));}\n\n  // background\n  const g=ctx.createRadialGradient(W/2,H*0.35,50,W/2,H*0.5,Math.max(W,H)*0.8);\n  g.addColorStop(0,'#0d1530');g.addColorStop(1,'#070b14');\n  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);\n\n  // trail\n  if(showTrail&&trail.length>=4){\n    ctx.lineCap='round';ctx.lineJoin='round';\n    const n=trail.length/2,hueBase=(time*30)%360;\n    // draw in chunks for speed with per-segment alpha\n    for(let i=1;i<n;i++){\n      const t=i/n;\n      const a=fadeTrail?t*t*0.95+0.02:0.9;\n      ctx.strokeStyle=`hsla(${(hueBase+t*120)%360},90%,${45+t*20}%,${a})`;\n      ctx.lineWidth=1+t*2.2;\n      ctx.beginPath();ctx.moveTo(trail[(i-1)*2],trail[(i-1)*2+1]);ctx.lineTo(trail[i*2],trail[i*2+1]);ctx.stroke();\n    }\n  }\n  // rods\n  ctx.lineCap='round';\n  ctx.strokeStyle='rgba(180,210,255,.9)';ctx.lineWidth=4;\n  ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();\n  ctx.strokeStyle='rgba(90,130,255,.35)';ctx.lineWidth=8;\n  ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();\n  // pivot\n  ctx.fillStyle='#0a1128';ctx.strokeStyle='#9db9ff';ctx.lineWidth=2;\n  ctx.beginPath();ctx.arc(px,py,7,0,7);ctx.fill();ctx.stroke();\n  // bobs\n  const r1=9+Math.cbrt(P.m1)*5,r2=9+Math.cbrt(P.m2)*5;\n  function bob(x,y,r,c1,c2){\n    const rg=ctx.createRadialGradient(x-r*0.3,y-r*0.3,1,x,y,r);\n    rg.addColorStop(0,c1);rg.addColorStop(1,c2);\n    ctx.fillStyle=rg;ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill();\n    ctx.strokeStyle='rgba(255,255,255,.5)';ctx.lineWidth=1.5;ctx.stroke();\n  }\n  bob(x1,y1,r1,'#cfe0ff','#3b5bff');bob(x2,y2,r2,'#ffe2c8','#ff5a3c');\n  // glow tip\n  ctx.fillStyle='rgba(255,120,80,.9)';ctx.beginPath();ctx.arc(x2,y2,3,0,7);ctx.fill();\n\n  stats.textContent=`θ1 ${state.th1.toFixed(3)}  ω1 ${state.w1.toFixed(3)}  ·  θ2 ${state.th2.toFixed(3)}  ω2 ${state.w2.toFixed(3)}  ·  E ${energy().toFixed(2)} J · RK4 @240Hz`;\n}\nrequestAnimationFrame(frame);\n</script>\n</body>\n</html>",
-            "hj_hard_domain_0": "Suppose the verifier uses the unsafe rule\n\\[\n\\operatorname{Accept}(M,s)\\quad\\Longleftrightarrow\\quad\ns^e\\bmod N=\\operatorname{CRC32}(M),\n\\]\nwhere the CRC is interpreted as a 32-bit integer.\n\nFor any chosen prefix \\(P\\), an attacker can append four bytes \\(x\\) to obtain any desired CRC32 value \\(t\\). CRC32 is affine over \\(\\mathrm{GF}(2)\\): for fixed \\(P\\),\n\\[\n\\operatorname{CRC32}(P\\|x)=b(P)\\oplus Ax,\n\\]\nwhere \\(A\\) is a \\(32\\times32\\) binary matrix. For standard CRC32, \\(A\\) is invertible, so the attacker computes \\(x=A^{-1}(t\\oplus b(P))\\).\n\nNow choose the purported signature \\(s=1\\). For every public exponent \\(e\\), \\(1^e\\bmod N=1\\). Set \\(t=1\\), compute the four-byte suffix, and submit \\((P\\|x,1)\\). It passes the stated verification rule without the private key. With \\(e=3\\), \\(s=2\\) and \\(t=8\\) give another example.\n\n**Why raw RSA matters:** textbook RSA checks only an integer equality; it imposes no valid signature-encoding structure. Its algebra is also malleable—\\((s_1s_2)^e\\equiv s_1^e s_2^e\\pmod N\\)—although CRC32’s XOR-linearity must **not** be mistaken for multiplicativity modulo \\(N\\). Separately, if an attacker has a signature on \\(M_0\\), they can make a different \\(P\\|x\\) with the same CRC32 and reuse that signature. That collision attack remains possible even if padding is added *while still signing only the CRC32*.\n\n**Countermeasure:** sign the **entire message** using RSASSA-PSS with SHA-256, and strictly verify its PSS encoding. Do not use CRC32 as the signed digest; retain it only for accidental-error detection if needed."
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
           },
           "math": {
             "accuracy_by_tier": [
-              0.0,
-              0.0,
+              1.0,
+              0.5,
               0.0
             ],
             "tiers": [
               {
                 "tier": 1,
-                "correct": 0,
+                "correct": 2,
                 "total": 2
               },
               {
                 "tier": 2,
-                "correct": 0,
+                "correct": 1,
                 "total": 2
               },
               {
@@ -691,45 +694,63 @@
               }
             ]
           },
-          "legacy_features": {
-            "hard_judged_architecture": 7,
-            "hard_judged_visual": 9,
-            "hard_math_t1": 0.0,
-            "hard_math_t2": 0.0,
-            "hard_math_t3": 0.0,
-            "hard_judged_domain": 10
-          },
-          "k": 2,
           "judged": {
-            "hard_architecture": {
-              "score": 7,
-              "why": "The design is concrete and broadly sound on quorum consensus, atomic deduplication, and reconciliation, but expiring idempotency keys breaks unconditional exactly-once guarantees, replicated participant logs alone do not resolve 2PC uncertainty without a durable coordinator decision, and globally linearizable transactions require explicit concurrency control and safe snapshot protocols beyond boun"
-            },
             "hard_visual": {
-              "score": 9,
-              "why": "Complete, runnable, self-contained code implements correct double-pendulum equations, coupled RK4 integration, and a motion trail, but the trail-length slider incorrectly truncates coordinate entries rather than point pairs, and resizing leaves stored trail coordinates misaligned."
+              "score": 7,
+              "why": "calibrated tier reference"
             },
             "hard_domain": {
-              "score": 10,
-              "why": "The answer gives a mathematically correct constructive forgery using an invertible four-byte CRC32 suffix and the raw-RSA fixed point s=1, accurately distinguishes RSA multiplicativity from CRC affine linearity, explains why padding alone cannot fix CRC collisions, and specifies full-message RSASSA-PSS with SHA-256 as the concrete countermeasure."
+              "score": 6,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 7,
+              "why": "calibrated tier reference"
             }
-          }
+          },
+          "legacy_features": {
+            "hard_math_t1": 1.0,
+            "hard_math_t2": 0.5,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 7,
+            "hard_judged_domain": 6,
+            "hard_judged_architecture": 7
+          },
+          "k": 2
         },
         "spatial_curve": {
           "tiers": {
             "point_in_box": {
               "acc": 1.0,
-              "n": 3
+              "n": 6
             },
             "ray_occlusion": {
-              "acc": 1.0,
+              "acc": 0.6667,
               "n": 6
             },
             "box_volume": {
-              "acc": 1.0,
+              "acc": 0.6667,
               "n": 6
             }
           },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.64,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.65,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.66,
+              "n": 2
+            }
+          },
+          "composite": 0.65,
           "k": 2
         }
       }

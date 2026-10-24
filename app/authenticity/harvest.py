@@ -665,10 +665,12 @@ async def harvest_model(
                                                   or v2_profile.get("knowledge_bank")
                                                   or v2_profile.get("discriminator")
                                                   or v2_profile.get("spatial_curve")
-                                                  or v2_profile.get("hard_series")):
+                                                  or v2_profile.get("hard_series")
+                                                  or v2_profile.get("tier_splitter")):
                 _struct["v2"] = v2_profile
             for _lane in ("tokenizer", "capability_curve", "knowledge_bank",
-                          "discriminator", "spatial_curve", "hard_series"):
+                          "discriminator", "spatial_curve", "hard_series",
+                          "tier_splitter"):
                 if not (isinstance(v2_profile, dict) and v2_profile.get(_lane)):
                     gaps.append(f"v2_{_lane}:unavailable")
         # Phase 4 consistency scoring (opt-in).
@@ -943,12 +945,6 @@ def list_testable_standards(standards_dir) -> dict:
     _PRIV = _re.compile(r'(^|[/\-_])(mintrouter|vsllm-o|vsllm-r|pix4k|a6api|sharellm|'
                         r'workbuddy|zai-web\d|chat2api|antigravity|arena-web|'
                         r'deepseek-web|qwen-web|mimo-web|codex|ds|zhipu)([/\-_]|$)', _re.I)
-    canonical = [s for s in standards
-                 if not (s.get("source_tag") or "").strip()
-                 and not _PRIV.search(s.get("sub_model", ""))]
-    full = [s for s in canonical if s.get("high_confidence")]
-    partial = [s for s in canonical if not s.get("high_confidence")]
-
     def _display(s):
         sub = s.get("sub_model", "")
         fam = s.get("family", "")
@@ -956,6 +952,23 @@ def list_testable_standards(standards_dir) -> dict:
         if sub.lower().startswith(fam.lower() + "-"):
             sub = sub[len(fam) + 1:]
         return sub
+
+    # Include both canonical (source_tag == "") and generic reference
+    # (source_tag == "reference") standards, deduplicating by (family, display)
+    # with canonical taking precedence over reference.
+    deduped = {}
+    for s in standards:
+        tag = (s.get("source_tag") or "").strip().lower()
+        if tag not in ("", "reference"):
+            continue
+        if _PRIV.search(s.get("sub_model", "")):
+            continue
+        key = ((s.get("family") or "").lower(), _display(s).lower())
+        if key not in deduped or tag == "":
+            deduped[key] = s
+    canonical = list(deduped.values())
+    full = [s for s in canonical if s.get("high_confidence")]
+    partial = [s for s in canonical if not s.get("high_confidence")]
 
     def _group(entries, ok):
         groups = {}

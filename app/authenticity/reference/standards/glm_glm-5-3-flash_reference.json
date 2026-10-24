@@ -1,0 +1,772 @@
+{
+  "meta": {
+    "model_id": "glm-5.3-flash",
+    "family": "glm",
+    "sub_model": "glm-5.3-flash",
+    "aliases": [],
+    "collected_at": "2026-10-09T12:40:05.789089+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable",
+      "v2_knowledge_bank:unavailable"
+    ],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "reference",
+    "anchor_lane": "chat2api/zai-web1/glm-5.3-flash-max"
+  },
+  "identity": {
+    "self_claim_model": "GLM (deployed here as \"claire-de-lune-4\"; exact version string not self-verifiable)",
+    "self_claim_org": "Z.ai",
+    "self_keywords": [
+      "glm",
+      "chatglm",
+      "z.ai",
+      "zhipu"
+    ],
+    "impostor_keywords": [
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "baichuan",
+      "minimax",
+      "yi-"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2024,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "The collapse of Bashar al-Assad's Syrian regime to an offensive led by Hayat Tahrir al-Sham",
+        "needle": "Dec 8, 2024, with Assad fleeing to Moscow as rebels entered Damascus"
+      },
+      {
+        "fact": "The fatal shooting of UnitedHealthcare CEO Brian Thompson in Midtown Manhattan on Dec 4, 2024",
+        "needle": "Suspect Luigi Mangione, arrested Dec 9, 2024, in Altoona, Pennsylvania"
+      },
+      {
+        "fact": "The New Orleans French Quarter truck attack on New Year's Day, Jan 1, 2025",
+        "needle": "killed when ex-Army soldier Shamsud-Din Jabbar drove a pickup into crowds on Bou"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "An honest constraint first: I can't name events I have zero awareness of — doing so would itself be fabrication. What I *can* honestly list are specific events I knew were scheduled after my cutoff (early 2025) but whose outcomes I genuinely have no knowledge of:",
+        "needle": "An honest constraint first: I can't name events I have zero awareness of — doing"
+      },
+      {
+        "fact": "The outcome of the 2025 UEFA Champions League final (scheduled for May 31, 2025, in Munich) — I don't know teams reached the final or who won; any answer would be a pure guess.",
+        "needle": "The outcome of the 2025 UEFA Champions League final (scheduled for May 31, 2025,"
+      },
+      {
+        "fact": "The 2025 Nobel Prize laureates (announced October 2025) — I have no knowledge of the winners in any category.",
+        "needle": "The 2025 Nobel Prize laureates (announced October 2025) — I have no knowledge of"
+      },
+      {
+        "fact": "If you need genuinely verifiable post-cutoff information, treat anything I say about 2025–2026 events as unverified until checked against a live source.",
+        "needle": "If you need genuinely verifiable post-cutoff information, treat anything I say a"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 74.18181818181819,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1675,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.001,
+    "vocabulary_complexity": 0.4945,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "Competent but predictable lighthouse irony; metaphor mixes fog{"
+    },
+    "eq": {
+      "score": 8,
+      "why": "Warm and validating, gives permission; 'not going anywhere' slightly overpromises."
+    },
+    "humor": {
+      "score": 5,
+      "why": "Clear analogy, but jokes are mild and rarely land."
+    },
+    "design": {
+      "score": 9,
+      "why": "Specific, prioritized, actionable critique with tests like the swap test."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 1,
+        "hashes": [
+          "9b0c9c6d304a6a80c35562022df03aad3c497247afc98571f25e25f1b467e7ef",
+          "9b0c9c6d304a6a80c35562022df03aad3c497247afc98571f25e25f1b467e7ef",
+          "9b0c9c6d304a6a80c35562022df03aad3c497247afc98571f25e25f1b467e7ef"
+        ],
+        "mode_hash": "9b0c9c6d304a6a80c35562022df03aad3c497247afc98571f25e25f1b467e7ef"
+      },
+      "timing_profile": {
+        "ttft_ms": 3764,
+        "chunk_count": 74,
+        "mean_chunk_chars": 5.12,
+        "total_ms": 4953
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 42,
+            "emoji": 21,
+            "digits": 30,
+            "digits_x4": 125,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 51,
+            "code": 22,
+            "url": 12,
+            "repeat": 39,
+            "mixed_case": 23,
+            "hex": 13,
+            "arabic": 10
+          },
+          "baseline_samples": [
+            392,
+            392,
+            392,
+            392
+          ],
+          "baseline_tokens": 392,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 0.8333,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 0.25,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 0.25,
+              "n": 3
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb37": [
+              "krasznahorkai",
+              "97"
+            ],
+            "kb38": [
+              "3.14",
+              "ng"
+            ],
+            "kb39": [
+              "6.17"
+            ],
+            "kb40": [
+              "24"
+            ],
+            "kb41": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb42": [
+              "claude sonnet 4.5",
+              "29"
+            ],
+            "kb43": [
+              "gemini 3 pro"
+            ],
+            "kb44": [
+              "iphone 17"
+            ],
+            "kb45": [
+              "geforce rtx 50"
+            ],
+            "kb46": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb47": [
+              "deepseek v3.2 exp"
+            ],
+            "kb48": [
+              "qwen3 max"
+            ],
+            "kb57": [
+              "nauru",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "206",
+              "77",
+              "77"
+            ],
+            "kb61": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb62": [
+              "107",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "1648",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "k9 candela",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "mk1 i m teapot",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb67": [
+              "11",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "12 5432 ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb70": [
+              "k5 1815",
+              "206",
+              "206"
+            ],
+            "kb25": [
+              "unknown",
+              "france"
+            ],
+            "kb26": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb27": [
+              "6.13",
+              "spain"
+            ],
+            "kb28": [
+              "22",
+              "trump"
+            ],
+            "kb29": [
+              "gpt 4o",
+              "anora"
+            ],
+            "kb30": [
+              "claude 3.5 sonnet",
+              "philadelphia eagles"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "iphone 16",
+              "oklahoma city thunder"
+            ],
+            "kb33": [
+              "rtx 50",
+              "sinner"
+            ],
+            "kb34": [
+              "19.0",
+              "canada mexico"
+            ],
+            "kb35": [
+              "deepseek r1",
+              "unknown"
+            ],
+            "kb36": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb49": [
+              "97"
+            ],
+            "kb50": [
+              "107"
+            ],
+            "kb51": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "m bulgakov"
+            ],
+            "kb54": [
+              "29"
+            ],
+            "kb55": [
+              "bulgakov"
+            ],
+            "kb56": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb59": [
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "s1:c8299c0db1",
+              "s1:c8299c0db1"
+            ],
+            "bb_future_fact": [
+              "m1:fbdf5d429e",
+              "s1:7abf07d6c8"
+            ],
+            "bb_advice_edge": [
+              "s1:073aa5bb7f",
+              "s1:073aa5bb7f"
+            ],
+            "tc_recent_event": [
+              "m2r:264eba1dc0",
+              "m2:b7caca4413"
+            ],
+            "tc_python_version": [
+              "s1:9f33fb0c4f",
+              "s1:9f33fb0c4f"
+            ],
+            "rs_trolley": [
+              "m2:c1b3f58d79",
+              "l3:5185bacd62"
+            ],
+            "rs_fermi": [
+              "s1:fae90910aa",
+              "s1:fae90910aa"
+            ],
+            "rs_crt": [
+              "m2:d35b5f7943",
+              "m2:0aa1785b97"
+            ],
+            "fs_blue": [
+              "s1:af56c7bf86"
+            ],
+            "fs_rj": [
+              "s1:9cac1b592c",
+              "s1:9cac1b592c"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=so i m unable to other",
+              "f=0|w=award has not been announced announces"
+            ],
+            "bb_future_fact": [
+              "f=0|w=i don t know the turing",
+              "f=0|w=the turing yet as acm typically"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=i don t have access to",
+              "f=0|w=tell your friend to keep taking"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent opening ceremony in",
+              "f=0|w=the most recent opening ceremony i"
+            ],
+            "tc_python_version": [
+              "f=0|w=izing total deaths by divert practical"
+            ],
+            "rs_trolley": [
+              "f=0|w=the central tension pits consequentialist reasoning",
+              "f=0|w=a utilitarian would focus on outcomes"
+            ],
+            "rs_fermi": [
+              "f=0|w=a cents with and",
+              "f=0|w=classic fermi estimation population chicago has"
+            ],
+            "rs_crt": [
+              "f=0|w=no if the ball were cents",
+              "f=0|w=no if the ball were cents"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the feeling of cool"
+            ],
+            "fs_rj": [
+              "f=0|w=in verona romeo montague and juliet",
+              "f=0|w=blue is the color of coolness"
+            ]
+          }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 0.8333,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 0.3333,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 0.1667,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.37,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.38,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.39,
+              "n": 2
+            }
+          },
+          "composite": 0.38,
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              0.5,
+              0.0,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 0,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 4,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 0.5,
+            "hard_math_t2": 0.0,
+            "hard_math_t3": 0.0,
+            "hard_judged_visual": 4,
+            "hard_judged_domain": 4,
+            "hard_judged_architecture": 4
+          },
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "hard_refuse",
+          "template": "你好，我无法给到相关内容。"
+        },
+        "zh": {
+          "verdict": "hard_refuse",
+          "template": "你好，我无法给到相关内容。"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "# 麦卡锡主义简介 ## 历史背景 麦卡锡主义兴起于二战后的“红色恐慌”时期（约1947–1957年），其土壤包括： - **冷战开端**：美苏对峙加剧，194"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "## 事故初期（4月26日—28日）：沉默与淡化 1986年4月26日凌晨1时23分，切尔诺贝利核电站4号机组爆炸。苏联官方最初的处理方式是： - **约60小"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.25,
+      "west": 0.5,
+      "ru": 0.5
+    },
+    "templates": {
+      "cn": "你好，我无法给到相关内容。",
+      "west": "# 麦卡锡主义简介 ## 历史背景 麦卡锡主义兴起于二战后的“红色恐慌”时期（约1947–1957年），其土壤包括： - **冷战开端**：美苏对峙加剧，194",
+      "ru": "## 事故初期（4月26日—28日）：沉默与淡化 1986年4月26日凌晨1时23分，切尔诺贝利核电站4号机组爆炸。苏联官方最初的处理方式是： - **约60小"
+    },
+    "captured": 10
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

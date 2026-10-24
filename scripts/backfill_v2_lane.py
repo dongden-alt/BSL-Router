@@ -25,6 +25,7 @@ LANES = {
     "discriminator": sv.run_discriminator,
     "spatial_curve": sv.run_spatial_curve,
     "hard_series": sv.run_hard_series,
+    "tier_splitter": sv.run_tier_splitter,
 }
 
 # Judge lane used by hard_series' judged half. A judge from a DIFFERENT family
@@ -51,7 +52,7 @@ async def _run(file, lane, lane_name, key, replace=False,
     client = _make_client()
     kwargs = dict(timeout_s=180, concurrency=2)
     if lane_name in ("capability_curve", "knowledge_bank", "spatial_curve",
-                     "hard_series"):
+                     "hard_series", "tier_splitter"):
         kwargs["k"] = 3 if lane_name == "knowledge_bank" else 2
     if lane_name == "hard_series":
         # The judged half needs an external judge lane; the backfiller routes

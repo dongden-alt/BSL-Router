@@ -300,6 +300,7 @@ async def _run_probe_network(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "X-BSL-Authenticity-Probe": "1",
     }
     ttft_deadline = float(ttft_s)
     idle_deadline = float(idle_s) if idle_s is not None else float(timeout_s)
@@ -466,6 +467,7 @@ async def _run_probe_scalar(
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
+                    "X-BSL-Authenticity-Probe": "1",
                 },
                 timeout=timeout_s,
             )
@@ -862,6 +864,7 @@ async def run_stream_probe(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "X-BSL-Authenticity-Probe": "1",
     }
     ttft_ms = 0
     chunk_count = 0

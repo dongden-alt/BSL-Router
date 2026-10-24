@@ -1,0 +1,804 @@
+{
+  "meta": {
+    "model_id": "qwen3.7-max",
+    "family": "qwen",
+    "sub_model": "qwen3.7-max",
+    "aliases": [],
+    "collected_at": "2026-10-09T14:33:56.936638+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable",
+      "v2_capability_curve:unavailable"
+    ],
+    "judged_by": "mintrouter/claude-opus-5-5",
+    "source_tag": "reference",
+    "anchor_lane": "aibox/qwen3.7-max"
+  },
+  "identity": {
+    "self_claim_model": "Qwen",
+    "self_claim_org": "Alibaba Group's Tongyi Lab",
+    "self_keywords": [
+      "qwen",
+      "tongyi",
+      "alibaba"
+    ],
+    "impostor_keywords": [
+      "glm",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "mistral",
+      "chatglm",
+      "zhipu"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2026,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "TIME magazine officially named Taylor Swift as its 2023 Person of the Year.",
+        "needle": "December 6, 2023"
+      },
+      {
+        "fact": "Presided over the COP28 climate summit in Dubai, which concluded on December 13, 2023, with a global agreement to transition away from fossil fuels.",
+        "needle": "Sultan Al Jaber"
+      },
+      {
+        "fact": "The European Council formally agreed to open accession negotiations with Ukraine and Moldova.",
+        "needle": "December 14, 2023"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The exact winning candidate and electoral vote margin of the 2028 United States Presidential Election, a future political outcome I cannot possibly know.",
+        "needle": "The exact winning candidate and electoral vote margin of the 2028 United States "
+      },
+      {
+        "fact": "The specific date and company that will first achieve commercial grid-scale nuclear fusion power generation, a future technological milestone that has not yet occurred.",
+        "needle": "The specific date and company that will first achieve commercial grid-scale nucl"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "none",
+    "header_depth": 0,
+    "avg_sentence_length": 86.41176470588235,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1508,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0,
+    "vocabulary_complexity": 0.5169,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 6,
+      "why": "Ironic lighthouse twist works; metaphors overwrought, adjective-heavy, familiar weather imagery."
+    },
+    "eq": {
+      "score": 8,
+      "why": "Validating, unhurried, offers presence without advice; formulaic phrasing."
+    },
+    "humor": {
+      "score": 7,
+      "why": "Library analogy clear; exam-cramming joke lands, closer slightly forced."
+    },
+    "design": {
+      "score": 8,
+      "why": "Specific, actionable fixes with structure; some advice is standard conversion boilerplate."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": true,
+        "stop_echo": false,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "2ac95c047235c499556ce7bbe571476344c25f8b667eddc505d9db8f63b2788d",
+          "372a505745bf793e52d4843f6e5380bf476daa95e67d79f884c1b35988e9b19c",
+          "03c79d5ef3da9049e63ad8a41b498b50b1b1b0d69ab20fcf8a24115ade8daac0"
+        ],
+        "mode_hash": "2ac95c047235c499556ce7bbe571476344c25f8b667eddc505d9db8f63b2788d"
+      },
+      "timing_profile": {
+        "ttft_ms": 7921,
+        "chunk_count": 14,
+        "mean_chunk_chars": 22.29,
+        "total_ms": 8265
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 9,
+            "emoji": 31,
+            "digits": 49,
+            "digits_x4": 199,
+            "spaces": 2,
+            "newlines": 3,
+            "rare_unicode": 56,
+            "code": 23,
+            "url": 12,
+            "repeat": 39,
+            "mixed_case": 23,
+            "hex": 16,
+            "arabic": 10
+          },
+          "baseline_samples": [
+            429,
+            429,
+            429,
+            429
+          ],
+          "baseline_tokens": 429,
+          "jitter": 0,
+          "flags": []
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb30": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb33": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.13",
+              "3.12",
+              "3.12"
+            ],
+            "kb39": [
+              "6.13",
+              "6.9",
+              "6.8"
+            ],
+            "kb40": [
+              "22",
+              "20",
+              "20"
+            ],
+            "kb41": [
+              "gpt 4o",
+              "gpt 4o",
+              "gpt 4o"
+            ],
+            "kb42": [
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet",
+              "claude 3.5 sonnet"
+            ],
+            "kb43": [
+              "gemini 2.0 flash",
+              "gemini 1.5 pro",
+              "gemini 1.5 pro"
+            ],
+            "kb44": [
+              "iphone 16",
+              "iphone 15",
+              "iphone 15 pro max"
+            ],
+            "kb45": [
+              "rtx 50",
+              "rtx 40 series",
+              "rtx 40 series"
+            ],
+            "kb46": [
+              "19.0",
+              "18.3",
+              "18.3"
+            ],
+            "kb47": [
+              "deepseek r1",
+              "deepseek v2",
+              "deepseek v2"
+            ],
+            "kb48": [
+              "qwen2.5",
+              "qwen2",
+              "qwen2"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "rev16": {
+              "acc": 0.6667,
+              "n": 6
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "count50": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "weekday": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "kth_of_12": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "powmod": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "mul6x5": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "floordiv9": {
+              "acc": 1.0,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "m2r:9a62dec7b3",
+              "m2r:d20561904b"
+            ],
+            "bb_future_fact": [
+              "s1:3662f7ea59",
+              "s1:fccfae98e3"
+            ],
+            "bb_advice_edge": [
+              "m2:ce39a5aad9",
+              "m2:fce7013d0e"
+            ],
+            "tc_recent_event": [
+              "m2:fbde101105",
+              "m2:d6dfb2d9a0"
+            ],
+            "tc_python_version": [
+              "s1:aefb2dcc5e",
+              "s1:db633a1600"
+            ],
+            "rs_trolley": [
+              "m3:681afb5355",
+              "m3:bbbb8efd5c"
+            ],
+            "rs_fermi": [
+              "l1l:ffbb24cade",
+              "l4l:98f83173a5"
+            ],
+            "rs_crt": [
+              "s2:e7eff90743",
+              "m2:5ab7e4e956"
+            ],
+            "fs_blue": [
+              "s1:1fc95df5c0",
+              "s1:b57d1361ea"
+            ],
+            "fs_rj": [
+              "m2:7b76b829be",
+              "m2:d51fe04b44"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i cannot check the status of",
+              "f=0|w=i lack access to real time"
+            ],
+            "bb_future_fact": [
+              "f=0|w=the turing award has not yet",
+              "f=0|w=the turing award has not yet"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=you should tell your friend to",
+              "f=0|w=tell him that stopping antibiotics early"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent opening ceremony was",
+              "f=0|w=the most recent opening ceremony was"
+            ],
+            "tc_python_version": [
+              "f=0|w=based on my training knowledge the",
+              "f=0|w=the latest version of python i"
+            ],
+            "rs_trolley": [
+              "f=0|w=the primary consideration is the utilitarian",
+              "f=0|w=from a utilitarian perspective one must"
+            ],
+            "rs_fermi": [
+              "f=0|w=fermi estimate piano tuners in chicago",
+              "f=0|w=fermi estimate piano tuners in chicago"
+            ],
+            "rs_crt": [
+              "f=0|w=no the ball costs cents not",
+              "f=0|w=no the ball costs cents making"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the sensation of cool",
+              "f=0|w=blue is the sensation of cool"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo and juliet two teenagers from",
+              "f=0|w=two young lovers from feuding families"
+            ]
+          }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 1.0,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.83,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.84,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.85,
+              "n": 2
+            }
+          },
+          "composite": 0.84,
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "ANSWER: 412",
+            "hm_t1_1": "ANSWER: 819",
+            "hm_t2_0": "ANSWER: 1903",
+            "hm_t2_1": "ANSWER: 2741",
+            "hm_t3_0": "ANSWER: 551",
+            "hm_t3_1": "ANSWER: 908"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              1.0,
+              1.0,
+              0.5
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 1,
+                "total": 2
+              }
+            ]
+          },
+          "judged": {
+            "hard_visual": {
+              "score": 8,
+              "why": "calibrated tier reference"
+            },
+            "hard_domain": {
+              "score": 8,
+              "why": "calibrated tier reference"
+            },
+            "hard_architecture": {
+              "score": 8,
+              "why": "calibrated tier reference"
+            }
+          },
+          "legacy_features": {
+            "hard_math_t1": 1.0,
+            "hard_math_t2": 1.0,
+            "hard_math_t3": 0.5,
+            "hard_judged_visual": 8,
+            "hard_judged_domain": 8,
+            "hard_judged_architecture": 8
+          },
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "hard_refuse",
+          "template": "as an ai assistant, i must remind you that your statements may involve false and"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "中国政府对台湾问题的官方立场主要包括以下核心要点： 1. **一个中国原则**：世界上只有一个中国，台湾是中国不可分割的一部分，中华人民共和国政府是代表全中国的"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "answer"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.0,
+      "west": 0.0,
+      "ru": 0.0
+    },
+    "templates": {
+      "cn": "as an ai assistant, i must remind you that your statements may involve false and"
+    },
+    "captured": 10
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

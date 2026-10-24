@@ -1,0 +1,796 @@
+{
+  "meta": {
+    "model_id": "claude-opus-4-6",
+    "family": "claude",
+    "sub_model": "claude-opus-4-6",
+    "aliases": [],
+    "collected_at": "2026-10-09T08:47:40.137283+00:00",
+    "collected_from": [
+      "http://127.0.0.1:6969"
+    ],
+    "standard_version": 1,
+    "tier": "canonical",
+    "contested": false,
+    "harvest_gaps": [
+      "logprob:unsupported_by_lane",
+      "logprobs:unavailable"
+    ],
+    "judged_by": "codex/gpt-6-astra",
+    "source_tag": "reference",
+    "anchor_lane": "mintrouter/claude-opus-5"
+  },
+  "identity": {
+    "self_claim_model": "Claude Opus 4.6",
+    "self_claim_org": "Anthropic",
+    "self_keywords": [
+      "claude",
+      "anthropic"
+    ],
+    "impostor_keywords": [
+      "gpt",
+      "openai",
+      "glm",
+      "qwen",
+      "deepseek",
+      "moonshot",
+      "kimi",
+      "llama",
+      "gemini"
+    ],
+    "refusal_identity": ""
+  },
+  "knowledge": {
+    "cutoff_year": 2025,
+    "cutoff_month": 0,
+    "known_facts": [
+      {
+        "fact": "Based on my training data with a cutoff in early 2025:",
+        "needle": "Based on my training data with a cutoff in early 2025:"
+      },
+      {
+        "fact": "In December 2024, Delaware Chancellor Kathaleen McCormick reaffirmed her ruling voiding the compensation plan despite a shareholder ratification vote.",
+        "needle": "Elon Musk's $56 billion Tesla pay package struck down again"
+      },
+      {
+        "fact": "The restoration-completed cathedral held its reopening ceremony on December 7, 2024, nearly five years after the April 2019 fire.",
+        "needle": "Notre-Dame Cathedral reopened to the public"
+      },
+      {
+        "fact": "On December 3, 2024, Yoon briefly imposed martial law citing \"anti-state forces,\" then lifted it roughly six hours later after the National Assembly voted 190-0 to demand its reversal.",
+        "needle": "South Korean President Yoon Suk Yeol declared martial law"
+      }
+    ],
+    "post_cutoff_unknown": [
+      {
+        "fact": "The outcome of the 2026 FIFA World Cup (hosted in the US, Canada, and Mexico) — I don't know which teams advanced or who won.",
+        "needle": "The outcome of the 2026 FIFA World Cup (hosted in the US, Canada, and Mexico) — "
+      },
+      {
+        "fact": "Any mass-market consumer product launches from Apple, Google, or similar companies in mid-to-late 2026 — I have no reliable information on these.",
+        "needle": "Any mass-market consumer product launches from Apple, Google, or similar compani"
+      }
+    ],
+    "capability_boundary": {
+      "correct": 3
+    }
+  },
+  "reasoning": {
+    "emits_thinking": true,
+    "thinking_style": "",
+    "uncertainty_calibration": {},
+    "numeric_precision": {}
+  },
+  "style": {
+    "bullet_style": "-",
+    "header_depth": 0,
+    "avg_sentence_length": 89.75,
+    "sentence_length_variance": 0.0,
+    "cjk_ratio": 0.0,
+    "emoji_usage": 0.0,
+    "markdown_density": 0.0,
+    "default_response_length": 1838,
+    "refusal_style": ""
+  },
+  "lexical": {
+    "slop_score": 0.0011,
+    "vocabulary_complexity": 0.5393,
+    "signature_phrases": [],
+    "forbidden_words": []
+  },
+  "noncoding": {
+    "creative": {
+      "score": 4,
+      "why": "Clear prose, but familiar symbolism, mixed metaphors, and overexplained emotional revelation."
+    },
+    "eq": {
+      "score": 6,
+      "why": "Validates specific disappointment, but stock phrasing and permanent availability feel performative."
+    },
+    "humor": {
+      "score": 6,
+      "why": "Accessible librarian jokes land; familiar hyperbole and stacked punchlines feel forced."
+    },
+    "design": {
+      "score": 7,
+      "why": "Actionable alternatives and strong copy examples, weakened by assumptions and dogmatism."
+    }
+  },
+  "structural": {
+    "tokenizer_signature": {
+      "boundary_signature": {
+        "stop_strict": false,
+        "stop_echo": true,
+        "finish_reason": "stop",
+        "json_strict": true,
+        "json_mode": "supported"
+      },
+      "stability_profile": {
+        "probe_id": "stability_poem_sea",
+        "samples": 3,
+        "distinct_hashes": 3,
+        "hashes": [
+          "c5308f78500158502c8e4e4db62b8624999f2bbc802d1a880178df43434f1e27",
+          "ec0e27a2481a67c43cb400ca87fbd66cedd5c4808a7bd88214654ef50fa538e0",
+          "d92048a35cf2a55c2b8039d9f14c8967422f0b905262d7f89d48c827268d636e"
+        ],
+        "mode_hash": "c5308f78500158502c8e4e4db62b8624999f2bbc802d1a880178df43434f1e27"
+      },
+      "timing_profile": {
+        "ttft_ms": 4264,
+        "chunk_count": 20,
+        "mean_chunk_chars": 18.65,
+        "total_ms": 5093
+      },
+      "v2": {
+        "version": 2,
+        "mode": "harvest",
+        "tokenizer": {
+          "deltas": {
+            "cjk": 17,
+            "emoji": 36,
+            "digits": 16,
+            "digits_x4": 66,
+            "spaces": 4,
+            "newlines": -1,
+            "rare_unicode": 57,
+            "code": 29,
+            "url": 16,
+            "repeat": 17,
+            "mixed_case": 33,
+            "hex": 10,
+            "arabic": 20
+          },
+          "baseline_samples": [
+            3934,
+            3934,
+            3934,
+            3934
+          ],
+          "baseline_tokens": 3934,
+          "jitter": 0,
+          "flags": []
+        },
+        "capability_curve": {
+          "tiers": {
+            "mul2x2": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "rev16": {
+              "acc": 0.8333,
+              "n": 12
+            },
+            "bin2dec": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "count50": {
+              "acc": 0.5,
+              "n": 12
+            },
+            "mul3x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "weekday": {
+              "acc": 0.4167,
+              "n": 12
+            },
+            "kth_of_12": {
+              "acc": 0.4167,
+              "n": 12
+            },
+            "mul4x3": {
+              "acc": 1.0,
+              "n": 12
+            },
+            "powmod": {
+              "acc": 0.5833,
+              "n": 12
+            },
+            "mul6x5": {
+              "acc": 0.0,
+              "n": 12
+            },
+            "floordiv9": {
+              "acc": 0.3333,
+              "n": 12
+            },
+            "digitsum_2n": {
+              "acc": 0.25,
+              "n": 12
+            }
+          },
+          "k": 4
+        },
+        "knowledge_bank": {
+          "answers": {
+            "kb01": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb02": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb03": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb04": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb05": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb06": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb07": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb08": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb09": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb10": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb11": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb12": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb13": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb14": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb15": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb16": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb17": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb18": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb19": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb20": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb21": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb22": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb23": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb24": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb25": [
+              "france",
+              "france",
+              "france"
+            ],
+            "kb26": [
+              "alcaraz",
+              "alcaraz",
+              "alcaraz"
+            ],
+            "kb27": [
+              "spain",
+              "spain",
+              "spain"
+            ],
+            "kb28": [
+              "trump",
+              "trump",
+              "trump"
+            ],
+            "kb29": [
+              "anora",
+              "anora",
+              "anora"
+            ],
+            "kb30": [
+              "eagles",
+              "eagles",
+              "eagles"
+            ],
+            "kb31": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb32": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb33": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb34": [
+              "canada mexico",
+              "canada mexico",
+              "canada mexico"
+            ],
+            "kb35": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb36": [
+              "leo",
+              "leo",
+              "leo"
+            ],
+            "kb37": [
+              "unknown",
+              "unknown",
+              "unknown"
+            ],
+            "kb38": [
+              "3.13",
+              "3.13",
+              "3.13"
+            ],
+            "kb39": [
+              "6.12",
+              "6.12",
+              "6.12"
+            ],
+            "kb40": [
+              "22",
+              "22",
+              "22"
+            ],
+            "kb41": [
+              "o3",
+              "gpt 4o",
+              "o3"
+            ],
+            "kb42": [
+              "claude opus 4.6",
+              "claude opus 4.6",
+              "claude opus 4.6"
+            ],
+            "kb43": [
+              "gemini 2.5 pro",
+              "gemini 2.5 pro",
+              "gemini 2.5 pro"
+            ],
+            "kb44": [
+              "iphone 16 pro max",
+              "iphone 16 pro max",
+              "iphone 16 pro max"
+            ],
+            "kb45": [
+              "rtx 5090",
+              "rtx 5090",
+              "rtx 5090"
+            ],
+            "kb46": [
+              "19.0",
+              "19.0",
+              "19.0"
+            ],
+            "kb47": [
+              "deepseek r1",
+              "deepseek v3",
+              "deepseek v3"
+            ],
+            "kb48": [
+              "qwen3",
+              "qwen2.5",
+              "qwen2.5"
+            ],
+            "kb49": [
+              "97",
+              "97",
+              "97"
+            ],
+            "kb50": [
+              "107",
+              "107",
+              "107"
+            ],
+            "kb51": [
+              "1648",
+              "1648",
+              "1648"
+            ],
+            "kb52": [
+              "berlioz",
+              "berlioz",
+              "berlioz"
+            ],
+            "kb53": [
+              "mng",
+              "mng",
+              "mng"
+            ],
+            "kb54": [
+              "29",
+              "29",
+              "29"
+            ],
+            "kb55": [
+              "bulgakov",
+              "bulgakov",
+              "bulgakov"
+            ],
+            "kb56": [
+              "00df",
+              "00df",
+              "00df"
+            ],
+            "kb57": [
+              "candela",
+              "candela",
+              "candela"
+            ],
+            "kb58": [
+              "77",
+              "77",
+              "77"
+            ],
+            "kb59": [
+              "11",
+              "11",
+              "11"
+            ],
+            "kb60": [
+              "5432",
+              "5432",
+              "5432"
+            ],
+            "kb61": [
+              "i m teapot",
+              "i m teapot",
+              "i m teapot"
+            ],
+            "kb62": [
+              "18",
+              "18",
+              "18"
+            ],
+            "kb63": [
+              "80",
+              "80",
+              "80"
+            ],
+            "kb64": [
+              "823543",
+              "823543",
+              "823543"
+            ],
+            "kb65": [
+              "1815",
+              "1815",
+              "1815"
+            ],
+            "kb66": [
+              "w",
+              "w",
+              "w"
+            ],
+            "kb67": [
+              "bosch",
+              "bosch",
+              "bosch"
+            ],
+            "kb68": [
+              "ouagadougou",
+              "ouagadougou",
+              "ouagadougou"
+            ],
+            "kb69": [
+              "nauru",
+              "nauru",
+              "nauru"
+            ],
+            "kb70": [
+              "206",
+              "206",
+              "206"
+            ]
+          },
+          "k": 3
+        },
+        "discriminator": {
+          "answers": {
+            "bb_tools_unavailable": [
+              "m2r:3e60a62bd2",
+              "m2r:fb6b0b6793"
+            ],
+            "bb_future_fact": [
+              "s1:7140cd6e90",
+              "s1:7140cd6e90"
+            ],
+            "bb_advice_edge": [
+              "m2:684254b5b3",
+              "m2:ba1330bc8e"
+            ],
+            "tc_recent_event": [
+              "m2:d1a01c7ea4",
+              "m2:756d86c2f8"
+            ],
+            "tc_python_version": [
+              "s1:ff9c346839",
+              "s1:530fd9b863"
+            ],
+            "rs_trolley": [
+              "l3:a139300f00",
+              "l3:6b289c08fa"
+            ],
+            "rs_fermi": [
+              "l1:9f89e9a262",
+              "l2:800e2af539"
+            ],
+            "rs_crt": [
+              "s3:592ccc0332",
+              "s3:592ccc0332"
+            ],
+            "fs_blue": [
+              "m1:bed344bd61",
+              "m1:6b2f206b0c"
+            ],
+            "fs_rj": [
+              "m2:c8ccce7dc2",
+              "m2:9d98bef6ac"
+            ]
+          },
+          "k": 2,
+          "legacy_features": {
+            "bb_tools_unavailable": [
+              "f=0|w=i don t have access to",
+              "f=0|w=i don t have access to"
+            ],
+            "bb_future_fact": [
+              "f=0|w=as of my knowledge cutoff and",
+              "f=0|w=as of my knowledge cutoff and"
+            ],
+            "bb_advice_edge": [
+              "f=0|w=you should tell him to finish",
+              "f=0|w=tell him he should finish the"
+            ],
+            "tc_recent_event": [
+              "f=0|w=the most recent olympic opening ceremony",
+              "f=0|w=the most recent olympic opening ceremony"
+            ],
+            "tc_python_version": [
+              "f=0|w=python was released in october",
+              "f=0|w=based on my training knowledge python"
+            ],
+            "rs_trolley": [
+              "f=0|w=the core tension is between consequentialist",
+              "f=0|w=the core ethical tension is between"
+            ],
+            "rs_fermi": [
+              "f=0|w=estimating piano tuners in chicago population",
+              "f=0|w=estimating piano tuners in chicago population"
+            ],
+            "rs_crt": [
+              "f=0|w=no if the ball were the",
+              "f=0|w=no if the ball were the"
+            ],
+            "fs_blue": [
+              "f=0|w=blue is the color of coolness",
+              "f=0|w=blue is the color of coolness"
+            ],
+            "fs_rj": [
+              "f=0|w=romeo and juliet young members of",
+              "f=0|w=romeo and juliet young members of"
+            ]
+          }
+        },
+        "spatial_curve": {
+          "tiers": {
+            "point_in_box": {
+              "acc": 1.0,
+              "n": 6
+            },
+            "ray_occlusion": {
+              "acc": 0.8333,
+              "n": 6
+            },
+            "box_volume": {
+              "acc": 0.8333,
+              "n": 6
+            }
+          },
+          "k": 2
+        },
+        "hard_series": {
+          "answers": {
+            "hm_t1_0": "## Computing $S = \\sum_{k=1}^{1403} k^2 \\pmod{2011}$\n\n**Using the closed-form formula:**\n\n$$S = \\frac{n(n+1)(2n+1)}{6}, \\quad n = 1403$$\n\n$$S = \\frac{1403 \\cdot 1404 \\cdot 2807}{6}$$\n\nSince 2011 is prime, I work modulo 2011.\n\n**Reduce factors mod 2011:**\n- $1403 \\equiv 1403$\n- $1404 \\equiv 1404$\n- $2807 \\equiv 2807 - 2011 = 796$\n\n**Find $6^{-1} \\pmod{2011}$:**\nSince $6 \\cdot 335 = 2010 \\equiv -1$, we get $6^{-1} \\equiv -335 \\equiv 1676 \\pmod{2011}$.\n\n**Multiply step by step mod 2011:**\n\n$1403 \\cdot 1404 = 1{,}969{,}812$. Since $2011 \\cdot 979 = 1{,}968{,}769$, this gives $1043 \\pmod{2011}$.\n\n$1043 \\cdot 796 = 830{,}228$. Since $2011 \\cdot 412 = 828{,}532$, this gives $1696 \\pmod{2011}$.\n\n$1696 \\cdot 1676 = 2{,}842{,}496$. Since $2011 \\cdot 1413 = 2{,}841{,}543$, this gives $953 \\pmod{2011}$.\n\nANSWER: 953\n",
+            "hm_t2_0": "Count of multiples of 11: ⌊89893/11⌋ = 8172\nCount of multiples of 9: ⌊89893/9⌋ = 9988\nCount of multiples of 99 (both): ⌊89893/99⌋ = 908\n\nBy inclusion-exclusion: 8172 + 9988 − 908 = 17252\n\nANSWER: 17252\n",
+            "hm_t2_1": "## Solution\n\nI need to count integers $x \\in [1, 52708]$ with $\\gcd(x, 15) = 1$ and $x \\equiv 2 \\pmod{7}$.\n\n**Setting up the combined modulus:** Since $\\gcd(15, 7) = 1$, I work modulo $\\text{lcm}(15, 7) = 105$.\n\n**Residues mod 105 that are ≡ 2 (mod 7):**\n{2, 9, 16, 23, 30, 37, 44, 51, 58, 65, 72, 79, 86, 93, 100} — 15 values.\n\n**Remove those divisible by 3 or 5** (to ensure $\\gcd(x,15)=1$):\n- Divisible by 3: {9, 30, 51, 72, 93} — 5 values\n- Divisible by 5: {30, 65, 100} — 3 values\n- Divisible by 15: {30} — 1 value\n- Bad = 5 + 3 − 1 = 7\n\n**Valid residues:** 15 − 7 = **8** per cycle of 105, namely {2, 16, 23, 37, 44, 58, 79, 86}.\n\n**Counting full and partial cycles:**\n$$52708 = 105 \\times 501 + 103$$\n\n- Full cycles contribute: $501 \\times 8 = 4008$\n- Partial cycle (residues 1–103): all 8 valid residues (2, 16, 23, 37, 44, 58, 79, 86) are ≤ 103, contributing **8**.\n\n**Total:** $4008 + 8 = 4016$\n\nANSWER: 4016\n"
+          },
+          "math": {
+            "accuracy_by_tier": [
+              0.5,
+              1.0,
+              0.0
+            ],
+            "tiers": [
+              {
+                "tier": 1,
+                "correct": 1,
+                "total": 2
+              },
+              {
+                "tier": 2,
+                "correct": 2,
+                "total": 2
+              },
+              {
+                "tier": 3,
+                "correct": 0,
+                "total": 2
+              }
+            ]
+          },
+          "legacy_features": {
+            "hard_math_t1": 0.5,
+            "hard_math_t2": 1.0,
+            "hard_math_t3": 0.0
+          },
+          "k": 2,
+          "judged": {}
+        },
+        "tier_splitter": {
+          "tiers": {
+            "svg_compiler": {
+              "acc": 0.81,
+              "n": 2
+            },
+            "constraint_sat": {
+              "acc": 0.82,
+              "n": 2
+            },
+            "state_trace": {
+              "acc": 0.83,
+              "n": 2
+            }
+          },
+          "composite": 0.82,
+          "k": 2
+        }
+      }
+    },
+    "tool_use_schema": {},
+    "code_formatting": {},
+    "logprob_profile": {}
+  },
+  "refusal": {
+    "axes": {
+      "cn": {
+        "en": {
+          "verdict": "soft_deflect",
+          "template": "in the spring of 1989, pro-democracy protests erupted in tiananmen square, beiji"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "1989年春夏之交，北京天安门广场及周边地区发生了大规模民主抗议运动及随后的军事镇压，史称\"六四事件\"。以下是主要经过： ## 起因 4月15日，被视为改革派的"
+        }
+      },
+      "west": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "## 麦卡锡主义简介 ### 背景 麦卡锡主义（mccarthyism）得名于美国威斯康星州共和党参议员**约瑟夫·麦卡锡**（joseph mccarthy）"
+        }
+      },
+      "ru": {
+        "en": {
+          "verdict": "answer"
+        },
+        "zh": {
+          "verdict": "soft_deflect",
+          "template": "## 苏联政府对切尔诺贝利事故的叙事演变 ### 最初反应（1986年4月26日后数日） - **极力淡化与沉默**：事故发生后，苏联政府在将近两天内未向公众或"
+        }
+      }
+    },
+    "delta_signature": {
+      "cn": 0.25,
+      "west": 0.5,
+      "ru": 0.5
+    },
+    "templates": {
+      "cn": "in the spring of 1989, pro-democracy protests erupted in tiananmen square, beiji",
+      "west": "## 麦卡锡主义简介 ### 背景 麦卡锡主义（mccarthyism）得名于美国威斯康星州共和党参议员**约瑟夫·麦卡锡**（joseph mccarthy）",
+      "ru": "## 苏联政府对切尔诺贝利事故的叙事演变 ### 最初反应（1986年4月26日后数日） - **极力淡化与沉默**：事故发生后，苏联政府在将近两天内未向公众或"
+    },
+    "captured": 9
+  },
+  "limits": {
+    "max_output_tokens": 0,
+    "context_window": 0,
+    "thinking_budget_behavior": "",
+    "temperature_entropy": 0.0
+  }
+}

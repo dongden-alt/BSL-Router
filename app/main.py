@@ -9853,18 +9853,21 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # (default 65535 floor when budget is off). Simplified per user directive.
 
     # Middleware.efficiency — Opus-style turn consolidation + tool batching
-    try:
-        _model_id = internal_request.model or ""
-        internal_request.messages = inject_turn_consolidation(internal_request.messages, _model_id)
-        internal_request.messages = inject_tool_batching(internal_request.messages, _model_id)
-        # GLM Language Forcing: detect user language, force GLM to think in it.
-        # Saves tokens on non-English tasks (GLM defaults to English reasoning).
-        # GAP-2a: LangForce is a BSL addition NOT in 9Router. Gate off for
-        # Gemini-path requests so the payload matches 9Router exactly.
-        if not client_wants_gemini:
-            internal_request.messages = inject_glm_language_forcing(internal_request.messages, _model_id)
-    except Exception as e:
-        print(f"Efficiency middleware error (non-blocking): {e}")
+    # Skip on internal authenticity probes (X-BSL-Authenticity-Probe: 1) so
+    # injected ## EFFICIENCY GUIDANCE never distorts single-turn probe outputs.
+    if request.headers.get("x-bsl-authenticity-probe") != "1":
+        try:
+            _model_id = internal_request.model or ""
+            internal_request.messages = inject_turn_consolidation(internal_request.messages, _model_id)
+            internal_request.messages = inject_tool_batching(internal_request.messages, _model_id)
+            # GLM Language Forcing: detect user language, force GLM to think in it.
+            # Saves tokens on non-English tasks (GLM defaults to English reasoning).
+            # GAP-2a: LangForce is a BSL addition NOT in 9Router. Gate off for
+            # Gemini-path requests so the payload matches 9Router exactly.
+            if not client_wants_gemini:
+                internal_request.messages = inject_glm_language_forcing(internal_request.messages, _model_id)
+        except Exception as e:
+            print(f"Efficiency middleware error (non-blocking): {e}")
 
     # AgentRouter-family NFKD transcode (live 2026-08-22; family-wide 2026-08-27):
     # AR returns 400 content-blocked on PRECOMPOSED Vietnamese codepoints

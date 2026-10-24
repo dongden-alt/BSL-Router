@@ -25,10 +25,10 @@ def _run(coro):
 
 def test_weights_invariants():
     assert abs(sum(FEATURE_WEIGHTS.values()) - 1.0) < 1e-9
-    # 2026-10-20 hard_series rebalance funded the new lane partly from refusal
-    # (0.05 -> 0.04); the family-corroborator role is unchanged.
-    assert FEATURE_WEIGHTS["refusal"] == 0.04
-    for d in ("tokenizer", "capability_curve", "knowledge_bank"):
+    # 2026-10-24 tier_splitter rebalance funded the new lane partly from refusal
+    # (0.04 -> 0.03); the family-corroborator role is unchanged.
+    assert FEATURE_WEIGHTS["refusal"] == 0.03
+    for d in ("tokenizer", "capability_curve", "knowledge_bank", "tier_splitter"):
         assert FEATURE_WEIGHTS[d] > 0
 
 
@@ -384,6 +384,7 @@ def test_v2_lane_failure_modes_are_failopen(monkeypatch):
         "discriminator": "lane_returned_empty",
         "spatial_curve": "lane_returned_empty",
         "hard_series": "lane_returned_empty",   # 2026-10-20 lane
+        "tier_splitter": "lane_returned_empty", # 2026-10-24 lane
     }
 
 
@@ -454,4 +455,5 @@ def test_sink_is_optional_and_return_value_unchanged(monkeypatch):
     assert r["canary_gap"] == "http_500"
     assert set(r["lane_gaps"]) == {"tokenizer", "capability_curve",
                                    "knowledge_bank", "discriminator",
-                                   "spatial_curve", "hard_series"}
+                                   "spatial_curve", "hard_series",
+                                   "tier_splitter"}

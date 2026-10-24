@@ -30,7 +30,7 @@ def test_feature_weights_sum_to_one_after_spatial_rebalance():
 
 
 def test_spatial_curve_weight_and_decisive_lane_registered():
-    assert FEATURE_WEIGHTS["spatial_curve"] == 0.10
+    assert FEATURE_WEIGHTS["spatial_curve"] == 0.09
     assert "spatial_curve" in DECISIVE_LANES
 
 
