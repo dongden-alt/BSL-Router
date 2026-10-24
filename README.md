@@ -66,6 +66,7 @@ Tools like **9Router**, **CLIProxyAPI**, **OmniRouter**, and **LiteLLM** were bu
 | **5-Tier Blacksand Smart Routing + Quality Gates** | ✅ **13 Categories × 3 Tiers + 15-Role Orchestrator + Worst-Score-Wins Gate** | ❌ Manual model only | ❌ Manual model only | ⚠️ Static rules | ⚠️ Conditional routing |
 | **Thinking-Parameter Parity & `thought_signature` Cache** | ✅ **11 Model Families Conformance-Tested + Router-Side `thought_signature` Re-Signing** | ⚠️ Partial | ⚠️ Partial | ❌ Pass-through | ❌ Pass-through |
 | **True Token/Cache Accounting & False-`499` Fix** | ✅ **Unified Cross-Dialect Accounting + Independent Backfill + Post-`[DONE]` `200 OK`** | ⚠️ Misses relay usage | ❌ No usage DB | ⚠️ Basic token logs | ⚠️ Varies by adapter |
+| **3-Layer Malicious API Key & Rogue Provider Shield** | ✅ **Static Key/URL/Header Scanner + SSRF/DNS-Rebinding Guard + Response & Tool-Call Injection Guard (`log_only` / `redact`)** | ❌ None | ❌ None | ❌ None | ❌ None |
 | **100% Local & Machine-Bound Encrypted Keys** | ✅ **Fernet + Windows DPAPI (`enc:`) + 4-Gate Pre-Push Scanner** | ⚠️ Local JSON | ⚠️ Plaintext auth files | ⚠️ Env / DB | ⚠️ Env / DB |
 
 ---
@@ -126,6 +127,12 @@ Point your client at one virtual model and let Blacksand route every turn:
 | **5** | `blacksand-agentic-max` | Multi-domain fusion for complex cross-domain workflows | Inherits Ultra config + cross-domain orchestration |
 
 - **Exhaustive Per-Leaf Multi-Token Failover:** If `providerA/model1` has 4 API keys or OAuth cookies, BSL Router tries **all 4 connections on `model1`** before advancing to `model2` in your Combo — and supports **recursive nested Combos** (`Combo A → Combo B → Combo C → Model`).
+
+### 6. 🛡️ 3-Layer Malicious API Key & Rogue Provider Shield
+Connecting community relays or third-party proxy endpoints exposes coding agents to credential exfiltration, SSRF, and poisoned `tool_calls`. BSL Router protects your workstation across three independent security layers:
+- **Layer 1 — Static Key, Endpoint & Header Scanner (`app/security/key_scanner.py`):** Blocks shell metacharacters, CRLF header injection, Unicode BiDi trojans, Base64-encoded payloads, env-var interpolation (`${...}`), webhook/tunnel exfiltration endpoints (`ngrok`, `webhook.site`, `oastify`, `trycloudflare`, `pipedream`, `serveo`, etc.), and malicious custom headers before keys are ever saved or verified (`/api/verify-key`, `/api/scan-keys`).
+- **Layer 2 — Network & SSRF Boundary (`app/security/url_validator.py`):** Blocks cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`, `100.100.100.200`), loopback/private CIDR probing, dangerous schemes (`file://`, `gopher://`, `dict://`, `ftp://`), and DNS-rebinding attacks on custom provider URLs.
+- **Layer 3 — Post-Upstream Response & Tool-Call Injection Guard (`app/middleware/response_guard.py`):** Inspects both assistant prose and serialized `tool_calls` / `tool_use` / `functionCall` arguments returned by third-party or community relay providers across streaming and non-streaming paths. Detects credential theft (`.env`, `.bsl_key`, SSH keys, cloud credentials), shell/LOLBAS RCE (`curl | sh`, `powershell -enc`, `reg save HKLM\SAM`, `mshta`, `regsvr32`), MCP/agent config hijacking (`mcp_config.json`, `claude_desktop_config.json`, `authorized_keys`), and stealth zero-width/BiDi payloads — with configurable **`log_only`** or active **`redact`** mode (replacing poisoned prose and stripping malicious `tool_calls` before they reach your IDE) plus live telemetry in **Tools → Malicious API Key & Response Injection Shield**.
 
 ---
 
@@ -206,7 +213,14 @@ Các công cụ như **9Router**, **CLIProxyAPI**, **OmniRouter**, hay **LiteLLM
 | **Định Tuyến Thông Minh 5 Tầng Blacksand** | ✅ **13 Danh Mục × 3 Tầng + Điều Phối 15 Role + Cổng Chất Lượng Cơ Học** | ❌ Chọn model thủ công | ❌ Chọn model thủ công | ⚠️ Luật tĩnh | ⚠️ Định tuyến điều kiện |
 | **Chuẩn hóa Thinking & Cache `thought_signature`** | ✅ **11 Họ Model Được Kiểm Chứng + Tự Động Ký Lại `thought_signature` Phía Router** | ⚠️ Một phần | ⚠️ Một phần | ❌ Chỉ chuyển tiếp | ❌ Chỉ chuyển tiếp |
 | **Đếm Token/Cache Chuẩn & Sửa Lỗi Giả `499`** | ✅ **Chuẩn Hóa Đa Giao Thức + Backfill Độc Lập + Nâng Cấp `200 OK` Sau `[DONE]`** | ⚠️ Thiếu usage từ relay | ❌ Không có DB usage | ⚠️ Log token cơ bản | ⚠️ Tùy adapter |
+| **Lá Chắn 3 Tầng Chống API Key Độc Hại & Relay Giả Mạo** | ✅ **Quét Key/URL/Header Tĩnh + Chặn SSRF/DNS-Rebinding + Response & Tool-Call Injection Guard (`log_only` / `redact`)** | ❌ Không có | ❌ Không có | ❌ Không có | ❌ Không có |
 | **100% Local & Mã Hóa Khóa Gắn Theo Máy** | ✅ **Fernet + Windows DPAPI (`enc:`) + 4 Cổng Quét Bí Mật Trước Khi Push** | ⚠️ File JSON local | ⚠️ File auth plaintext | ⚠️ Env / DB | ⚠️ Env / DB |
+
+### 🛡️ Lá Chắn Bảo Mật 3 Tầng Chống API Key Độc Hại & Relay Giả Mạo
+Khi kết nối các relay cộng đồng hoặc proxy bên thứ ba, coding agent của bạn có nguy cơ bị đánh cắp khóa bí mật, tấn công SSRF hoặc chèn lệnh RCE ẩn trong `tool_calls`. BSL Router bảo vệ máy trạm qua 3 tầng độc lập:
+- **Tầng 1 — Quét Tĩnh API Key, Endpoint & Custom Header (`app/security/key_scanner.py`):** Chặn ký tự điều khiển shell, CRLF header injection, Unicode BiDi trojan ẩn, payload mã hóa Base64 nhúng trong key, nội suy biến môi trường (`${...}`), tên miền webhook/tunnel thu thập dữ liệu (`ngrok`, `webhook.site`, `oastify`, `trycloudflare`, `pipedream`, `serveo`, v.v.) và các custom header giả mạo ngay trước khi lưu hoặc xác minh key (`/api/verify-key`, `/api/scan-keys`).
+- **Tầng 2 — Vành Đai Mạng & Chống SSRF (`app/security/url_validator.py`):** Chặn truy cập cloud metadata (`169.254.169.254`, `metadata.google.internal`, `100.100.100.200`), dải mạng nội bộ/loopback, giao thức nguy hiểm (`file://`, `gopher://`, `dict://`, `ftp://`) và tấn công DNS-rebinding trên các URL provider tùy chỉnh.
+- **Tầng 3 — Kiểm Soát Phản Hồi & Chặn Tool-Call Độc Hại Từ Upstream (`app/middleware/response_guard.py`):** Quét cả văn bản trả lời lẫn tham số `tool_calls` / `tool_use` / `functionCall` trả về từ provider trên cả luồng stream và non-stream. Phát hiện hành vi đánh cắp thông tin nhạy cảm (`.env`, `.bsl_key`, khóa SSH, cloud credentials), thực thi mã từ xa qua shell/LOLBAS (`curl | sh`, `powershell -enc`, `reg save HKLM\SAM`, `mshta`, `regsvr32`), chiếm quyền cấu hình MCP/agent (`mcp_config.json`, `claude_desktop_config.json`, `authorized_keys`) và chuỗi ký tự ẩn zero-width/BiDi — hỗ trợ chế độ **`log_only`** (chỉ ghi log) hoặc **`redact`** chủ động (tự động cắt bỏ `tool_calls` độc hại và che nội dung bị tiêm nhiễm trước khi trả về IDE) ngay trên tab **Tools**.
 
 ---
 

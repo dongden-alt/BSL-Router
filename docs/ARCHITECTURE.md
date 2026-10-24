@@ -1,5 +1,10 @@
 # How BSL Router Works
 
+> **3-Layer Malicious API Key & Rogue Provider Shield — Static Key/URL/Header Scanner, Network SSRF Guard & Post-Upstream Response/Tool-Call Injection Guard with Active Redaction & UI Telemetry (CODE DONE — 146/146 security/FEL/audit unit tests pass 2026-10-24):**
+> - **Layer 1 — Static Key, Endpoint & Custom Header Scanner (`app/security/key_scanner.py`, `POST /api/verify-key`, `GET/POST /api/scan-keys`):** Detects shell metacharacters, CRLF header injection, hidden Unicode BiDi/zero-width trojans (`HIDDEN_UNICODE_PATTERN`), env-var expansion (`${...}`) / path traversal (`../`) / embedded commands (`KEY_PAYLOAD_PATTERNS`), Base64-encoded command/exfiltration payloads inside crafted API keys (`_detect_base64_payload_in_key`), 28+ suspicious webhook/tunnel domains (`ngrok`, `webhook.site`, `oastify`, `trycloudflare`, `pipedream`, `serveo`, `pinggy`, etc.) + webhook exfil paths (`WEBHOOK_EXFIL_PATHS`), and malicious custom headers (`_scan_header_custom` blocking `Host` / `Authorization` / `X-Forwarded-Host` overrides, CRLF, and payload markers).
+> - **Layer 2 — Network & SSRF Boundary (`app/security/url_validator.py`):** Blocks cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`, `100.100.100.200`), loopback/private CIDR probing, dangerous schemes (`file://`, `gopher://`, `dict://`, `ftp://`), and DNS-rebinding attacks on custom provider URLs.
+> - **Layer 3 — Post-Upstream Response & Tool-Call Injection Guard (`app/middleware/response_guard.py`, `app/main.py`, `app/static/app.js`):** Inspects both assistant prose and serialized `tool_calls` / `tool_use` / `functionCall` arguments across all streaming and non-streaming paths (`OpenAI Chat`, `Anthropic Messages`, `Gemini v1beta/v1internal`, `OpenAI Responses`). Detects credential exfiltration (`.env`, `.bsl_key`, SSH keys, cloud creds + outbound transfer via `tool_secret_exfil_network`), shell/LOLBAS execution (`curl | sh`, `powershell -enc`, `reg save HKLM\SAM`, `mshta`, `regsvr32` via `tool_lolbas_exec`), MCP/agent config hijacking (`mcp_config.json`, `claude_desktop_config.json`, `.claude/settings.json`, `authorized_keys` via `tool_agent_config_hijack`), and stealth zero-width/BiDi payloads. Supports configurable `tools.response_guard.mode` (`"log_only"` vs `"redact"`, where `apply_guard()` scrubs injected prose and strips malicious `tool_calls` on non-streaming responses) and exposes live telemetry + 1-click provider config scan in **Tools → Malicious API Key & Response Injection Shield** (`GET /api/security/response-guard`, `POST /api/security/response-guard/clear`).
+
 > **Faithful Execution Layer (FEL) Full Overhaul — 100% Stream Coverage, Native `gemini-4-argon` Cloud Code Envelope Support, Starter-Word Regex Cache (`~223x` Faster), Early-Stream Refusal Recovery & Live UI Sandbox (DONE — 308/308 unit/integration tests pass & live `:6969` runtime verified 2026-10-23):**
 > - **All-Path Streaming Observability, Native `gemini-4-argon` Passthrough & SQLite Backfill (`app/main.py`, `app/middleware/fel_wiring.py`, `app/middleware/response_guard.py`, `app/observability.py`):** `_wrap_egress_stream()` wraps all 6 streaming return paths (`anthropic_egress`, `gemini_egress`, `anthropic_to_openai_egress_stream_guarded`, `kiro`, `codex`, and `raw_upstream_guarded`) plus native Antigravity IDE passthrough (`_forward_antigravity_native`), `_apply_fel_to_antigravity_native_body()` applies FEL clarity/reframe/directives to Google Cloud Code `{"model": "...", "request": {"contents": [...], "systemInstruction": {"parts": [...]}}}` envelopes so native `gemini-4-argon` calls receive full FEL coverage, `FelStreamObserver` and `ResponseGuardObserver` parse OpenAI, Anthropic, Gemini (`candidates[].content.parts[]` and `response.candidates[]`), and OpenAI Responses API (`response.output_text.delta`) SSE frames, and `obs.note_fel_context()` backfills `refusal_class` and `fel` onto committed SQLite `usage_events` rows via `_RECENT_REQUEST_ROW_IDS`.
 > - **Starter-Word Indexed Regex Cache & Vendor/Combo Family Detection (`app/middleware/fel_wiring.py`, `app/middleware/faithful_execution.py`, `app/main.py`):** `_COMPILED_SENSITIVITY_CACHE` indexes sensitivity phrases by their first word token and `_fold_diacritics()` fast-paths ASCII inputs (`3,804.2 ms -> 17.06 ms` for 20 × 14 KB blocks). `detect_family()` strips vendor prefixes/brackets (`z-ai/glm-5.3-free`, `[opencode]deepseek-v4-pro`, `hy4-preview`, `mimo-v2.6-pro`, `gemini-4-argon`, `argon-*`, etc.) and `_resolve_preflight_fel_family()` resolves aliases and recursive combo chains during pre-flight.
@@ -375,10 +380,11 @@ Plus an optional 24h cache retention flag for OpenAI (experimental).
 > [!IMPORTANT]
 > The encryption key is **machine-bound**. Copying `config.yaml` to another computer will not carry the credentials over.
 
-### 🛡️ Security Scanner
-Audits your provider configuration for risky settings. Checks for: exfil URLs, key injection, URL spoofing, credential leakage, local network exfil, insecure transport, token tampering, and duplicate keys.
-
-Findings are graded **block** (must fix), **warn** (review), or **info**.
+### 🛡️ 3-Layer Malicious API Key & Rogue Provider Shield
+Protects your workstation against malicious API keys, rogue third-party relays, SSRF, and poisoned upstream responses across three independent layers:
+1. **Layer 1 — Static Key, Endpoint & Header Scanner (`app/security/key_scanner.py`):** Runs automatically on `POST /api/verify-key`, `POST /api/config`, and `GET/POST /api/scan-keys`. Checks for shell metacharacters, CRLF injection, hidden Unicode BiDi/zero-width trojans (`HIDDEN_UNICODE_PATTERN`), env-var interpolation (`${...}`), path traversal (`../`), Base64-encoded payloads inside API keys (`_detect_base64_payload_in_key`), 28+ suspicious webhook/tunnel domains (`SUSPICIOUS_DOMAINS`) + webhook exfil paths (`WEBHOOK_EXFIL_PATHS`), URL spoofing, insecure transport, and malicious `header_custom` entries (`_scan_header_custom`). Findings are graded **block** (must fix), **warn** (review), or **info**.
+2. **Layer 2 — Network & SSRF Boundary (`app/security/url_validator.py`):** Blocks cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`, `100.100.100.200`), private/loopback CIDR probing, dangerous schemes (`file://`, `gopher://`, `dict://`, `ftp://`), and DNS-rebinding attacks before any outbound verification or proxy connection opens.
+3. **Layer 3 — Post-Upstream Response & Tool-Call Injection Guard (`app/middleware/response_guard.py`):** Inspects assistant prose and serialized `tool_calls` / `tool_use` / `functionCall` arguments returned by upstream providers (`classify_injection`). Detects prompt-override markers, credential exfiltration (`.env`, `.bsl_key`, SSH keys, cloud credentials + outbound network commands via `tool_secret_exfil_network`), shell/LOLBAS execution (`tool_shell_exec`, `tool_lolbas_exec`), MCP/agent config hijacking (`tool_agent_config_hijack`), and stealth zero-width/BiDi runs. Configured under `tools.response_guard` (`enabled`, `mode: "log_only" | "redact"`, `max_chars: 16384`), where `redact` mode actively scrubs injected prose and strips malicious `tool_calls` on non-streaming responses (`apply_guard`) and sets `x-bsl-response-guard: flagged:<categories>`. Live scan telemetry is served at `GET /api/security/response-guard` and `POST /api/security/response-guard/clear`.
 
 ### 🕵️ MITM Proxy (Optional)
 Intercepts traffic for apps that don't let you change the API URL:
@@ -955,6 +961,11 @@ tools:
     refusal_recovery: { enabled: true, max_recoveries: 1 }
     clarity: { enabled: true, vocabulary_map: {} }
     families: { cn: true, gpt: true, claude: true, gemini: true }
+  # Post-upstream Response & Tool-Call Injection Guard — default OFF
+  response_guard:
+    enabled: false
+    mode: "log_only"             # log_only | redact
+    max_chars: 16384
 
 # Antigravity IDE integration
 antigravity_integration:
@@ -1012,6 +1023,9 @@ See [config.example.yaml](../config.example.yaml) for a complete working templat
 | `POST /api/app-integration/antigravity/patch` | Apply/restore/restart-and-apply Antigravity IDE/Desktop direct patch |
 | `POST /api/app-integration/claude-code/sync` | Atomically sync Claude Code CLI & Desktop (`settings.json` + `inferenceModels`) |
 | `POST /admin/fel/preview` | Zero-side-effect dry-run simulation of FEL clarity, semantic reframing, family resolution, and directive output |
+| `POST /api/verify-key` | Static key/endpoint/header scan + SSRF validation + live upstream key verification (`blocked`, `scan_findings`) |
+| `GET /api/security/response-guard` | Live `tools.response_guard` config and aggregated injection scan telemetry (`total_scans`, `flagged_count`, `by_category`, `by_provider`, `recent_flagged`) |
+| `POST /api/security/response-guard/clear` | Clear Response Guard JSONL event telemetry logs |
 
 ---
 
@@ -1149,6 +1163,10 @@ Thử lần lượt provider. Chain deadline ngăn timeout cascading.
   - Chống từ chối giả (false refusals), bỏ bước, rớt tool call và dừng sớm thông qua hợp đồng hoàn thành tích cực nối vào đuôi system prompt (giữ nguyên `cache_control` của Anthropic) và bộ viết lại từ nhạy cảm theo từ bắt đầu (`_COMPILED_SENSITIVITY_CACHE` + đường tắt ASCII, nhanh hơn **~223 lần** — `<0,9 ms` mỗi khối 14 KB).
   - Bọc toàn bộ 6 luồng streaming egress cộng với luồng passthrough native của Antigravity IDE (`_forward_antigravity_native` với phong bì Google Cloud Code `request.contents` / `request.systemInstruction` cho `gemini-4-argon`) bằng `_wrap_egress_stream()`.
   - Phục hồi từ chối mềm ngay đầu stream (`_fel_stream_with_recovery`, đệm 40–220 ký tự đầu tiên across EN/VI/ZH), giữ nguyên tường chặn cứng (`blocked`), backfill `refusal_class` và `fel` vào SQLite `usage_events` qua `_RECENT_REQUEST_ROW_IDS`, kèm Hộp thử nghiệm Dry-Run (`POST /admin/fel/preview`) và Thanh Telemetry 7 ngày trên tab Tools.
+- **Lá Chắn Bảo Mật 3 Tầng Chống API Key Độc Hại & Relay Giả Mạo (`app/security/key_scanner.py`, `app/security/url_validator.py`, `app/middleware/response_guard.py`)**:
+  - **Tầng 1 — Quét Tĩnh API Key, Endpoint & Custom Header (`key_scanner.py`):** Chặn ký tự shell metacharacters, CRLF injection, Unicode BiDi trojan ẩn (`HIDDEN_UNICODE_PATTERN`), nội suy biến môi trường (`${...}`), path traversal (`../`), payload mã hóa Base64 nhúng trong API key (`_detect_base64_payload_in_key`), 28+ tên miền webhook/tunnel thu thập dữ liệu (`SUSPICIOUS_DOMAINS`) + đường dẫn webhook exfil (`WEBHOOK_EXFIL_PATHS`), và các `header_custom` nguy hiểm (`_scan_header_custom`) ngay trên `/api/verify-key`, `/api/config`, và `/api/scan-keys`.
+  - **Tầng 2 — Vành Đai Mạng & Chống SSRF (`url_validator.py`):** Chặn truy cập cloud metadata (`169.254.169.254`, `metadata.google.internal`, `100.100.100.200`), dải IP nội bộ/loopback, giao thức nguy hiểm (`file://`, `gopher://`, `dict://`, `ftp://`) và DNS-rebinding.
+  - **Tầng 3 — Kiểm Soát Phản Hồi & Chặn Tool-Call Độc Hại Từ Upstream (`response_guard.py`):** Quét văn bản trả lời và tham số `tool_calls` / `tool_use` / `functionCall` trên cả 4 giao thức (`OpenAI Chat`, `Anthropic Messages`, `Gemini v1beta/v1internal`, `OpenAI Responses`). Phát hiện đánh cắp thông tin nhạy cảm (`tool_secret_exfil_network`), thực thi lệnh shell/LOLBAS (`tool_shell_exec`, `tool_lolbas_exec`), chiếm quyền cấu hình MCP/agent (`tool_agent_config_hijack`) và chuỗi ký tự ẩn zero-width/BiDi. Hỗ trợ cấu hình `tools.response_guard.mode` (`"log_only"` hoặc `"redact"` chủ động cắt bỏ `tool_calls` độc hại và che nội dung bị tiêm nhiễm qua `apply_guard()`) kèm bảng điều khiển trực quan và telemetry tại `GET /api/security/response-guard` và `POST /api/security/response-guard/clear`.
 
 ### 🔐 Quản Lý Đa Tài Khoản OAuth, Chống Khóa Theo Phiên & Huy Hiệu Hạng Thuê Bao
 - **Chống khóa tài khoản OAuth theo phiên (Per-Session Sticky Round-Robin)**: Khi bật `Round Robin` trên provider OAuth, `oauth_antiban.apply_affinity()` xoay tài khoản bắt đầu **theo từng phiên hội thoại mới** (`_SESSION_RR_CURSOR`) nhưng ghim toàn bộ các lượt trong cùng một phiên vào 1 tài khoản duy nhất (`AffinityStore`) — vừa chống bị khóa do trộn danh tính giữa phiên, vừa giữ ấm bộ nhớ đệm KV prompt cache.
@@ -1246,6 +1264,9 @@ Xem [config.example.yaml](../config.example.yaml) để có template hoàn chỉ
 | `POST /api/app-integration/antigravity/patch` | Bật/tắt/khởi động lại để áp dụng patch trực tiếp Antigravity IDE/Desktop |
 | `POST /api/app-integration/claude-code/sync` | Đồng bộ nguyên tử Claude Code CLI & Desktop (`settings.json` + `inferenceModels`) |
 | `POST /admin/fel/preview` | Chạy thử nghiệm Dry-Run (không tác dụng phụ) cho FEL trên tab Tools |
+| `POST /api/verify-key` | Quét tĩnh key/URL/header + kiểm tra SSRF + xác minh key trực tiếp (`blocked`, `scan_findings`) |
+| `GET /api/security/response-guard` | Đọc cấu hình `tools.response_guard` và thống kê telemetry phát hiện injection (`total_scans`, `flagged_count`, `by_category`, `by_provider`, `recent_flagged`) |
+| `POST /api/security/response-guard/clear` | Xóa lịch sử telemetry JSONL của Response Guard |
 | `GET/POST /api/authenticity/*` | Kiểm định độ xác thực model (`TraitMark V2/V3`) & quản lý chuẩn đóng băng |
 
 ---

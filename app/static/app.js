@@ -2344,7 +2344,13 @@ window.fetchModels = async (btn) => {
                 });
             } else {
                 failed++;
-                const msg = (respData.error || ('status ' + (respData.status || 'unknown'))).toString();
+                const scanMsg = (Array.isArray(respData.scan_findings) && respData.scan_findings.length > 0)
+                    ? respData.scan_findings.map(f => f.message).join('; ')
+                    : '';
+                if (respData.blocked || scanMsg) {
+                    showToast(`🛡️ Security ${respData.blocked ? 'Blocked' : 'Warning'}: ${scanMsg || respData.error || 'Security scan failed'}`, true);
+                }
+                const msg = (scanMsg || respData.error || ('status ' + (respData.status || 'unknown'))).toString();
                 failures.push(`#${i + 1} ${c.name || ''}: ${msg}`.trim());
             }
         } catch (err) {
@@ -2409,8 +2415,17 @@ window.verifyProviderKey = async (btn) => {
             body: JSON.stringify(payload)
         });
         const data = await res.json();
-        btn.textContent = data.ok ? '✓ Valid' : '✗ Invalid';
-        btn.style.color = data.ok ? 'var(--success)' : 'var(--danger)';
+        if (data.blocked || (Array.isArray(data.scan_findings) && data.scan_findings.length > 0)) {
+            const scanMsg = (data.scan_findings || []).map(f => f.message).join('; ') || data.error || 'Security scan failed';
+            showToast(`🛡️ Security ${data.blocked ? 'Blocked' : 'Warning'}: ${scanMsg}`, !!data.blocked);
+        }
+        if (data.blocked) {
+            btn.textContent = '🛡️ Blocked';
+            btn.style.color = 'var(--danger)';
+        } else {
+            btn.textContent = data.ok ? '✓ Valid' : '✗ Invalid';
+            btn.style.color = data.ok ? 'var(--success)' : 'var(--danger)';
+        }
     } catch {
         btn.textContent = '? Error';
         btn.style.color = 'var(--text-muted)';
@@ -3352,7 +3367,14 @@ window.verifyConnectionKey = async (btn) => {
             body: JSON.stringify({ provider_id: activeProviderId, format: providerFormat, api_key: key, base_url: baseUrl })
         });
         const data = await res.json();
-        if (data.ok) {
+        if (data.blocked || (Array.isArray(data.scan_findings) && data.scan_findings.length > 0)) {
+            const scanMsg = (data.scan_findings || []).map(f => f.message).join('; ') || data.error || 'Security scan failed';
+            showToast(`🛡️ Security ${data.blocked ? 'Blocked' : 'Warning'}: ${scanMsg}`, !!data.blocked);
+        }
+        if (data.blocked) {
+            btn.textContent = '🛡️ Blocked';
+            btn.style.color = 'var(--danger)';
+        } else if (data.ok) {
             btn.textContent = '✓ Valid';
             btn.style.color = 'var(--success)';
         } else {
@@ -7126,6 +7148,12 @@ saveConfig = async function() {
 
 function renderToolsTab() {
     const t = globalConfig.tools || {};
+    const rg = (t && t.response_guard && typeof t.response_guard === 'object') ? t.response_guard : {};
+    setTimeout(() => {
+        if (typeof window.loadResponseGuardTelemetry === 'function') {
+            window.loadResponseGuardTelemetry();
+        }
+    }, 50);
     return `
         <div class="settings-section">
             <h2 class="section-title">Document Intelligence</h2>
@@ -7366,11 +7394,197 @@ function renderToolsTab() {
             </div>
         </div>
 
+        <div class="settings-section" id="security-shield-section">
+            <h2 class="section-title">🛡️ Malicious API Key &amp; Response Injection Shield</h2>
+            <div style="font-size:12px; color:var(--text-muted); margin-bottom:14px; line-height:1.55;">
+                BSL Router's 2-stage runtime defense against poisoned third-party API keys, credential-stealing relays, and injected agent tool calls (<code>curl | bash</code>, <code>iwr | iex</code>, LOLBAS, <code>.env</code>/SSH key exfiltration, and MCP config hijacking).
+            </div>
+
+            <div class="setting-row" style="flex-direction:column; align-items:stretch; gap:10px;">
+                <div style="display:flex; align-items:center; justify-content:space-between; width:100%;">
+                    <div class="setting-info">
+                        <div class="setting-title">Stage 1 — Pre-Flight Key, Header &amp; Endpoint Audit</div>
+                        <div class="setting-desc">Scans all configured provider API keys, custom headers, and <code>base_url</code> endpoints for shell/SQL/XSS/CRLF injection, hidden Unicode BiDi trojans, Base64-embedded instruction payloads, exfiltration tunnels/webhooks (<code>ngrok</code>, <code>webhook.site</code>, <code>interact.sh</code>, <code>oastify</code>, Discord/Telegram webhooks), cleartext HTTP, LAN SSRF, and domain spoofing.</div>
+                    </div>
+                    <button class="btn btn-secondary" type="button" style="flex:0 0 auto;" onclick="window.runProviderSecurityScan()">🔍 Scan All Provider Keys &amp; Endpoints</button>
+                </div>
+                <div id="key-scanner-results" style="display:none; margin-top:4px;"></div>
+            </div>
+
+            <div class="setting-row">
+                <div class="setting-info">
+                    <div class="setting-title">Stage 2 — Live Response &amp; Tool-Call Injection Guard</div>
+                    <div class="setting-desc">Inspects streaming SSE and non-streaming responses across all 4 dialects (OpenAI Chat, OpenAI Responses, Anthropic Messages, Gemini) for user-directed secret-harvesting imperatives and fabricated agent <code>tool_calls</code>.</div>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" onchange="window.updateResponseGuardConfig('enabled', this.checked)" ${rg.enabled ? 'checked' : ''}>
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div class="setting-row">
+                <div class="setting-info">
+                    <div class="setting-title">Protection Mode</div>
+                    <div class="setting-desc">Choose how BSL Router handles responses flagged for credential exfiltration or malicious tool-call execution.</div>
+                </div>
+                <select class="input" style="width: 280px" onchange="window.updateResponseGuardConfig('mode', this.value)">
+                    <option value="log_only" ${(rg.mode === 'log_only' || !rg.mode) ? 'selected' : ''}>Log Only (Zero-Mutation Telemetry)</option>
+                    <option value="redact" ${rg.mode === 'redact' ? 'selected' : ''}>Redact &amp; Strip Malicious Tool Calls</option>
+                    <option value="block" ${rg.mode === 'block' ? 'selected' : ''}>Hard Block Flagged Responses</option>
+                </select>
+            </div>
+
+            <div class="setting-row">
+                <div class="setting-info">
+                    <div class="setting-title">Stream Inspection Window (Chars)</div>
+                    <div class="setting-desc">Maximum characters accumulated per stream for visible-text and tool-argument inspection (clamped 1024–1048576).</div>
+                </div>
+                <input type="number" class="input" style="width: 140px" min="1024" max="1048576" step="1024" value="${rg.max_chars || 16384}" onchange="window.updateResponseGuardConfig('max_chars', Math.max(1024, Math.min(1048576, parseInt(this.value) || 16384)))">
+            </div>
+
+            <div class="setting-row" style="flex-direction:column; align-items:stretch; gap:10px;">
+                <div style="display:flex; align-items:center; justify-content:space-between; width:100%;">
+                    <div class="setting-info">
+                        <div class="setting-title">Live Response Guard Telemetry</div>
+                        <div class="setting-desc">Real-time summary of scanned responses and flagged injection attempts from <code>.brain/logs/response_guard_events.jsonl</code>.</div>
+                    </div>
+                    <div style="display:flex; gap:8px;">
+                        <button class="btn btn-secondary" type="button" onclick="window.loadResponseGuardTelemetry()">↻ Refresh Telemetry</button>
+                        <button class="btn btn-secondary" type="button" onclick="window.clearResponseGuardTelemetry()">🗑️ Clear Log</button>
+                    </div>
+                </div>
+                <div id="response-guard-telemetry" style="font-size:12px; color:var(--text-muted); padding:10px 14px; border:1px solid var(--border-color); border-radius:8px; background:rgba(0,0,0,0.12);">
+                    Loading Response Guard telemetry...
+                </div>
+            </div>
+        </div>
+
         ${felBlockHTML()}
 
         </div>
     `;
 }
+
+window.updateResponseGuardConfig = function(key, value) {
+    if (!globalConfig.tools) globalConfig.tools = {};
+    if (!globalConfig.tools.response_guard || typeof globalConfig.tools.response_guard !== 'object') {
+        globalConfig.tools.response_guard = { enabled: false, mode: 'log_only', max_chars: 16384 };
+    }
+    globalConfig.tools.response_guard[key] = value;
+    scheduleAutoSave();
+};
+
+window.runProviderSecurityScan = async function() {
+    const box = document.getElementById('key-scanner-results');
+    if (!box) return;
+    box.style.display = 'block';
+    box.innerHTML = '<div style="font-size:12px; color:var(--text-muted); padding:8px;">Scanning all provider keys, headers, and endpoints...</div>';
+    try {
+        const res = await fetch('/api/scan-keys');
+        const data = await res.json();
+        const findings = Array.isArray(data.findings) ? data.findings : [];
+        const blocks = findings.filter(f => f.severity === 'block').length;
+        const warns = findings.filter(f => f.severity === 'warn').length;
+        let badgeColor = '#22c55e';
+        let badgeBg = 'rgba(34,197,94,0.12)';
+        let statusIcon = '✅';
+        if (blocks > 0 || data.passed === false) {
+            badgeColor = '#ef4444';
+            badgeBg = 'rgba(239,68,68,0.14)';
+            statusIcon = '🛑';
+        } else if (warns > 0) {
+            badgeColor = '#f59e0b';
+            badgeBg = 'rgba(245,158,11,0.14)';
+            statusIcon = '⚠️';
+        }
+        let html = `<div style="padding:10px 14px; border-radius:8px; border:1px solid ${badgeColor}; background:${badgeBg}; margin-bottom:${findings.length ? '10px' : '0'}; font-size:12px; font-weight:600; color:${badgeColor};">
+            ${statusIcon} ${escapeHtml(data.summary || (findings.length === 0 ? 'Scan PASSED: no issues found.' : 'Scan complete.'))}
+        </div>`;
+        if (findings.length > 0) {
+            html += `<div style="overflow-x:auto; border:1px solid var(--border-color); border-radius:8px;">
+                <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                    <thead>
+                        <tr style="text-align:left; border-bottom:1px solid var(--border-color); background:rgba(255,255,255,0.03);">
+                            <th style="padding:8px 10px;">Severity</th>
+                            <th style="padding:8px 10px;">Provider / Conn</th>
+                            <th style="padding:8px 10px;">Category</th>
+                            <th style="padding:8px 10px;">Finding</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${findings.map(f => {
+                            const sevColor = f.severity === 'block' ? '#ef4444' : '#f59e0b';
+                            return `<tr style="border-bottom:1px solid var(--border-color);">
+                                <td style="padding:8px 10px; font-weight:700; color:${sevColor}; text-transform:uppercase;">${escapeHtml(f.severity || '')}</td>
+                                <td style="padding:8px 10px; font-family:monospace;">${escapeHtml((f.provider || '-') + ' / ' + (f.connection || '-'))}</td>
+                                <td style="padding:8px 10px; font-family:monospace;">${escapeHtml(f.category || '')}</td>
+                                <td style="padding:8px 10px;">
+                                    <div style="font-weight:600;">${escapeHtml(f.message || '')}</div>
+                                    <div style="color:var(--text-muted); font-size:11px;">${escapeHtml(f.detail || '')}</div>
+                                </td>
+                            </tr>`;
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+        }
+        box.innerHTML = html;
+    } catch (err) {
+        box.innerHTML = `<div style="color:var(--danger); font-size:12px; padding:8px;">Failed to run security scan: ${escapeHtml(err.message || String(err))}</div>`;
+    }
+};
+
+window.loadResponseGuardTelemetry = async function() {
+    const box = document.getElementById('response-guard-telemetry');
+    if (!box) return;
+    try {
+        const res = await fetch('/api/security/response-guard?limit=20');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const total = data.total_scans || 0;
+        const clean = data.clean_count || 0;
+        const unknown = data.unknown_count || 0;
+        const flagged = data.flagged_count || 0;
+        const recentFlagged = Array.isArray(data.recent_flagged) ? data.recent_flagged : [];
+        const flagColor = flagged > 0 ? '#ef4444' : '#22c55e';
+        let html = `<div style="display:flex; flex-wrap:wrap; gap:18px; align-items:center;">
+            <div><strong>Total Scans:</strong> <span style="font-family:monospace;">${total}</span></div>
+            <div><strong>Clean:</strong> <span style="font-family:monospace; color:#22c55e;">${clean}</span></div>
+            <div><strong>Ambiguous (Unflagged):</strong> <span style="font-family:monospace; color:#f59e0b;">${unknown}</span></div>
+            <div><strong>Flagged Injections:</strong> <span style="font-family:monospace; font-weight:700; color:${flagColor};">${flagged}</span></div>
+        </div>`;
+        if (recentFlagged.length > 0) {
+            html += `<div style="margin-top:10px; padding-top:8px; border-top:1px solid var(--border-color);">
+                <div style="font-weight:600; margin-bottom:6px; color:#ef4444;">Recent Flagged Injections (${recentFlagged.length}):</div>
+                <div style="display:flex; flex-direction:column; gap:4px; max-height:160px; overflow-y:auto;">
+                    ${recentFlagged.slice(0, 10).map(ev => {
+                        const v = ev.verdict || {};
+                        const matched = Array.isArray(v.matched) ? v.matched.join(', ') : '';
+                        const cats = Array.isArray(v.categories) ? v.categories.join(', ') : '';
+                        return `<div style="font-family:monospace; font-size:11px; padding:4px 8px; border-radius:4px; background:rgba(239,68,68,0.08);">
+                            [${escapeHtml(ev.ts || '')}] <strong>${escapeHtml((ev.provider || '?') + '/' + (ev.model || '?'))}</strong> — categories: ${escapeHtml(cats)} | markers: ${escapeHtml(matched)}
+                        </div>`;
+                    }).join('')}
+                </div>
+            </div>`;
+        }
+        box.innerHTML = html;
+    } catch (err) {
+        box.textContent = 'Telemetry unavailable: ' + (err.message || String(err));
+    }
+};
+
+window.clearResponseGuardTelemetry = async function() {
+    try {
+        await fetch('/api/security/response-guard/clear', { method: 'POST' });
+        showToast('Response Guard telemetry cleared');
+        if (typeof window.loadResponseGuardTelemetry === 'function') {
+            window.loadResponseGuardTelemetry();
+        }
+    } catch (err) {
+        showToast('Failed to clear Response Guard telemetry', true);
+    }
+};
 
 window.toggleSmartPromptCaching = function(enabled) {
     if (!globalConfig.tools) globalConfig.tools = {};

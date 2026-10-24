@@ -161,7 +161,10 @@ from app.middleware.response_guard import (  # provider-injection guard (default
     resolve_guard,
     classify_injection,
     serialize_tool_args,
+    apply_guard,
     guard_event,
+    read_guard_events_summary,
+    clear_guard_events,
     ResponseGuardObserver,
 )
 from app.compat.reasoning_policy import (
@@ -5833,7 +5836,9 @@ async def verify_key(request: Request):
         # Security pre-scan (block before probing suspicious URLs)
         try:
             from app.security.key_scanner import scan_single_key
-            scan_findings = scan_single_key(api_key, base_url, effective_format)
+            scan_findings = scan_single_key(
+                api_key, base_url, effective_format, body.get("header_custom")
+            )
             blocks = [f for f in scan_findings if f.severity == "block"]
             if blocks:
                 return JSONResponse({
@@ -15613,8 +15618,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 # Provider-injection scan on the assembled non-stream response.
                 # log_only: READ-ONLY telemetry, emits ONE guard_event, never
                 # mutates resp and never interferes with the zombie check or FEL
-                # recovery below. resolve_guard → None when absent/disabled, so a
-                # disabled config costs one dict lookup and zero scanning.
+                # recovery below. redact / block: applies apply_guard to scrub
+                # or replace _response_json and syncs resp's serialized body.
+                _guard_mutated = False
                 try:
                     _gcfg = resolve_guard(config.get("tools", {}))
                     if _gcfg is not None:
@@ -15630,12 +15636,28 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 "chars": len(_g_visible or ""),
                                 "tool_args_chars": len(_g_args or ""),
                                 "tool_calls": _g_had_tools,
+                                "mode": _gcfg.mode,
                             },
                         )
+                        if (
+                            _g_verdict.flagged
+                            and _gcfg.mode in ("redact", "block")
+                            and isinstance(_response_json, dict)
+                            and _response_json
+                        ):
+                            _response_json = apply_guard(_g_verdict, _response_json, mode=_gcfg.mode)
+                            _guard_mutated = True
+                            _guarded_bytes = json.dumps(_response_json, ensure_ascii=False, default=str).encode("utf-8")
+                            if isinstance(resp, _SyntheticResponse):
+                                resp._json_data = _response_json
+                                resp._text = _guarded_bytes.decode("utf-8", errors="replace")
+                                resp.content = _guarded_bytes
+                            else:
+                                resp._content = _guarded_bytes
                 except Exception as _guard_err:
                     print(f"[ResponseGuard] scan failed (fail-open): {_guard_err}", flush=True)
 
-                _zombie_check = _response_has_model_output(_response_json, out_tokens)
+                _zombie_check = True if _guard_mutated else _response_has_model_output(_response_json, out_tokens)
                 if _zombie_check and (not in_tokens or not out_tokens):
                     try:
                         _ns_vis, _ = fel_response_visible_text(_response_json)
@@ -18272,6 +18294,31 @@ async def scan_keys_snapshot_endpoint(request: Request):
         return JSONResponse(result.to_dict())
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@app.get("/api/security/response-guard")
+async def response_guard_summary_endpoint(limit: int = 50):
+    """Return live Response Guard configuration and aggregated scan telemetry."""
+    config = cs_get_config()
+    rg_cfg = (config.get("tools") or {}).get("response_guard") if isinstance(config.get("tools"), dict) else {}
+    if not isinstance(rg_cfg, dict):
+        rg_cfg = {}
+    summary = await asyncio.to_thread(read_guard_events_summary, limit)
+    return JSONResponse({
+        "config": {
+            "enabled": bool(rg_cfg.get("enabled", False)),
+            "mode": str(rg_cfg.get("mode") or "log_only"),
+            "max_chars": int(rg_cfg.get("max_chars") or 16384),
+        },
+        **summary,
+    })
+
+
+@app.post("/api/security/response-guard/clear")
+async def response_guard_clear_endpoint():
+    """Clear Response Guard JSONL event logs."""
+    ok = await asyncio.to_thread(clear_guard_events)
+    return JSONResponse({"ok": bool(ok)})
 
 
 # ── Auto-Update Endpoints ──────────────────────────────────────────────────────

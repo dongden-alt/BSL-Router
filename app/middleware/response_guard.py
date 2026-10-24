@@ -75,6 +75,8 @@ __all__ = [
     "apply_guard",
     "ResponseGuardObserver",
     "guard_event",
+    "read_guard_events_summary",
+    "clear_guard_events",
 ]
 
 # Unicode apostrophe/accent variants -> ASCII "'" so marker matching is
@@ -373,6 +375,41 @@ _TOOL_ARG_MARKERS: Tuple[_Marker, ...] = (
         "counterexample that must NOT match: 'echo aGk= | base64 -d' "
         "pipes INTO base64; the decode side has no trailing pipe.",
     ),
+    _m(
+        "tool_secret_exfil_network", "exfiltration", "tool_arg",
+        r"(?=[\s\S]*(?:\.env\b|\.bsl_key\b|id_rsa|\.ssh\b|\.aws/credentials|\.npmrc|\.netrc|kubeconfig))"
+        r"(?=[\s\S]*(?:\b(?:curl|wget|iwr|invoke-webrequest|invoke-restmethod|nc|ncat|scp|ftp)\b|"
+        r"(?:-[df]\b|--data|--upload-file|\bpost\b)[\s\S]{0,120}https?://|"
+        r"https?://[\s\S]{0,120}(?:-[df]\b|--data|--upload-file|\bpost\b)))",
+        "ATTACK (tool args): combines a local secret/credential file path "
+        "(.env, .bsl_key, id_rsa, .ssh, .aws/credentials, .npmrc, .netrc, "
+        "kubeconfig) with an outbound network transfer command in the same "
+        "tool call. Benign counterexample that must NOT match: reading .env "
+        "locally with no outbound network command, or curling a normal URL "
+        "without referencing a secret file.",
+    ),
+    _m(
+        "tool_lolbas_exec", "execution", "tool_arg",
+        r"(\bmshta\b[^;]{0,80}(https?:|javascript:|vbscript:)|"
+        r"\bregsvr32\b[^;]{0,80}/i:https?:|"
+        r"\brundll32\b[^;]{0,80}javascript:|"
+        r"\breg\s+save\s+hklm[\\/]+(sam|system|security)\b|"
+        r"\bpowershell(?:\.exe)?\b[^;]{0,60}\s-(?:e|enc|encodedcommand)\s+[a-z0-9+/=]{16,})",
+        "ATTACK (tool args): Windows/system LOLBAS execution or credential-hive "
+        "dumping payloads (mshta, regsvr32 /i:http, rundll32 javascript:, "
+        "reg save HKLM\\SAM, powershell -EncodedCommand). Benign counterexample "
+        "that must NOT match: standard 'powershell -Command Get-Process'.",
+    ),
+    _m(
+        "tool_agent_config_hijack", "execution", "tool_arg",
+        r"(?=[\s\S]*(?:mcp_config\.json|claude_desktop_config\.json|\.claude/settings\.json|authorized_keys|\.bashrc|\.zshrc))"
+        r"(?=[\s\S]*(?:\b(?:curl|wget|iwr|nc|ncat|eval)\b|\bbash\s+-i\b|https?://))",
+        "ATTACK (tool args): backdooring agent/MCP or shell configuration "
+        "files (mcp_config.json, claude_desktop_config.json, .claude/settings.json, "
+        "authorized_keys, .bashrc, .zshrc) combined with a remote payload "
+        "or reverse-shell indicator. Benign counterexample that must NOT "
+        "match: reading mcp_config.json locally with no remote payload.",
+    ),
 )
 
 _MIN_DISTINCT_HITS = 2  # mirror classify_refusal's >=2-DISTINCT gate
@@ -435,9 +472,12 @@ def classify_injection(
 
         # Tool-arg tier first (highest severity per spec): raw command in a
         # fabricated tool call. Single hit flags - the bytes ARE the payload.
-        for mid in _score_tier(args_norm, _TOOL_ARG_MARKERS):
+        _tool_hits = _score_tier(args_norm, _TOOL_ARG_MARKERS)
+        for mid in _tool_hits:
             matched.append(mid)
-            _mark_category(categories, "execution")
+        for marker in _TOOL_ARG_MARKERS:
+            if marker.mid in _tool_hits:
+                _mark_category(categories, marker.category)
 
         # High-confidence prose tier: single hit flags.
         for marker in _HIGH_MARKERS:
@@ -619,32 +659,169 @@ def resolve_guard(cfg_tools: Any) -> Optional[GuardConfig]:
 # ── Response action (default: identity passthrough) ─────────────────────────
 
 
+_REDACT_TEXT_TAG = "[REDACTED BY BSL RESPONSE GUARD: malicious provider instruction removed]"
+_WARN_PREFIX = "[⚠️ BSL RESPONSE GUARD WARNING: Potential provider injection detected] "
+_REDACT_TOOL_MSG = "[REDACTED BY BSL RESPONSE GUARD: blocked malicious tool_call injection]"
+
+
 def apply_guard(verdict: Any, response: Any, mode: str = "log_only") -> Any:
     """Apply the verdict's configured action to the response object.
 
-    log_only (DEFAULT and the ONLY mode this pass ships): the response
-    object is returned UNCHANGED - same identity, not a copy.
-    redact / block: minimal, clearly-marked branches exist behind the mode
-    knob but are NOT enabled this pass. They only operate on dict-shaped
-    openai JSON; anything else (stream objects, synthetic responses with a
-    json body behind .json()) is returned unchanged. Never raises."""
+    log_only (DEFAULT): the response object is returned UNCHANGED - same
+    identity, not a copy.
+    redact: deep-copies a dict-shaped response, scrubs matched prose injection
+    spans across OpenAI Chat, Anthropic Messages, Gemini candidates, and OpenAI
+    Responses formats, and strips fabricated/malicious tool calls when any
+    tool_arg marker matched.
+    block: replaces a dict-shaped response with a structured security error.
+    Never raises."""
     try:
         if mode == "log_only" or not getattr(verdict, "flagged", False):
             return response
         if mode == "redact":
-            # NOT ENABLED this pass - zipper retention ahead; the minimal
-            # branch strips the matched marker spans from a plain dict
-            # body we can safely copy. Anything non-dict passes through.
             if isinstance(response, dict):
                 import copy as _copy
                 scrubbed = _copy.deepcopy(response)
-                # Redaction is intentionally inert pending FP-rate data:
-                # strip nothing yet, the branch only proves the knob exists.
+                matched_set = set(getattr(verdict, "matched", []) or [])
+                has_tool_hit = any(str(m).startswith("tool_") for m in matched_set)
+                has_prose_hit = any(not str(m).startswith("tool_") for m in matched_set)
+                prose_markers = [
+                    m for m in (_HIGH_MARKERS + _AMBIGUOUS_MARKERS)
+                    if m.mid in matched_set
+                ]
+
+                def _scrub_text(text: str) -> str:
+                    if not isinstance(text, str) or not text:
+                        return text
+                    out_text = text
+                    total_subs = 0
+                    for marker in prose_markers:
+                        out_text, n_sub = marker.pattern.subn(_REDACT_TEXT_TAG, out_text)
+                        total_subs += n_sub
+                    if (
+                        has_prose_hit
+                        and total_subs == 0
+                        and _REDACT_TEXT_TAG not in out_text
+                        and _WARN_PREFIX not in out_text
+                    ):
+                        out_text = _WARN_PREFIX + out_text
+                    return out_text
+
+                # 1. OpenAI Chat Completions: choices[].message
+                choices = scrubbed.get("choices")
+                if isinstance(choices, list):
+                    for choice in choices:
+                        if not isinstance(choice, dict):
+                            continue
+                        msg = choice.get("message")
+                        if not isinstance(msg, dict):
+                            continue
+                        if isinstance(msg.get("content"), str):
+                            msg["content"] = _scrub_text(msg["content"])
+                        elif isinstance(msg.get("content"), list):
+                            for part in msg["content"]:
+                                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                                    part["text"] = _scrub_text(part["text"])
+                        if has_tool_hit:
+                            msg.pop("tool_calls", None)
+                            if choice.get("finish_reason") == "tool_calls":
+                                choice["finish_reason"] = "stop"
+                            cur_c = msg.get("content")
+                            if not cur_c:
+                                msg["content"] = _REDACT_TOOL_MSG
+                            elif isinstance(cur_c, str) and _REDACT_TOOL_MSG not in cur_c:
+                                msg["content"] = f"{cur_c}\n{_REDACT_TOOL_MSG}".strip()
+
+                # 2. Anthropic Messages: content[]
+                anth_content = scrubbed.get("content")
+                if isinstance(anth_content, list):
+                    new_content = []
+                    for block in anth_content:
+                        if not isinstance(block, dict):
+                            new_content.append(block)
+                            continue
+                        if has_tool_hit and block.get("type") == "tool_use":
+                            continue
+                        if isinstance(block.get("text"), str):
+                            block["text"] = _scrub_text(block["text"])
+                        new_content.append(block)
+                    if has_tool_hit:
+                        if scrubbed.get("stop_reason") == "tool_use":
+                            scrubbed["stop_reason"] = "end_turn"
+                        if not any(
+                            isinstance(b, dict) and _REDACT_TOOL_MSG in str(b.get("text", ""))
+                            for b in new_content
+                        ):
+                            new_content.append({"type": "text", "text": _REDACT_TOOL_MSG})
+                    scrubbed["content"] = new_content
+
+                # 3. Gemini / Cloud Code v1internal: candidates[].content.parts[]
+                gem_cands = scrubbed.get("candidates")
+                if not isinstance(gem_cands, list) and isinstance(scrubbed.get("response"), dict):
+                    gem_cands = scrubbed["response"].get("candidates")
+                if isinstance(gem_cands, list):
+                    for cand in gem_cands:
+                        if not isinstance(cand, dict):
+                            continue
+                        c_content = cand.get("content")
+                        if isinstance(c_content, dict) and isinstance(c_content.get("parts"), list):
+                            new_parts = []
+                            for part in c_content["parts"]:
+                                if not isinstance(part, dict):
+                                    new_parts.append(part)
+                                    continue
+                                if has_tool_hit and (part.get("functionCall") or part.get("function_call")):
+                                    continue
+                                if not part.get("thought") and isinstance(part.get("text"), str):
+                                    part["text"] = _scrub_text(part["text"])
+                                new_parts.append(part)
+                            if has_tool_hit and not any(
+                                isinstance(p, dict) and _REDACT_TOOL_MSG in str(p.get("text", ""))
+                                for p in new_parts
+                            ):
+                                new_parts.append({"text": _REDACT_TOOL_MSG})
+                            c_content["parts"] = new_parts
+
+                # 4. OpenAI Responses API: output[]
+                resp_output = scrubbed.get("output")
+                if isinstance(resp_output, list):
+                    new_output = []
+                    for item in resp_output:
+                        if not isinstance(item, dict):
+                            new_output.append(item)
+                            continue
+                        if has_tool_hit and item.get("type") == "function_call":
+                            continue
+                        if isinstance(item.get("text"), str):
+                            item["text"] = _scrub_text(item["text"])
+                        if isinstance(item.get("content"), list):
+                            for sub in item["content"]:
+                                if isinstance(sub, dict) and isinstance(sub.get("text"), str):
+                                    sub["text"] = _scrub_text(sub["text"])
+                        new_output.append(item)
+                    if has_tool_hit and not any(
+                        isinstance(it, dict)
+                        and (
+                            _REDACT_TOOL_MSG in str(it.get("text", ""))
+                            or any(
+                                isinstance(s, dict) and _REDACT_TOOL_MSG in str(s.get("text", ""))
+                                for s in (it.get("content") or [])
+                            )
+                        )
+                        for it in new_output
+                    ):
+                        new_output.append({
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": _REDACT_TOOL_MSG}],
+                        })
+                    scrubbed["output"] = new_output
+
                 return scrubbed
             return response
         if mode == "block":
-            # NOT ENABLED this pass - replaces a dict-shaped body with a
-            # security warning. Non-dict responses pass through unchanged.
+            # Replaces a dict-shaped body with a security warning.
+            # Non-dict responses pass through unchanged.
             if isinstance(response, dict):
                 return {
                     "error": {
@@ -774,6 +951,75 @@ def guard_event(event_type: str, *, model: str = "", provider: str = "",
         _guard_line(rec)
     except Exception:
         pass
+
+
+def read_guard_events_summary(limit: int = 50) -> dict:
+    """Read GUARD_LOG_PATH and return aggregated telemetry and recent events."""
+    summary = {
+        "total_scans": 0,
+        "clean_count": 0,
+        "unknown_count": 0,
+        "flagged_count": 0,
+        "by_provider": {},
+        "by_category": {},
+        "recent_flagged": [],
+        "recent_events": [],
+    }
+    try:
+        cap = max(1, min(int(limit or 50), 500))
+        if not os.path.exists(GUARD_LOG_PATH):
+            return summary
+        all_events: List[dict] = []
+        flagged_events: List[dict] = []
+        with open(GUARD_LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line_s = line.strip()
+                if not line_s:
+                    continue
+                try:
+                    rec = json.loads(line_s)
+                except Exception:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                summary["total_scans"] += 1
+                v_obj = rec.get("verdict") if isinstance(rec.get("verdict"), dict) else {}
+                is_flagged = bool(v_obj.get("flagged", False))
+                v_label = str(v_obj.get("verdict", "")).lower()
+                if is_flagged:
+                    summary["flagged_count"] += 1
+                    prov = str(rec.get("provider") or "unknown")
+                    summary["by_provider"][prov] = summary["by_provider"].get(prov, 0) + 1
+                    for cat in (v_obj.get("categories") or []):
+                        cat_s = str(cat)
+                        summary["by_category"][cat_s] = summary["by_category"].get(cat_s, 0) + 1
+                    flagged_events.append(rec)
+                elif v_label == "unknown":
+                    summary["unknown_count"] += 1
+                else:
+                    summary["clean_count"] += 1
+                all_events.append(rec)
+        summary["recent_flagged"] = list(reversed(flagged_events[-cap:]))
+        summary["recent_events"] = list(reversed(all_events[-cap:]))
+        return summary
+    except Exception:
+        return summary
+
+
+def clear_guard_events() -> bool:
+    """Clear GUARD_LOG_PATH and rotated backup safely. Never raises."""
+    try:
+        for path in (GUARD_LOG_PATH, GUARD_LOG_PATH + ".1"):
+            if os.path.exists(path):
+                try:
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.truncate(0)
+                    os.remove(path)
+                except Exception:
+                    pass
+        return True
+    except Exception:
+        return False
 
 
 # ── Stream observer (semantics cloned from FelStreamObserver) ────────────────

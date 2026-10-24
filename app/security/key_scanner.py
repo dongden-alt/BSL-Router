@@ -11,6 +11,7 @@ Scans provider configurations for security risks:
 """
 from __future__ import annotations
 
+import base64
 import re
 import ipaddress
 from dataclasses import dataclass, field
@@ -50,7 +51,23 @@ SUSPICIOUS_DOMAINS = {
     "webhook.site", "pipedream.net",
     "requestbin.com", "hookbin.com",
     "beeceptor.com", "mocky.io",
+    "interact.sh", "oast.pro", "oast.live", "oast.site",
+    "oast.online", "oast.fun", "oast.me", "oastify.com",
+    "burpcollaborator.net", "canarytokens.com",
+    "transfer.sh", "0x0.st", "file.io",
+    "trycloudflare.com", "loca.lt", "serveo.net",
+    "localhost.run", "telebit.cloud",
 }
+
+WEBHOOK_EXFIL_PATHS = (
+    "discord.com/api/webhooks",
+    "discordapp.com/api/webhooks",
+    "api.telegram.org/bot",
+    "hooks.slack.com/services",
+)
+
+# Hidden Unicode BiDi / zero-width / BOM trojan characters
+HIDDEN_UNICODE_PATTERN = re.compile(r'[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]')
 
 # Shell metacharacters in API keys (should never be there)
 SHELL_INJECTION_PATTERNS = [
@@ -65,6 +82,38 @@ SHELL_INJECTION_PATTERNS = [
     re.compile(r'javascript:', re.IGNORECASE),
     re.compile(r'data:text/html', re.IGNORECASE),
 ]
+
+# Environment variable expansion / path traversal / direct payload markers in API keys
+KEY_PAYLOAD_PATTERNS = [
+    re.compile(
+        r'(?:%USERPROFILE%|%APPDATA%|%LOCALAPPDATA%|\$HOME\b|\$USER\b|\$OPENAI_API_KEY\b|\$ANTHROPIC_API_KEY\b|\.\./|\.\.\\)',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'(?:\bcurl\s+|\bwget\s+|\bpowershell\b|/bin/sh\b|ignore\s+previous|system\s+prompt|\beval\s*\(|\bexec\s*\()',
+        re.IGNORECASE,
+    ),
+]
+
+_BASE64_CMD_MARKERS = (
+    "curl ",
+    "wget ",
+    "powershell",
+    "/bin/sh",
+    "ignore previous",
+    "system prompt",
+    "eval(",
+    "exec(",
+)
+
+_BASE64_PAYLOAD_MARKERS = (
+    "http://",
+    "https://",
+    *_BASE64_CMD_MARKERS,
+)
+
+_BASE64_SEGMENT_RE = re.compile(r'[A-Za-z0-9+/=]{20,}')
+_JWT_RE = re.compile(r'^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$')
 
 # credential leakage query params
 CREDENTIAL_PARAMS = {"key", "token", "api_key", "apikey", "secret", "password", "auth"}
@@ -131,12 +180,146 @@ def _check_url_spoofing(base_url: str) -> Optional[str]:
     return None
 
 
-def scan_single_key(api_key: str, base_url: str, provider_format: str) -> list[Finding]:
-    """Scan a single key/URL pair for security risks."""
+def _detect_base64_payload_in_key(api_key: str) -> Optional[str]:
+    """Detect malicious instruction/URL/command payloads hidden inside Base64 segments of an API key."""
+    if not api_key or len(api_key) < 20:
+        return None
+    is_jwt = bool(_JWT_RE.match(api_key.strip()))
+    for seg in _BASE64_SEGMENT_RE.findall(api_key):
+        if len(seg) < 20:
+            continue
+        padded = seg + ("=" * ((4 - len(seg) % 4) % 4))
+        try:
+            raw = base64.b64decode(padded, validate=False)
+            if not raw:
+                continue
+            decoded = raw.decode("utf-8")
+        except Exception:
+            continue
+        if not decoded or not all(32 <= ord(c) <= 126 or c in "\r\n\t" for c in decoded):
+            continue
+        stripped_dec = decoded.strip()
+        is_json_obj = stripped_dec.startswith("{") and stripped_dec.endswith("}")
+        low = decoded.lower()
+        if is_jwt or is_json_obj:
+            for marker in _BASE64_CMD_MARKERS:
+                if marker in low:
+                    return marker
+            for sus_domain in SUSPICIOUS_DOMAINS:
+                if sus_domain in low:
+                    return sus_domain
+            for wh_path in WEBHOOK_EXFIL_PATHS:
+                if wh_path in low:
+                    return wh_path
+        else:
+            for marker in _BASE64_PAYLOAD_MARKERS:
+                if marker in low:
+                    return marker
+    return None
+
+
+def _scan_header_custom(header_custom: Optional[dict]) -> list[Finding]:
+    """Scan custom HTTP headers for CRLF injection, shell/XSS/SQL payloads, hidden Unicode, or exfil domains."""
+    findings: list[Finding] = []
+    if not isinstance(header_custom, dict):
+        return findings
+
+    for h_key, h_val in header_custom.items():
+        k_str = str(h_key) if h_key is not None else ""
+        v_str = str(h_val) if h_val is not None else ""
+        combined = f"{k_str}: {v_str}"
+
+        if "\r" in k_str or "\n" in k_str or "\r" in v_str or "\n" in v_str:
+            findings.append(Finding(
+                severity="block",
+                category="header_injection",
+                provider="",
+                connection="",
+                message=f"Custom header '{k_str}' contains CRLF newline injection",
+                detail="CR/LF characters in custom headers allow HTTP header splitting/injection.",
+            ))
+            continue
+
+        if HIDDEN_UNICODE_PATTERN.search(combined):
+            findings.append(Finding(
+                severity="block",
+                category="header_injection",
+                provider="",
+                connection="",
+                message=f"Custom header '{k_str}' contains hidden Unicode control/BiDi characters",
+                detail="Invisible or bidirectional Unicode characters are not allowed in custom headers.",
+            ))
+            continue
+
+        matched_shell = False
+        for pattern in SHELL_INJECTION_PATTERNS + KEY_PAYLOAD_PATTERNS:
+            if pattern.search(k_str) or pattern.search(v_str):
+                # Allow legitimate URLs in Referer / HTTP-Referer / Origin unless they hit a suspicious domain below
+                if pattern is KEY_PAYLOAD_PATTERNS[1] and k_str.lower() in ("referer", "http-referer", "origin", "x-title") and v_str.lower().startswith(("http://", "https://")):
+                    continue
+                findings.append(Finding(
+                    severity="block",
+                    category="header_injection",
+                    provider="",
+                    connection="",
+                    message=f"Custom header '{k_str}' contains injection pattern: {pattern.pattern}",
+                    detail="Custom header key or value matches shell/XSS/SQL/payload injection pattern.",
+                ))
+                matched_shell = True
+                break
+        if matched_shell:
+            continue
+
+        v_low = v_str.lower()
+        for sus_domain in SUSPICIOUS_DOMAINS:
+            if sus_domain in v_low:
+                findings.append(Finding(
+                    severity="block",
+                    category="header_injection",
+                    provider="",
+                    connection="",
+                    message=f"Custom header '{k_str}' references suspicious exfiltration domain: {sus_domain}",
+                    detail="Custom header points to a known exfiltration or tunnel domain.",
+                ))
+                break
+        for wh_path in WEBHOOK_EXFIL_PATHS:
+            if wh_path in v_low:
+                findings.append(Finding(
+                    severity="block",
+                    category="header_injection",
+                    provider="",
+                    connection="",
+                    message=f"Custom header '{k_str}' references webhook exfiltration endpoint",
+                    detail="Custom header points to a webhook endpoint.",
+                ))
+                break
+
+    return findings
+
+
+def scan_single_key(
+    api_key: str,
+    base_url: str,
+    provider_format: str,
+    header_custom: Optional[dict] = None,
+) -> list[Finding]:
+    """Scan a single key/URL pair (and optional custom headers) for security risks."""
     findings = []
 
-    # 1. Key injection check
+    # 0. Hidden Unicode BiDi / zero-width Trojan check on api_key and base_url
+    if (api_key and HIDDEN_UNICODE_PATTERN.search(api_key)) or (base_url and HIDDEN_UNICODE_PATTERN.search(base_url)):
+        findings.append(Finding(
+            severity="block",
+            category="key_injection",
+            provider="",
+            connection="",
+            message="API key or URL contains hidden Unicode control/BiDi characters",
+            detail="Invisible or bidirectional Unicode characters can disguise malicious keys or domains.",
+        ))
+
+    # 1. Key injection & embedded payload check
     if api_key:
+        injected = False
         for pattern in SHELL_INJECTION_PATTERNS:
             if pattern.search(api_key):
                 findings.append(Finding(
@@ -147,15 +330,72 @@ def scan_single_key(api_key: str, base_url: str, provider_format: str) -> list[F
                     message=f"API key contains suspicious pattern: {pattern.pattern}",
                     detail="Key matches injection pattern. This could indicate a crafted key.",
                 ))
+                injected = True
                 break
+        if not injected:
+            for pattern in KEY_PAYLOAD_PATTERNS:
+                if pattern.search(api_key):
+                    findings.append(Finding(
+                        severity="block",
+                        category="key_injection",
+                        provider="",
+                        connection="",
+                        message=f"API key contains embedded payload or env-var expansion: {pattern.pattern}",
+                        detail="Key contains environment variable expansion, path traversal, or command/URL payload.",
+                    ))
+                    injected = True
+                    break
+        if not injected:
+            key_stripped = api_key.strip()
+            key_low = key_stripped.lower()
+            if "http://" in key_low or "https://" in key_low:
+                has_sus_domain = any(d in key_low for d in SUSPICIOUS_DOMAINS)
+                has_wh_path = any(w in key_low for w in WEBHOOK_EXFIL_PATHS)
+                is_single_url = key_low.startswith(("http://", "https://")) and not any(ch.isspace() for ch in key_stripped)
+                if has_sus_domain or has_wh_path or not is_single_url:
+                    findings.append(Finding(
+                        severity="block",
+                        category="key_injection",
+                        provider="",
+                        connection="",
+                        message="API key contains embedded URL or exfiltration endpoint",
+                        detail="Key contains an embedded URL with surrounding text or references a known exfiltration/webhook endpoint.",
+                    ))
+                else:
+                    findings.append(Finding(
+                        severity="warn",
+                        category="key_injection",
+                        provider="",
+                        connection="",
+                        message="API key appears to be a URL rather than a credential (check if base_url was pasted into api_key)",
+                        detail="A bare URL was found in api_key. Verify that base_url was not accidentally pasted into the API key field.",
+                    ))
+                injected = True
+        if not injected:
+            b64_marker = _detect_base64_payload_in_key(api_key)
+            if b64_marker:
+                findings.append(Finding(
+                    severity="block",
+                    category="key_injection",
+                    provider="",
+                    connection="",
+                    message=f"API key contains Base64-encoded payload ('{b64_marker}')",
+                    detail="A Base64 segment inside the API key decodes to an embedded URL, command, or prompt-injection payload.",
+                ))
+
+    # 1b. Custom header scan
+    if header_custom:
+        findings.extend(_scan_header_custom(header_custom))
 
     if not base_url:
         return findings
 
     parsed = urlparse(base_url)
-    host = parsed.hostname or ""
+    host = (parsed.hostname or "").lower()
+    url_lower = base_url.lower()
 
-    # 2. Exfil URL check (match domain or any subdomain)
+    # 2. Exfil URL check (match domain or any subdomain, plus webhook paths)
+    exfil_matched = False
     for sus_domain in SUSPICIOUS_DOMAINS:
         if host == sus_domain or host.endswith("." + sus_domain):
             findings.append(Finding(
@@ -166,7 +406,21 @@ def scan_single_key(api_key: str, base_url: str, provider_format: str) -> list[F
                 message=f"base_url points to suspicious domain: {host}",
                 detail=f"This domain ({host}) is commonly used for data exfiltration.",
             ))
+            exfil_matched = True
             break
+
+    if not exfil_matched:
+        for wh_path in WEBHOOK_EXFIL_PATHS:
+            if wh_path in url_lower:
+                findings.append(Finding(
+                    severity="block",
+                    category="exfil_url",
+                    provider="",
+                    connection="",
+                    message=f"base_url points to webhook exfiltration endpoint: {wh_path}",
+                    detail="Webhook endpoints (Discord, Telegram, Slack) are used for credential exfiltration.",
+                ))
+                break
 
     # 3. credential leakage check
     query = parsed.query
@@ -286,8 +540,9 @@ def scan_provider_config(config: dict) -> ScanResult:
             base_url = conn.get("base_url", "")
             token_type = conn.get("token_type", "")
             refresh_token = conn.get("refresh_token", "")
+            header_custom = conn.get("header_custom") if isinstance(conn.get("header_custom"), dict) else prov_data.get("header_custom")
 
-            findings = scan_single_key(api_key, base_url, provider_format)
+            findings = scan_single_key(api_key, base_url, provider_format, header_custom=header_custom)
             for f in findings:
                 f.provider = prov_id
                 f.connection = conn_name
