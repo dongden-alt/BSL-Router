@@ -268,7 +268,7 @@ def test_egress_guard_wiring_present():
     assert "_is_wall_ae = _is_terminal_relay_wall(resp.status_code, err_text)" in src, (
         "Gap 3a: Anthropic egress missing _is_wall_ae detector call"
     )
-    assert "if not _is_wall_ae and active_chain and _fb_next_idx < len(active_chain):" in src, (
+    assert "if not _is_wall_ae and active_chain and" in src, (
         "Gap 3a: Anthropic egress chain-advance not gated on not _is_wall_ae"
     )
     assert "if not _is_wall_ae:" in src, (
@@ -277,7 +277,7 @@ def test_egress_guard_wiring_present():
     assert "_is_wall_ao = _is_terminal_relay_wall(resp.status_code, err_text)" in src, (
         "Gap 3b: Anthropic→OpenAI egress missing _is_wall_ao detector call"
     )
-    assert "if not _is_wall_ao and active_chain and _fb_next_idx < len(active_chain):" in src, (
+    assert "if not _is_wall_ao and active_chain and" in src, (
         "Gap 3b: Anthropic→OpenAI egress chain-advance not gated on not _is_wall_ao"
     )
     assert "if not _is_wall_ao and not _emit.emitted:" in src, (

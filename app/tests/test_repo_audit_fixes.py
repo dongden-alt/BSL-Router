@@ -281,7 +281,7 @@ def test_fix_f_native_headers_force_identity_encoding_and_strip_content_encoding
 
     req = Request(scope, receive)
     req_headers = main._antigravity_native_request_headers(req)
-    assert req_headers.get("accept-encoding") == "identity"
+    assert req_headers.get("accept-encoding") == "gzip, deflate, br"
     assert [k for k in req_headers if k.lower() == "accept-encoding"] == ["accept-encoding"]
 
     import gzip
@@ -294,13 +294,31 @@ def test_fix_f_native_headers_force_identity_encoding_and_strip_content_encoding
             "Transfer-Encoding": "chunked",
             "X-Goog-Request-Id": "req-123",
         },
-        content=gzip.compress(b"{}"),
+        content=gzip.compress(b'{"candidates": []}'),
     )
     resp_headers = main._antigravity_native_response_headers(up_resp)
     lower_keys = {k.lower() for k in resp_headers}
-    assert "content-encoding" not in lower_keys
+    # Shared helper preserves content-encoding for raw streaming passthrough;
+    # non-streaming _forward_antigravity_native strips content-encoding when
+    # returning already-decoded upstream_response.content.
+    assert "content-encoding" in lower_keys
     assert "transfer-encoding" not in lower_keys
     assert "x-goog-request-id" in lower_keys
+
+    class _FakeClient:
+        def build_request(self, method, url, headers=None, content=None):
+            return httpx.Request(method, url, headers=headers, content=content)
+
+        async def send(self, request, stream=False):
+            return up_resp
+
+    with patch("app.main._get_antigravity_egress_client", return_value=_FakeClient()):
+        nonstream_resp = asyncio.run(
+            main._forward_antigravity_native(req, is_stream=False, raw_body=b"{}")
+        )
+    nonstream_lower = {k.lower() for k in nonstream_resp.headers.keys()}
+    assert "content-encoding" not in nonstream_lower
+    assert nonstream_resp.body == b'{"candidates": []}'
 
     lifespan_src = inspect.getsource(main.lifespan)
     assert '_boot_cfg.get("claude_code_integration", {}).get("enabled", False)' in lifespan_src
@@ -337,3 +355,73 @@ def test_fix_g_config_example_requirements_and_no_bom_in_tests(tmp_path):
     ):
         raw_bytes = (REPO_ROOT / rel).read_bytes()
         assert not raw_bytes.startswith(b"\xef\xbb\xbf"), f"UTF-8 BOM still present in {rel}"
+
+
+# ── Pass 2 Audit Fixes (P2-01 .. P2-06) ──────────────────────────────────────
+
+
+def test_p2_01_init_config_auto_bootstrap_no_unbound_shutil(tmp_path, monkeypatch):
+    saved = cs.get_config()
+    missing_cfg = tmp_path / "fresh_subdir" / "config.yaml"
+    monkeypatch.setenv("BSL_CONFIG_PATH", str(missing_cfg))
+    try:
+        cs.init_config(None)
+        assert missing_cfg.exists()
+        assert cs.get_config()["admin"]["password"] == "123456"
+    finally:
+        cs.replace_config(saved)
+
+
+def test_p2_02_all_streaming_guards_catch_combo_wrap_restart():
+    src = inspect.getsource(main._process_chat_completion_pass)
+    assert src.count("except _ComboWrapRestart as _ns_wrap:") >= 4
+    assert src.count("_stream_guard=False") >= 5
+
+
+def test_p2_03_antifreeze_safe_print_swallows_oserror(monkeypatch):
+    import app.antifreeze as afz
+
+    def broken_print(*args, **kwargs):
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr("builtins.print", broken_print)
+    afz._safe_print("should not raise")
+    afz_src = inspect.getsource(afz)
+    # Only _safe_print itself should call print(..., flush=True)
+    assert afz_src.count("flush=True") == 1
+
+
+def test_p2_04_protocol_error_and_expected_httpx_tuple():
+    from app.utils import google_cloudcode_egress as gce
+
+    assert "0.26.0" in gce._EXPECTED_HTTPX
+    assert "0.27.0" in gce._EXPECTED_HTTPX
+    for fn in (
+        main._forward_antigravity_native,
+        main._forward_antigravity_ccpa_control,
+        main.antigravity_fetch_available_models,
+    ):
+        fn_src = inspect.getsource(fn)
+        assert "httpx.ProtocolError" in fn_src
+        assert "httpx.RemoteProtocolError" not in fn_src
+
+
+def test_p2_05_and_06_fel_observer_thinking_and_recovery_stream_guard():
+    obs_anth = FelStreamObserver()
+    obs_anth.observe(b'data: {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hmm"}}\n\n')
+    assert obs_anth._had_thinking is True
+
+    obs_oai = FelStreamObserver()
+    obs_oai.observe(b'data: {"choices": [{"delta": {"reasoning_content": "step 1"}}]}\n\n')
+    assert obs_oai._had_thinking is True
+
+    obs_gem = FelStreamObserver()
+    obs_gem.observe(b'data: {"candidates": [{"content": {"parts": [{"thought": true, "text": "thinking"}]}}]}\n\n')
+    assert obs_gem._had_thinking is True
+
+    obs_resp = FelStreamObserver()
+    obs_resp.observe(b'data: {"type": "response.reasoning_summary_text.delta", "delta": "plan"}\n\n')
+    assert obs_resp._had_thinking is True
+
+    main_src = inspect.getsource(main._process_chat_completion_pass)
+    assert 'if _peek_obs._had_tools or getattr(_peek_obs, "_had_thinking", False):' in main_src

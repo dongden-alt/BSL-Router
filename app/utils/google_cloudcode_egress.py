@@ -66,7 +66,7 @@ logger = logging.getLogger("bsl.google_egress")
 # The one semi-private seam we rely on is ``httpx.AsyncHTTPTransport._pool``.
 # It is stable in this pinned pair; if either dependency changes, the wiring
 # must be re-verified against the live egress proof before trusting it.
-_EXPECTED_HTTPX = "0.27.0"
+_EXPECTED_HTTPX = ("0.26.0", "0.27.0")
 _EXPECTED_HTTPCORE = "1.0.2"
 
 # ── Allowlist: EXACTLY the two hosts poisoned in the Windows hosts file ──────
@@ -434,7 +434,7 @@ def _discover_default_async_backend() -> httpcore.AsyncNetworkBackend:
 
 
 def _check_pinned_stack() -> None:
-    if httpx.__version__ != _EXPECTED_HTTPX or httpcore.__version__ != _EXPECTED_HTTPCORE:
+    if httpx.__version__ not in _EXPECTED_HTTPX or httpcore.__version__ != _EXPECTED_HTTPCORE:
         logger.warning(
             "google-egress: unverified transport stack (httpx=%s httpcore=%s; "
             "expected httpx=%s httpcore=%s). The AsyncHTTPTransport._pool seam "

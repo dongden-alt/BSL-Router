@@ -168,7 +168,6 @@ def init_config(path: str | None = None) -> None:
     from app.crypto import migrate_plaintext_config
     raw, migrated = migrate_plaintext_config(raw)
     if migrated:
-        import shutil
         shutil.copy2(path, path + ".pre-encryption.bak")
         with open(path, "w", encoding="utf-8") as f:
             yaml.dump(raw, f, default_flow_style=False, sort_keys=False)

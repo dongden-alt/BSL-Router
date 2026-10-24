@@ -56,6 +56,13 @@ def next_stream_id() -> str:
     return f"stream-{_stream_counter}-{time.time():.0f}"
 
 
+def _safe_print(msg: str) -> None:
+    try:
+        print(msg, flush=True)
+    except Exception:
+        pass
+
+
 async def register_stream(stream_id: str, task: asyncio.Task) -> None:
     async with _STREAMS_LOCK:
         ACTIVE_STREAMS[stream_id] = task
@@ -64,9 +71,8 @@ async def register_stream(stream_id: str, task: asyncio.Task) -> None:
     # active_streams tells us a leak exists but not WHICH stream leaked. Log
     # identity on both edges; an id that registers and never unregisters is the
     # leak, and its absence from the unregister log is the proof.
-    print(
-        f"[AFZ-STREAM] +register {stream_id} active={len(ACTIVE_STREAMS)}",
-        flush=True,
+    _safe_print(
+        f"[AFZ-STREAM] +register {stream_id} active={len(ACTIVE_STREAMS)}"
     )
 
 
@@ -75,9 +81,8 @@ async def unregister_stream(stream_id: str) -> None:
         ACTIVE_STREAMS.pop(stream_id, None)
         _born = _STREAM_BIRTH.pop(stream_id, None)
     _age = f"{time.monotonic() - _born:.1f}s" if _born is not None else "unknown"
-    print(
-        f"[AFZ-STREAM] -unregister {stream_id} age={_age} active={len(ACTIVE_STREAMS)}",
-        flush=True,
+    _safe_print(
+        f"[AFZ-STREAM] -unregister {stream_id} age={_age} active={len(ACTIVE_STREAMS)}"
     )
 
 
@@ -96,7 +101,7 @@ async def force_stop_all() -> int:
             t.cancel()
             cancelled += 1
     if cancelled:
-        print(f"[AntiFreeze] force-stop cancelled {cancelled} active stream(s): {_ids}", flush=True)
+        _safe_print(f"[AntiFreeze] force-stop cancelled {cancelled} active stream(s): {_ids}")
     return cancelled
 
 
@@ -119,13 +124,12 @@ def bench_leaf(config: Any, provider: str, model: str, status: int, err: Optiona
             err or "stream_failed",
             out_tokens=out_tokens,
         )
-        print(
+        _safe_print(
             f"[AntiFreeze] benched leaf {provider}/{model} "
-            f"(status={status}, err={str(err)[:120]})",
-            flush=True,
+            f"(status={status}, err={str(err)[:120]})"
         )
     except Exception as _be:
-        print(f"[AntiFreeze] bench failed (non-blocking): {_be}", flush=True)
+        _safe_print(f"[AntiFreeze] bench failed (non-blocking): {_be}")
 
 
 async def stream_deadline(
@@ -183,9 +187,8 @@ async def stream_deadline(
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                print(
-                    f"[AntiFreeze] {stream_id} exceeded hard deadline ({deadline_s}s) — force-closing.",
-                    flush=True,
+                _safe_print(
+                    f"[AntiFreeze] {stream_id} exceeded hard deadline ({deadline_s}s) — force-closing."
                 )
                 try:
                     yield error_frame
@@ -198,9 +201,8 @@ async def stream_deadline(
             except StopAsyncIteration:
                 return
             except asyncio.TimeoutError:
-                print(
-                    f"[AntiFreeze] {stream_id} exceeded hard deadline ({deadline_s}s) — force-closing.",
-                    flush=True,
+                _safe_print(
+                    f"[AntiFreeze] {stream_id} exceeded hard deadline ({deadline_s}s) — force-closing."
                 )
                 try:
                     yield error_frame
@@ -298,11 +300,10 @@ async def afz_guard(
             raise
         # Upstream died mid-flight (RemoteProtocolError, ReadError, reset, ...).
         # Emitting the terminal frame is the whole point of this guard.
-        print(
+        _safe_print(
             f"[AntiFreeze] {stream_id} upstream failed mid-stream "
             f"({type(_err).__name__}: {_err}) -- emitting terminal frame "
-            f"(emitted={_emitted}, protocol={protocol}).",
-            flush=True,
+            f"(emitted={_emitted}, protocol={protocol})."
         )
         try:
             for _frame in _terminal_frames(protocol, _err, emitted=_emitted):

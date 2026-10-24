@@ -1862,6 +1862,7 @@ class FelStreamObserver:
         self._text_chunks: List[str] = []
         self._char_count = 0
         self._had_tools = False
+        self._had_thinking = False
         self._finalized = False
         self._dead = False
         self._line_buffer = b""
@@ -1913,12 +1914,16 @@ class FelStreamObserver:
                         # Track tool use
                         elif delta.get("type") == "tool_use":
                             self._had_tools = True
+                        elif delta.get("type") in ("thinking_delta", "signature_delta"):
+                            self._had_thinking = True
 
                 # Anthropic: content_block_start with content_block.type == "tool_use"
                 if "content_block" in obj:
                     cb = obj["content_block"]
                     if isinstance(cb, dict) and cb.get("type") == "tool_use":
                         self._had_tools = True
+                    elif isinstance(cb, dict) and cb.get("type") in ("thinking", "redacted_thinking"):
+                        self._had_thinking = True
 
                 # OpenAI: choices[].delta.content
                 if "choices" in obj and isinstance(obj["choices"], list):
@@ -1932,6 +1937,8 @@ class FelStreamObserver:
                         # Track tool calls
                         if "tool_calls" in delta:
                             self._had_tools = True
+                        if delta.get("reasoning_content") or delta.get("reasoning"):
+                            self._had_thinking = True
 
                         # Extract content
                         self._add_text(delta.get("content", ""))
@@ -1951,7 +1958,9 @@ class FelStreamObserver:
                                     continue
                                 if part.get("functionCall") or part.get("function_call"):
                                     self._had_tools = True
-                                elif not part.get("thought") and isinstance(part.get("text"), str):
+                                elif part.get("thought"):
+                                    self._had_thinking = True
+                                elif isinstance(part.get("text"), str):
                                     self._add_text(part["text"])
 
                 # OpenAI Responses API SSE: response.output_text.delta / function_call
@@ -1962,6 +1971,8 @@ class FelStreamObserver:
                     item = obj.get("item") if isinstance(obj.get("item"), dict) else {}
                     if ev_type == "response.function_call_arguments.delta" or item.get("type") == "function_call":
                         self._had_tools = True
+                elif isinstance(ev_type, str) and ev_type.startswith("response.reasoning"):
+                    self._had_thinking = True
 
         except Exception:
             self._dead = True

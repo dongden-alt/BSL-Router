@@ -2265,17 +2265,14 @@ def _antigravity_native_request_headers(request: Request) -> dict:
     """Copy Google inference-safe headers without recording authorization values."""
     explicit_headers = {
         "authorization", "x-goog-api-key", "content-type", "accept",
-        "accept-language", "user-agent", "x-client-data",
+        "accept-encoding", "accept-language", "user-agent", "x-client-data",
         "x-cloud-trace-context", "x-request-id",
     }
     headers = {}
     for name, value in request.headers.items():
         normalized = name.lower()
-        if normalized == "accept-encoding":
-            continue
         if normalized in explicit_headers or normalized.startswith(("x-goog-", "x-client-")):
             headers[name] = value
-    headers["accept-encoding"] = "identity"
     return headers
 
 
@@ -2336,7 +2333,7 @@ async def _forward_antigravity_native_or_error(
 def _antigravity_native_response_headers(response: httpx.Response) -> dict:
     """Forward end-to-end-safe metadata without transfer framing fields."""
     excluded = {
-        "connection", "content-encoding", "content-length", "keep-alive",
+        "connection", "content-length", "keep-alive",
         "proxy-authenticate", "proxy-authorization", "te", "trailer",
         "transfer-encoding", "upgrade",
     }
@@ -2459,7 +2456,7 @@ async def _forward_antigravity_native(request: Request, is_stream: bool, raw_bod
             try:
                 upstream_response = await client.send(upstream_request, stream=is_stream)
                 break
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
+            except (httpx.ProtocolError, httpx.ReadError, httpx.WriteError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
                 if google_egress_client is not None or attempt >= 2:
                     raise
                 rotate_google_ip_cache()
@@ -2502,12 +2499,12 @@ async def _forward_antigravity_native(request: Request, is_stream: bool, raw_bod
                 # deadline wrapper: stream_deadline injects SSE terminal frames
                 # on timeout, which would corrupt a non-event-stream response.
                 _afz_sid, _afz_body = _afz_passthrough_guard(
-                    upstream_response.aiter_raw(),
+                    _wrap_egress_stream(upstream_response.aiter_raw(), model=_ag_fel_model, provider="antigravity"),
                     upstream_response.headers.get("content-type", ""),
                     protocol="gemini",
                 )
                 return StreamingResponse(
-                    _wrap_egress_stream(_afz_body, model=_ag_fel_model, provider="antigravity"),
+                    _afz_body,
                     status_code=upstream_response.status_code,
                     headers=headers,
                     background=BackgroundTask(upstream_response.aclose),
@@ -2517,10 +2514,14 @@ async def _forward_antigravity_native(request: Request, is_stream: bool, raw_bod
                 raise
 
         try:
+            _nonstream_headers = {
+                k: v for k, v in _antigravity_native_response_headers(upstream_response).items()
+                if k.lower() != "content-encoding"
+            }
             return Response(
                 content=upstream_response.content,
                 status_code=upstream_response.status_code,
-                headers=_antigravity_native_response_headers(upstream_response),
+                headers=_nonstream_headers,
             )
         finally:
             await upstream_response.aclose()
@@ -11707,7 +11708,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 yield _b
                             _buffered.clear()
                             continue
-                        if _peek_obs._had_tools:
+                        if _peek_obs._had_tools or getattr(_peek_obs, "_had_thinking", False):
                             _passthrough = True
                             for _b in _buffered:
                                 yield _b
@@ -11783,6 +11784,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             client_wants_gemini,
                             _retry_state=_rec_retry_state,
                             request=request,
+                            _stream_guard=False,
                         )
                         if hasattr(_rec_resp, "body_iterator"):
                             try:
@@ -13185,38 +13187,50 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         stats["error"] = None
                         _retry_again = True
                     except _ComboFallbackNeeded as _cf_egr:
-                        if not getattr(_cf_egr, "backoff", 0):
-                            _mark_conn_failed_for_retry(_cf_egr.retry_state, getattr(_cf_egr, "status_code", 502), getattr(_cf_egr, "err_text", ""))
-                        if getattr(_cf_egr, "backoff", 0):
-                            # NEVER-STOP wrap: sleep the pass backoff (client
-                            # disconnect cancels — the only permitted terminator).
-                            await asyncio.sleep(_cf_egr.backoff)
-                        _egr_fallback = await _process_chat_completion(
-                            body, client_wants_anthropic, client_wants_gemini,
-                            _retry_state=_cf_egr.retry_state,
-                            request=request,
-                        )
-                        if hasattr(_egr_fallback, "body_iterator"):
-                            async for _fc in _egr_fallback.body_iterator:
-                                yield _fc
-                        elif hasattr(_egr_fallback, "__aiter__"):
-                            async for _fc in _egr_fallback:
-                                yield _fc
-                        else:
-                            # TYPEERROR FIX (2026-08-24): serialize a plain
-                            # Response/JSONResponse return instead of 'async for'
-                            # over it (TypeError -> terminal 502 -> force-stop).
+                        _ns_backoff = float(getattr(_cf_egr, "backoff", 0) or 0)
+                        _ns_state = _cf_egr.retry_state
+                        if not _ns_backoff:
+                            _mark_conn_failed_for_retry(_ns_state, getattr(_cf_egr, "status_code", 502), getattr(_cf_egr, "err_text", ""))
+                        while True:
+                            if _ns_backoff:
+                                # NEVER-STOP wrap: sleep the pass backoff (client
+                                # disconnect cancels — the only permitted terminator).
+                                await asyncio.sleep(_ns_backoff)
                             try:
-                                _egr_fb_body = getattr(_egr_fallback, "body", b"") or b""
-                                if isinstance(_egr_fb_body, str):
-                                    _egr_fb_body = _egr_fb_body.encode("utf-8", "replace")
-                                _egr_err_frame = {"error": {"message": _egr_fb_body.decode("utf-8", "replace")[:500] or "fallback_failed", "type": "proxy_error"}}
-                                yield f"data: {json.dumps(_egr_err_frame)}\n\n".encode("utf-8")
-                                yield b"data: [DONE]\n\n"
-                            except Exception:
-                                yield f'data: {{"error": {{"message": "fallback_failed", "type": "proxy_error"}}}}\n\n'.encode("utf-8")
-                                yield b"data: [DONE]\n\n"
-                        return
+                                _egr_fallback = await _process_chat_completion(
+                                    body, client_wants_anthropic, client_wants_gemini,
+                                    _retry_state=_ns_state,
+                                    request=request,
+                                    _stream_guard=False,
+                                )
+                                if hasattr(_egr_fallback, "body_iterator"):
+                                    _ns_iter = _egr_fallback.body_iterator
+                                elif hasattr(_egr_fallback, "__aiter__"):
+                                    _ns_iter = _egr_fallback
+                                else:
+                                    # TYPEERROR FIX (2026-08-24): serialize a plain
+                                    # Response/JSONResponse return instead of 'async for'
+                                    # over it (TypeError -> terminal 502 -> force-stop).
+                                    try:
+                                        _egr_fb_body = getattr(_egr_fallback, "body", b"") or b""
+                                        if isinstance(_egr_fb_body, str):
+                                            _egr_fb_body = _egr_fb_body.encode("utf-8", "replace")
+                                        _egr_err_frame = {"error": {"message": _egr_fb_body.decode("utf-8", "replace")[:500] or "fallback_failed", "type": "proxy_error"}}
+                                        yield f"data: {json.dumps(_egr_err_frame)}\n\n".encode("utf-8")
+                                        yield b"data: [DONE]\n\n"
+                                    except Exception:
+                                        yield f'data: {{"error": {{"message": "fallback_failed", "type": "proxy_error"}}}}\n\n'.encode("utf-8")
+                                        yield b"data: [DONE]\n\n"
+                                    return
+                                async for _fc in _ns_iter:
+                                    yield _fc
+                                return
+                            except _ComboWrapRestart as _ns_wrap:
+                                if _retry_state is None:
+                                    _ns_backoff = float(getattr(_ns_wrap, "backoff", 0) or 0)
+                                    _ns_state = _ns_wrap.retry_state
+                                    continue
+                                raise
                     except (GeneratorExit, asyncio.CancelledError):
                         raise
                     except Exception as _egr_guarded_err:
@@ -14245,40 +14259,53 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         pass
                     return
                 except _ComboFallbackNeeded as _cf:
-                    if not getattr(_cf, "backoff", 0):
-                        _mark_conn_failed_for_retry(_cf.retry_state, getattr(_cf, "status_code", 502), getattr(_cf, "err_text", ""))
-                    if getattr(_cf, "backoff", 0):
-                        # NEVER-STOP wrap: sleep the pass backoff (client
-                        # disconnect cancels — the only permitted terminator).
-                        await asyncio.sleep(_cf.backoff)
-                    _fallback = await _process_chat_completion(
-                        body, client_wants_anthropic, client_wants_gemini,
-                        _retry_state=_cf.retry_state,
-                        request=request,
-                    )
-                    if hasattr(_fallback, "body_iterator"):
-                        async for _fc in _fallback.body_iterator:
-                            yield _fc
-                    elif hasattr(_fallback, "__aiter__"):
-                        async for _fc in _fallback:
-                            yield _fc
-                    else:
-                        # TYPEERROR FIX (2026-08-24): the nested call can return a
-                        # plain Response (e.g. JSONResponse on the non-stream error
-                        # path). 'async for' over it raised TypeError -> afz_guard
-                        # caught it -> terminal 502 -> force-stop. Serialize its
-                        # JSON body as the SOLE terminal Gemini error frame.
+                    _ns_backoff = float(getattr(_cf, "backoff", 0) or 0)
+                    _ns_state = _cf.retry_state
+                    if not _ns_backoff:
+                        _mark_conn_failed_for_retry(_ns_state, getattr(_cf, "status_code", 502), getattr(_cf, "err_text", ""))
+                    while True:
+                        if _ns_backoff:
+                            # NEVER-STOP wrap: sleep the pass backoff (client
+                            # disconnect cancels — the only permitted terminator).
+                            await asyncio.sleep(_ns_backoff)
                         try:
-                            _fb_bytes = _fallback.body if isinstance(getattr(_fallback, "body", None), (bytes, bytearray)) else str(getattr(_fallback, "body", "")).encode("utf-8", "replace")
-                            from app.compat.adapters.gemini import sse_data as _g_sse_fb, SSE_DONE as _G_SSE_FB, terminal_error_frame as _g_term_fb
-                            _fb_status = getattr(_fallback, "status_code", 502) or 502
-                            yield _g_sse_fb(_g_term_fb(_fb_status, _fb_bytes.decode("utf-8", "replace")[:500] or "fallback_failed", target_model))
-                            yield _G_SSE_FB
-                        except Exception as _fb_err:
-                            print(f"[Combo Fallback] nested-response serialization failed: {_fb_err}", flush=True)
-                            from app.compat.adapters.gemini import sse_data as _g_sse_fb2, SSE_DONE as _G_SSE_FB2, terminal_error_frame as _g_term_fb2
-                            yield _g_sse_fb2(_g_term_fb2(502, "fallback_failed", target_model))
-                            yield _G_SSE_FB2
+                            _fallback = await _process_chat_completion(
+                                body, client_wants_anthropic, client_wants_gemini,
+                                _retry_state=_ns_state,
+                                request=request,
+                                _stream_guard=False,
+                            )
+                            if hasattr(_fallback, "body_iterator"):
+                                _ns_iter = _fallback.body_iterator
+                            elif hasattr(_fallback, "__aiter__"):
+                                _ns_iter = _fallback
+                            else:
+                                # TYPEERROR FIX (2026-08-24): the nested call can return a
+                                # plain Response (e.g. JSONResponse on the non-stream error
+                                # path). 'async for' over it raised TypeError -> afz_guard
+                                # caught it -> terminal 502 -> force-stop. Serialize its
+                                # JSON body as the SOLE terminal Gemini error frame.
+                                try:
+                                    _fb_bytes = _fallback.body if isinstance(getattr(_fallback, "body", None), (bytes, bytearray)) else str(getattr(_fallback, "body", "")).encode("utf-8", "replace")
+                                    from app.compat.adapters.gemini import sse_data as _g_sse_fb, SSE_DONE as _G_SSE_FB, terminal_error_frame as _g_term_fb
+                                    _fb_status = getattr(_fallback, "status_code", 502) or 502
+                                    yield _g_sse_fb(_g_term_fb(_fb_status, _fb_bytes.decode("utf-8", "replace")[:500] or "fallback_failed", target_model))
+                                    yield _G_SSE_FB
+                                except Exception as _fb_err:
+                                    print(f"[Combo Fallback] nested-response serialization failed: {_fb_err}", flush=True)
+                                    from app.compat.adapters.gemini import sse_data as _g_sse_fb2, SSE_DONE as _G_SSE_FB2, terminal_error_frame as _g_term_fb2
+                                    yield _g_sse_fb2(_g_term_fb2(502, "fallback_failed", target_model))
+                                    yield _G_SSE_FB2
+                                return
+                            async for _fc in _ns_iter:
+                                yield _fc
+                            return
+                        except _ComboWrapRestart as _ns_wrap:
+                            if _retry_state is None:
+                                _ns_backoff = float(getattr(_ns_wrap, "backoff", 0) or 0)
+                                _ns_state = _ns_wrap.retry_state
+                                continue
+                            raise
                 except (GeneratorExit, asyncio.CancelledError):
                     raise
                 except Exception:
@@ -14858,40 +14885,52 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         stats["error"] = None
                         _retry_again = True
                     except _ComboFallbackNeeded as _cf_anthr:
-                        if not getattr(_cf_anthr, "backoff", 0):
-                            _mark_conn_failed_for_retry(_cf_anthr.retry_state, getattr(_cf_anthr, "status_code", 502), getattr(_cf_anthr, "err_text", ""))
+                        _ns_backoff = float(getattr(_cf_anthr, "backoff", 0) or 0)
+                        _ns_state = _cf_anthr.retry_state
+                        if not _ns_backoff:
+                            _mark_conn_failed_for_retry(_ns_state, getattr(_cf_anthr, "status_code", 502), getattr(_cf_anthr, "err_text", ""))
                         # Body-level upstream failure (e.g. 524 stall after headers) —
                         # advance the combo chain instead of returning an error to the client.
-                        if getattr(_cf_anthr, "backoff", 0):
-                            # NEVER-STOP wrap: sleep the pass backoff (client
-                            # disconnect cancels — the only permitted terminator).
-                            await asyncio.sleep(_cf_anthr.backoff)
-                        _anthr_fallback = await _process_chat_completion(
-                            body, client_wants_anthropic, client_wants_gemini,
-                            _retry_state=_cf_anthr.retry_state,
-                            request=request,
-                        )
-                        if hasattr(_anthr_fallback, "body_iterator"):
-                            async for _fc in _anthr_fallback.body_iterator:
-                                yield _fc
-                        elif hasattr(_anthr_fallback, "__aiter__"):
-                            async for _fc in _anthr_fallback:
-                                yield _fc
-                        else:
-                            # TYPEERROR FIX (2026-08-24): serialize a plain
-                            # Response/JSONResponse instead of 'async for' (TypeError
-                            # -> terminal 502 -> force-stop).
+                        while True:
+                            if _ns_backoff:
+                                # NEVER-STOP wrap: sleep the pass backoff (client
+                                # disconnect cancels — the only permitted terminator).
+                                await asyncio.sleep(_ns_backoff)
                             try:
-                                _afb = getattr(_anthr_fallback, "body", b"") or b""
-                                if isinstance(_afb, str):
-                                    _afb = _afb.encode("utf-8", "replace")
-                                _afb_err = {"error": {"message": _afb.decode("utf-8", "replace")[:500] or "fallback_failed", "type": "proxy_error"}}
-                                yield f"data: {json.dumps(_afb_err)}\n\n".encode("utf-8")
-                                yield b"data: [DONE]\n\n"
-                            except Exception:
-                                yield f'data: {{"error": {{"message": "fallback_failed", "type": "proxy_error"}}}}\n\n'.encode("utf-8")
-                                yield b"data: [DONE]\n\n"
-                        return
+                                _anthr_fallback = await _process_chat_completion(
+                                    body, client_wants_anthropic, client_wants_gemini,
+                                    _retry_state=_ns_state,
+                                    request=request,
+                                    _stream_guard=False,
+                                )
+                                if hasattr(_anthr_fallback, "body_iterator"):
+                                    _ns_iter = _anthr_fallback.body_iterator
+                                elif hasattr(_anthr_fallback, "__aiter__"):
+                                    _ns_iter = _anthr_fallback
+                                else:
+                                    # TYPEERROR FIX (2026-08-24): serialize a plain
+                                    # Response/JSONResponse instead of 'async for' (TypeError
+                                    # -> terminal 502 -> force-stop).
+                                    try:
+                                        _afb = getattr(_anthr_fallback, "body", b"") or b""
+                                        if isinstance(_afb, str):
+                                            _afb = _afb.encode("utf-8", "replace")
+                                        _afb_err = {"error": {"message": _afb.decode("utf-8", "replace")[:500] or "fallback_failed", "type": "proxy_error"}}
+                                        yield f"data: {json.dumps(_afb_err)}\n\n".encode("utf-8")
+                                        yield b"data: [DONE]\n\n"
+                                    except Exception:
+                                        yield f'data: {{"error": {{"message": "fallback_failed", "type": "proxy_error"}}}}\n\n'.encode("utf-8")
+                                        yield b"data: [DONE]\n\n"
+                                    return
+                                async for _fc in _ns_iter:
+                                    yield _fc
+                                return
+                            except _ComboWrapRestart as _ns_wrap:
+                                if _retry_state is None:
+                                    _ns_backoff = float(getattr(_ns_wrap, "backoff", 0) or 0)
+                                    _ns_state = _ns_wrap.retry_state
+                                    continue
+                                raise
                     except (GeneratorExit, asyncio.CancelledError):
                         if _should_mark_client_disconnected(stats):
                             try:
@@ -17846,7 +17885,7 @@ async def _forward_antigravity_ccpa_control(request: Request, operation: str):
             try:
                 upstream_response = await client.send(upstream_request, stream=True)
                 break
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
+            except (httpx.ProtocolError, httpx.ReadError, httpx.WriteError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
                 if google_egress_client is not None or attempt >= 2:
                     raise
                 rotate_google_ip_cache()
@@ -18119,7 +18158,7 @@ async def antigravity_fetch_available_models(request: Request):
                 try:
                     response = await client.send(native_request)
                     break
-                except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
+                except (httpx.ProtocolError, httpx.ReadError, httpx.WriteError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
                     if google_egress_client is not None or attempt >= 2:
                         raise
                     rotate_google_ip_cache()
