@@ -1457,8 +1457,9 @@ def classify_refusal(visible_text: str, had_tool_calls: bool) -> str:
 
 def response_visible_text(openai_json: Any) -> Tuple[str, bool]:
     """Extract (visible_text, had_tool_calls) from an OpenAI-shaped completion
-    dict (upstream reply OR the assembled stream-buffer product). Fail-open:
-    ("", False) when unparseable."""
+    dict (upstream reply OR the assembled stream-buffer product), or from
+    Anthropic / Gemini (including Cloud Code v1internal) / OpenAI Responses
+    non-stream dicts. Fail-open: ("", False) when unparseable."""
     try:
         if not isinstance(openai_json, dict):
             return ("", False)
@@ -1468,17 +1469,72 @@ def response_visible_text(openai_json: Any) -> Tuple[str, bool]:
             first = choices[0]
             if isinstance(first, dict):
                 choice = first
-        if choice is None:
-            return ("", False)
-        message = choice.get("message")
-        if not isinstance(message, dict):
-            return ("", False)
-        content = message.get("content")
-        text = content if isinstance(content, str) else (
-            _content_text(content) if isinstance(content, list) else ""
-        )
-        had_tools = bool(message.get("tool_calls"))
-        return (text, had_tools)
+        if choice is not None:
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                return ("", False)
+            content = message.get("content")
+            text = content if isinstance(content, str) else (
+                _content_text(content) if isinstance(content, list) else ""
+            )
+            had_tools = bool(message.get("tool_calls"))
+            return (text, had_tools)
+
+        # Anthropic non-stream dict: content = [{type: "text", text: ...}, {type: "tool_use", ...}]
+        anth_content = openai_json.get("content")
+        if isinstance(anth_content, list):
+            parts_text: List[str] = []
+            had_tools = False
+            for block in anth_content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "tool_use":
+                    had_tools = True
+                elif btype == "text" and isinstance(block.get("text"), str):
+                    parts_text.append(block["text"])
+            return ("".join(parts_text), had_tools)
+
+        # Gemini / Cloud Code v1internal non-stream dict: candidates or response.candidates
+        gem_cands = openai_json.get("candidates")
+        if not isinstance(gem_cands, list) and isinstance(openai_json.get("response"), dict):
+            gem_cands = openai_json["response"].get("candidates")
+        if isinstance(gem_cands, list):
+            parts_text = []
+            had_tools = False
+            for cand in gem_cands:
+                if not isinstance(cand, dict):
+                    continue
+                cand_content = cand.get("content")
+                if isinstance(cand_content, dict) and isinstance(cand_content.get("parts"), list):
+                    for part in cand_content["parts"]:
+                        if not isinstance(part, dict):
+                            continue
+                        if part.get("functionCall") or part.get("function_call"):
+                            had_tools = True
+                        elif not part.get("thought") and isinstance(part.get("text"), str):
+                            parts_text.append(part["text"])
+            return ("".join(parts_text), had_tools)
+
+        # OpenAI Responses API non-stream dict: output = [{type: "message"|"function_call", ...}]
+        resp_output = openai_json.get("output")
+        if isinstance(resp_output, list):
+            parts_text = []
+            had_tools = False
+            for item in resp_output:
+                if not isinstance(item, dict):
+                    continue
+                itype = item.get("type")
+                if itype == "function_call":
+                    had_tools = True
+                elif itype == "message" and isinstance(item.get("content"), list):
+                    for block in item["content"]:
+                        if isinstance(block, dict) and block.get("type") in ("output_text", "text"):
+                            if isinstance(block.get("text"), str):
+                                parts_text.append(block["text"])
+            return ("".join(parts_text), had_tools)
+
+        return ("", False)
     except Exception:
         return ("", False)
 
@@ -1880,9 +1936,12 @@ class FelStreamObserver:
                         # Extract content
                         self._add_text(delta.get("content", ""))
 
-                # Gemini SSE: candidates[].content.parts[]
-                if "candidates" in obj and isinstance(obj["candidates"], list):
-                    for cand in obj["candidates"]:
+                # Gemini SSE: candidates[].content.parts[] (bare or v1internal response.candidates)
+                _gem_cands = obj.get("candidates")
+                if not isinstance(_gem_cands, list) and isinstance(obj.get("response"), dict):
+                    _gem_cands = obj["response"].get("candidates")
+                if isinstance(_gem_cands, list):
+                    for cand in _gem_cands:
                         if not isinstance(cand, dict):
                             continue
                         content = cand.get("content")

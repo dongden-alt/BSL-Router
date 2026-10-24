@@ -1,4 +1,4 @@
-﻿"""
+"""
 Tests for the OrphanBlockGuard — defensive egress layer inside
 AnthropicStreamToolGuard (app/middleware/anthropic_tools.py).
 

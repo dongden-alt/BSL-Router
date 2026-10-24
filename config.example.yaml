@@ -46,7 +46,7 @@ aliases: {}
 
 admin:
   password_enabled: false
-  password: enc:YOUR_ENCRYPTED_ADMIN_PASSWORD_HERE
+  password: '123456'
 
 update:
   github_repo: ''
@@ -56,6 +56,9 @@ update:
 antigravity_integration:
   enabled: false
   mappings: {}
+
+claude_code_integration:
+  enabled: false
 
 # Google OAuth client credentials for the "antigravity" login flow. / Thông tin OAuth của Google cho luồng đăng nhập "antigravity".
 # Built-in Antigravity desktop OAuth credentials are used automatically when these

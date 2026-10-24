@@ -229,6 +229,7 @@ def acquire_instance_lock(port: int, intended_successor: bool = False,
     """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     lock_path = os.path.join(root, ".brain", "logs", f"router-{port}.lock")
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     deadline = time.monotonic() + max_wait_s
     waited = 0.0
     while True:

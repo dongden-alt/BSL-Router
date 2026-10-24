@@ -1,4 +1,4 @@
-﻿"""
+"""
 Regression tests for the 2026-08-23 dual-bug fix.
 
 Bug A - kilocode tools[0].type 400:

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Regression tests for the 2026-08-23 force-stop fix (deadline-stall fallback veto).
 
 BUG: CHAIN_TOTAL_BUDGET (150s) < max(STREAM_DEADLINE_LADDER) (600s) inverted

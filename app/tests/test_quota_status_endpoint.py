@@ -1,4 +1,4 @@
-﻿"""Per-key quota probe: unit normalization + /api/quota/status contract.
+"""Per-key quota probe: unit normalization + /api/quota/status contract.
 
 Research 2026-08-24 (source-verified one-api/new-api):
   subscription hard_limit_usd = (RemainQuota+UsedQuota)/QuotaPerUnit (500k=$1)

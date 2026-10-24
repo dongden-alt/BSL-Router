@@ -146,6 +146,24 @@ def init_config(path: str | None = None) -> None:
     integration.setdefault("enabled", False)
     integration.setdefault("mappings", {})
 
+    # Enforce canonical type + format for known OAuth providers present in config
+    _oauth_formats = {
+        "claude": "anthropic",
+        "kiro": "kiro",
+        "codex": "openai",
+        "antigravity": "openai",
+        "github": "openai",
+        "grok-cli": "openai",
+        "cursor": "openai",
+    }
+    _raw_provs = raw.get("providers")
+    if isinstance(_raw_provs, dict):
+        for _pid, _pfmt in _oauth_formats.items():
+            _pcfg = _raw_provs.get(_pid)
+            if isinstance(_pcfg, dict):
+                _pcfg["type"] = "oauth"
+                _pcfg["format"] = _pfmt
+
     # One-time migration: detect plaintext secrets and encrypt them
     from app.crypto import migrate_plaintext_config
     raw, migrated = migrate_plaintext_config(raw)

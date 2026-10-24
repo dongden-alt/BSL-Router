@@ -112,10 +112,14 @@ const OAUTH_PROVIDER_MODELS = {
         // google-api-nodejs-client/9.15.1 (hub/2.24.0 returned wrong tier).
         // Gemini 4 Argon
         { id: 'gemini-4-argon-high' },
+        { id: 'gemini-4-argon-medium' },
+        { id: 'gemini-4-argon-low' },
+        { id: 'gemini-4-argon' },
         // Gemini 3.8 Flash
         { id: 'gemini-3.8-flash-high' },
         { id: 'gemini-3.8-flash-medium' },
         { id: 'gemini-3.8-flash-low' },
+        { id: 'gemini-3.8-flash-tiered' },
         { id: 'gemini-3.8-flash' },
         // Gemini 3.7 Flash
         { id: 'gemini-3.7-flash-high' },
@@ -601,6 +605,9 @@ async function fetchConfig() {
                 } else {
                     // Always enforce type from KNOWN_PROVIDERS — prevents stale config from mis-routing oauth providers
                     globalConfig.providers[p.id].type = cat;
+                    if (cat === 'oauth' || !globalConfig.providers[p.id].format) {
+                        globalConfig.providers[p.id].format = p.format;
+                    }
                 }
             });
         });

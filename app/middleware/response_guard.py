@@ -536,6 +536,43 @@ def serialize_tool_args(openai_response: Any) -> str:
                     payload = block.get("input")
                     if isinstance(payload, dict):
                         pieces.append(json.dumps(payload, ensure_ascii=False, default=str))
+            # Gemini / Cloud Code v1internal candidates[].content.parts[].functionCall
+            gem_cands = openai_response.get("candidates")
+            if not isinstance(gem_cands, list) and isinstance(openai_response.get("response"), dict):
+                gem_cands = openai_response["response"].get("candidates")
+            if isinstance(gem_cands, list):
+                for cand in gem_cands:
+                    if not isinstance(cand, dict):
+                        continue
+                    cand_content = cand.get("content")
+                    if isinstance(cand_content, dict) and isinstance(cand_content.get("parts"), list):
+                        for part in cand_content["parts"]:
+                            if not isinstance(part, dict):
+                                continue
+                            fc = part.get("functionCall") or part.get("function_call")
+                            if isinstance(fc, dict):
+                                name = fc.get("name")
+                                args = fc.get("args")
+                                if isinstance(name, str) and name:
+                                    pieces.append(name)
+                                if isinstance(args, str) and args:
+                                    pieces.append(args)
+                                elif isinstance(args, dict):
+                                    pieces.append(json.dumps(args, ensure_ascii=False, default=str))
+            # OpenAI Responses API output[] function_call items
+            resp_output = openai_response.get("output")
+            if isinstance(resp_output, list):
+                for item in resp_output:
+                    if not isinstance(item, dict) or item.get("type") != "function_call":
+                        continue
+                    name = item.get("name")
+                    args = item.get("arguments")
+                    if isinstance(name, str) and name:
+                        pieces.append(name)
+                    if isinstance(args, str) and args:
+                        pieces.append(args)
+                    elif isinstance(args, dict):
+                        pieces.append(json.dumps(args, ensure_ascii=False, default=str))
         return "\n".join(pieces)
     except Exception:
         return ""
@@ -882,8 +919,10 @@ class ResponseGuardObserver:
                                         self._add_tool_args(fn.get("arguments"))
                         self._add_text(choice_delta.get("content", ""))
 
-                # Gemini dialect: candidates[].content.parts[]
+                # Gemini dialect: candidates[].content.parts[] (bare or v1internal response.candidates)
                 candidates = obj.get("candidates")
+                if not isinstance(candidates, list) and isinstance(obj.get("response"), dict):
+                    candidates = obj["response"].get("candidates")
                 if isinstance(candidates, list):
                     for cand in candidates:
                         if not isinstance(cand, dict):

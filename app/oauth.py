@@ -900,10 +900,14 @@ OAUTH_PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
         # plan-gated models resolve for Ultra accounts.
         # --- Gemini 4 Argon ---
         {"id": "gemini-4-argon-high"},
+        {"id": "gemini-4-argon-medium"},
+        {"id": "gemini-4-argon-low"},
+        {"id": "gemini-4-argon"},
         # --- Gemini 3.8 Flash ---
         {"id": "gemini-3.8-flash-high"},
         {"id": "gemini-3.8-flash-medium"},
         {"id": "gemini-3.8-flash-low"},
+        {"id": "gemini-3.8-flash-tiered"},
         {"id": "gemini-3.8-flash"},
         # --- Gemini 3.7 Flash ---
         {"id": "gemini-3.7-flash-high"},
@@ -1016,6 +1020,46 @@ OAUTH_PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
 }
 
 
+OAUTH_PROVIDER_FORMATS: dict[str, str] = {
+    "claude": "anthropic",
+    "kiro": "kiro",
+    "codex": "openai",
+    "antigravity": "openai",
+    "github": "openai",
+    "grok-cli": "openai",
+    "cursor": "openai",
+}
+
+
+def ensure_oauth_provider_defaults(provider: str, provider_config: dict[str, Any]) -> None:
+    """Ensure an OAuth provider config entry has canonical type, format, connections,
+    and non-destructively backfilled predefined models (enabled=False by default)."""
+    if not isinstance(provider_config, dict):
+        return
+    provider_config["type"] = "oauth"
+    provider_config["format"] = OAUTH_PROVIDER_FORMATS.get(
+        provider, provider_config.get("format") or "openai"
+    )
+    provider_config.setdefault("connections", [])
+    models = provider_config.setdefault("models", [])
+    if not isinstance(models, list):
+        models = []
+        provider_config["models"] = models
+    predefined = OAUTH_PROVIDER_MODELS.get(provider, [])
+    if predefined:
+        existing_ids = {
+            m.get("id") for m in models if isinstance(m, dict) and isinstance(m.get("id"), str)
+        }
+        for m in predefined:
+            mid = m.get("id")
+            if isinstance(mid, str) and mid and mid not in existing_ids:
+                row: dict[str, Any] = {"id": mid, "enabled": False}
+                if "kind" in m:
+                    row["kind"] = m["kind"]
+                models.append(row)
+                existing_ids.add(mid)
+
+
 @oauth_router.get("/providers/models")
 async def get_oauth_provider_models():
     """Return predefined model lists for all OAuth providers."""
@@ -1079,6 +1123,7 @@ def _save_connection(provider: str, flow_type: str, access_token: str, refresh_t
         raise HTTPException(status_code=503, detail="Router configuration is not loaded")
     providers = config.setdefault("providers", {})
     provider_config = providers.setdefault(provider, {"type": "oauth", "connections": []})
+    ensure_oauth_provider_defaults(provider, provider_config)
     connections = provider_config.setdefault("connections", [])
     if not isinstance(connections, list):
         raise HTTPException(status_code=500, detail=f"Provider {provider} has an invalid connections configuration")

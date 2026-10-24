@@ -2265,14 +2265,17 @@ def _antigravity_native_request_headers(request: Request) -> dict:
     """Copy Google inference-safe headers without recording authorization values."""
     explicit_headers = {
         "authorization", "x-goog-api-key", "content-type", "accept",
-        "accept-encoding", "accept-language", "user-agent", "x-client-data",
+        "accept-language", "user-agent", "x-client-data",
         "x-cloud-trace-context", "x-request-id",
     }
     headers = {}
     for name, value in request.headers.items():
         normalized = name.lower()
+        if normalized == "accept-encoding":
+            continue
         if normalized in explicit_headers or normalized.startswith(("x-goog-", "x-client-")):
             headers[name] = value
+    headers["accept-encoding"] = "identity"
     return headers
 
 
@@ -2333,8 +2336,9 @@ async def _forward_antigravity_native_or_error(
 def _antigravity_native_response_headers(response: httpx.Response) -> dict:
     """Forward end-to-end-safe metadata without transfer framing fields."""
     excluded = {
-        "connection", "content-length", "keep-alive", "proxy-authenticate",
-        "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade",
+        "connection", "content-encoding", "content-length", "keep-alive",
+        "proxy-authenticate", "proxy-authorization", "te", "trailer",
+        "transfer-encoding", "upgrade",
     }
     return {name: value for name, value in response.headers.items() if name.lower() not in excluded}
 
@@ -3217,7 +3221,7 @@ async def lifespan(app: FastAPI):
         _boot_cfg = cs_get_config()
         if _boot_cfg.get("antigravity_integration", {}).get("enabled", False):
             await asyncio.to_thread(patch_antigravity, port=_boot_cfg.get("server", {}).get("port", 6969), restore=False)
-        if _boot_cfg.get("claude_code_integration", {}).get("enabled", True):
+        if _boot_cfg.get("claude_code_integration", {}).get("enabled", False):
             await asyncio.to_thread(_sync_claude_code_settings, _boot_cfg)
     except Exception as _boot_int_err:
         print(f"[BSL Router] Startup app integration sync warning: {_boot_int_err}", flush=True)
@@ -11723,7 +11727,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 except Exception:
                     for _b in _buffered:
                         yield _b
-                    return
+                    _buffered.clear()
+                    raise
 
                 if not _triggered_class and _buffered and not _passthrough:
                     _peek_text = "".join(_peek_obs._text_chunks)
@@ -11790,6 +11795,21 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                         await _rec_aclose()
                                     except Exception:
                                         pass
+                                _rec_bg = getattr(_rec_resp, "background", None)
+                                if _rec_bg is not None:
+                                    try:
+                                        await _rec_bg()
+                                    except Exception:
+                                        pass
+                            return
+                        elif getattr(_rec_resp, "body", None):
+                            yield _rec_resp.body
+                            _rec_bg = getattr(_rec_resp, "background", None)
+                            if _rec_bg is not None:
+                                try:
+                                    await _rec_bg()
+                                except Exception:
+                                    pass
                             return
                     except Exception as _srec_err:
                         print(f"[FEL] stream refusal recovery failed (fail-open): {_srec_err}", flush=True)
@@ -18998,12 +19018,13 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                 detected_plan = _normalize_oauth_tier(provider, None, conn, raw_data) or detected_plan
         elif token and provider in ("antigravity", "gemini-cli"):
             project_id = str(pd.get("project_id") or pd.get("projectId") or conn.get("project_id") or conn.get("projectId") or "").strip()
+            from app.utils.google_cloudcode_egress import google_cloudcode_sync_post
             sub_cache_key = token[:32]
             sub_cached = _ANTIGRAVITY_SUB_CACHE.get(sub_cache_key)
             sub_data = sub_cached[1] if (sub_cached and not force and now - sub_cached[0] < 300.0) else None
             if sub_data is None:
                 try:
-                    sub_resp = httpx.post(
+                    sub_resp = google_cloudcode_sync_post(
                         "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
                         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "antigravity/1.23.2 darwin/arm64"},
                         json={"metadata": {"ideType": "ANTIGRAVITY"}, "mode": 1},
@@ -19025,7 +19046,7 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
 
             url = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
             ag_ua = getattr(_ag_upstream_contract, "ANTIGRAVITY_UPSTREAM_UA", "antigravity/hub/2.24.0 windows/amd64")
-            response = httpx.post(
+            response = google_cloudcode_sync_post(
                 url,
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": ag_ua},
                 json={"project": project_id} if project_id else {},
@@ -19043,7 +19064,7 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                 raw_groups.append({"displayName": "Google", "buckets": list(data.get("buckets") or [])})
             if not raw_groups and provider == "gemini-cli" and project_id:
                 try:
-                    g_resp = httpx.post(
+                    g_resp = google_cloudcode_sync_post(
                         "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
                         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                         json={"project": project_id},

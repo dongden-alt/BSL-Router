@@ -480,3 +480,136 @@ def build_google_egress_client() -> httpx.AsyncClient:
         transport=transport,
         trust_env=False,  # env proxy vars must never redirect this client
     )
+
+
+class HostsBypassSyncBackend(httpcore.NetworkBackend):
+    """Synchronous delegating network backend that redirects ONLY allowlisted Google hosts."""
+
+    def __init__(self, inner: httpcore.NetworkBackend):
+        self._inner = inner
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: Optional[float] = None,
+        local_address: Optional[str] = None,
+        socket_options=None,
+    ):
+        if host in ALLOWED_GOOGLE_HOSTS:
+            ips = resolve_google_ips(host)
+            if not ips:
+                raise httpcore.ConnectError(
+                    f"no safe public Google IP resolvable for {host}"
+                )
+            last_exc: Optional[BaseException] = None
+            _attempt = 0
+            for ip in ips:
+                try:
+                    stream = self._inner.connect_tcp(
+                        ip,
+                        port,
+                        timeout=timeout,
+                        local_address=local_address,
+                        socket_options=socket_options,
+                    )
+                    logger.info("google-egress-sync connected %s:%s via %s", host, port, ip)
+                    return stream
+                except Exception as exc:
+                    last_exc = exc
+                    _attempt += 1
+                    logger.warning(
+                        "google-egress-sync connect failover: %s (%s), trying next (attempt %d/%d)",
+                        ip,
+                        type(exc).__name__,
+                        _attempt,
+                        len(ips),
+                    )
+                    if _attempt < len(ips):
+                        _delay = min(
+                            _EGRESS_BACKOFF_BASE_S * (2 ** (_attempt - 1)),
+                            _EGRESS_BACKOFF_MAX_S,
+                        )
+                        time.sleep(_delay)
+            assert last_exc is not None
+            raise last_exc
+
+        return self._inner.connect_tcp(
+            host,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    def connect_unix_socket(self, *args, **kwargs):
+        return self._inner.connect_unix_socket(*args, **kwargs)
+
+    def sleep(self, seconds: float) -> None:
+        self._inner.sleep(seconds)
+
+
+def _discover_default_sync_backend() -> httpcore.NetworkBackend:
+    """Return httpcore's default synchronous network backend instance."""
+    probe = httpcore.ConnectionPool()
+    for value in vars(probe).values():
+        if hasattr(value, "connect_tcp"):
+            return value
+    return httpcore.SyncBackend()
+
+
+def build_google_egress_sync_client() -> httpx.Client:
+    """Build a dedicated hosts-file-bypassing synchronous httpx.Client for Google Cloud Code."""
+    _check_pinned_stack()
+
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    backend = HostsBypassSyncBackend(_discover_default_sync_backend())
+
+    pool = httpcore.ConnectionPool(
+        ssl_context=ssl_context,
+        max_connections=50,
+        max_keepalive_connections=20,
+        keepalive_expiry=_KEEPALIVE_EXPIRY,
+        http1=True,
+        http2=True,
+        retries=_POOL_RETRIES,
+        network_backend=backend,
+    )
+
+    transport = httpx.HTTPTransport()
+    transport._pool = pool
+
+    return httpx.Client(
+        timeout=_UPSTREAM_TIMEOUT,
+        transport=transport,
+        trust_env=False,
+    )
+
+
+_SYNC_CLIENT_LOCK = threading.Lock()
+_SYNC_CLIENT: Optional[httpx.Client] = None
+_ORIG_HTTPX_POST = httpx.post
+
+
+def _get_google_egress_sync_client() -> httpx.Client:
+    global _SYNC_CLIENT
+    if _SYNC_CLIENT is None:
+        with _SYNC_CLIENT_LOCK:
+            if _SYNC_CLIENT is None:
+                _SYNC_CLIENT = build_google_egress_sync_client()
+    return _SYNC_CLIENT
+
+
+def google_cloudcode_sync_post(
+    url: str,
+    *,
+    headers: Optional[dict] = None,
+    json: Optional[object] = None,
+    timeout: float = 4.5,
+) -> httpx.Response:
+    """Send a synchronous POST to an allowlisted Google Cloud Code endpoint using
+    the hosts-file-bypassing client, while honoring test monkeypatches on httpx.post."""
+    if httpx.post is not _ORIG_HTTPX_POST or hasattr(httpx.post, "_mock_name"):
+        return httpx.post(url, headers=headers, json=json, timeout=timeout)
+    client = _get_google_egress_sync_client()
+    return client.post(url, headers=headers, json=json, timeout=timeout)
