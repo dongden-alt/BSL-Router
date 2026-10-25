@@ -284,6 +284,14 @@ def _normalize_tool_parameters(params: Any) -> Dict[str, Any]:
                     continue
                 if key not in _GEMINI_SCHEMA_KEEP:
                     continue
+                if key in ("minItems", "maxItems"):
+                    from app.compat.adapters.gemini import _coerce_schema_int
+                    out[key] = _coerce_schema_int(child)
+                    continue
+                if key in ("minimum", "maximum"):
+                    from app.compat.adapters.gemini import _coerce_schema_num
+                    out[key] = _coerce_schema_num(child)
+                    continue
                 if key == "type" and isinstance(child, str):
                     out[key] = child.lower()
                     continue

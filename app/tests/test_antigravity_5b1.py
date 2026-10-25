@@ -505,6 +505,172 @@ def test_non_stream_empty_content_keeps_parts_nonempty():
     assert parts[0]["text"].strip() != ""
 
 
+def test_protojson_stringified_schema_integers_coerced_across_all_providers():
+    """Regression (2026-10-26): Antigravity's Go `protojson` serializes int64
+    fields in `learning.genai.beyond.Schema` (`minLength`, `maxLength`,
+    `minItems`, `maxItems`, `minProperties`, `maxProperties`) as JSON strings
+    (e.g. `send_message` carries `"minLength": "1"` on `Recipient` and `Message`).
+    Strict JSON Schema validators (`agentrouter/gpt-5.6-sol`, `codex/gpt-5.6-sol`,
+    Anthropic, Kiro, etc.) reject `"1"` with:
+      `Invalid schema for function 'send_message': '1' is not of type 'integer'`.
+    Verify all ingress/egress normalizers coerce stringified numeric constraints
+    without corrupting property names that happen to match schema keywords.
+    """
+    from app.normalizer import UniversalNormalizer
+    from app import codex_adapter, kiro_adapter, normalizer_v2
+    from app.compat.adapters.antigravity_upstream import _normalize_tool_parameters
+
+    send_message_params = {
+        "type": "OBJECT",
+        "properties": {
+            "Recipient": {
+                "type": "STRING",
+                "description": "Conversation ID of the agent to message.",
+                "minLength": "1",
+                "maxLength": "128",
+            },
+            "Message": {
+                "type": "STRING",
+                "description": "Content of the message.",
+                "minLength": "1",
+            },
+            "Tags": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+                "minItems": "1",
+                "maxItems": "3",
+            },
+            "Timeout": {
+                "type": "INTEGER",
+                "minimum": "0",
+                "maximum": "30000",
+                "multipleOf": "0.5",
+            },
+            # Property whose user-defined name collides with a numeric schema keyword:
+            "minLength": {
+                "type": "STRING",
+                "minLength": "2",
+            },
+        },
+        "minProperties": "1",
+        "maxProperties": "10",
+        "required": ["Recipient", "Message"],
+    }
+    wrapper = _wrapper(
+        [{"role": "user", "parts": [{"text": "compact"}]}],
+        tools=[{
+            "functionDeclarations": [
+                {"name": "send_message", "description": "Send message", "parameters": send_message_params},
+                {"name": "json_schema_decl", "parametersJsonSchema": {"type": "OBJECT", "properties": {"x": {"type": "STRING", "minLength": "4"}}}},
+            ]
+        }],
+    )
+    ob = gemini_request_to_openai(unwrap_request(wrapper), "gpt-5.6-sol")
+    p = ob["tools"][0]["function"]["parameters"]
+    assert p["properties"]["Recipient"]["minLength"] == 1
+    assert isinstance(p["properties"]["Recipient"]["minLength"], int)
+    assert p["properties"]["Recipient"]["maxLength"] == 128
+    assert p["properties"]["Message"]["minLength"] == 1
+    assert p["properties"]["Tags"]["minItems"] == 1
+    assert p["properties"]["Tags"]["maxItems"] == 3
+    assert p["properties"]["Timeout"]["minimum"] == 0
+    assert p["properties"]["Timeout"]["maximum"] == 30000
+    assert p["properties"]["Timeout"]["multipleOf"] == 0.5
+    assert p["minProperties"] == 1
+    assert p["maxProperties"] == 10
+    # Property literally named "minLength" is preserved as a subschema dict:
+    assert isinstance(p["properties"]["minLength"], dict)
+    assert p["properties"]["minLength"]["type"] == "string"
+    assert p["properties"]["minLength"]["minLength"] == 2
+    # parametersJsonSchema fallback also sanitized:
+    p2 = ob["tools"][1]["function"]["parameters"]
+    assert p2["properties"]["x"]["minLength"] == 4
+
+    # Direct OpenAI ingress (UniversalNormalizer.normalize_to_openai) with raw stringified minLength:
+    raw_openai = {
+        "model": "agentrouter/gpt-5.6-sol",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "send_message", "parameters": copy.deepcopy(send_message_params)}}],
+    }
+    internal_req = UniversalNormalizer.normalize_to_openai(raw_openai)
+    assert internal_req.tools[0]["function"]["parameters"]["properties"]["Recipient"]["minLength"] == 1
+
+    # Anthropic egress & ingress:
+    anth_payload = UniversalNormalizer.normalize_to_anthropic(internal_req)
+    assert anth_payload["tools"][0]["input_schema"]["properties"]["Recipient"]["minLength"] == 1
+    anth_roundtrip = UniversalNormalizer.normalize_to_openai_from_anthropic({
+        "model": "claude",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"name": "send_message", "input_schema": copy.deepcopy(send_message_params)}],
+    })
+    assert anth_roundtrip["tools"][0]["function"]["parameters"]["properties"]["Recipient"]["minLength"] == 1
+
+    # Codex Responses egress:
+    codex_body = codex_adapter.openai_to_responses(copy.deepcopy(raw_openai))
+    assert codex_body["tools"][0]["parameters"]["properties"]["Recipient"]["minLength"] == 1
+
+    # Kiro egress:
+    kiro_tools = kiro_adapter._convert_tools_v2(raw_openai["tools"])
+    assert kiro_tools[0]["toolSpecification"]["inputSchema"]["json"]["properties"]["Recipient"]["minLength"] == 1
+
+    # normalizer_v2 Gemini ingress:
+    can = normalizer_v2.to_canonical(normalizer_v2.DIALECT_GEMINI, unwrap_request(wrapper))
+    assert can.tools[0]["function"]["parameters"]["properties"]["Recipient"]["minLength"] == 1
+
+    # Antigravity Cloud Code upstream egress (coerces allowlisted minItems/maxItems/minimum/maximum):
+    ag_params = _normalize_tool_parameters(send_message_params)
+    assert ag_params["properties"]["Tags"]["minItems"] == 1
+    assert ag_params["properties"]["Tags"]["maxItems"] == 3
+    assert ag_params["properties"]["Timeout"]["minimum"] == 0
+    assert ag_params["properties"]["Timeout"]["maximum"] == 30000
+
+
+def test_codex_sse_error_classification_treats_invalid_schema_as_400():
+    """Regression (2026-10-26): Codex SSE `response.failed` with
+    `Invalid schema for function 'send_message': "1" is not of type "integer"`
+    must classify as HTTP 400 (client/schema validation error), NOT 503 (which
+    triggered 4x `[CodexOverloadRetry]` on the same account and tripped the
+    circuit breaker as `server_error`)."""
+    from app.codex_adapter import classify_codex_error_status
+
+    err_obj = {
+        "code": "invalid_function_parameters",
+        "message": 'Invalid schema for function \'send_message\': "1" is not of type "integer"',
+    }
+    assert classify_codex_error_status(err_obj, err_obj["message"], default_status=503) == 400
+    assert classify_codex_error_status({}, "Invalid schema for function 'send_message': '1' is not of type 'integer'") == 400
+    assert classify_codex_error_status({"code": "rate_limit_exceeded"}, "Rate limit reached") == 429
+    assert classify_codex_error_status({"code": "invalid_api_key"}, "Unauthorized token") == 401
+    assert classify_codex_error_status({"code": "server_error"}, "The server had an error processing your request") == 503
+
+
+def test_system_restart_endpoint_schedules_restart_and_returns_restarting(monkeypatch):
+    """Verify POST /api/system/restart returns 200 {"status": "restarting"}
+    and spawns the background restart thread without executing os._exit during tests."""
+    from fastapi.testclient import TestClient
+    import app.main as main_mod
+
+    spawned = []
+
+    class _DummyThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            spawned.append(self.target)
+
+    monkeypatch.setattr(main_mod, "_is_admin_auth_enabled", lambda: False)
+    monkeypatch.setattr(main_mod._threading, "Thread", _DummyThread)
+
+    client = TestClient(main_mod.app)
+    resp = client.post("/api/system/restart")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "restarting"
+    assert len(spawned) == 1
+
+
 if __name__ == "__main__":
     # Allow direct execution for quick local checks.
     import pytest

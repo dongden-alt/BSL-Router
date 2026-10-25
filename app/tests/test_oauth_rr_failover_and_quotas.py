@@ -223,6 +223,7 @@ def test_ui_static_contract_for_oauth_round_robin_and_dual_quota_bars():
 async def test_oauth_multi_account_immediate_failover_end_to_end():
     """When OAuth Account 0 returns 429, _process_chat_completion immediately retries Account 1 and clears softban."""
     import httpx
+    import asyncio
     from app import main as bsl_main
 
     oauth_antiban.reset_store()
@@ -514,6 +515,7 @@ def test_antigravity_quota_groups_google_and_claude():
 @pytest.mark.anyio
 async def test_ensure_and_probe_oauth_quota_refreshes_expired_token():
     """Verify _ensure_and_probe_oauth_quota refreshes expired OAuth token before probing upstream quota."""
+    import asyncio
     from app import main as bsl_main
 
     conn = {
@@ -713,6 +715,7 @@ def test_precise_quota_probes_for_kiro_grok_cursor_github_and_kimi():
 async def test_non_oauth_combo_rotates_all_tokens_per_leaf_before_advancing_model():
     """Non-OAuth multi-token/cookie models in a combo must rotate conn[0]->conn[1] BEFORE advancing to the next model ID."""
     import httpx
+    import asyncio
     from app import main as bsl_main
 
     _PROVIDER_RR_STATE.clear()
@@ -881,6 +884,7 @@ def test_codex_openai_to_responses_preserves_and_synthesizes_prompt_cache_key():
 
 def test_circuit_breaker_honors_resets_in_seconds_and_resolver_skips_zero_quota_oauth():
     """Verify 429 usage_limit_reached with resets_in_seconds opens breaker for window duration and _pick_connection skips 0%-quota accounts."""
+    import asyncio
     from app import main as bsl_main
     from app.circuit_breaker import CircuitBreaker
 
@@ -910,4 +914,45 @@ def test_circuit_breaker_honors_resets_in_seconds_and_resolver_skips_zero_quota_
     }
     picked = [_pick_connection(prov_cfg, "gpt-5.6-codex", "codex", breaker=None)[1] for _ in range(4)]
     assert picked == [0, 0, 0, 0]
+
+
+def test_grok_cli_protocol_version_and_headers_unified():
+    """Verify Grok CLI version >= 1.0.13 (1.0.70) is unified across proxy, OAuth exchange, and stealth UA."""
+    import asyncio
+    from app import main as bsl_main
+    from app import oauth as bsl_oauth
+
+    ver_parts = [int(p) for p in bsl_oauth._GROK_CLI_VERSION.split("-")[0].split(".")]
+    assert tuple(ver_parts) >= (1, 0, 70)
+    assert bsl_main._STEALTH_USER_AGENTS["grok-cli"] == bsl_oauth._GROK_CLI_USER_AGENT
+    assert bsl_main._STEALTH_USER_AGENTS["grok-image"] == bsl_oauth._GROK_CLI_USER_AGENT
+    assert bsl_main._STEALTH_USER_AGENTS["grok-video"] == bsl_oauth._GROK_CLI_USER_AGENT
+
+    headers: dict = {}
+    bsl_main._inject_provider_headers(
+        headers,
+        "grok-cli",
+        {"email": "dev@x.ai", "provider_data": {"userId": "user-123"}},
+    )
+    assert headers["x-xai-token-auth"] == "xai-grok-cli"
+    assert headers["x-grok-client-identifier"] == "grok-shell"
+    assert headers["x-grok-client-version"] == bsl_oauth._GROK_CLI_VERSION
+    assert headers["x-grok-client-mode"] == "headless"
+    assert headers["x-email"] == "dev@x.ai"
+    assert headers["x-userid"] == "user-123"
+
+    captured_headers: dict = {}
+
+    async def _fake_get_json(url: str, hdrs: dict):
+        captured_headers.update(hdrs)
+        return {"userId": "user-123", "email": "dev@x.ai", "hasGrokCodeAccess": True}
+
+    with patch.object(bsl_oauth, "_get_json", side_effect=_fake_get_json):
+        res = asyncio.run(bsl_oauth._post_exchange_grok({"access_token": "tok-abc"}))
+        assert res["user"]["userId"] == "user-123"
+        assert captured_headers["x-xai-token-auth"] == "xai-grok-cli"
+        assert captured_headers["x-grok-client-identifier"] == "grok-shell"
+        assert captured_headers["x-grok-client-version"] == bsl_oauth._GROK_CLI_VERSION
+        assert captured_headers["x-grok-client-mode"] == "headless"
+        assert captured_headers["User-Agent"] == bsl_oauth._GROK_CLI_USER_AGENT
 

@@ -2,6 +2,7 @@ from typing import List, Dict, Any
 import json
 import time
 from app.models import ChatCompletionRequest
+from app.compat.adapters.gemini import coerce_json_schema_numerics
 
 class UniversalNormalizer:
     @staticmethod
@@ -13,6 +14,14 @@ class UniversalNormalizer:
         # Use model_validate (Pydantic v2) instead of **kwargs unpacking.
         # This prevents crashes on unknown/extra fields sent by various clients
         # (e.g. OpenWebUI adds 'user', Cursor adds 'metadata', etc.)
+        if isinstance(request_body, dict) and isinstance(request_body.get("tools"), list):
+            from app.compat.adapters.gemini import coerce_json_schema_numerics
+            _clean_tools = []
+            for _t in request_body["tools"]:
+                if isinstance(_t, dict) and isinstance(_t.get("function"), dict) and isinstance(_t["function"].get("parameters"), dict):
+                    _t = {**_t, "function": {**_t["function"], "parameters": coerce_json_schema_numerics(_t["function"]["parameters"])}}
+                _clean_tools.append(_t)
+            request_body = {**request_body, "tools": _clean_tools}
         return ChatCompletionRequest.model_validate(request_body)
 
     # ------------------------------------------------------------------
@@ -222,7 +231,7 @@ class UniversalNormalizer:
                         "function": {
                             "name": tool.get("name", ""),
                             "description": tool.get("description", ""),
-                            "parameters": tool.get("input_schema", {"type": "object", "properties": {}})
+                            "parameters": coerce_json_schema_numerics(tool.get("input_schema", {"type": "object", "properties": {}}))
                         }
                     })
                 elif "function" in tool:
@@ -469,7 +478,7 @@ class UniversalNormalizer:
                     anthropic_tools.append({
                         "name": fn.get("name", ""),
                         "description": fn.get("description", ""),
-                        "input_schema": fn.get("parameters", {"type": "object", "properties": {}})
+                        "input_schema": coerce_json_schema_numerics(fn.get("parameters", {"type": "object", "properties": {}}))
                     })
                 elif "name" in tool:
                     # Already Anthropic format

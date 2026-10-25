@@ -12,6 +12,7 @@ import json
 import re
 import uuid
 from typing import Any
+from app.compat.adapters.gemini import coerce_json_schema_numerics
 
 # Kiro expects Content-Type: application/x-amz-json-1.0 for the generateAssistantResponse endpoint
 KIRO_CONTENT_TYPE = "application/x-amz-json-1.0"
@@ -195,7 +196,7 @@ def _convert_tools_v2(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]
                 "name": func.get("name", ""),
                 "description": func.get("description", ""),
                 "inputSchema": {
-                    "json": func.get("parameters", {})
+                    "json": coerce_json_schema_numerics(func.get("parameters", {}))
                 }
             }
         })

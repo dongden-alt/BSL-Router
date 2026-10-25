@@ -435,7 +435,8 @@ def _ingress_gemini(body: Dict[str, Any]) -> CanonicalRequest:
                 if fd.get("description") is not None:
                     fn["description"] = fd.get("description")
                 if fd.get("parameters") is not None:
-                    fn["parameters"] = fd.get("parameters")
+                    from app.compat.adapters.gemini import coerce_json_schema_numerics
+                    fn["parameters"] = coerce_json_schema_numerics(fd.get("parameters"))
                 can.tools.append({"type": "function", "function": fn})
         else:
             gem_extra.setdefault("tools_unmapped", []).append(tool)

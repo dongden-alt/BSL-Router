@@ -239,7 +239,7 @@ const KNOWN_PROVIDERS = {
         { id: 'codex',       name: 'OpenAI Codex',   format: 'openai',    url: 'https://chatgpt.com/backend-api/codex' },
         { id: 'github',      name: 'GitHub Copilot', format: 'openai',    url: 'https://api.githubcopilot.com' },
         { id: 'cursor',      name: 'Cursor IDE',     format: 'openai',    url: 'https://api2.cursor.sh' },
-        { id: 'grok-cli',    name: 'Grok CLI',       format: 'openai',    url: 'https://api.x.ai/v1' },
+        { id: 'grok-cli',    name: 'Grok CLI',       format: 'openai',    url: 'https://cli-chat-proxy.grok.com/v1' },
         { id: 'kiro',        name: 'Kiro AI',        format: 'kiro',      url: 'https://runtime.us-east-1.kiro.dev' },
     ],
     api: [
@@ -486,6 +486,60 @@ async function handleAdminLogout() {
 /**
  * Handle shutdown — terminates the BSL Router backend only.
  */
+async function handleRestart() {
+    if (!confirm('Are you sure you want to restart BSL Router?\n\nThis will terminate the current router process and immediately start it again.')) {
+        return;
+    }
+    const btn = document.getElementById('btn-system-restart');
+    const origHtml = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Restarting...`;
+    }
+    try {
+        const res = await fetch('/api/system/restart', { method: 'POST' });
+        if (!res.ok) {
+            showToast('Restart failed — check if server is running', true);
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+            }
+            return;
+        }
+        showToast('Restarting BSL Router — waiting for server to come back online...');
+    } catch (err) {
+        showToast('Restarting BSL Router — waiting for server to come back online...');
+    }
+
+    // Wait 2.5s for the old process to exit, then poll /health until the new process responds
+    setTimeout(() => {
+        let attempts = 0;
+        const maxAttempts = 30;
+        const pollTimer = setInterval(async () => {
+            attempts += 1;
+            try {
+                const healthRes = await fetch('/health', { cache: 'no-store' });
+                if (healthRes.ok) {
+                    clearInterval(pollTimer);
+                    showToast('BSL Router restarted successfully!');
+                    setTimeout(() => location.reload(), 500);
+                    return;
+                }
+            } catch (_) {
+                // Still restarting
+            }
+            if (attempts >= maxAttempts) {
+                clearInterval(pollTimer);
+                showToast('Server is taking longer than expected — please refresh the page.', true);
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = origHtml;
+                }
+            }
+        }, 1000);
+    }, 2500);
+}
+
 async function handleShutdown() {
     if (!confirm('Are you sure you want to shutdown BSL Router?\n\nThis will stop the backend service. Other applications will not be affected.')) {
         return;
@@ -7052,6 +7106,17 @@ function renderSettingsTab() {
 
         <div class="settings-section">
             <h2 class="section-title">⚡ System Controls</h2>
+
+            <div class="setting-row">
+                <div class="setting-info">
+                    <div class="setting-title">Restart BSL Router</div>
+                    <div class="setting-desc">Kills the current backend process and immediately starts a fresh instance on port 6969. Other applications (MITM proxy, tunnels, etc.) continue running unaffected.</div>
+                </div>
+                <button class="btn-restart" id="btn-system-restart" onclick="handleRestart()">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                    Restart
+                </button>
+            </div>
 
             <div class="setting-row">
                 <div class="setting-info">

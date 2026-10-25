@@ -56,6 +56,9 @@ from app.oauth import (
     ensure_fresh_token,
     consume_oauth_state,
     OAuthStateError,
+    _GROK_CLI_VERSION,
+    _GROK_CLI_CLIENT_IDENTIFIER,
+    _GROK_CLI_USER_AGENT,
 )
 from app.utils.google_cloudcode_egress import build_google_egress_client, rotate_google_ip_cache
 from app.compat.adapters import antigravity_upstream as _ag_upstream_contract
@@ -225,19 +228,19 @@ _STEALTH_USER_AGENTS: dict[str, str] = {
     "codex": "codex_cli_rs/0.61.0 (Windows NT 10.0; Win64; x64)",
     "kiro": "aws-toolkit-vscode/3.0.0",
     "github": "GitHubCopilotChat/0.26.7",
-    "grok-cli": "grok-pager/0.2.99 grok-shell/0.2.99 (linux; x86_64)",
+    "grok-cli": _GROK_CLI_USER_AGENT,
     "qwen": "qwen-cli/1.0.0",
     "cursor": "cursor/0.42.0",
     "openai": "codex_cli_rs/0.61.0 (Windows NT 10.0; Win64; x64)",
     # Image providers — map to the authentic UA of their app family
     "openai-image": "codex_cli_rs/0.61.0 (Windows NT 10.0; Win64; x64)",
     "gemini-image": "google-api-nodejs-client/9.15.1",
-    "grok-image": "grok-pager/0.2.99 grok-shell/0.2.99 (linux; x86_64)",
+    "grok-image": _GROK_CLI_USER_AGENT,
     "qwen-image": "qwen-cli/1.0.0",
     # Video providers
     "openai-video": "codex_cli_rs/0.61.0 (Windows NT 10.0; Win64; x64)",
     "google-veo": "google-api-nodejs-client/9.15.1",
-    "grok-video": "grok-pager/0.2.99 grok-shell/0.2.99 (linux; x86_64)",
+    "grok-video": _GROK_CLI_USER_AGENT,
     "runway-video": "RunwayML-API/1.0",
     # OpenCode gateways
     "opencode-zen": "opencode/1.0.0",
@@ -325,9 +328,17 @@ def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dic
     # "Your Grok CLI version (none) is outdated."
     if provider_name == 'grok-cli':
         headers["x-xai-token-auth"] = "xai-grok-cli"
-        headers["x-grok-client-identifier"] = "grok-pager"
+        headers["x-grok-client-identifier"] = _GROK_CLI_CLIENT_IDENTIFIER
         # ponytail: pin to 9Router-tested version; bump when 9Router updates
-        headers["x-grok-client-version"] = "0.2.99"
+        headers["x-grok-client-version"] = _GROK_CLI_VERSION
+        _g_pd = (active_conn.get('provider_data') if isinstance(active_conn, dict) else None) or {}
+        if isinstance(_g_pd, dict):
+            _g_email = str((active_conn.get('email') if isinstance(active_conn, dict) else '') or _g_pd.get('email') or '').strip()
+            _g_uid = str(_g_pd.get('userId') or _g_pd.get('user_id') or '').strip()
+            if _g_email:
+                headers["x-email"] = _g_email
+            if _g_uid:
+                headers["x-userid"] = _g_uid
         headers["x-grok-client-mode"] = "headless"
 
     # Codex (OpenAI): chatgpt.com/backend-api/codex requires ChatGPT-Account-ID.
@@ -5708,6 +5719,137 @@ async def auth_status(request: Request):
     return JSONResponse({"auth_required": True, "authenticated": authenticated})
 
 
+
+
+def _collect_router_kill_pids() -> list[int]:
+    """Walk UP from our own PID collecting every python/uvicorn ancestor so a
+    restart or shutdown terminates the full router process tree (including venv
+    stub launcher and watchdog supervisor) without touching external shells."""
+    import subprocess as _sp
+    my_pid = _os_module.getpid()
+    pid_info = {}
+    try:
+        wmic = _sp.run(
+            ['wmic', 'process', 'get', 'ProcessId,ParentProcessId,Name', '/format:csv'],
+            capture_output=True, text=True, timeout=8
+        )
+        for row in wmic.stdout.splitlines():
+            cols = row.strip().split(',')
+            if len(cols) >= 4 and cols[3].strip().isdigit() and cols[2].strip().isdigit():
+                pid_v = int(cols[3].strip())
+                ppid_v = int(cols[2].strip())
+                name_v = cols[1].strip().lower()
+                pid_info[pid_v] = (ppid_v, name_v)
+    except Exception:
+        pid_info = {}
+    if not pid_info:
+        try:
+            ps = _sp.run(
+                ['powershell', '-NoProfile', '-Command',
+                 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId),$($_.ParentProcessId),$($_.Name)" }'],
+                capture_output=True, text=True, timeout=8
+            )
+            for row in ps.stdout.splitlines():
+                cols = row.strip().split(',')
+                if len(cols) >= 3 and cols[0].strip().isdigit() and cols[1].strip().isdigit():
+                    pid_info[int(cols[0].strip())] = (int(cols[1].strip()), cols[2].strip().lower())
+        except Exception:
+            pass
+    kill_pids = [my_pid]
+    cur = my_pid
+    for _ in range(10):
+        entry = pid_info.get(cur)
+        if not entry:
+            break
+        ppid, _name = entry
+        parent = pid_info.get(ppid)
+        if parent and ('python' in parent[1] or 'uvicorn' in parent[1]):
+            kill_pids.append(ppid)
+            cur = ppid
+        else:
+            break
+    return kill_pids
+
+
+@app.post("/api/system/restart")
+async def system_restart(request: Request):
+    """Kill the current BSL Router backend process tree and immediately spawn a
+    fresh instance on the configured port (default 6969)."""
+    try:
+        _audit = _Path(".brain/logs/restart_audit.log")
+        _audit.parent.mkdir(parents=True, exist_ok=True)
+        _ua = request.headers.get("user-agent", "?")
+        with open(_audit, "a", encoding="utf-8") as _fh:
+            _fh.write(
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} SYSTEM_RESTART client="
+                f"{request.client.host if request.client else '?'} ua={_ua[:80]}\n"
+            )
+    except Exception:
+        pass
+    if _is_admin_auth_enabled():
+        session_token = request.cookies.get("bsl_admin_session")
+        if not _is_valid_admin_session(session_token):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    def _delayed_system_restart():
+        time.sleep(0.8)
+        import subprocess as _sp
+        import tempfile as _tempfile
+
+        kill_pids = _collect_router_kill_pids()
+        _root = _os_module.path.dirname(_os_module.path.dirname(_os_module.path.abspath(__file__)))
+        _venv_py = _os_module.path.join(_root, ".venv", "Scripts", "python.exe")
+        if not _os_module.path.exists(_venv_py):
+            import sys as _sys_mod
+            _venv_py = _sys_mod.executable
+        _port = 6969
+        try:
+            _cfg_port = (cs_get_config() or {}).get("server", {}).get("port")
+            if isinstance(_cfg_port, int) and _cfg_port > 0:
+                _port = _cfg_port
+        except Exception:
+            pass
+        _log_dir = _os_module.path.join(_root, ".brain", "logs")
+        _os_module.makedirs(_log_dir, exist_ok=True)
+        _out_log = _os_module.path.join(_log_dir, "app.out.log")
+        _err_log = _os_module.path.join(_log_dir, "app.err.log")
+        _lock_file = _os_module.path.join(_log_dir, f"router-{_port}.lock")
+
+        bat_path = _os_module.path.join(_tempfile.gettempdir(), 'bsl_restart.bat')
+        try:
+            with open(bat_path, 'w', encoding='utf-8') as f:
+                f.write('@echo off\n')
+                f.write('timeout /t 1 /nobreak >nul\n')
+                f.write(f'taskkill /F /T /PID {kill_pids[-1]} >nul 2>&1\n')
+                for pid in kill_pids:
+                    f.write(f'taskkill /F /PID {pid} >nul 2>&1\n')
+                f.write(f'del /F /Q "{_lock_file}" >nul 2>&1\n')
+                f.write('set PYTHONIOENCODING=utf-8\n')
+                f.write('set PYTHONUNBUFFERED=1\n')
+                f.write('set BSL_INTENDED_SUCCESSOR=1\n')
+                f.write('set BSL_SUPERVISED=\n')
+                f.write(f'cd /d "{_root}"\n')
+                f.write(
+                    f'start "" /B cmd /c ""{_venv_py}" -m app.dualstack_serve --port {_port} '
+                    f'>> "{_out_log}" 2>> "{_err_log}""\n'
+                )
+                f.write('del "%~f0"\n')
+            _sp.Popen(
+                ['cmd', '/c', bat_path],
+                cwd=_root,
+                creationflags=0x08000000 | _sp.CREATE_NEW_PROCESS_GROUP,
+                stdout=_sp.DEVNULL,
+                stderr=_sp.DEVNULL,
+                stdin=_sp.DEVNULL,
+                close_fds=True,
+            )
+        except Exception:
+            pass
+
+        _os_module._exit(0)
+
+    _threading.Thread(target=_delayed_system_restart, daemon=True).start()
+    return JSONResponse({"status": "restarting", "message": "BSL Router is restarting."})
 
 
 @app.post("/api/system/shutdown")
@@ -12120,7 +12262,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                 if not isinstance(_rf_err, dict):
                                                     _rf_err = {"message": str(_rf_err)}
                                                 _rf_msg = str(_rf_err.get("message") or _rf_err.get("code") or data_json.get("type") or "response.failed")
-                                                _rf_sc = 429 if any(m in _rf_msg.lower() for m in ("rate", "quota", "limit", "credit")) else 503
+                                                _rf_sc = codex_adapter.classify_codex_error_status(_rf_err, _rf_msg, default_status=503)
                                                 if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
                                                     _codex_overload_attempt += 1
                                                     _codex_retry_overload = True
@@ -12848,7 +12990,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                         if not isinstance(_rf_err, dict):
                                                             _rf_err = {"message": str(_rf_err)}
                                                         _rf_msg = str(_rf_err.get("message") or _rf_err.get("code") or dj.get("type") or "response.failed")
-                                                        _rf_sc = 429 if any(m in _rf_msg.lower() for m in ("rate", "quota", "limit", "credit")) else 503
+                                                        _rf_sc = codex_adapter.classify_codex_error_status(_rf_err, _rf_msg, default_status=503)
                                                         if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
                                                             _codex_overload_attempt += 1
                                                             _codex_retry_overload = True
@@ -13567,7 +13709,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             if not isinstance(_rf_err, dict):
                                                 _rf_err = {"message": str(_rf_err)}
                                             _rf_msg = str(_rf_err.get("message") or _rf_err.get("code") or dj.get("type") or "response.failed")
-                                            _rf_sc = 429 if any(m in _rf_msg.lower() for m in ("rate", "quota", "limit", "credit")) else 503
+                                            _rf_sc = codex_adapter.classify_codex_error_status(_rf_err, _rf_msg, default_status=503)
                                             if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
                                                 _codex_overload_attempt += 1
                                                 _codex_retry_overload = True
@@ -15522,7 +15664,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 _cx_http_status = 429
                             elif any(x in _err_code_str or x in _err_msg_str.lower() for x in ("auth", "invalid_api_key", "token", "unauthorized")):
                                 _cx_http_status = 401
-                            elif any(x in _err_code_str for x in ("invalid_request", "unsupported", "model_not_found")):
+                            elif any(x in _err_code_str or x in _err_msg_str.lower() for x in ("invalid_request", "invalid schema", "invalid_schema", "not of type", "unsupported", "model_not_found", "context_length", "string_above_max_length", "missing required")):
                                 _cx_http_status = 400
                             else:
                                 _cx_http_status = 502
@@ -19259,10 +19401,10 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
             grok_headers = {
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
-                "User-Agent": "grok-shell/1.0.44 (linux; x86_64)",
+                "User-Agent": _GROK_CLI_USER_AGENT,
                 "x-xai-token-auth": "xai-grok-cli",
                 "x-grok-client-identifier": "grok-shell",
-                "x-grok-client-version": "1.0.44",
+                "x-grok-client-version": _GROK_CLI_VERSION,
                 "x-grok-client-mode": "headless",
             }
             if email:

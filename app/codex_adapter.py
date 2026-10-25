@@ -280,7 +280,8 @@ def _convert_chat_tools(chat_body: dict) -> list[dict[str, Any]]:
         if src.get("description") is not None:
             t["description"] = src["description"]
         if src.get("parameters") is not None:
-            t["parameters"] = src["parameters"]
+            from app.compat.adapters.gemini import coerce_json_schema_numerics
+            t["parameters"] = coerce_json_schema_numerics(src["parameters"])
         tools_out.append(t)
 
     for tool in chat_body.get("tools") or []:
@@ -295,6 +296,35 @@ def _convert_chat_tools(chat_body: dict) -> list[dict[str, Any]]:
 
 
 # ── Response Conversion ──────────────────────────────────────────────────────
+
+def classify_codex_error_status(err_obj: Any, msg: str = "", default_status: int = 503) -> int:
+    """Classify a Codex SSE `response.failed` / `error` event into an HTTP status code.
+
+    Prevents deterministic 400 validation/schema errors (e.g. `Invalid schema for function ...`)
+    or 401 auth errors from being misclassified as transient 503/502 server errors that
+    trigger `[CodexOverloadRetry]` 4x on the same account and trip the circuit breaker.
+    """
+    code_str = ""
+    if isinstance(err_obj, dict):
+        code_str = f"{err_obj.get('code') or ''} {err_obj.get('type') or ''}".lower()
+    elif err_obj is not None:
+        code_str = str(err_obj).lower()
+    msg_low = (msg or "").lower()
+    combined = f"{code_str} {msg_low}"
+    if any(m in combined for m in ("rate", "quota", "limit_reached", "usage_limit", "too_many", "credit")):
+        return 429
+    if any(m in combined for m in (
+        "invalid schema", "invalid_schema", "invalid_request", "invalid_function",
+        "not of type", "unsupported", "model_not_found", "context_length",
+        "string_above_max_length", "missing required", "bad_request",
+    )):
+        return 400
+    if any(m in combined for m in ("invalid_api_key", "unauthorized", "authentication", "token_expired", "auth")):
+        return 401
+    if "limit" in msg_low or "token" in code_str:
+        return 429 if "limit" in msg_low else 401
+    return default_status
+
 
 def responses_json_to_openai(resp: dict, model: str) -> dict[str, Any]:
     """Assemble an OpenAI chat.completion from a completed Responses object.

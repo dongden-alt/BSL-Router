@@ -333,6 +333,86 @@ def _join_system_text(system_instruction: Any) -> str:
     return ""
 
 
+_SCHEMA_INT_KEYS = frozenset({
+    "minLength", "maxLength",
+    "minItems", "maxItems",
+    "minProperties", "maxProperties",
+    "minContains", "maxContains",
+})
+
+_SCHEMA_NUM_KEYS = frozenset({
+    "minimum", "maximum",
+    "exclusiveMinimum", "exclusiveMaximum",
+    "multipleOf",
+})
+
+_SCHEMA_MAP_CONTAINERS = frozenset({
+    "properties", "$defs", "definitions", "patternProperties", "dependentSchemas",
+})
+
+
+def _coerce_schema_int(val: Any) -> Any:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float) and val.is_integer():
+        return int(val)
+    if isinstance(val, str):
+        s = val.strip()
+        if s and (s.isdigit() or (s[0] in "+-" and s[1:].isdigit())):
+            try:
+                return int(s)
+            except ValueError:
+                return val
+    return val
+
+
+def _coerce_schema_num(val: Any) -> Any:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return val
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return val
+        if s.isdigit() or (s[0] in "+-" and s[1:].isdigit()):
+            try:
+                return int(s)
+            except ValueError:
+                pass
+        try:
+            f = float(s)
+            return int(f) if f.is_integer() and "." not in s and "e" not in s.lower() else f
+        except ValueError:
+            return val
+    return val
+
+
+def coerce_json_schema_numerics(value: Any) -> Any:
+    """Recursively coerce ProtoJSON-stringified integer/number keywords in a JSON Schema
+    (e.g. `"minLength": "1"` -> `1`) without mutating input or altering other keys."""
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, child in value.items():
+            if key in _SCHEMA_MAP_CONTAINERS and isinstance(child, dict):
+                out[key] = {
+                    prop_name: coerce_json_schema_numerics(prop_schema)
+                    for prop_name, prop_schema in child.items()
+                }
+            elif key in _SCHEMA_INT_KEYS:
+                out[key] = _coerce_schema_int(child)
+            elif key in _SCHEMA_NUM_KEYS:
+                out[key] = _coerce_schema_num(child)
+            else:
+                out[key] = coerce_json_schema_numerics(child)
+        return out
+    if isinstance(value, list):
+        return [coerce_json_schema_numerics(item) for item in value]
+    return value
+
+
 def _sanitize_parameters(params: Any) -> Dict[str, Any]:
     """Sanitize a functionDeclaration `parameters` schema for OpenAI tools:
     lowercase schema `type` strings recursively, drop `enumDescriptions`, and
@@ -350,6 +430,18 @@ def _sanitize_parameters(params: Any) -> Dict[str, Any]:
         if isinstance(value, dict):
             sanitized = {}
             for key, child in value.items():
+                if key in _SCHEMA_MAP_CONTAINERS and isinstance(child, dict):
+                    sanitized[key] = {
+                        prop_name: _sanitize_schema(prop_schema)
+                        for prop_name, prop_schema in child.items()
+                    }
+                    continue
+                if key in _SCHEMA_INT_KEYS:
+                    sanitized[key] = _coerce_schema_int(child)
+                    continue
+                if key in _SCHEMA_NUM_KEYS:
+                    sanitized[key] = _coerce_schema_num(child)
+                    continue
                 if key == "enumDescriptions":
                     continue
                 if key == "type" and isinstance(child, str):
@@ -422,7 +514,9 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
                 "function": {
                     "name": _tool_name.strip(),
                     "description": decl.get("description", ""),
-                    "parameters": _sanitize_parameters(decl.get("parameters")),
+                    "parameters": _sanitize_parameters(
+                        decl.get("parameters") if decl.get("parameters") is not None else decl.get("parametersJsonSchema")
+                    ),
                 },
             })
     if openai_tools:

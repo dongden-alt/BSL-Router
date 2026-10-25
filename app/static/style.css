@@ -375,6 +375,26 @@ input:checked + .slider:before { transform: translateX(16px); }
 }
 
 /* Danger / Logout Buttons (Settings tab) */
+.btn-restart {
+    background: transparent;
+    border: 1px solid #bfdbfe;
+    color: var(--primary, #2563eb);
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer;
+    transition: 0.2s;
+    display: inline-flex; align-items: center; gap: 8px;
+}
+.btn-restart:hover:not(:disabled) {
+    background: var(--primary, #2563eb);
+    color: white;
+    border-color: var(--primary, #2563eb);
+}
+.btn-restart:disabled {
+    opacity: 0.65;
+    cursor: wait;
+}
 .btn-shutdown {
     background: transparent;
     border: 1px solid #fecaca;

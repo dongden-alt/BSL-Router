@@ -66,7 +66,9 @@ _GOOGLE_CODE_ASSIST_URL = "https://cloudcode-pa.googleapis.com/v1internal:loadCo
 _GOOGLE_ONBOARD_USER_URL = "https://cloudcode-pa.googleapis.com/v1internal:onboardUser"
 _ANTIGRAVITY_LOAD_CODE_ASSIST_USER_AGENT = "google-api-nodejs-client/9.15.1"
 _ANTIGRAVITY_LOAD_CODE_ASSIST_API_CLIENT = "google-cloud-sdk vscode_cloudshelleditor/0.1"
-_GROK_CLI_USER_AGENT = "grok-pager/0.2.99 grok-shell/0.2.99 (linux; x86_64)"
+_GROK_CLI_VERSION = os.environ.get("BSL_GROK_CLI_VERSION", "1.0.70").strip() or "1.0.70"
+_GROK_CLI_CLIENT_IDENTIFIER = "grok-shell"
+_GROK_CLI_USER_AGENT = f"grok-pager/{_GROK_CLI_VERSION} grok-shell/{_GROK_CLI_VERSION} (linux; x86_64)"
 
 _oauth_states: dict[str, dict[str, Any]] = {}
 _oauth_completions: dict[str, dict[str, Any]] = {}
@@ -570,7 +572,9 @@ async def _post_exchange_grok(tokens: dict[str, Any], config: dict[str, Any] | N
         "Accept": "application/json",
         "User-Agent": _GROK_CLI_USER_AGENT,
         "x-xai-token-auth": "xai-grok-cli",
-        "x-grok-client-version": "0.2.99",
+        "x-grok-client-identifier": _GROK_CLI_CLIENT_IDENTIFIER,
+        "x-grok-client-version": _GROK_CLI_VERSION,
+        "x-grok-client-mode": "headless",
     })
     return {"user": user or None}
 
@@ -2465,6 +2469,7 @@ async def _grok_refresh_token(
             "refresh_token": refresh_token,
         },
         "Grok token refresh",
+        {"User-Agent": _GROK_CLI_USER_AGENT},
     )
     access_token = _token_value(raw, "access_token", "accessToken")
     if not isinstance(access_token, str) or not access_token:
