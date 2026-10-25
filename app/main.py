@@ -9855,7 +9855,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # Middleware.efficiency — Opus-style turn consolidation + tool batching
     # Skip on internal authenticity probes (X-BSL-Authenticity-Probe: 1) so
     # injected ## EFFICIENCY GUIDANCE never distorts single-turn probe outputs.
-    if request.headers.get("x-bsl-authenticity-probe") != "1":
+    if request is None or request.headers.get("x-bsl-authenticity-probe") != "1":
         try:
             _model_id = internal_request.model or ""
             internal_request.messages = inject_turn_consolidation(internal_request.messages, _model_id)

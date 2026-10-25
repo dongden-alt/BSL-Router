@@ -206,3 +206,53 @@ def test_model_test_passes_when_fast(guarded_mod, monkeypatch):
     monkeypatch.setattr(mod, "_process_chat_completion", _fast_probe)
     resp = asyncio.run(mod.test_model(_StubRequest({"provider": "prov1", "model": "m1"})))
     assert resp.status_code == 200
+
+
+def test_model_test_real_process_chat_completion_with_null_request(monkeypatch):
+    """Regression (2026-10-25): /api/test-model calls _process_chat_completion(probe_body)
+    with request=None. Middleware.efficiency must null-guard request before reading
+    request.headers, or codex/provider model tests fail with 500
+    \"'NoneType' object has no attribute 'headers'\".
+    """
+    mod = _import_mod()
+    cfg = {
+        "providers": {
+            "codex": {
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "models": [{"id": "gpt-5.6-sol"}],
+                "connections": [{"api_key": "test-oauth-tok", "enabled": True}],
+            }
+        }
+    }
+    monkeypatch.setattr(mod, "cs_get_config", lambda: cfg)
+
+    class _FakeResp:
+        status_code = 200
+        headers = {"content-type": "text/event-stream"}
+        text = ""
+        content = b""
+
+        async def aiter_bytes(self):
+            yield (
+                b'event: response.completed\n'
+                b'data: {"type":"response.completed","response":{"id":"r1","status":"completed",'
+                b'"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"OK"}]}],'
+                b'"usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}}\n\n'
+            )
+
+        async def aclose(self):
+            pass
+
+    class _FakeClient:
+        def build_request(self, method, url, headers=None, content=None):
+            return {"method": method, "url": url, "headers": headers or {}, "content": content}
+
+        async def send(self, req, stream=False):
+            return _FakeResp()
+
+    monkeypatch.setattr(mod, "_get_client_for_proxy", lambda proxy=None: _FakeClient())
+    resp = asyncio.run(mod.test_model(_StubRequest({"provider": "codex", "model": "gpt-5.6-sol"})))
+    data = json.loads(resp.body)
+    assert resp.status_code == 200, data
+    assert data == {"ok": True, "status": 200}
+
