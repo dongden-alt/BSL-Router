@@ -172,7 +172,34 @@ _CONTENT_MARKERS = (
     b'"inlineData"',
     b'"output_text.delta"',
     b'"function_call"',
+    b'"tool_calls"',
+    b'"reasoning_content"',
 )
+
+
+def _is_openai_role_priming_only(chunk: bytes) -> bool:
+    """True when `chunk` is a single OpenAI chat.completion.chunk carrying only
+    an assistant role-priming delta (`{"role":"assistant"}` / `"content":""`)
+    and no renderable text, reasoning, or tool calls."""
+    if chunk.count(b"data:") != 1:
+        return False
+    if b'"choices"' not in chunk:
+        return False
+    if b'"role":"assistant"' not in chunk and b'"role": "assistant"' not in chunk:
+        return False
+    if b'"reasoning"' in chunk or b'"audio"' in chunk:
+        return False
+    # If "content" is present, it must be the empty string or null.
+    if b'"content"' in chunk:
+        has_empty_content = (
+            b'"content":""' in chunk
+            or b'"content": ""' in chunk
+            or b'"content":null' in chunk
+            or b'"content": null' in chunk
+        )
+        if not has_empty_content:
+            return False
+    return True
 
 
 def _is_scaffolding_only(chunk: bytes) -> bool:
@@ -200,10 +227,16 @@ def _is_scaffolding_only(chunk: bytes) -> bool:
         return True
     # A non-empty text field means real output regardless of frame type. Absence
     # of the empty-string form is required, so `"text":""` stays scaffolding.
-    if b'"text":"' in chunk and b'"text":""' not in chunk:
+    if (b'"text":"' in chunk and b'"text":""' not in chunk) or (
+        b'"text": "' in chunk and b'"text": ""' not in chunk
+    ):
         return False
-    if b'"content":"' in chunk and b'"content":""' not in chunk:
+    if (b'"content":"' in chunk and b'"content":""' not in chunk) or (
+        b'"content": "' in chunk and b'"content": ""' not in chunk
+    ):
         return False
+    if _is_openai_role_priming_only(chunk):
+        return True
     return any(t in chunk for t in _SCAFFOLDING_TYPES)
 
 

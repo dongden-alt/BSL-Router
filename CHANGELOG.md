@@ -7,7 +7,40 @@ Mọi thay đổi đáng chú ý của BSL Router được ghi lại trong file 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-**🌐 [English](#110---2026-10-23)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+**🌐 [English](#111---2026-10-28)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+
+---
+
+## [1.1.1] - 2026-10-28
+
+> **Release `v1.1.1`:** Faithful Execution Layer (FEL) Multi-Turn Tool-Loop Extraction, SSE `data:` Spacing & Reasoning-Stream Peek Buffer Hardening (`244/244` FEL tests pass); Pre-Emission Inline HTTP-200 Upstream Error Interception & Automatic Combo Failover; and Deterministic `<= 64` Char MCP Tool `call_id` / `tool_call_id` Bounding + Never-Stop Wrap Suppression on `400` Payload Validation Defects.
+
+### 🇬🇧 English — Fixed
+
+- **FEL Multi-Turn Tool-Loop Extraction, SSE `data:` Spacing & Reasoning-Stream Peek Buffer Hardening (`app/middleware/fel_wiring.py`, `app/main.py`):**
+  - Updated `extract_last_user_text()` and `set_last_user_text()` across OpenAI, Anthropic, and Gemini/`v1internal` envelopes to skip `tool_result` / `functionResponse`-only user turns during multi-turn agent loops instead of returning `""` / `False` on the first reverse iteration.
+  - Expanded `_REFUSAL_MARKERS` with second-clause refusal framing markers (`"i'm unable to"`, `"i can't assist with"`, `"i cannot assist with"`, `"i can't fulfill"`, `"i cannot fulfill"`, `"i'm sorry, but i"`, `"safety guidelines"`, `"security controls"`, `"circumvent"`, `"unauthorized access"`).
+  - Updated `FelStreamObserver.observe()` to parse `b"data:"` SSE lines both with and without a trailing space (`line[5:].decode("utf-8", errors="ignore").strip()`).
+  - Updated `_fel_stream_with_recovery()` in `app/main.py` so initial `<thinking>` chunks do not prematurely abort stream refusal peeking before `len(_buffered) >= 120` (`244/244` FEL tests pass).
+- **Pre-Emission Inline HTTP-200 Upstream Error Interception & Combo Failover (`app/main.py`, `app/middleware/stream_guard.py`, `app/tests/test_antigravity_5b1.py`):**
+  - Fixed a bug where WorkBuddy ACP / Chat2API E2B sandboxes caught upstream model-routing errors (`400 model [deep-model] service info not found ... Currently supported models for your account: ...`) and streamed them as normal `agent_message_chunk` prose inside an HTTP `200 OK` SSE response (`out=138` tokens), causing BSL Router to render the error directly into the Antigravity IDE chat bubble instead of failing over.
+  - Added `_detect_inline_upstream_error()`, `_detect_inline_upstream_error_from_sse_event()`, and `_detect_inline_upstream_error_from_response()` in `app/main.py` plus `_is_openai_role_priming_only()` in `app/middleware/stream_guard.py`, intercepting inline HTTP-200 error banners pre-emission across all 5 lanes (`gemini_egress_stream`, `raw_upstream`, `egress_stream`, `anthropic_to_openai_egress_stream`, and non-streaming / `StreamBuffer`), benching the broken leaf (`502`/`429`), and transparently advancing the combo chain to the next healthy provider/model.
+- **Long MCP Tool `call_id` / `tool_call_id` `<= 64` Char Bounding & Never-Stop Wrap Suppression on `400` Payload Defects (`app/compat/adapters/gemini.py`, `app/compat/adapters/antigravity_upstream.py`, `app/compat/stream_normalizer.py`, `app/codex_adapter.py`, `app/normalizer.py`, `app/normalizer_v2.py`, `app/main.py`):**
+  - Fixed `Invalid 'input[58].call_id': string too long. Expected a string with maximum length 64, but got a string with length 70 instead.` (`code: string_above_max_length`) when Antigravity calls long-named MCP tools (`call_<63-char-tool-name>_1` = 70 chars).
+  - Added `bound_tool_call_id()` (`f"{call_id[:51]}_{sha1(call_id)[:12]}"` when `> 64` chars) and `_mint_tool_call_id()` across Gemini, OpenAI, Anthropic, Codex, and `normalizer_v2` converters so every `call_id` / `tool_call_id` is deterministically bounded to `<= 64` characters with zero collisions across repeated calls (`_1`, `_2`, `_3`), and added `_is_unrecoverable_payload_400()` in `_raise_combo_wrap` / `_probe_wrap_terminal` so Pass 2+ never-stop combo retries do not loop on deterministic `400` payload validation errors.
+
+### 🇻🇳 Tiếng Việt — Đã Sửa Trong `v1.1.1`
+
+- **Gia Cố Faithful Execution Layer (FEL): Trích Xuất Lượt User Qua Vòng Lặp Tool, Chuẩn Hóa SSE `data:` & Bộ Đệm Peek Suy Luận (`app/middleware/fel_wiring.py`, `app/main.py`):**
+  - Cập nhật `extract_last_user_text()` và `set_last_user_text()` trên cả 3 định dạng OpenAI, Anthropic và Gemini/`v1internal` để tự động bỏ qua các lượt `role: "user"` chỉ chứa kết quả công cụ (`tool_result` / `functionResponse`) trong vòng lặp multi-turn của agent, tìm đúng văn bản yêu cầu thực tế gần nhất của người dùng thay vì trả về chuỗi rỗng `""` ngay ở bước lặp đầu tiên.
+  - Mở rộng `_REFUSAL_MARKERS` với các mẫu từ chối vế hai (`"i'm unable to"`, `"i can't assist with"`, `"i cannot fulfill"`, `"safety guidelines"`, `"security controls"`, `"circumvent"`, `"unauthorized access"`).
+  - Cập nhật `FelStreamObserver.observe()` để đọc được cả dòng SSE `b"data:"` không có khoảng trắng phía sau dấu hai chấm.
+  - Cập nhật `_fel_stream_with_recovery()` trong `app/main.py` để các khung suy luận `<thinking>` ban đầu không làm thoát sớm vòng lặp kiểm tra từ chối trước khi tích lũy đủ vùng đệm `len(_buffered) >= 120` (`244/244` bài kiểm thử FEL vượt qua).
+- **Chặn Sớm Thông Báo Lỗi Upstream Đội Lốt HTTP `200 OK` & Tự Động Chuyển Đổi Dự Phòng Trong Combo (`app/main.py`, `app/middleware/stream_guard.py`, `app/tests/test_antigravity_5b1.py`):**
+  - Khắc phục triệt để hiện tượng sandbox E2B của WorkBuddy ACP / Chat2API bắt lỗi định tuyến model (`400 model [deep-model] service info not found ...`) rồi phát về như văn bản hội thoại bình thường bên trong luồng SSE HTTP `200 OK`, khiến lỗi bị in thẳng vào khung chat Antigravity IDE thay vì chuyển sang model dự phòng tiếp theo.
+  - Bổ sung `_detect_inline_upstream_error()`, `_detect_inline_upstream_error_from_sse_event()`, `_detect_inline_upstream_error_from_response()` và `_is_openai_role_priming_only()` trên cả 5 làn egress (`gemini_egress_stream`, `raw_upstream`, `egress_stream`, `anthropic_to_openai_egress_stream` và non-streaming / `StreamBuffer`), tự động tạm ngưng nhánh lỗi (`502`/`429`) trước khi phát token đầu tiên về client và chuyển mượt mà sang model kế tiếp trong Combo.
+- **Giới Hạn Độ Dài `call_id` / `tool_call_id` `<= 64` Ký Tự Cho Các MCP Tool Tên Dài & Chặn Vòng Lặp Never-Stop Trên Lỗi `400` (`app/compat/adapters/gemini.py`, `app/compat/adapters/antigravity_upstream.py`, `app/compat/stream_normalizer.py`, `app/codex_adapter.py`, `app/normalizer.py`, `app/normalizer_v2.py`, `app/main.py`):**
+  - Khắc phục triệt để lỗi `Invalid 'input[58].call_id': string too long. Expected a string with maximum length 64, but got a string with length 70 instead.` (`code: string_above_max_length`) khi Antigravity gọi các MCP tool có tên dài (`call_<63-char-tool-name>_1` = 70 ký tự). Bổ sung `bound_tool_call_id()` (`f"{call_id[:51]}_{sha1(call_id)[:12]}"` khi `> 64` ký tự) và `_mint_tool_call_id()` trên toàn bộ các bộ chuyển đổi, đồng thời thêm `_is_unrecoverable_payload_400()` trong `_raise_combo_wrap` / `_probe_wrap_terminal` để dừng ngay việc lặp lại Pass 2+ vô ích khi gặp lỗi xác thực payload `400`.
 
 ---
 

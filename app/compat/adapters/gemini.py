@@ -333,6 +333,37 @@ def _join_system_text(system_instruction: Any) -> str:
     return ""
 
 
+MAX_TOOL_CALL_ID_LEN = 64
+
+
+def bound_tool_call_id(call_id: Any, max_len: int = MAX_TOOL_CALL_ID_LEN) -> Any:
+    """Deterministically bound a tool_call_id / call_id to ``<= max_len`` (64) chars.
+
+    OpenAI Chat Completions and Responses API (`codex/*`, `openai/*`, etc.) reject
+    any `call_id` / `tool_call_id` longer than 64 characters with:
+      `400 Invalid 'input[N].call_id': string too long. Expected a string with
+       maximum length 64, but got a string with length 70 instead (string_above_max_length)`.
+    Using a deterministic prefix + 12-char SHA-1 suffix ensures that matching
+    assistant `tool_calls[].id` (`function_call.call_id`) and tool-role
+    `tool_call_id` (`function_call_output.call_id`) always map to the exact same
+    64-char ID without collisions.
+    """
+    if not isinstance(call_id, str) or len(call_id) <= max_len:
+        return call_id
+    import hashlib
+    digest = hashlib.sha1(call_id.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    keep = max(1, max_len - 1 - len(digest))
+    return f"{call_id[:keep]}_{digest}"
+
+
+def _mint_tool_call_id(name: str, seq: int, max_len: int = MAX_TOOL_CALL_ID_LEN) -> str:
+    """Mint a unique `call_<name>_<seq>` ID guaranteed to be `<= max_len` (64) chars."""
+    raw = f"call_{name}_{seq}"
+    if len(raw) <= max_len:
+        return raw
+    return bound_tool_call_id(raw, max_len=max_len)
+
+
 _SCHEMA_INT_KEYS = frozenset({
     "minLength", "maxLength",
     "minItems", "maxItems",
@@ -584,7 +615,7 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
                 # suffix guarantees uniqueness across the whole conversation while
                 # keeping the readable tool name for debugging.
                 _tool_call_seq += 1
-                _call_id = f"call_{name}_{_tool_call_seq}"
+                _call_id = _mint_tool_call_id(name, _tool_call_seq)
                 _tc: Dict[str, Any] = {
                     "id": _call_id,
                     "type": "function",
@@ -625,7 +656,7 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
                     _matched_id = _pending_calls.pop(0)[1]
                 if _matched_id is None:
                     _tool_call_seq += 1
-                    _matched_id = f"call_{name}_{_tool_call_seq}"
+                    _matched_id = _mint_tool_call_id(name, _tool_call_seq)
                 _tr: Dict[str, Any] = {
                     "role": "tool",
                     "tool_call_id": _matched_id,

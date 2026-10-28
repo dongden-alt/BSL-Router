@@ -143,6 +143,20 @@ _REFUSAL_MARKERS: Tuple[str, ...] = (
     #     → 1 hit → "unknown". Same gap class, second verb frame.
     "i can't provide step-by-step",
     "i can't provide instructions",
+    "i'm unable to",
+    "i can't assist with",
+    "i cannot assist with",
+    "i can't fulfill",
+    "i cannot fulfill",
+    "i'm sorry, but i",
+    "i'm sorry, i can't",
+    "i apologize, but i",
+    "safety guidelines",
+    "usage guidelines",
+    "security controls",
+    "security measures",
+    "circumvent",
+    "unauthorized access",
     # Chinese (ZH) refusal frames (DeepSeek / Qwen / GLM / Kimi / MiniMax)
     "抱歉，我无法",
     "抱歉，我不能",
@@ -1283,13 +1297,17 @@ def extract_last_user_text(body: Any) -> str:
         if isinstance(msgs, list):
             for msg in reversed(msgs):
                 if isinstance(msg, dict) and (msg.get("role") or "") == "user":
-                    return _content_text(msg.get("content"))
+                    txt = _content_text(msg.get("content"))
+                    if txt:
+                        return txt
             return ""
         items = body.get("input")
         if isinstance(items, list):
             for item in reversed(items):
                 if isinstance(item, dict) and (item.get("role") or "") == "user":
-                    return _content_text(item.get("content"))
+                    txt = _content_text(item.get("content"))
+                    if txt:
+                        return txt
             return ""
         contents = body.get("contents")
         if not any(key in body for key in ("messages", "input", "contents")) and isinstance(body.get("request"), dict):
@@ -1305,8 +1323,8 @@ def extract_last_user_text(body: Any) -> str:
                             and isinstance(part.get("text"), str)
                             and not part["text"].strip().lower().startswith("data:")
                         ]
-                        return "\n".join(texts)
-                    return ""
+                        if texts:
+                            return "\n".join(texts)
             return ""
         return ""
     except Exception:
@@ -1340,7 +1358,7 @@ def set_last_user_text(body: Dict[str, Any], new_text: str) -> bool:
                     continue
                 parts = turn.get("parts")
                 if not isinstance(parts, list):
-                    return False
+                    continue
                 text_indices = [
                     i for i, part in enumerate(parts)
                     if isinstance(part, dict) and part.get("thought") is not True
@@ -1348,7 +1366,7 @@ def set_last_user_text(body: Dict[str, Any], new_text: str) -> bool:
                     and not part["text"].strip().lower().startswith("data:")
                 ]
                 if not text_indices:
-                    return False
+                    continue
                 parts[text_indices[0]] = {**parts[text_indices[0]], "text": new_text}
                 for i in reversed(text_indices[1:]):
                     parts.pop(i)
@@ -1894,9 +1912,9 @@ class FelStreamObserver:
             self._line_buffer = lines[-1]
 
             for line in lines[:-1]:
-                if not line.startswith(b"data: "):
+                if not line.startswith(b"data:"):
                     continue
-                data_str = line[6:].decode("utf-8", errors="ignore").strip()
+                data_str = line[5:].decode("utf-8", errors="ignore").strip()
                 if not data_str or data_str == "[DONE]":
                     continue
                 try:

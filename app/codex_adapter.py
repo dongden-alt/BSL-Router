@@ -16,6 +16,7 @@ import json
 import os
 import re
 from typing import Any
+from app.compat.adapters.gemini import bound_tool_call_id
 
 
 # ── Effort normalization ─────────────────────────────────────────────────────
@@ -112,7 +113,7 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
             if call_id:
                 input_parts.append({
                     "type": "function_call_output",
-                    "call_id": call_id,
+                    "call_id": bound_tool_call_id(call_id),
                     "output": content or "",
                 })
             else:
@@ -145,7 +146,7 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
                         args = json.dumps(args) if args is not None else "{}"
                     input_parts.append({
                         "type": "function_call",
-                        "call_id": tc.get("id") or tc.get("call_id") or f"call_{idx}",
+                        "call_id": bound_tool_call_id(tc.get("id") or tc.get("call_id") or f"call_{idx}"),
                         "name": name,
                         "arguments": args,
                     })

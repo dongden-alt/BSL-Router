@@ -285,7 +285,7 @@ def _normalize_tool_parameters(params: Any) -> Dict[str, Any]:
                 if key not in _GEMINI_SCHEMA_KEEP:
                     continue
                 if key in ("minItems", "maxItems"):
-                    from app.compat.adapters.gemini import _coerce_schema_int
+                    from app.compat.adapters.gemini import _coerce_schema_int, _mint_tool_call_id
                     out[key] = _coerce_schema_int(child)
                     continue
                 if key in ("minimum", "maximum"):
@@ -704,10 +704,11 @@ class CloudCodeSSETranslator:
             elif isinstance(part.get("functionCall"), dict):
                 fc = part["functionCall"]
                 name = fc.get("name") or "tool"
+                from app.compat.adapters.gemini import _mint_tool_call_id
                 self._tc_count += 1
                 _openai_tc: Dict[str, Any] = {
                     "index": self._tc_count - 1,
-                    "id": f"call_{name}_{self._tc_count}",
+                    "id": _mint_tool_call_id(name, self._tc_count),
                     "type": "function",
                     "function": {
                         "name": name,

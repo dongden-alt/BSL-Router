@@ -914,6 +914,26 @@ def _is_terminal_relay_wall(status_code, err_text) -> bool:
         return False
 
 
+def _is_unrecoverable_payload_400(status_code, err_text) -> bool:
+    """True when a 400 error body indicates a deterministic request-payload or
+    schema validation defect (`string_above_max_length`, `invalid schema for function`,
+    `invalid_function_parameters`, `context_length_exceeded`) so never-stop pass-2+
+    wrapping does not resend the identical rejected payload forever."""
+    try:
+        if status_code != 400 or not err_text:
+            return False
+        _low = err_text.lower() if isinstance(err_text, str) else str(err_text).lower()
+        return any(m in _low for m in (
+            "string_above_max_length",
+            "invalid schema for function",
+            "invalid_function_parameters",
+            "context_length_exceeded",
+            "maximum context length",
+        ))
+    except Exception:
+        return False
+
+
 def _is_thought_signature_400(status_code, err_text) -> bool:
     """Payload-defect 400: an echoed history functionCall lacks its
     thought_signature (antigravity/Gemini oauth lane, 2026-09-26 incident).
@@ -8906,7 +8926,7 @@ def _raise_combo_wrap(model, config, request, retry_state, active_chain,
     # A thought_signature payload-defect 400 is likewise terminal (Layer B,
     # 2026-09-26): the echoed functionCall is unsignable, so wrapping just
     # re-sends the same invalid body forever.
-    if _is_terminal_relay_wall(status_code, err_text) or _is_thought_signature_400(status_code, err_text):
+    if _is_terminal_relay_wall(status_code, err_text) or _is_thought_signature_400(status_code, err_text) or _is_unrecoverable_payload_400(status_code, err_text):
         print(f"[TerminalWall] suppressing never-stop wrap ({reason}) - terminal relay wall", flush=True)
         return
     if not _combo_infinite_retry_enabled(config):
@@ -8936,10 +8956,149 @@ def _probe_wrap_terminal(status_code, err_text, reason) -> bool:
     False and the legacy never-stop wrap runs (network errors, 5xx, recoverable
     400s).
     """
-    if _is_terminal_relay_wall(status_code, err_text) or _is_thought_signature_400(status_code, err_text):
+    if _is_terminal_relay_wall(status_code, err_text) or _is_thought_signature_400(status_code, err_text) or _is_unrecoverable_payload_400(status_code, err_text):
         print(f"[TerminalWall] suppressing never-stop wrap ({reason}) - terminal relay wall", flush=True)
         return True
     return False
+
+
+_INLINE_UPSTREAM_MODEL_ERR_RE = re.compile(
+    r"^\s*(4\d\d|5\d\d)\s+model\s+\[[^\]]+\]\s+"
+    r"(?:service\s+info\s+not\s+found|not\s+found|is\s+not\s+supported|unavailable)\b",
+    re.IGNORECASE,
+)
+_INLINE_UPSTREAM_GATEWAY_TRACE_ERR_RE = re.compile(
+    r"^\s*(4\d\d|5\d\d)\s+[^\n]{3,200}\([0-9a-f]{16,40}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\)",
+    re.IGNORECASE,
+)
+_INLINE_UPSTREAM_QUOTA_ERR_RE = re.compile(
+    r"^\s*429\s+(?:credits?\s+exhausted|quota\s+exhausted|rate\s+limit|too\s+many\s+requests)\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_inline_upstream_error(text: str) -> Optional[tuple[int, str]]:
+    """Detect fatal upstream gateway/ACP errors rendered inline inside HTTP-200 assistant text.
+
+    WorkBuddy ACP / Chat2API E2B sandboxes catch upstream model-routing and
+    credit-exhaustion HTTP errors and stream them as normal assistant text
+    chunks on an HTTP 200 SSE response, e.g.:
+      "400 model [deep-model] service info not found (01a1828bc2d577ef.../2f8a7d30-...)\n"
+      "Currently supported models for your account:\n  - default-model\n..."
+    or:
+      "429 Credits exhausted. Please visit ..."
+
+    Returns (status_code, summary_error_message) when `text` is deterministically
+    an inline upstream error banner, or None for normal model output.
+    400/404/5xx model-service banners map to 502 (Bad Gateway) so
+    error_prevention benches the broken leaf on strike 1 and combo fallback
+    advances to the next healthy provider/model instead of rendering the
+    error into the client's chat transcript.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    stripped = text.lstrip()
+    if not stripped:
+        return None
+    head = stripped[:600]
+    first_line = head.split("\n", 1)[0].strip()
+
+    if _INLINE_UPSTREAM_QUOTA_ERR_RE.match(head):
+        return 429, f"inline_upstream_error: {first_line[:240]}"
+
+    if _INLINE_UPSTREAM_MODEL_ERR_RE.match(head):
+        return 502, f"inline_upstream_error: {first_line[:240]}"
+
+    m_trace = _INLINE_UPSTREAM_GATEWAY_TRACE_ERR_RE.match(head)
+    if m_trace:
+        raw_code = int(m_trace.group(1))
+        mapped_code = 429 if raw_code == 429 else (raw_code if raw_code in (401, 403) else 502)
+        return mapped_code, f"inline_upstream_error: {first_line[:240]}"
+
+    low = head.lower()
+    if (
+        "service info not found" in low
+        and (
+            "currently supported models for your account:" in low
+            or "please use --model " in low
+        )
+    ):
+        return 502, f"inline_upstream_error: {first_line[:240]}"
+
+    return None
+
+
+def _detect_inline_upstream_error_from_sse_event(ev: Any) -> Optional[tuple[int, str]]:
+    """Inspect a parsed SSE JSON frame (OpenAI, Anthropic, Gemini, or Responses)
+    for an inline upstream error banner in its text delta."""
+    if not isinstance(ev, dict):
+        return None
+    choices = ev.get("choices")
+    if isinstance(choices, list):
+        for ch in choices:
+            if not isinstance(ch, dict):
+                continue
+            delta = ch.get("delta")
+            if isinstance(delta, dict):
+                c = delta.get("content")
+                if isinstance(c, str) and c:
+                    hit = _detect_inline_upstream_error(c)
+                    if hit:
+                        return hit
+            msg = ch.get("message")
+            if isinstance(msg, dict):
+                c = msg.get("content")
+                if isinstance(c, str) and c:
+                    hit = _detect_inline_upstream_error(c)
+                    if hit:
+                        return hit
+    delta_obj = ev.get("delta")
+    if isinstance(delta_obj, dict):
+        t = delta_obj.get("text")
+        if isinstance(t, str) and t:
+            hit = _detect_inline_upstream_error(t)
+            if hit:
+                return hit
+    elif isinstance(delta_obj, str) and delta_obj:
+        hit = _detect_inline_upstream_error(delta_obj)
+        if hit:
+            return hit
+    inner = ev.get("response") if isinstance(ev.get("response"), dict) else ev
+    cands = inner.get("candidates") if isinstance(inner, dict) else None
+    if isinstance(cands, list):
+        for cand in cands:
+            if not isinstance(cand, dict):
+                continue
+            parts = ((cand.get("content") or {}).get("parts")) if isinstance(cand.get("content"), dict) else None
+            if isinstance(parts, list):
+                for p in parts:
+                    if isinstance(p, dict) and not p.get("thought") and isinstance(p.get("text"), str):
+                        hit = _detect_inline_upstream_error(p["text"])
+                        if hit:
+                            return hit
+    return None
+
+
+def _detect_inline_upstream_error_from_response(data: Any) -> Optional[tuple[int, str]]:
+    """Inspect an assembled non-streaming JSON response (OpenAI, Anthropic, or Gemini)
+    for an inline upstream error banner."""
+    if not isinstance(data, dict):
+        return None
+    hit = _detect_inline_upstream_error_from_sse_event(data)
+    if hit:
+        return hit
+    content_blocks = data.get("content")
+    if isinstance(content_blocks, list):
+        for blk in content_blocks:
+            if isinstance(blk, dict) and blk.get("type") == "text" and isinstance(blk.get("text"), str):
+                hit = _detect_inline_upstream_error(blk["text"])
+                if hit:
+                    return hit
+    elif isinstance(content_blocks, str) and content_blocks:
+        hit = _detect_inline_upstream_error(content_blocks)
+        if hit:
+            return hit
+    return None
 
 
 class _ComboWrapRestart(Exception):
@@ -11858,7 +12017,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 yield _b
                             _buffered.clear()
                             continue
-                        if _peek_obs._had_tools or getattr(_peek_obs, "_had_thinking", False):
+                        if _peek_obs._had_tools or len(_buffered) >= 120:
                             _passthrough = True
                             for _b in _buffered:
                                 yield _b
@@ -12279,6 +12438,21 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                     bench_leaf(config, provider_name, target_model, _rf_sc, _rf_msg, 0)
                                                     if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("codex_response_failed"):
                                                         raise _ComboFallbackNeeded(_rf_sc, _rf_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                            _inl_raw = _detect_inline_upstream_error_from_sse_event(data_json) if not _emit.emitted else None
+                                            if _inl_raw is not None:
+                                                _inl_sc, _inl_msg = _inl_raw
+                                                stats["ttft"] = 0.0
+                                                stats["status"] = _inl_sc
+                                                stats["error"] = _inl_msg
+                                                _codex_pre_buf.clear()
+                                                bench_leaf(config, provider_name, target_model, _inl_sc, _inl_msg, 0)
+                                                if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("inline_upstream_error"):
+                                                    raise _ComboFallbackNeeded(_inl_sc, _inl_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                                _raise_combo_wrap(
+                                                    model, config, request, _retry_state, active_chain,
+                                                    original_model, _cache_breakpoints, _inl_sc,
+                                                    _inl_msg, reason="openai_inline_upstream_error",
+                                                )
                                             _mark_stream_completed_if_terminal(stats, data_json)
                                             # CODEX FIX (2026-08-22): Responses SSE nests
                                             # usage under response.usage (event
@@ -12325,9 +12499,21 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 # that vetoed every later fallback and surfaced the
                                 # client 502 on a mid-stream transport death. Yield
                                 # it (TTFT/keepalive) but commit only real content.
+                                # Hold non-comment scaffolding (e.g. OpenAI empty
+                                # role-priming delta) in _codex_pre_buf until the
+                                # first real output chunk arrives so inline HTTP-200
+                                # upstream error banners on chunk 2 can fail over
+                                # cleanly before any JSON frame reaches the client.
                                 if not is_scaffolding_only(chunk):
+                                    for _pb in _codex_pre_buf:
+                                        yield _pb
+                                    _codex_pre_buf.clear()
                                     _emit.mark_emitted(chunk)
-                                yield chunk
+                                    yield chunk
+                                elif not _emit.emitted and not chunk.lstrip().startswith(b":"):
+                                    _codex_pre_buf.append(chunk)
+                                else:
+                                    yield chunk
                     except (httpx.RemoteProtocolError, httpx.TransportError) as _mid_err:
                         # BUG J: transport death mid-body. Route into the combo chain
                         # instead of falling through to `except Exception` (which
@@ -13007,6 +13193,21 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                             bench_leaf(config, provider_name, target_model, _rf_sc, _rf_msg, 0)
                                                             if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("codex_response_failed"):
                                                                 raise _ComboFallbackNeeded(_rf_sc, _rf_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                                    _inl_ae = _detect_inline_upstream_error_from_sse_event(dj) if not _emit.emitted else None
+                                                    if _inl_ae is not None:
+                                                        _inl_sc, _inl_msg = _inl_ae
+                                                        stats["ttft"] = 0.0
+                                                        stats["status"] = _inl_sc
+                                                        stats["error"] = _inl_msg
+                                                        _codex_pre_buf.clear()
+                                                        bench_leaf(config, provider_name, target_model, _inl_sc, _inl_msg, 0)
+                                                        if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("inline_upstream_error"):
+                                                            raise _ComboFallbackNeeded(_inl_sc, _inl_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                                        _raise_combo_wrap(
+                                                            model, config, request, _retry_state, active_chain,
+                                                            original_model, _cache_breakpoints, _inl_sc,
+                                                            _inl_msg, reason="anthropic_egress_inline_upstream_error",
+                                                        )
                                                     _mark_stream_completed_if_terminal(stats, dj)
                                                     u = _usage_from_sse_data(dj)
                                                     if u:
@@ -13032,8 +13233,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             _codex_pre_buf.append(chunk)
                                     else:
                                         if not is_scaffolding_only(chunk):
+                                            for _pb in _codex_pre_buf:
+                                                yield _pb
+                                            _codex_pre_buf.clear()
                                             _emit.mark_emitted(chunk)
-                                        yield chunk
+                                            yield chunk
+                                        elif not _emit.emitted and not chunk.lstrip().startswith(b":"):
+                                            _codex_pre_buf.append(chunk)
+                                        else:
+                                            yield chunk
                             finally:
                                 if not _drain_task.done():
                                     _drain_task.cancel()
@@ -13725,6 +13933,17 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             bench_leaf(config, provider_name, target_model, _rf_sc, _rf_msg, 0)
                                             if not _emit.emitted:
                                                 _raise_gemini_combo_fallback(_rf_sc, _rf_msg, _emit)
+                                        _inl_gem = _detect_inline_upstream_error_from_sse_event(dj) if not _emit.emitted else None
+                                        if _inl_gem is not None:
+                                            _inl_sc, _inl_msg = _inl_gem
+                                            stats["ttft"] = 0.0
+                                            stats["status"] = _inl_sc
+                                            stats["error"] = _inl_msg
+                                            _codex_pre_buf.clear()
+                                            bench_leaf(config, provider_name, target_model, _inl_sc, _inl_msg, 0)
+                                            if not _emit.emitted:
+                                                _raise_gemini_combo_fallback(_inl_sc, _inl_msg, _emit)
+                                                break
                                         _mark_stream_completed_if_terminal(stats, dj)
                                         _u_gem = _usage_from_sse_data(dj)
                                         if _u_gem:
@@ -13735,6 +13954,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 except Exception:
                                     pass
                                 if _codex_retry_overload:
+                                    break
+                                if (
+                                    isinstance(stats.get("error"), str)
+                                    and stats["error"].startswith("inline_upstream_error:")
+                                    and not _emit.emitted
+                                ):
                                     break
                                 if provider_name == "codex":
                                     if stats["ttft"] > 0.0 or stats.get("stream_completed") or stats.get("error"):
@@ -14765,6 +14990,20 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                         elif line.startswith("data: "):
                                             try:
                                                 dj = json.loads(line[6:])
+                                                _inl_a2o = _detect_inline_upstream_error_from_sse_event(dj) if not _emit.emitted else None
+                                                if _inl_a2o is not None:
+                                                    _inl_sc, _inl_msg = _inl_a2o
+                                                    stats["ttft"] = 0.0
+                                                    stats["status"] = _inl_sc
+                                                    stats["error"] = _inl_msg
+                                                    bench_leaf(config, provider_name, target_model, _inl_sc, _inl_msg, 0)
+                                                    if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("inline_upstream_error"):
+                                                        raise _ComboFallbackNeeded(_inl_sc, _inl_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                                    _raise_combo_wrap(
+                                                        model, config, request, _retry_state, active_chain,
+                                                        original_model, _cache_breakpoints, _inl_sc,
+                                                        _inl_msg, reason="a2o_inline_upstream_error",
+                                                    )
                                                 _mark_stream_completed_if_terminal(stats, dj)
                                                 _u_a2o = _usage_from_sse_data(dj)
                                                 if _u_a2o:
@@ -14772,6 +15011,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                     record_cache_warmth(provider_name, _active_conn_index, _u_a2o, tools_config=config.get("tools", {}))
                                             except json.JSONDecodeError:
                                                 pass
+                                except _ComboFallbackNeeded:
+                                    raise
                                 except Exception:
                                     pass
                                 # BUG M (2026-09-27): keepalive/comment-only chunk
@@ -15802,8 +16043,19 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 except Exception as _guard_err:
                     print(f"[ResponseGuard] scan failed (fail-open): {_guard_err}", flush=True)
 
-                _zombie_check = True if _guard_mutated else _response_has_model_output(_response_json, out_tokens)
-                if _zombie_check and (not in_tokens or not out_tokens):
+                _inline_ns_err = None if _guard_mutated else _detect_inline_upstream_error_from_response(_response_json)
+                if _inline_ns_err is not None:
+                    _inl_sc, _inl_msg = _inline_ns_err
+                    error_msg = _inl_msg
+                    bench_leaf(config, provider_name, target_model, _inl_sc, _inl_msg, 0)
+                    print(
+                        f"[Combo Fallback] '{model}' non-stream inline upstream error for "
+                        f"{target_model}/{provider_name}: {_inl_msg} — advancing",
+                        flush=True,
+                    )
+                    resp = _SyntheticResponse(_inl_sc, {"error": _inl_msg}, _inl_msg)
+                _zombie_check = True if (_guard_mutated or _inline_ns_err is not None) else _response_has_model_output(_response_json, out_tokens)
+                if _zombie_check and _inline_ns_err is None and (not in_tokens or not out_tokens):
                     try:
                         _ns_vis, _ = fel_response_visible_text(_response_json)
                         _ns_targs = serialize_tool_args(_response_json)

@@ -18,6 +18,7 @@ Key rules:
 - Convert usage/stop reasons correctly
 """
 from typing import AsyncIterator, Optional, Dict, Any, List
+from app.compat.adapters.gemini import bound_tool_call_id, _mint_tool_call_id
 import json
 import time
 import codecs
@@ -191,7 +192,7 @@ class StreamNormalizer:
                 args = fn.get("arguments") or ""
                 tool_blocks[1000 + len(tool_blocks)] = {
                     "index": current_tool_index,
-                    "id": call.get("id") or f"call_{fn.get('name') or 'function'}_{len(tool_blocks)}",
+                    "id": bound_tool_call_id(call.get("id") or _mint_tool_call_id(fn.get('name') or 'function', len(tool_blocks))),
                     "name": fn.get("name", ""),
                     "args_buffer": args,
                     "arg_fragments": [args] if args else [],
@@ -490,7 +491,7 @@ class StreamNormalizer:
                         current_tool_index += 1
                         tool_blocks[tc_index] = {
                             "index": block_index,
-                            "id": tc_id or f"call_{tc_name or 'function'}_{len(tool_blocks)}",
+                            "id": bound_tool_call_id(tc_id or _mint_tool_call_id(tc_name or 'function', len(tool_blocks))),
                             "name": tc_name,
                             "args_buffer": "",
                             "arg_fragments": [],
@@ -756,7 +757,7 @@ class StreamNormalizer:
                             if block.get("type") == "tool_use":
                                 current_tool_index += 1
                                 current_tool_name = block.get("name", "")
-                                current_tool_id = block.get("id") or f"call_{current_tool_name or 'function'}_{current_tool_index}"
+                                current_tool_id = bound_tool_call_id(block.get("id") or _mint_tool_call_id(current_tool_name or 'function', current_tool_index))
                                 # Preserve the provider ID: clients echo it in tool_result.
                                 # Synthesize only when the upstream omitted one.
                                 # Emit start chunk (arguments: "" init slot in accumulator)

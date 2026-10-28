@@ -2,7 +2,7 @@ from typing import List, Dict, Any
 import json
 import time
 from app.models import ChatCompletionRequest
-from app.compat.adapters.gemini import coerce_json_schema_numerics
+from app.compat.adapters.gemini import coerce_json_schema_numerics, bound_tool_call_id
 
 class UniversalNormalizer:
     @staticmethod
@@ -15,13 +15,32 @@ class UniversalNormalizer:
         # This prevents crashes on unknown/extra fields sent by various clients
         # (e.g. OpenWebUI adds 'user', Cursor adds 'metadata', etc.)
         if isinstance(request_body, dict) and isinstance(request_body.get("tools"), list):
-            from app.compat.adapters.gemini import coerce_json_schema_numerics
+            from app.compat.adapters.gemini import coerce_json_schema_numerics, bound_tool_call_id
             _clean_tools = []
             for _t in request_body["tools"]:
                 if isinstance(_t, dict) and isinstance(_t.get("function"), dict) and isinstance(_t["function"].get("parameters"), dict):
                     _t = {**_t, "function": {**_t["function"], "parameters": coerce_json_schema_numerics(_t["function"]["parameters"])}}
                 _clean_tools.append(_t)
             request_body = {**request_body, "tools": _clean_tools}
+        if isinstance(request_body, dict) and isinstance(request_body.get("messages"), list):
+            from app.compat.adapters.gemini import bound_tool_call_id
+            _clean_msgs = []
+            for _m in request_body["messages"]:
+                if isinstance(_m, dict):
+                    if isinstance(_m.get("tool_call_id"), str) and len(_m["tool_call_id"]) > 64:
+                        _m = {**_m, "tool_call_id": bound_tool_call_id(_m["tool_call_id"])}
+                    if isinstance(_m.get("tool_calls"), list):
+                        _tcs = []
+                        _changed_tc = False
+                        for _tc in _m["tool_calls"]:
+                            if isinstance(_tc, dict) and isinstance(_tc.get("id"), str) and len(_tc["id"]) > 64:
+                                _tc = {**_tc, "id": bound_tool_call_id(_tc["id"])}
+                                _changed_tc = True
+                            _tcs.append(_tc)
+                        if _changed_tc:
+                            _m = {**_m, "tool_calls": _tcs}
+                _clean_msgs.append(_m)
+            request_body = {**request_body, "messages": _clean_msgs}
         return ChatCompletionRequest.model_validate(request_body)
 
     # ------------------------------------------------------------------
@@ -128,7 +147,7 @@ class UniversalNormalizer:
                         text_parts.append(block.get("text", ""))
                     elif btype == "tool_use":
                         tc: Dict[str, Any] = {
-                            "id": block.get("id", ""),
+                            "id": bound_tool_call_id(block.get("id", "")),
                             "type": "function",
                             "function": {
                                 "name": block.get("name", ""),
@@ -196,7 +215,7 @@ class UniversalNormalizer:
                     tool_use_id = tr.get("tool_use_id", "")
                     openai_body["messages"].append({
                         "role": "tool",
-                        "tool_call_id": tool_use_id,
+                        "tool_call_id": bound_tool_call_id(tool_use_id),
                         "content": str(tr_content) if tr_content else "",
                         "name": tool_name_map.get(tool_use_id, "tool")
                     })

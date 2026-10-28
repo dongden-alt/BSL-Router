@@ -671,6 +671,162 @@ def test_system_restart_endpoint_schedules_restart_and_returns_restarting(monkey
     assert len(spawned) == 1
 
 
+def test_long_mcp_tool_call_id_bounded_to_64_chars_across_gemini_normalizer_and_codex():
+    """Regression (2026-10-28): When Antigravity calls a tool with a long MCP name
+    (e.g. 63 chars `mcp_adversarial-crucible-mcp_crucible_evaluate_loop_convergence`),
+    `f"call_{name}_{seq}"` produces a 70-char `call_id`, which OpenAI/Codex rejects with:
+    `Invalid 'input[58].call_id': string too long. Expected a string with maximum length 64,
+    but got a string with length 70 instead.` (`code: string_above_max_length`).
+
+    Verify:
+    1. `gemini_request_to_openai` bounds `call_id` and `tool_call_id` to <= 64 chars.
+    2. Repeated calls (`_1`, `_2`) to the same long-named tool get distinct 64-char IDs.
+    3. Each `function_call` and its matching `function_call_output` preserve identical `call_id`s.
+    4. `UniversalNormalizer.normalize_to_openai` and `codex_adapter.openai_to_responses`
+       also bound pre-existing >64-char `call_id`s deterministically.
+    """
+    from app.compat.adapters.gemini import bound_tool_call_id, MAX_TOOL_CALL_ID_LEN
+    from app.codex_adapter import openai_to_responses
+    from app.normalizer import UniversalNormalizer
+    import app.main as main_mod
+
+    long_tool_name = "mcp_adversarial-crucible-mcp_crucible_evaluate_loop_convergence"
+    assert len(long_tool_name) == 63
+
+    wrapper = _wrapper([
+        {"role": "user", "parts": [{"text": "run convergence twice"}]},
+        {"role": "model", "parts": [{"functionCall": {"name": long_tool_name, "args": {"round": 1}}}]},
+        {"role": "user", "parts": [{"functionResponse": {"name": long_tool_name, "response": {"result": "ok1"}}}]},
+        {"role": "model", "parts": [{"functionCall": {"name": long_tool_name, "args": {"round": 2}}}]},
+        {"role": "user", "parts": [{"functionResponse": {"name": long_tool_name, "response": {"result": "ok2"}}}]},
+    ])
+    ob = gemini_request_to_openai(unwrap_request(wrapper), normalize_model(wrapper["model"]))
+
+    asst1 = ob["messages"][1]
+    tool1 = ob["messages"][2]
+    asst2 = ob["messages"][3]
+    tool2 = ob["messages"][4]
+
+    cid1 = asst1["tool_calls"][0]["id"]
+    cid2 = asst2["tool_calls"][0]["id"]
+
+    assert len(cid1) <= MAX_TOOL_CALL_ID_LEN == 64
+    assert len(cid2) <= MAX_TOOL_CALL_ID_LEN == 64
+    assert cid1 != cid2, "Repeated calls to the same long-named tool must not collide!"
+    assert tool1["tool_call_id"] == cid1
+    assert tool2["tool_call_id"] == cid2
+
+    # Pass through Codex Responses adapter and verify all input items have call_id <= 64
+    resp_payload = openai_to_responses(ob)
+    fc_items = [item for item in resp_payload["input"] if item.get("type") == "function_call"]
+    fco_items = [item for item in resp_payload["input"] if item.get("type") == "function_call_output"]
+    assert len(fc_items) == 2
+    assert len(fco_items) == 2
+    assert fc_items[0]["call_id"] == fco_items[0]["call_id"] == cid1
+    assert fc_items[1]["call_id"] == fco_items[1]["call_id"] == cid2
+    assert all(len(item["call_id"]) <= 64 for item in fc_items + fco_items)
+
+    # Also test UniversalNormalizer + Codex adapter when given raw 70-char IDs directly
+    raw_70_id_1 = f"call_{long_tool_name}_1"
+    raw_70_id_2 = f"call_{long_tool_name}_2"
+    assert len(raw_70_id_1) == 70
+    raw_openai_body = {
+        "model": "gpt-6-astra",
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": raw_70_id_1, "type": "function", "function": {"name": long_tool_name, "arguments": "{}"}},
+                    {"id": raw_70_id_2, "type": "function", "function": {"name": long_tool_name, "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": raw_70_id_1, "content": "res1"},
+            {"role": "tool", "tool_call_id": raw_70_id_2, "content": "res2"},
+        ],
+    }
+    norm_req = UniversalNormalizer.normalize_to_openai(raw_openai_body)
+    norm_body = norm_req.model_dump() if hasattr(norm_req, "model_dump") else norm_req
+    norm_tc_1 = norm_body["messages"][1]["tool_calls"][0]["id"]
+    norm_tc_2 = norm_body["messages"][1]["tool_calls"][1]["id"]
+    assert len(norm_tc_1) == 64
+    assert len(norm_tc_2) == 64
+    assert norm_tc_1 != norm_tc_2
+    assert norm_body["messages"][2]["tool_call_id"] == norm_tc_1
+    assert norm_body["messages"][3]["tool_call_id"] == norm_tc_2
+    assert bound_tool_call_id(raw_70_id_1) == norm_tc_1
+
+    # Verify _is_unrecoverable_payload_400 stops never-stop combo wrap on 400 string_above_max_length
+    codex_400_err = (
+        '{"error": {"message": "Invalid \'input[58].call_id\': string too long. '
+        'Expected a string with maximum length 64, but got a string with length 70 instead.", '
+        '"type": "invalid_request_error", "param": "input[58].call_id", "code": "string_above_max_length"}}'
+    )
+    assert main_mod._is_unrecoverable_payload_400(400, codex_400_err) is True
+    assert main_mod._is_unrecoverable_payload_400(503, codex_400_err) is False
+    assert main_mod._is_unrecoverable_payload_400(429, "Rate limit reached") is False
+
+
+
+def test_inline_upstream_error_detected_and_fails_over():
+    """Regression (2026-10-28): WorkBuddy ACP / Chat2API E2B sandboxes catch
+    upstream model errors (`400 model [deep-model] service info not found ...`)
+    and stream them as normal assistant text chunks inside an HTTP 200 SSE
+    response."""
+    from app import main as main_mod
+    from app.middleware.stream_guard import is_scaffolding_only
+
+    wb_err_text = (
+        "400 model [deep-model] service info not found "
+        "(01a1828bc2d577ef8bd6d61092d1886a/2f8a7d30-9c21-4f0b-1d59-afe09b0c6000)\n"
+        "Currently supported models for your account:\n"
+        "- default-model\n"
+        "- glm-5.3\n"
+        "- kimi-k3\n"
+        "Please use --model <model_id> to specify a valid model."
+    )
+    hit = main_mod._detect_inline_upstream_error(wb_err_text)
+    assert hit is not None
+    assert hit[0] == 502
+    assert "400 model [deep-model] service info not found" in hit[1]
+
+    quota_hit = main_mod._detect_inline_upstream_error("429 Credits exhausted. Please visit workbuddy.")
+    assert quota_hit is not None
+    assert quota_hit[0] == 429
+
+    # Normal prose discussing 400 or models must NEVER false-positive
+    assert main_mod._detect_inline_upstream_error("HTTP 400 means Bad Request when calling a model.") is None
+    assert main_mod._detect_inline_upstream_error("Here is the fix for the 400 model error:") is None
+
+    # OpenAI role-priming empty delta chunk is pure scaffolding
+    role_chunk = (
+        b'data: {"id": "chatcmpl-1", "object": "chat.completion.chunk", '
+        b'"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": null}]}\n\n'
+    )
+    content_chunk = (
+        b'data: {"id": "chatcmpl-1", "object": "chat.completion.chunk", '
+        b'"choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": null}]}\n\n'
+    )
+    assert is_scaffolding_only(role_chunk) is True
+    assert is_scaffolding_only(content_chunk) is False
+
+    # SSE event and non-stream response detectors
+    openai_sse_ev = {
+        "id": "chatcmpl-wb",
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {"content": wb_err_text}, "finish_reason": None}],
+    }
+    assert main_mod._detect_inline_upstream_error_from_sse_event(openai_sse_ev) == hit
+
+    openai_ns_resp = {
+        "id": "chatcmpl-wb",
+        "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": wb_err_text}, "finish_reason": "stop"}],
+    }
+    assert main_mod._detect_inline_upstream_error_from_response(openai_ns_resp) == hit
+
+
 if __name__ == "__main__":
     # Allow direct execution for quick local checks.
     import pytest

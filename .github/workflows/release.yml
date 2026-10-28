@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v1.1.0)'
+        description: 'Tag to release (e.g. v1.1.1)'
         required: true
-        default: 'v1.1.0'
+        default: 'v1.1.1'
       latest:
         description: 'Mark this release as latest (true/false). Use false for backfills of older tags.'
         required: false
