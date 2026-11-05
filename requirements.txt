@@ -5,7 +5,7 @@
 # on python<3.11. Keep typing-extensions unpinned (a 4.11.0 pin breaks the
 # 3.11/3.12 legs; Py3.10 cannot resolve this stack at all).
 fastapi==0.129.1
-starlette==0.52.1
+starlette==1.3.1
 uvicorn[standard]==0.30.1
 httpx[http2]==0.27.0
 pydantic==2.7.4
