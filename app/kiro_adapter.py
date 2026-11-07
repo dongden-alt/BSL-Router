@@ -71,10 +71,33 @@ def openai_to_kiro(upstream_payload: dict, profile_arn: str | None = None) -> di
             if entry:
                 history_msgs.append(entry)
 
+    # OAuth anti-ban (2026-11-07): keep conversationId sticky across turns of the
+    # same conversation instead of rotating uuid4 on every turn while passing history.
+    _kiro_conv_seed = None
+    try:
+        from app import oauth_antiban as _oab
+        _kiro_conv_seed = _oab.current_request_session_key()
+    except Exception:
+        _kiro_conv_seed = None
+    if not _kiro_conv_seed and messages:
+        for _m in messages:
+            if isinstance(_m, dict) and _m.get("role") == "user":
+                _mc = _m.get("content") or ""
+                if isinstance(_mc, list):
+                    _mc = _flatten_content_v2(_mc)
+                if _mc:
+                    _kiro_conv_seed = f"{model}|{_mc[:256]}"
+                    break
+    _kiro_conv_id = (
+        str(uuid.uuid5(uuid.NAMESPACE_DNS, f"bsl-kiro-conv:{_kiro_conv_seed}"))
+        if _kiro_conv_seed
+        else str(uuid.uuid4())
+    )
+
     body: dict[str, Any] = {
         "conversationState": {
             "chatTriggerType": "MANUAL",
-            "conversationId": str(uuid.uuid4()),
+            "conversationId": _kiro_conv_id,
             "currentMessage": {
                 "userInputMessage": {
                     "content": current_msg_content,

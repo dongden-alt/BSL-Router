@@ -546,8 +546,31 @@ def openai_to_cloudcode_envelope(
     except Exception:
         pass
 
+    # OAuth anti-ban (2026-11-07): derive a sticky sessionId per conversation/session
+    # instead of minting a random uuid4 on every turn, which created a proxy/replay
+    # fingerprint on Cloud Code v1internal across multi-turn agentic sessions.
+    _ag_sess_seed = None
+    try:
+        from app import oauth_antiban as _oab
+        _ag_sess_seed = _oab.current_request_session_key()
+    except Exception:
+        _ag_sess_seed = None
+    if not _ag_sess_seed and contents:
+        try:
+            _first_part = ((contents[0].get("parts") or [{}])[0]).get("text") or ""
+            _sys_anchor = (sys_texts[0][:128] if sys_texts else "")
+            if _first_part or _sys_anchor:
+                _ag_sess_seed = f"{model}|{_sys_anchor}|{_first_part[:256]}"
+        except Exception:
+            _ag_sess_seed = None
+    _ag_session_id = (
+        f"bsl-{uuid.uuid5(uuid.NAMESPACE_DNS, f'bsl-ag-session:{_ag_sess_seed}').hex[:12]}"
+        if _ag_sess_seed
+        else f"bsl-{uuid.uuid4().hex[:12]}"
+    )
+
     request_obj: Dict[str, Any] = {
-        "sessionId": f"bsl-{uuid.uuid4().hex[:12]}",
+        "sessionId": _ag_session_id,
         "contents": contents,
     }
     if sys_texts:

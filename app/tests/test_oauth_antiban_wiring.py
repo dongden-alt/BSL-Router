@@ -168,3 +168,77 @@ def test_main_import_registers_affinity_hook():
     import app.main  # noqa: F401  (conftest isolates config.yaml before this import)
 
     assert mr._AFFINITY_HOOK is oab.resolver_affinity_hook
+
+
+def test_all_oauth_providers_covered_in_affinity_and_profiles():
+    expected = {
+        "antigravity", "gemini-cli", "codex", "claude", "claude_code",
+        "claude-code", "claudecode", "kiro", "cursor", "github",
+        "copilot", "github-copilot", "grok-cli", "qwen", "qwen-code",
+        "commandcode", "iflow", "cline", "kimi-coding",
+    }
+    assert expected.issubset(oab.OAUTH_AFFINITY_PROVIDERS)
+    for prov in ("antigravity", "codex", "claude", "kiro", "cursor", "github", "copilot", "grok-cli", "qwen"):
+        assert oab.is_oauth_provider(prov) is True
+        min_iv, jitter = oab.provider_cadence_params(prov, oab.resolve_antiban_config(None))
+        assert min_iv >= 0.6
+        assert 0.2 <= jitter <= 0.5
+    # Kiro has stricter 1.2s min_interval_seconds per single-stream guard
+    kiro_iv, _ = oab.provider_cadence_params("kiro", oab.resolve_antiban_config(None))
+    assert kiro_iv == 1.2
+
+
+def test_is_oauth_connection_recognizes_provider_data_and_token_type_markers():
+    assert oab.is_oauth_connection({"enabled": True, "api_key": "plain-key"}) is False
+    assert oab.is_oauth_connection({"enabled": True, "token_type": "oauth", "api_key": "tok"}) is True
+    assert oab.is_oauth_connection({"enabled": True, "provider_data": {"chatgptAccountId": "acct-1"}}) is True
+    assert oab.is_oauth_connection({"enabled": True, "provider_data": {"profileArn": "arn:aws:codewhisperer:1"}}) is True
+    assert oab.is_oauth_connection({"enabled": True, "provider_data": {"copilotToken": "ghu_1"}}) is True
+
+
+def test_multi_provider_session_rhythm_headers_and_cursor_checksum():
+    import asyncio
+    rhythm = oab.get_claude_rhythm()
+
+    claude_h = rhythm.headers_for_provider("claude", "sess-1", "acct-claude")
+    assert "x-claude-code-session-id" in claude_h
+    assert claude_h["X-Stainless-Runtime"] == "node"
+
+    codex_h1 = rhythm.headers_for_provider("codex", "sess-1", "acct-codex")
+    codex_h2 = rhythm.headers_for_provider("codex", "sess-1", "acct-codex")
+    assert codex_h1["session_id"] == codex_h2["session_id"]
+    assert codex_h1["Conversation-Id"] == codex_h1["session_id"]
+
+    kiro_h = rhythm.headers_for_provider("kiro", "sess-1", "acct-kiro")
+    assert len(kiro_h["amz-sdk-invocation-id"]) == 36
+    assert kiro_h["x-amzn-codewhisperer-optout"] == "true"
+
+    cursor_h1 = rhythm.headers_for_provider("cursor", "sess-1", "acct-cursor-A")
+    cursor_h2 = rhythm.headers_for_provider("cursor", "sess-1", "acct-cursor-B")
+    assert "/" in cursor_h1["x-cursor-checksum"]
+    # Different Cursor accounts must have distinct hardware fingerprints
+    assert cursor_h1["x-cursor-checksum"][8:] != cursor_h2["x-cursor-checksum"][8:]
+    assert cursor_h1["x-ghost-mode"] == "true"
+
+    copilot_h = rhythm.headers_for_provider("copilot", "sess-1", "acct-gh")
+    assert copilot_h["Copilot-Integration-Id"] == "vscode-chat"
+    assert copilot_h["Openai-Intent"] == "conversation-panel"
+
+    ag_h = rhythm.headers_for_provider("antigravity", "sess-1", "acct-ag")
+    assert ag_h["X-Goog-Api-Client"].startswith("gl-node/")
+
+    # govern_pre_send scores human (>=0.75) for real OAuth connections
+    decision = asyncio.run(
+        oab.govern_pre_send(
+            "codex",
+            {"oauth_email": "u@example.com", "refresh_token": "r1"},
+            0,
+            "sess-codex-1",
+            {"tools": {"oauth_antiban": {"min_interval_seconds": 0.0}}},
+        )
+    )
+    assert decision["proceed"] is True
+    assert decision["grade"] == "human"
+    assert decision["score"] >= 0.85
+    assert "session_id" in decision["headers"]
+

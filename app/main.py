@@ -247,6 +247,13 @@ _STEALTH_USER_AGENTS: dict[str, str] = {
     "opencode-zen": "opencode/1.0.0",
     "opencode_go": "opencode/1.0.0",
     "opencode-go": "opencode/1.0.0",
+    # Copilot / Qwen / Cline / iFlow / Kimi OAuth & CLI aliases
+    "copilot": "GitHubCopilotChat/0.26.7",
+    "github-copilot": "GitHubCopilotChat/0.26.7",
+    "qwen-code": "qwen-cli/1.0.0",
+    "claude-code": "claude-cli/2.0.1 (external, cli)",
+    "claude_code": "claude-cli/2.0.1 (external, cli)",
+    "claudecode": "claude-cli/2.0.1 (external, cli)",
 }
 
 
@@ -373,6 +380,29 @@ def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dic
     # zen-compatible upstreams.
     if provider_name.startswith("opencode"):
         _opencode_identity_headers(headers, active_conn)
+
+    # Cursor IDE (api2.cursor.sh): deterministic per-account hardware checksum
+    # + ghost-mode + request-id telemetry headers.
+    if provider_name == "cursor":
+        import uuid as _uuid
+        _c_acct = _oauth_antiban.account_identity(active_conn if isinstance(active_conn, dict) else {})
+        headers.setdefault("x-cursor-checksum", _oauth_antiban.build_cursor_checksum(_c_acct))
+        headers.setdefault("x-cursor-client-version", "1.0.0")
+        headers.setdefault("x-cursor-timezone", "UTC")
+        headers.setdefault("x-ghost-mode", "true")
+        headers.setdefault("x-request-id", str(_uuid.uuid4()))
+
+    # GitHub Copilot (api.githubcopilot.com): VS Code Chat integration headers.
+    if provider_name in ("github", "copilot", "github-copilot"):
+        import uuid as _uuid
+        headers.setdefault("Editor-Version", "vscode/1.100.0")
+        headers.setdefault("Editor-Plugin-Version", "copilot-chat/0.26.7")
+        headers.setdefault("Copilot-Integration-Id", "vscode-chat")
+        headers.setdefault("Openai-Intent", "conversation-panel")
+        headers.setdefault("X-GitHub-Api-Version", "2025-04-01")
+        headers.setdefault("X-Request-Id", str(_uuid.uuid4()))
+        headers.setdefault("X-Initiator", "agent" if (isinstance(active_conn, dict) and active_conn.get("_is_agent_turn")) else "user")
+
     # ── Header Profile System (user-configurable, extends the blocks above) ──
     # Providers with strict client-identity requirements (Codex CLI, Claude Code
     # CLI, custom gateways) get their required headers from the provider's
@@ -404,6 +434,24 @@ def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dic
         headers["anthropic-version"] = "2023-06-01"
         headers["anthropic-beta"] = "oauth-2025-04-20,interleaved-thinking-2025-05-14"
         headers["x-app"] = "cli"
+    elif profile in ("copilot", "github-copilot"):
+        import uuid as _uuid
+        headers["User-Agent"] = "GitHubCopilotChat/0.26.7"
+        headers["Editor-Version"] = "vscode/1.100.0"
+        headers["Editor-Plugin-Version"] = "copilot-chat/0.26.7"
+        headers["Copilot-Integration-Id"] = "vscode-chat"
+        headers["Openai-Intent"] = "conversation-panel"
+        headers["X-GitHub-Api-Version"] = "2025-04-01"
+        headers.setdefault("X-Request-Id", str(_uuid.uuid4()))
+    elif profile == "cursor":
+        import uuid as _uuid
+        _c_acct = _oauth_antiban.account_identity(active_conn if isinstance(active_conn, dict) else {})
+        headers["User-Agent"] = "cursor/0.42.0"
+        headers["x-cursor-checksum"] = _oauth_antiban.build_cursor_checksum(_c_acct)
+        headers["x-cursor-client-version"] = "1.0.0"
+        headers["x-cursor-timezone"] = "UTC"
+        headers["x-ghost-mode"] = "true"
+        headers.setdefault("x-request-id", str(_uuid.uuid4()))
     elif profile == "opencode":
         # OpenCode Zen client identity for CUSTOM providers pointed at zen or
         # zen-compatible upstreams — mirrors the hardcoded opencode* branch.
@@ -11155,12 +11203,14 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 session_key=_oauth_antiban.current_request_session_key(),
                 config=config,
             )
-            # G4: merge Claude session-rhythm headers into the outgoing request
+            # G4: merge multi-provider session-rhythm headers into the outgoing request
             _oab_headers = _oab_decision.get("headers", {})
             if _oab_headers and isinstance(_oab_headers, dict):
+                _existing_lower = {k.lower() for k in headers}
                 for _hk, _hv in _oab_headers.items():
-                    if _hk.lower() not in headers:  # never override auth
+                    if _hk.lower() not in _existing_lower:  # never override auth or explicit profile headers
                         headers[_hk] = _hv
+                        _existing_lower.add(_hk.lower())
             # G5: if authenticity_enforce=true and score below threshold, abort
             if not _oab_decision.get("proceed", True):
                 return JSONResponse(

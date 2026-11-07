@@ -176,3 +176,19 @@ def test_retention_headers_str_cast_non_string_values():
     assert headers["X-Flag"] == "True"
     assert headers["X-Pi"] == "3.14"
     assert "X-Empty" not in headers
+
+
+def test_cursor_and_copilot_oauth_headers_and_profiles():
+    h_cur1, h_cur2 = {}, {}
+    _inject_provider_headers(h_cur1, "cursor", {"oauth_email": "a@cursor.sh"}, {})
+    _inject_provider_headers(h_cur2, "cursor", {"oauth_email": "b@cursor.sh"}, {})
+    assert "/" in h_cur1["x-cursor-checksum"]
+    assert h_cur1["x-cursor-checksum"][8:] != h_cur2["x-cursor-checksum"][8:]
+    assert h_cur1["x-ghost-mode"] == "true"
+
+    h_cop = {}
+    _inject_provider_headers(h_cop, "github", {"_is_agent_turn": True}, {})
+    assert h_cop["Copilot-Integration-Id"] == "vscode-chat"
+    assert h_cop["Editor-Version"].startswith("vscode/")
+    assert h_cop["X-Initiator"] == "agent"
+

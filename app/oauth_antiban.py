@@ -49,27 +49,81 @@ except Exception:  # pragma: no cover - httpx always present in prod
     httpx = None  # type: ignore
 
 
-# Providers this module governs by default. Antigravity (P1), OpenAI Codex (P2),
-# Claude Code (P3). A provider is ALSO treated as OAuth when any connection
-# carries an OAuth marker, so custom-named OAuth lanes still get affinity.
+# Providers this module governs by default across all OAuth / CLI / IDE lanes:
+# Google Antigravity & Gemini CLI (P1), OpenAI Codex CLI (P2), Claude Code CLI (P3),
+# AWS Kiro IDE (P4), Cursor IDE (P5), GitHub Copilot (P6), Grok CLI (P7),
+# Qwen Code (P8), CommandCode / iFlow / Cline / Kimi Coding.
+# A provider is ALSO treated as OAuth when any connection carries an OAuth marker,
+# so custom-named OAuth lanes still get affinity + anti-ban protection.
 OAUTH_AFFINITY_PROVIDERS = frozenset({
     "antigravity",
+    "gemini-cli",
     "codex",
     "claude",
     "claude_code",
     "claude-code",
     "claudecode",
+    "kiro",
+    "cursor",
+    "github",
+    "copilot",
+    "github-copilot",
+    "grok-cli",
+    "qwen",
+    "qwen-code",
+    "commandcode",
+    "iflow",
+    "cline",
+    "kimi-coding",
 })
 
 # Per-connection markers that identify an OAuth credential. We deliberately
 # never key identity off the raw token; stable non-secret identities only.
 _OAUTH_CONN_MARKERS = ("refresh_token", "oauth", "oauth_email", "id")
+_OAUTH_PROVIDER_DATA_MARKERS = (
+    "refreshToken",
+    "chatgptAccountId",
+    "profileArn",
+    "copilotToken",
+    "authMethod",
+)
 
 _DEFAULT_TTL_SECONDS = 1800
 _DEFAULT_MAX_SESSIONS = 512
 _DEFAULT_CLIENT_CACHE = 64
 
 _CLAUDE_FAMILY = frozenset({"claude", "claude_code", "claude-code", "claudecode"})
+_COPILOT_FAMILY = frozenset({"github", "copilot", "github-copilot"})
+_ANTIGRAVITY_FAMILY = frozenset({"antigravity", "gemini-cli"})
+_QWEN_FAMILY = frozenset({"qwen", "qwen-code"})
+
+# Per-provider anti-ban cadence & concurrency profiles (2026 protocol research):
+# - kiro: AWS CodeWhisperer enforces 1 concurrent stream/account + flags <1.1s bursts
+# - antigravity/claude: 0.9s min interval + 35% jitter
+# - codex: 0.8s min interval + 30% jitter
+# - cursor: 0.7s min interval + 30% jitter
+# - github/copilot: 0.6s min interval + 25% jitter
+PROVIDER_ANTIBAN_PROFILES: Dict[str, Dict[str, float]] = {
+    "kiro": {"min_interval_seconds": 1.2, "cadence_jitter": 0.35},
+    "antigravity": {"min_interval_seconds": 0.9, "cadence_jitter": 0.35},
+    "gemini-cli": {"min_interval_seconds": 0.9, "cadence_jitter": 0.35},
+    "claude": {"min_interval_seconds": 0.9, "cadence_jitter": 0.35},
+    "claude_code": {"min_interval_seconds": 0.9, "cadence_jitter": 0.35},
+    "claude-code": {"min_interval_seconds": 0.9, "cadence_jitter": 0.35},
+    "claudecode": {"min_interval_seconds": 0.9, "cadence_jitter": 0.35},
+    "codex": {"min_interval_seconds": 0.8, "cadence_jitter": 0.30},
+    "cursor": {"min_interval_seconds": 0.7, "cadence_jitter": 0.30},
+    "github": {"min_interval_seconds": 0.6, "cadence_jitter": 0.25},
+    "copilot": {"min_interval_seconds": 0.6, "cadence_jitter": 0.25},
+    "github-copilot": {"min_interval_seconds": 0.6, "cadence_jitter": 0.25},
+    "grok-cli": {"min_interval_seconds": 0.7, "cadence_jitter": 0.30},
+    "qwen": {"min_interval_seconds": 0.7, "cadence_jitter": 0.30},
+    "qwen-code": {"min_interval_seconds": 0.7, "cadence_jitter": 0.30},
+    "commandcode": {"min_interval_seconds": 0.7, "cadence_jitter": 0.30},
+    "iflow": {"min_interval_seconds": 0.7, "cadence_jitter": 0.30},
+    "cline": {"min_interval_seconds": 0.7, "cadence_jitter": 0.30},
+    "kimi-coding": {"min_interval_seconds": 0.7, "cadence_jitter": 0.30},
+}
 
 _DEFAULTS = {
     "enabled": True,
@@ -103,6 +157,8 @@ def resolve_antiban_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     for k in _DEFAULTS:
         if k in raw and raw[k] is not None:
             out[k] = raw[k]
+    out["_explicit_min_interval"] = "min_interval_seconds" in raw and raw["min_interval_seconds"] is not None
+    out["_explicit_cadence_jitter"] = "cadence_jitter" in raw and raw["cadence_jitter"] is not None
     out["enabled"] = bool(out["enabled"])
     out["authenticity_enforce"] = bool(out["authenticity_enforce"])
     for k in (
@@ -138,18 +194,32 @@ def is_oauth_connection(conn: Any) -> bool:
     """
     if not isinstance(conn, dict):
         return False
-    return any(conn.get(m) for m in _OAUTH_CONN_MARKERS)
+    if any(conn.get(m) for m in _OAUTH_CONN_MARKERS):
+        return True
+    if str(conn.get("token_type") or "").strip().lower() == "oauth":
+        return True
+    if str(conn.get("auth_type") or "").strip().lower() == "oauth":
+        return True
+    if conn.get("auth_method"):
+        return True
+    pd = conn.get("provider_data")
+    if isinstance(pd, dict) and any(pd.get(m) for m in _OAUTH_PROVIDER_DATA_MARKERS):
+        return True
+    return False
 
 
 def is_oauth_provider(provider_name: str, provider_config: Optional[Dict[str, Any]] = None) -> bool:
     """True when affinity should govern this provider.
 
-    Default-on for the three known OAuth providers; also true when any
+    Default-on for all known OAuth/CLI/IDE providers; also true when any
     connection carries an OAuth marker so custom-named OAuth lanes are covered.
     """
-    if (provider_name or "").lower() in OAUTH_AFFINITY_PROVIDERS:
+    if (provider_name or "").strip().lower() in OAUTH_AFFINITY_PROVIDERS:
         return True
-    if isinstance(provider_config, dict) and provider_config.get("type") == "oauth":
+    if isinstance(provider_config, dict) and (
+        provider_config.get("type") == "oauth"
+        or provider_config.get("auth_type") == "oauth"
+    ):
         return True
     for conn in (provider_config or {}).get("connections", []) or []:
         if is_oauth_connection(conn):
@@ -159,6 +229,21 @@ def is_oauth_provider(provider_name: str, provider_config: Optional[Dict[str, An
 
 def is_claude_provider(provider_name: str) -> bool:
     return (provider_name or "").strip().lower() in _CLAUDE_FAMILY
+
+
+def provider_cadence_params(provider_name: str, cfg: Dict[str, Any]) -> Tuple[float, float]:
+    """Return (min_interval_seconds, cadence_jitter) honoring per-provider profiles
+    unless explicitly overridden in tools.oauth_antiban config."""
+    pname = (provider_name or "").strip().lower()
+    prof = PROVIDER_ANTIBAN_PROFILES.get(pname)
+    min_iv = float(cfg.get("min_interval_seconds", 0.9))
+    jitter = float(cfg.get("cadence_jitter", 0.35))
+    if prof:
+        if not cfg.get("_explicit_min_interval"):
+            min_iv = float(prof.get("min_interval_seconds", min_iv))
+        if not cfg.get("_explicit_cadence_jitter"):
+            jitter = float(prof.get("cadence_jitter", jitter))
+    return min_iv, jitter
 
 
 def _dig(body: Dict[str, Any], dotted: str) -> Optional[str]:
@@ -448,13 +533,21 @@ _CLIENTS_LOCK = threading.Lock()
 def account_identity(conn: Dict[str, Any], fallback_index: Optional[int] = None) -> str:
     """Stable, non-secret per-account identity for cache keying.
 
-    Prefers connection id, then oauth_email, then original index. NEVER the
+    Prefers connection id, then oauth_email/email/name, then non-secret
+    provider_data account identifiers, then original index. NEVER the
     token/api_key.
     """
-    for k in ("id", "oauth_email", "email", "name"):
-        v = conn.get(k)
-        if v:
-            return str(v)
+    if isinstance(conn, dict):
+        for k in ("id", "oauth_email", "email", "name"):
+            v = conn.get(k)
+            if v:
+                return str(v)
+        pd = conn.get("provider_data")
+        if isinstance(pd, dict):
+            for pk in ("chatgptAccountId", "accountId", "profileArn", "userId", "email"):
+                pv = pd.get(pk)
+                if pv:
+                    return str(pv)
     return "idx:%s" % fallback_index if fallback_index is not None else "anon"
 
 
@@ -701,16 +794,50 @@ class SessionLaneStore:
 
 
 # ---------------------------------------------------------------------------
-# G4 -- Claude session-lifecycle telemetry rhythm
+# G4 -- Multi-provider session-lifecycle telemetry rhythm
 # ---------------------------------------------------------------------------
 
-class ClaudeSessionRhythm:
-    """Mimic the Claude Code harness session lifecycle, not just its headers.
 
-    Anthropic reads the *rhythm*: a session opens, keeps alive, sends turns
-    with human think-time, and carries a stable session id. We track per-session
-    turn count + last-turn time and expose the session header surface the real
-    CLI emits, plus a think-time hint the dispatcher can sleep on. Fail-open.
+def build_cursor_checksum(account_id: str) -> str:
+    """Build a deterministic per-account Cursor x-cursor-checksum header.
+
+    Cursor's api2.cursor.sh edge validates `x-cursor-checksum` formatted as
+    `<8-char-obfuscated-timestamp><64-hex-machineId>/<64-hex-macMachineId>`.
+    Each account gets its own stable SHA-256 hardware fingerprint derived from
+    its non-secret account_id so N Cursor accounts never share a single machineId
+    (which triggers multi-account device-farm bans) nor rotate hardware IDs on
+    every request (which triggers token-theft lockouts).
+    """
+    import base64
+    import hashlib
+    seed = str(account_id or "bsl-cursor-default")
+    machine_id = hashlib.sha256(("bsl-cursor-machine:" + seed).encode("utf-8")).hexdigest()
+    mac_id = hashlib.sha256(("bsl-cursor-mac:" + seed).encode("utf-8")).hexdigest()
+    ts_kb = int(time.time() // 1000)
+    raw = bytearray([
+        (ts_kb >> 40) & 0xFF,
+        (ts_kb >> 32) & 0xFF,
+        (ts_kb >> 24) & 0xFF,
+        (ts_kb >> 16) & 0xFF,
+        (ts_kb >> 8) & 0xFF,
+        ts_kb & 0xFF,
+    ])
+    prev = 165
+    for i in range(len(raw)):
+        raw[i] = ((raw[i] ^ prev) + (i & 0xFF)) & 0xFF
+        prev = raw[i]
+    ts_prefix = base64.b64encode(bytes(raw)).decode("ascii")
+    return f"{ts_prefix}{machine_id}/{mac_id}"
+
+
+class ClaudeSessionRhythm:
+    """Mimic OAuth CLI/IDE harness session lifecycles across all OAuth providers.
+
+    Upstream gateways (Anthropic Claude Code, OpenAI Codex CLI, AWS Kiro IDE,
+    Cursor IDE, GitHub Copilot, Google Antigravity / Gemini CLI, Qwen Code)
+    inspect session telemetry rhythm: a session opens, keeps a stable session/
+    conversation ID per account, emits SDK/IDE telemetry headers, and paces
+    turns with human think-time. Fail-open.
     """
 
     SESSION_HEADER = "x-claude-code-session-id"
@@ -725,7 +852,14 @@ class ClaudeSessionRhythm:
         now = time.monotonic()
         s = self._sessions.get(session_key)
         if s is None or now - s.get("last", 0.0) > self._ttl:
-            s = {"session_id": uuid.uuid4().hex, "turns": 0, "opened": now, "last": now}
+            sid_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"bsl-oab-session:{session_key}"))
+            s = {
+                "session_id": sid_uuid.replace("-", ""),
+                "session_uuid": sid_uuid,
+                "turns": 0,
+                "opened": now,
+                "last": now,
+            }
             self._sessions[session_key] = s
         self._sessions.move_to_end(session_key)
         while len(self._sessions) > 512:
@@ -733,11 +867,78 @@ class ClaudeSessionRhythm:
         return s
 
     def headers_for(self, session_key: str) -> Dict[str, str]:
-        """Return the session-telemetry headers the dispatcher should merge."""
+        """Return the Claude session-telemetry headers (backward-compatible)."""
         try:
             with self._lock:
                 s = self._get(session_key)
             return {self.SESSION_HEADER: s["session_id"]}
+        except Exception:
+            return {}
+
+    def headers_for_provider(
+        self,
+        provider_name: str,
+        session_key: Optional[str],
+        account_id: str = "anon",
+    ) -> Dict[str, str]:
+        """Return provider-specific anti-ban session & SDK telemetry headers."""
+        import uuid
+        pname = (provider_name or "").strip().lower()
+        sk = session_key or f"acct:{account_id}"
+        try:
+            with self._lock:
+                s = self._get(f"{pname}:{account_id}:{sk}")
+            sid_hex = s["session_id"]
+            sid_uuid = s["session_uuid"]
+
+            if pname in _CLAUDE_FAMILY:
+                return {
+                    self.SESSION_HEADER: sid_hex,
+                    "X-Stainless-Lang": "js",
+                    "X-Stainless-Runtime": "node",
+                    "X-Stainless-Runtime-Version": "v22.14.0",
+                    "X-Stainless-Arch": "x64",
+                    "X-Stainless-OS": "Windows",
+                }
+            if pname == "codex":
+                return {
+                    "session_id": sid_uuid,
+                    "Conversation-Id": sid_uuid,
+                }
+            if pname == "kiro":
+                return {
+                    "amz-sdk-invocation-id": str(uuid.uuid4()),
+                    "amz-sdk-request": "attempt=1; max=3",
+                    "x-amzn-kiro-agent-mode": "vibe",
+                    "x-amzn-codewhisperer-optout": "true",
+                }
+            if pname == "cursor":
+                return {
+                    "x-cursor-checksum": build_cursor_checksum(account_id),
+                    "x-cursor-client-version": "1.0.0",
+                    "x-cursor-timezone": "UTC",
+                    "x-ghost-mode": "true",
+                    "x-request-id": str(uuid.uuid4()),
+                }
+            if pname in _COPILOT_FAMILY:
+                return {
+                    "Editor-Version": "vscode/1.100.0",
+                    "Editor-Plugin-Version": "copilot-chat/0.26.7",
+                    "Copilot-Integration-Id": "vscode-chat",
+                    "Openai-Intent": "conversation-panel",
+                    "X-GitHub-Api-Version": "2025-04-01",
+                    "X-Request-Id": str(uuid.uuid4()),
+                }
+            if pname in _ANTIGRAVITY_FAMILY:
+                return {
+                    "X-Goog-Api-Client": "gl-node/22.14.0",
+                    "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
+                }
+            if pname in _QWEN_FAMILY:
+                return {
+                    "X-DashScope-Client": "qwen-code/0.2.1",
+                }
+            return {}
         except Exception:
             return {}
 
@@ -967,9 +1168,10 @@ async def govern_pre_send(
         acct = account_identity(conn, conn_index)
         session_key = session_key or current_request_session_key()
 
-        # G1 -- cadence governor (jittered min-interval)
+        # G1 -- cadence governor (per-provider jittered min-interval)
+        min_iv, jitter = provider_cadence_params(provider_name, cfg)
         decision["waited"] = await _CADENCE.wait_turn(
-            acct, cfg["min_interval_seconds"], cfg["cadence_jitter"],
+            acct, min_iv, jitter,
         )
 
         # G3 -- session-lane pinning (account <-> egress identity)
@@ -983,17 +1185,38 @@ async def govern_pre_send(
                 decision["pinned_account"] = pinned_account
             decision["pinned_egress"] = pinned_egress
 
-        # G4 -- Claude session rhythm headers
-        if session_key and is_claude_provider(provider_name):
-            decision["headers"] = _CLAUDE_RHYTHM.headers_for(session_key)
-            _CLAUDE_RHYTHM.note_turn(session_key)
+        # G4 -- Multi-provider session-lifecycle & SDK telemetry headers
+        if is_claude_provider(provider_name):
+            if session_key:
+                decision["headers"] = _CLAUDE_RHYTHM.headers_for_provider(provider_name, session_key, acct)
+                _CLAUDE_RHYTHM.note_turn(session_key)
+        else:
+            decision["headers"] = _CLAUDE_RHYTHM.headers_for_provider(provider_name, session_key, acct)
+            if session_key:
+                _CLAUDE_RHYTHM.note_turn(f"{provider_name}:{acct}:{session_key}")
 
         # G5 -- graded authenticity pre-send
+        if conn.get("header_profile") is False or conn.get("_profile") is False:
+            _has_profile = False
+        else:
+            _has_profile = bool(
+                conn.get("header_profile")
+                or conn.get("_profile")
+                or (provider_name or "").strip().lower() in OAUTH_AFFINITY_PROVIDERS
+            )
+        if conn.get("egress_proxy") is False:
+            _has_egress = False
+        else:
+            _has_egress = (
+                bool(pinned_egress)
+                or bool(conn.get("proxy_bypass"))
+                or is_oauth_connection(conn)
+            )
         score, _parts = authenticity_score(
             provider_name,
-            has_official_profile=bool(conn.get("header_profile") or conn.get("_profile")),
+            has_official_profile=_has_profile,
             cadence_engaged=True,
-            has_stable_egress=bool(pinned_egress) or bool(conn.get("proxy_bypass")),
+            has_stable_egress=_has_egress,
             session_pinned=bool(session_key),
             usage_fraction=_USAGE.spend_fraction(acct, float(conn.get("_usage_budget_tokens") or 0.0)),
             session_rhythm=bool(decision["headers"]) or not is_claude_provider(provider_name),
