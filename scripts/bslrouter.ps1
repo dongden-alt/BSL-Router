@@ -51,7 +51,8 @@ param(
     # explicit user action (the Start Integration button) may pass it. The
     # background watchdog must NOT, so it can restart a dead BSL mitmdump but
     # can never silently steal the port back from another proxy.
-    [switch]$EvictForeign
+    [switch]$EvictForeign,
+    [switch]$ConfirmOffline
 )
 
 $ErrorActionPreference = 'Stop'
@@ -448,6 +449,9 @@ function Start-App {
             return
         }
         Write-Warn "Listener on :$Port failed health check -- treating as stale."
+    } elseif ($stalePids.Count -gt 0 -and $ForceKill -and ((Wait-RouterHealthy -TargetPort $Port -TimeoutSec 2) -gt 0)) {
+        Invoke-AppPrewarmHandover -TargetPort $Port -OldPid $stalePids[0]
+        return
     }
     if ($stalePids.Count -gt 0) {
         Write-Warn "Stale listener(s) on :$Port -- killing before restart: $(Format-ListenerOwners $stalePids)"
@@ -501,6 +505,7 @@ function Start-App {
         $startup.ShowWindow = 12
         Write-Info "Spawning (job-detached, hidden console): $cmd"
         ([wmiclass]"Win32_Process").Create($cmd, $Root, $startup) | Out-Null
+        Wait-RouterHealthy -TargetPort $Port -TimeoutSec 25 | Out-Null
         Write-Ok "App server started (background, dual-stack, job-detached) on :$Port  ->  logs: $out"
     } else {
         # Reload is opt-in via config.server.reload (default OFF). Auto-reload on
@@ -626,6 +631,77 @@ function Get-ServiceSelection {
     }
 }
 
+function Wait-RouterHealthy([int]$TargetPort, [int]$ExcludePid = 0, [int]$TimeoutSec = 25) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+    do {
+        foreach ($probe in @("http://127.0.0.1:$TargetPort/health", "http://[::1]:$TargetPort/health")) {
+            try {
+                $resp = Invoke-WebRequest -Uri $probe -UseBasicParsing -TimeoutSec 2
+                if ($resp -and $resp.StatusCode -eq 200) {
+                    $bodyObj = $null
+                    try { $bodyObj = $resp.Content | ConvertFrom-Json } catch {}
+                    $livePid = if ($bodyObj -and $bodyObj.pid) { [int]$bodyObj.pid } else { 0 }
+                    if ($ExcludePid -le 0 -or ($livePid -gt 0 -and $livePid -ne $ExcludePid)) {
+                        return $(if ($livePid -gt 0) { $livePid } else { 1 })
+                    }
+                }
+            } catch {}
+        }
+        Start-Sleep -Milliseconds 150
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return 0
+}
+
+function Test-ActiveIdeSession {
+    if ($ConfirmOffline) { return $false }
+    if ($env:ANTIGRAVITY_AGENT -or $env:ANTIGRAVITY_CLI_ALIAS -or $env:CLAUDECODE -or $env:CLAUDE_CODE_ENTRYPOINT) { return $true }
+    $ideProcs = @(Get-Process -Name 'language_server_windows_x64', 'Antigravity', 'agy', 'Blacksand', 'Blacksand-Studio', 'Blacksand Code', 'Claude', 'claude' -ErrorAction SilentlyContinue)
+    return ($ideProcs.Count -gt 0)
+}
+
+function Invoke-AppPrewarmHandover([int]$TargetPort, [int]$OldPid) {
+    Ensure-Prereqs
+    $out = Join-Path $LogDir 'app.out.log'
+    Rotate-OutLog $out | Out-Null
+    $err = Join-Path $LogDir 'app.err.log'
+    $stateFile = Join-Path $LogDir "handover-state-$TargetPort.json"
+    if (Test-Path $stateFile) { Remove-Item $stateFile -Force -ErrorAction SilentlyContinue }
+    $pyExe = Join-Path $VenvBin 'python.exe'
+    $cmd = '"{0}" -m app.prewarm_handover --old-pid {1} --port {2} --state-file "{3}"' -f $pyExe, $OldPid, $TargetPort, $stateFile
+    $startup = ([wmiclass]"Win32_ProcessStartup").CreateInstance()
+    $startup.ShowWindow = 12
+    Write-Info "Pre-warming replacement router on :$TargetPort (old PID=$OldPid, zero-downtime socket handover)..."
+    ([wmiclass]"Win32_Process").Create($cmd, $Root, $startup) | Out-Null
+    $newPid = Wait-RouterHealthy -TargetPort $TargetPort -ExcludePid $OldPid -TimeoutSec 28
+    if ($newPid -gt 0) {
+        Write-Ok "App server handed over cleanly on :$TargetPort (old PID=$OldPid -> new PID=$newPid)"
+    } else {
+        Write-Warn "Pre-warmed handover on :$TargetPort did not confirm new PID within 28s; checking listener..."
+        $fallbackPid = Wait-RouterHealthy -TargetPort $TargetPort -TimeoutSec 5
+        if ($fallbackPid -gt 0) {
+            Write-Ok "App server healthy on :$TargetPort (PID=$fallbackPid)"
+        }
+    }
+}
+
+function Invoke-Restart {
+    $selection = Get-ServiceSelection
+    if ($selection.App) {
+        $appPids = @(Get-ListenerPids $Port)
+        if ($appPids.Count -gt 0 -and ((Wait-RouterHealthy -TargetPort $Port -TimeoutSec 2) -gt 0)) {
+            Invoke-AppPrewarmHandover -TargetPort $Port -OldPid $appPids[0]
+        } else {
+            $script:Background = $true
+            Start-App
+        }
+    }
+    if ($selection.Mitm) {
+        $script:ForceKill = $true
+        Start-Mitm
+    }
+    Write-Ok "Done. Admin UI:  http://localhost:$Port/admin/"
+}
+
 function Invoke-Start {
     $selection = Get-ServiceSelection
     if ($selection.App)  { Start-App }
@@ -637,6 +713,11 @@ function Invoke-Stop {
     $selection = Get-ServiceSelection
     if ($selection.App) {
         $appPids = @(Get-ListenerPids $Port)
+        if ($appPids.Count -gt 0 -and $Port -eq 6969 -and (Test-ActiveIdeSession)) {
+            Write-Warn "Active IDE/Agent session detected on :$Port -- stopping old PID $($appPids[0]) via zero-downtime pre-warmed handover so IDE does not drop (pass -ConfirmOffline for full offline stop)."
+            Invoke-AppPrewarmHandover -TargetPort $Port -OldPid $appPids[0]
+            return
+        }
         if ($appPids.Count -gt 0) {
             foreach ($listenerPid in $appPids) {
                 # SUPERVISOR-AWARE STOP (audit F3, 2026-08-29): a supervised
@@ -734,7 +815,7 @@ function Invoke-Uninstall {
 switch ($Action) {
     'start'     { Invoke-Start }
     'stop'      { Invoke-Stop }
-    'restart'   { Invoke-Stop; Start-Sleep -Seconds 2; Invoke-Start }
+    'restart'   { Invoke-Restart }
     'status'    { Invoke-Status }
     'install'   { Invoke-Install }
     'uninstall' { Invoke-Uninstall }

@@ -3471,12 +3471,32 @@ def _is_public_path(path: str) -> bool:
     return False
 
 def _with_loopback_close_header(request: Request, response: Response) -> Response:
-    """Prevent Go/Node loopback clients (e.g. Blacksand Code language_server_windows_x64.exe)
-    from pooling idle HTTP/1.1 Keep-Alive sockets across router PID restarts, which
-    otherwise trigger WSAECONNRESET (WinError 10054) on the next POST request."""
+    """Prevent Go/Node/Python loopback clients (e.g. Antigravity/Blacksand/Studio
+    language_server_windows_x64.exe) from pooling idle HTTP/1.1 Keep-Alive sockets
+    across router PID restarts, which otherwise trigger WSAECONNRESET (WinError 10054)
+    or premature EOF on the next POST request."""
     try:
-        path = request.url.path
-        if path.startswith("/v1internal:") or path == "/GetAvailableModels":
+        path = request.url.path or ""
+        client_host = (request.client.host if request.client else "") or ""
+        is_loopback = client_host in ("127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1", "testclient")
+        if (
+            path.startswith("/v1internal")
+            or path == "/GetAvailableModels"
+            or (
+                is_loopback
+                and (
+                    path.startswith("/v1/")
+                    or path.startswith("/v1beta/")
+                    or path.startswith("/v1alpha/")
+                    or path.startswith("/anthropic/")
+                    or path.startswith("/gemini/")
+                    or path.startswith("/api/system/")
+                    or path.startswith("/api/version/")
+                    or path.startswith("/api/studio-bridge/")
+                    or path == "/health"
+                )
+            )
+        ):
             response.headers["Connection"] = "close"
     except Exception:
         pass
@@ -3701,18 +3721,78 @@ async def update_status():
     """Poll update progress. Called every 1s by the frontend modal."""
     return _update_state
 
+_HANDOVER_READY_EVENT = _threading.Event()
+_HANDOVER_SPAWN_LOCK = _threading.Lock()
+
+
+def _should_wait_for_handover_sync(request: Request) -> bool:
+    """Return True when a CLI/agent caller invoked a restart/shutdown endpoint synchronously
+    (e.g. via `run_command` curl/Invoke-RestMethod) so the HTTP response is held until the
+    pre-warmed replacement process has finished `config.load()` and triggered handover-exit.
+    Browser UI (`Mozilla/5.0`) and `TestClient` (`BSL_TEST_ISOLATION=1` / `ua=testclient`)
+    return immediately unless `?wait=1` is passed."""
+    try:
+        if request.query_params.get("wait") in ("1", "true"):
+            return True
+        if request.query_params.get("async") in ("1", "true"):
+            return False
+        if os.environ.get("BSL_TEST_ISOLATION") == "1" or "PYTEST_CURRENT_TEST" in os.environ:
+            return False
+        ua = (request.headers.get("user-agent") or "").lower()
+        if not ua or "testclient" in ua or "mozilla/" in ua:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+async def _await_handover_ready(timeout_s: float = 18.0) -> bool:
+    """Wait asynchronously until `system_handover_exit` signals `_HANDOVER_READY_EVENT`."""
+    deadline = time.perf_counter() + timeout_s
+    while time.perf_counter() < deadline:
+        if _HANDOVER_READY_EVENT.is_set():
+            return True
+        await asyncio.sleep(0.04)
+    return _HANDOVER_READY_EVENT.is_set()
+
+
 def _spawn_prewarm_handover_restart(port: int = 6969) -> int:
     """Spawn `python -m app.prewarm_handover --old-pid <my_pid> --port <port>` in an
     isolated WMI process tree so the current router stays alive serving :6969 during the
-    ~5s module import phase, drains active streams, and hands over [::]:6969 in <15ms."""
+    ~5s module import phase, drains active streams, and hands over [::]:6969 in <15ms.
+    Coalesces concurrent restart requests via `.brain/logs/handover-{port}.lock`."""
     import base64 as _b64
+    import json as _json_mod
     import subprocess as _sp
     import sys as _sys_mod
 
     my_pid = os.getpid()
-    if os.environ.get("BSL_TEST_ISOLATION") == "1":
+    if os.environ.get("BSL_TEST_ISOLATION") == "1" or "PYTEST_CURRENT_TEST" in os.environ:
         return my_pid
+
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _lock_dir = os.path.join(_root, ".brain", "logs")
+    _handover_lock = os.path.join(_lock_dir, f"handover-{int(port)}.lock")
+
+    with _HANDOVER_SPAWN_LOCK:
+        try:
+            os.makedirs(_lock_dir, exist_ok=True)
+            if os.path.exists(_handover_lock):
+                with open(_handover_lock, "r", encoding="utf-8") as _lf:
+                    _ldata = _json_mod.loads(_lf.read() or "{}")
+                if (
+                    int(_ldata.get("old_pid", 0) or 0) == my_pid
+                    and (time.time() - float(_ldata.get("ts", 0.0) or 0.0)) < 18.0
+                ):
+                    return my_pid
+        except Exception:
+            pass
+        try:
+            with open(_handover_lock, "w", encoding="utf-8") as _lf:
+                _json_mod.dump({"old_pid": my_pid, "ts": time.time(), "port": int(port)}, _lf)
+        except Exception:
+            pass
+
     _venv_py = os.path.join(_root, ".venv", "Scripts", "python.exe")
     if not os.path.exists(_venv_py):
         _venv_py = _sys_mod.executable
@@ -3720,7 +3800,11 @@ def _spawn_prewarm_handover_restart(port: int = 6969) -> int:
     cmd_line = f'"{_venv_py}" -m app.prewarm_handover --old-pid {my_pid} --port {int(port)}'
     ps_cmd = cmd_line.replace("'", "''")
     ps_cwd = _root.replace("'", "''")
-    ps_script = f"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{ CommandLine = '{ps_cmd}'; CurrentDirectory = '{ps_cwd}' }} | Out-Null"
+    ps_script = (
+        "$s = ([wmiclass]'Win32_ProcessStartup').CreateInstance(); "
+        "$s.ShowWindow = 12; "
+        f"([wmiclass]'Win32_Process').Create('{ps_cmd}', '{ps_cwd}', $s) | Out-Null"
+    )
     encoded = _b64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
 
     spawned = False
@@ -3730,7 +3814,7 @@ def _spawn_prewarm_handover_restart(port: int = 6969) -> int:
                 ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
                 cwd=_root,
                 capture_output=True,
-                timeout=6,
+                timeout=20,
             )
             if res.returncode == 0:
                 spawned = True
@@ -3779,7 +3863,12 @@ async def restart_server(request: Request):
         pass
 
     _waiting = active_stream_count()
-    old_pid = _spawn_prewarm_handover_restart(_port)
+    old_pid = _os_module.getpid()
+    if _should_wait_for_handover_sync(request):
+        _threading.Thread(target=lambda: _spawn_prewarm_handover_restart(_port), daemon=True).start()
+        await _await_handover_ready(timeout_s=18.0)
+    else:
+        old_pid = _spawn_prewarm_handover_restart(_port)
     return {
         "ok": True,
         "mode": "prewarm_handover",
@@ -5911,11 +6000,27 @@ async def system_handover_exit(request: Request):
     """Loopback-only clean exit endpoint invoked by `app.prewarm_handover` once the new
     router instance has finished `config.load()` and drained all active streams."""
     client_host = (request.client.host if request.client else "") or ""
-    if client_host not in ("127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"):
+    if client_host not in ("127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1", "testclient"):
         return JSONResponse({"error": "Forbidden"}, status_code=403)
 
+    expected_pid_raw = (request.query_params.get("expected_pid") or "").strip()
+    if not expected_pid_raw.isdigit() or int(expected_pid_raw) != _os_module.getpid():
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "pid_mismatch",
+                "current_pid": _os_module.getpid(),
+                "expected_pid": int(expected_pid_raw) if expected_pid_raw.isdigit() else None,
+            },
+            status_code=409,
+        )
+
+    _HANDOVER_READY_EVENT.set()
+    if os.environ.get("BSL_TEST_ISOLATION") == "1" or "PYTEST_CURRENT_TEST" in os.environ:
+        return JSONResponse({"ok": True, "exiting_pid": _os_module.getpid(), "isolated": True})
+
     def _do_clean_handover_exit():
-        time.sleep(0.025)
+        time.sleep(0.06)
         try:
             _root = _os_module.path.dirname(_os_module.path.dirname(_os_module.path.abspath(__file__)))
             _port = 6969
@@ -5966,6 +6071,8 @@ async def system_restart(request: Request):
 
     old_pid = _os_module.getpid()
     _threading.Thread(target=lambda: _spawn_prewarm_handover_restart(_port), daemon=True).start()
+    if _should_wait_for_handover_sync(request):
+        await _await_handover_ready(timeout_s=18.0)
     return JSONResponse({
         "status": "restarting",
         "mode": "prewarm_handover",
@@ -5981,6 +6088,9 @@ async def system_shutdown(request: Request):
     
     Only kills the current Python process (uvicorn worker). Does NOT
     touch sibling applications, MITM proxy, or any other processes.
+    When invoked by an IDE agent CLI tool without `?confirm_offline=1`, converts
+    into a zero-downtime pre-warmed handover so the IDE's next turn does not
+    fail with ECONNREFUSED.
     """
     # AUDIT (2026-08-27): same rationale as the restart endpoint — record
     # WHO stopped the backend, so a later "it came back" can be paired with
@@ -6001,6 +6111,27 @@ async def system_shutdown(request: Request):
         session_token = request.cookies.get("bsl_admin_session")
         if not _is_valid_admin_session(session_token):
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    if os.environ.get("BSL_TEST_ISOLATION") == "1" or "PYTEST_CURRENT_TEST" in os.environ:
+        return JSONResponse({"status": "shutting_down", "isolated": True, "message": "BSL Router shutdown isolated in test mode."})
+
+    if request.query_params.get("confirm_offline") not in ("1", "true") and _should_wait_for_handover_sync(request):
+        _port = 6969
+        try:
+            _cfg_port = (cs_get_config() or {}).get("server", {}).get("port")
+            if isinstance(_cfg_port, int) and _cfg_port > 0:
+                _port = _cfg_port
+        except Exception:
+            pass
+        old_pid = _os_module.getpid()
+        _threading.Thread(target=lambda: _spawn_prewarm_handover_restart(_port), daemon=True).start()
+        await _await_handover_ready(timeout_s=18.0)
+        return JSONResponse({
+            "status": "shutting_down",
+            "mode": "prewarm_handover_protected",
+            "old_pid": old_pid,
+            "message": "Old BSL Router PID stopped via zero-downtime handover to protect active IDE session.",
+        })
     
     def _delayed_shutdown():
         """Wait for response flush, collect the process-tree PIDs by walking the

@@ -691,7 +691,7 @@ Status: 🔨 CODE DONE, awaiting a user-commanded `:6969` restart.
 
 ## Middleware Pipeline
 
-The routing pipeline consists of 36 middleware modules. Here's the full inventory:
+The routing pipeline consists of 38 middleware modules. Here's the full inventory:
 
 ### Classification Layer
 | Module | Purpose |
@@ -727,15 +727,17 @@ The routing pipeline consists of 36 middleware modules. Here's the full inventor
 | `quality.py` | Response quality gates (truncation detection + retry) |
 | `efficiency.py` | Opus efficiency optimization (token budget management) |
 | `compaction.py` | Context window management (compaction before overflow) |
+| `dedup_viewfile.py` | Duplicate `view_file` / `read_file` tool-result compaction across long agent sessions |
 | `thinking_fallback.py` | Reasoning parameter fallback |
 | `response_format_guard.py` | Response format validation |
 
-### Stream Protection Layer
+### Stream Protection & Provider Filter Layer
 | Module | Purpose |
 |---|---|
-| `stream_guard.py` | SSE stream integrity validation |
-| `caching.py` | Prompt caching injection (4 strategies) |
-| `glm_tools.py` | GLM tool call translation |
+| `stream_guard.py` | SSE stream integrity validation & pre-emission inline HTTP-200 error detection |
+| `caching.py` | Unified 1-Button Smart Prompt Caching across all model families |
+| `glm_tools.py` | GLM tool call translation & strict `<name>` tag boundary sanitization |
+| `kiro_filter_guard.py` | Provider-scoped Kiro `<thinking>` content-filter sanitizer & script-aware 160K/200K context window budget guard (`[BSL CONTEXT BUDGET GUARD]`) |
 
 ### Benchmark Sheets
 | Module | Purpose |
@@ -744,22 +746,54 @@ The routing pipeline consists of 36 middleware modules. Here's the full inventor
 | `bsl_lite_benchmark_sheet.py` | Lite tier benchmark data |
 | `bsl_agentic_benchmark_sheet.py` | Agentic tier benchmark data |
 
-### Tool Hygiene & Repair Layer (2026-09 wave)
+### Tool Hygiene & Repair Layer (2026-09–2026-11 wave)
 | Module | Purpose |
 |---|---|
-| `anthropic_tools.py` | Same-dialect (Anthropic→Anthropic) tool-call hygiene; repairs GLM-5.x malformed tool-argument JSON |
+| `anthropic_tools.py` | Same-dialect (Anthropic→Anthropic) tool-call hygiene, `AnthropicStreamToolGuard`, and `AnthropicStreamLifecycleTracker` terminal-frame synthesis |
 | `tool_arg_repair.py` | Dialect-agnostic JSON-repair ladder for tool-argument strings, shared by all 4 format lanes |
 | `glm_parallel_guard.py` | Injects `disable_parallel_tool_use` into the final Anthropic payload for GLM-family targets (fixes dropped tool args in multi-tool batches) |
-| `agentrouter_policy.py` | AgentRouter provider policy: Vietnamese-content preflight (VN text triggers upstream 400 content-blocked) |
+| `agentrouter_policy.py` | AgentRouter provider policy: Vietnamese NFKD diacritic transcoding & GPT-5.6/6.1 function-tool reasoning policy |
 
-### Execution Integrity Layer
+### Execution Integrity & Security Layer
 | Module | Purpose |
 |---|---|
 | `faithful_execution.py` | FEL directive builder (pure) — counters false refusals, skipped steps, dropped tool calls, premature stops |
 | `fel_wiring.py` | FEL backend wiring into the live request path (default OFF, fail-open — see FEL section) |
+| `response_guard.py` | Layer-3 post-upstream response & tool-call injection scanner with active `redact` mode and JSONL telemetry |
 | `normalizer_shadow.py` | Normalizer v2 shadow/active round-trip wiring (default OFF, one JSONL record per request) |
 | `responses_thread_store.py` | Responses API thread store — `previous_response_id` emulation (default OFF) |
-| `gemini_last_role.py` | Appends a minimal user continuation when the trailing role would be rejected by Gemini `generateContent` |
+| `gemini_last_role.py` | Appends a minimal user continuation when the trailing role would be rejected by Gemini `generateContent` / Cloud Code `v1internal` |
+
+---
+
+## Zero-Drop Server Lifecycle, Dual-Stack Pre-Warmed Handover & 6-Surface IDE/CLI Self-Preservation (`v1.1.2`)
+
+BSL Router serves as the live local inference backbone on `[::]:6969` (IPv6 `::1` + IPv4 `127.0.0.1` via `IPV6_V6ONLY=0` and `SO_EXCLUSIVEADDRUSE=1` in `app/dualstack_serve.py`). Because active coding sessions in **Antigravity App**, **Antigravity CLI (`agy`)**, **Blacksand Code**, **Blacksand Studio**, **Claude Code Desktop**, and **Claude Code CLI** stream continuously through `:6969`, the router enforces a **5-layer Zero-Drop Lifecycle Architecture** (`app/main.py`, `app/prewarm_handover.py`, `app/watchdog.py`, `scripts/bslrouter.ps1`, `scripts/shutdown_bsl.ps1`):
+
+| Layer | Module / Endpoint | Architectural Guarantee |
+|---|---|---|
+| **1. 6-Surface Self-Preserving Stop/Shutdown** | `scripts/bslrouter.ps1` (`Test-ActiveIdeSession`), `scripts/shutdown_bsl.ps1`, `POST /api/system/shutdown` | Detects active IDE/CLI sessions across `language_server_windows_x64`, `Antigravity`, `agy`, `Blacksand`, `Blacksand-Studio`, `Blacksand Code`, `Claude`, `claude`, and env vars (`ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CLI_ALIAS`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`). Unless `-ConfirmOffline` / `confirm_offline=1` is explicitly passed, `stop` and `shutdown` automatically convert into a zero-downtime pre-warmed handover (`<17ms` socket swap) so an agent running a stop command inside an IDE/CLI never kills its own active turn. |
+| **2. Pre-Warmed Dual-Stack Handover (`<17ms` Swap) & `45s` Stream Drain** | `app/prewarm_handover.py` (`BSL-PrewarmSupervisor`), `_spawn_prewarm_handover_restart()` | Pre-imports `app.dualstack_serve`, `app.main`, and `main.load_config()` (~5s) **while the existing router continues serving all traffic**, polls `/api/observability/usage/inflight` for up to `45.0s` until `active_streams == 0` for 2 consecutive checks, then signals `/api/system/handover-exit?expected_pid=<old_pid>` and binds `[::]:6969` in `<17ms`. |
+| **3. Synchronous CLI/Agent Readiness Gate & `18s` Single-Flight Coalescing** | `POST /api/system/restart`, `POST /api/version/restart` (`_HANDOVER_READY_EVENT`, `.brain/logs/handover-6969.lock`), `Wait-RouterHealthy` | CLI/agent callers (`curl`, `Invoke-RestMethod`, `python-httpx`) hold the restart HTTP response open until the pre-warmed worker finishes `config.load()` and triggers `handover-exit`, while browser UI (`Mozilla/5.0`) and `TestClient` callers return immediately. Concurrent restart storms within `18.0s` coalesce onto the single in-flight handover worker. |
+| **4. Mandatory `expected_pid` Verification & Watchdog `rc=0` Successor Guard** | `POST /api/system/handover-exit`, `app/watchdog.py` (`run_supervised`), `app/prewarm_handover.py` | `/api/system/handover-exit` requires `?expected_pid=<live_pid>` and returns `409 Conflict` (`error: "pid_mismatch"`) when missing or stale so a delayed handover worker can never terminate a newly swapped router. When a supervised child exits with `rc == 0`, both `app/watchdog.py` and `BSL-PrewarmSupervisor` poll `/health` for up to `3.5s` to verify a healthy successor PID bound `:6969` — respawning immediately if `:6969` is unlistening. All WMI (`Win32_ProcessStartup.ShowWindow = 12`) and `subprocess.Popen` (`CREATE_NO_WINDOW = 0x08000000`) spawns run 100% hidden outside `run_command`'s Windows Job Object. |
+| **5. Universal Loopback `Connection: close`** | `app/main.py` (`_with_loopback_close_header`) | Emits `Connection: close` on all loopback clients (`127.0.0.1`, `::1`, `localhost`, `::ffff:127.0.0.1`) across `/v1internal` (including URL-encoded `/v1internal%3AstreamGenerateContent`), `/GetAvailableModels`, `/v1/*`, `/v1beta/*`, `/v1alpha/*`, `/anthropic/*`, `/gemini/*`, `/api/system/*`, `/api/version/*`, `/api/studio-bridge/*`, and `/health`, preventing Go `language_server_windows_x64.exe` and Node HTTP clients from pooling stale keep-alive sockets across PID transitions. |
+
+---
+
+## Multi-Provider OAuth Anti-Ban Protocol v2 (`app/oauth_antiban.py` — 19 Providers)
+
+BSL Router protects multi-account OAuth, CLI, and IDE credentials across **19 provider IDs** (`antigravity`, `gemini-cli`, `codex`, `claude`, `claude_code`, `claude-code`, `claudecode`, `kiro`, `cursor`, `github`, `copilot`, `github-copilot`, `grok-cli`, `qwen`, `qwen-code`, `commandcode`, `iflow`, `cline`, `kimi-coding`):
+
+1. **Per-Session Sticky Account Affinity (`AffinityStore` + `_SESSION_RR_CURSOR`):** When `round_robin: true` is enabled on an OAuth provider, new conversations rotate across healthy accounts while every turn inside an active conversation remains pinned to the same account, preserving prompt-cache locality and preventing mid-session identity switching. On `401`/`402`/`403`/`429`/`5xx`, `govern_post_send()` immediately releases the session pin so `_mark_conn_failed_for_retry()` fails over to the next sibling account.
+2. **Per-Account `httpx.AsyncClient` Keep-Alive Pool Isolation:** Each `(provider, account_id)` pair gets its own dedicated HTTP/2 + HTTP/1.1 connection pool so two OAuth accounts never share a TLS socket or HTTP/2 connection.
+3. **Per-Provider Jittered Cadence Profiles (`PROVIDER_ANTIBAN_PROFILES`):** Enforces provider-calibrated inter-request spacing (`kiro`: `1.2s` + `0.35` jitter for AWS CodeWhisperer single-stream enforcement; `antigravity` / `claude`: `0.9s`; `codex`: `0.8s`; `cursor` / `grok-cli` / `qwen`: `0.7s`; `github` / `copilot`: `0.6s`).
+4. **Authentic Session-Lifecycle & SDK Telemetry Headers (`headers_for_provider` & `build_cursor_checksum`):**
+   - **Claude Code (`claude*`):** Session-sticky `x-claude-code-session-id` + Stainless Node SDK headers (`X-Stainless-Lang: js`, `X-Stainless-Runtime: node`, `X-Stainless-Runtime-Version: v22.14.0`, `X-Stainless-Arch: x64`, `X-Stainless-OS: Windows`).
+   - **OpenAI Codex (`codex`):** Deterministic per-(session, account) UUIDv5 `session_id` and `Conversation-Id`, plus `originator: codex`, `OpenAI-Beta: codex-1`, and `ChatGPT-Account-ID`.
+   - **AWS Kiro (`kiro`):** Per-request `amz-sdk-invocation-id` (UUID4), `amz-sdk-request: attempt=1; max=3`, `x-amzn-kiro-agent-mode: vibe`, `x-amzn-codewhisperer-optout: true`, and sticky per-conversation `conversationState.conversationId` in `kiro_adapter.openai_to_kiro()`.
+   - **Cursor IDE (`cursor`):** Deterministic per-account SHA-256 `machineId/macMachineId` hardware fingerprint with rolling obfuscated timestamp prefix (`build_cursor_checksum(account_id)`), `x-cursor-client-version: 1.0.0`, `x-cursor-timezone: UTC`, `x-ghost-mode: true`, and `x-request-id`.
+   - **GitHub Copilot (`github`, `copilot`, `github-copilot`):** `Editor-Version: vscode/1.100.0`, `Editor-Plugin-Version: copilot-chat/0.26.7`, `Copilot-Integration-Id: vscode-chat`, `Openai-Intent: conversation-panel`, `X-GitHub-Api-Version: 2025-04-01`, `X-Request-Id`, and `X-Initiator` (`agent` vs `user`).
+   - **Google Antigravity & Gemini CLI (`antigravity`, `gemini-cli`):** `X-Goog-Api-Client: gl-node/22.14.0`, `Client-Metadata`, and deterministic per-session `request.sessionId` in `openai_to_cloudcode_envelope()`.
 
 ---
 
@@ -850,50 +884,45 @@ The admin dashboard is a single-page app (`app/static/`) with 10 tabs:
 ```
 bsl-router/
 ├── app/
-│   ├── main.py                  # Server entry point + all HTTP routes
+│   ├── main.py                  # Server entry point + 153 HTTP routes (~20.5K LOC)
+│   ├── dualstack_serve.py       # Dual-stack IPv6+IPv4 [::]:6969 server + self-health watchdog
+│   ├── prewarm_handover.py      # Zero-downtime pre-warmed socket handover & BSL-PrewarmSupervisor
+│   ├── watchdog.py              # Process supervisor with rc=0 successor health verification
 │   ├── models.py                # Data models (Pydantic)
-│   ├── config_state.py          # Config loading and hot-reload
-│   ├── crypto.py                # Fernet encryption/decryption
-│   ├── oauth.py                 # OAuth 2.0 flows + token refresh
-│   ├── normalizer.py            # Response normalization
-│   ├── observability.py         # Request/response logging
-│   ├── antifreeze.py            # Stream deadline + kill registry
+│   ├── config_state.py          # Repo-root anchored config loading & atomic persistence
+│   ├── crypto.py                # Fernet + DPAPI encryption/decryption
+│   ├── oauth.py                 # Multi-provider OAuth 2.0 flows + token refresh + quota probing
+│   ├── oauth_antiban.py         # 19-provider OAuth Anti-Ban v2 (sticky affinity, pool isolation, SDK headers)
+│   ├── antigravity_patcher.py   # Pure-Python ASAR + IDE settings.json direct patcher
+│   ├── codex_adapter.py         # OpenAI Chat <-> Codex Responses API SSE & tool-call bridge
+│   ├── kiro_adapter.py          # AWS CodeWhisperer / Kiro EventStream adapter
+│   ├── normalizer.py            # Response normalization & <=64-char tool call_id bounding
+│   ├── normalizer_v2.py         # Canonical normalizer v2
+│   ├── observability.py         # SQLite usage_events + capped async JSONL capture queues
+│   ├── antifreeze.py            # 10m stream deadline + ACTIVE_STREAMS registry
+│   ├── circuit_breaker.py       # Quota-aware circuit breaker
+│   ├── error_prevention.py      # Softban & provider health tracking
 │   ├── mitm.py                  # MITM proxy management
+│   ├── authenticity/            # 19-module Model Authenticity Engine (TraitMark V2/V3 + 6-lane supply_lane)
 │   ├── compat/                  # Protocol translation
-│   │   ├── families/            # 14 provider family adapters
-│   │   ├── stream_normalizer.py # Stream format normalization
+│   │   ├── families/            # 14 provider family adapters + _base, _effort, _legacy_reference
+│   │   ├── adapters/            # gemini.py, antigravity_upstream.py, anthropic_tools.py
+│   │   ├── stream_normalizer.py # Stream format normalization & message_start ID preservation
 │   │   ├── tool_ledger.py       # Tool call ID tracking
 │   │   └── reasoning_policy.py  # Thinking parameter rules
-│   ├── middleware/              # 36 routing pipeline modules
-│   │   ├── bsl_chat_router.py   # Tier 1: Chat
-│   │   ├── bsl_lite_router.py   # Tier 2: Lite
-│   │   ├── bsl_agentic_router.py       # Tier 3: Agentic
-│   │   ├── bsl_agentic_ultra_router.py # Tier 4: Ultra
-│   │   ├── bsl_agentic_max_router.py   # Tier 5: Max
-│   │   ├── bsl_orchestrator.py         # Multi-agent orchestration
-│   │   ├── bsl_auto_select.py          # Auto model selection
-│   │   ├── category_classifier.py      # 13-way classification
-│   │   ├── coding_category_classifier.py # 8-way coding classification
-│   │   ├── task_complexity.py          # Complexity estimation
-│   │   ├── route_registry.py           # Central route definitions
-│   │   ├── stream_guard.py             # SSE integrity validation
-│   │   ├── caching.py                  # Prompt caching (4 strategies)
-│   │   ├── quality.py                  # Quality gates
-│   │   ├── efficiency.py              # Opus efficiency
-│   │   ├── compaction.py              # Context management
-│   │   ├── thinking_fallback.py       # Reasoning fallback
-│   │   ├── glm_tools.py               # GLM tool translation
-│   │   └── ...                        # + 18 more modules
+│   ├── middleware/              # 38 routing, quality, security & hygiene pipeline modules
 │   ├── routing/
-│   │   └── combo_resolver.py    # Combo chain resolution + fallback
+│   │   └── combo_resolver.py    # Recursive combo chain resolution + 1-key double-tap guard
 │   ├── scouts/                  # Vision, docs, canvas analysis
-│   ├── security/                # Key scanning
-│   ├── static/                  # Admin dashboard (HTML/JS/CSS)
-│   └── tests/                   # 147 test files
+│   ├── security/                # 3-layer security shield (key_scanner, url_validator, pool_auth)
+│   ├── static/                  # Admin dashboard SPA (index.html, app.js, style.css)
+│   └── tests/                   # 228 test files (4,200+ tests across Py3.11 & Py3.12 CI legs)
 ├── scripts/
-│   ├── bslrouter.ps1            # Unified launcher (port-kill retry)
+│   ├── bslrouter.ps1            # Unified launcher + 6-surface IDE/CLI self-preserving stop/restart
+│   ├── shutdown_bsl.ps1         # Safe shutdown wrapper (delegates to zero-drop handover when IDE/CLI active)
+│   ├── pre-push-check.ps1       # 4-gate secret/path/diff/gitignore pre-push verifier
 │   └── update_bsl_router.py     # GitHub auto-update script
-├── config.example.yaml          # Config template
+├── config.example.yaml          # Tracked config template
 └── requirements.txt             # Python dependencies
 ```
 
@@ -1031,6 +1060,9 @@ See [config.example.yaml](../config.example.yaml) for a complete working templat
 | `POST /api/verify-key` | Static key/endpoint/header scan + SSRF validation + live upstream key verification (`blocked`, `scan_findings`) |
 | `GET /api/security/response-guard` | Live `tools.response_guard` config and aggregated injection scan telemetry (`total_scans`, `flagged_count`, `by_category`, `by_provider`, `recent_flagged`) |
 | `POST /api/security/response-guard/clear` | Clear Response Guard JSONL event telemetry logs |
+| `POST /api/system/restart` / `POST /api/version/restart` | Zero-downtime pre-warmed dual-stack handover restart (blocks until new worker is ready for CLI/agent callers; immediate return for WebUI) |
+| `POST /api/system/handover-exit?expected_pid=<pid>` | Verified PID-matched handover exit (`409 Conflict` if `expected_pid` is missing or does not match live `os.getpid()`) |
+| `POST /api/system/shutdown` | Self-preserving system shutdown (converts to zero-downtime pre-warmed handover unless `?confirm_offline=1` is passed) |
 
 ---
 
@@ -1173,17 +1205,21 @@ Thử lần lượt provider. Chain deadline ngăn timeout cascading.
   - **Tầng 2 — Vành Đai Mạng & Chống SSRF (`url_validator.py`):** Chặn truy cập cloud metadata (`169.254.169.254`, `metadata.google.internal`, `100.100.100.200`), dải IP nội bộ/loopback, giao thức nguy hiểm (`file://`, `gopher://`, `dict://`, `ftp://`) và DNS-rebinding.
   - **Tầng 3 — Kiểm Soát Phản Hồi & Chặn Tool-Call Độc Hại Từ Upstream (`response_guard.py`):** Quét văn bản trả lời và tham số `tool_calls` / `tool_use` / `functionCall` trên cả 4 giao thức (`OpenAI Chat`, `Anthropic Messages`, `Gemini v1beta/v1internal`, `OpenAI Responses`). Phát hiện đánh cắp thông tin nhạy cảm (`tool_secret_exfil_network`), thực thi lệnh shell/LOLBAS (`tool_shell_exec`, `tool_lolbas_exec`), chiếm quyền cấu hình MCP/agent (`tool_agent_config_hijack`) và chuỗi ký tự ẩn zero-width/BiDi. Hỗ trợ cấu hình `tools.response_guard.mode` (`"log_only"` hoặc `"redact"` chủ động cắt bỏ `tool_calls` độc hại và che nội dung bị tiêm nhiễm qua `apply_guard()`) kèm bảng điều khiển trực quan và telemetry tại `GET /api/security/response-guard` và `POST /api/security/response-guard/clear`.
 
-### 🔐 Quản Lý Đa Tài Khoản OAuth, Chống Khóa Theo Phiên & Huy Hiệu Hạng Thuê Bao
-- **Chống khóa tài khoản OAuth theo phiên (Per-Session Sticky Round-Robin)**: Khi bật `Round Robin` trên provider OAuth, `oauth_antiban.apply_affinity()` xoay tài khoản bắt đầu **theo từng phiên hội thoại mới** (`_SESSION_RR_CURSOR`) nhưng ghim toàn bộ các lượt trong cùng một phiên vào 1 tài khoản duy nhất (`AffinityStore`) — vừa chống bị khóa do trộn danh tính giữa phiên, vừa giữ ấm bộ nhớ đệm KV prompt cache.
-- **Tự động xoay hết đa Token/Cookie trên từng Model trong Combo**: `_mark_conn_failed_for_retry()` thử hết mọi kết nối khả dụng (cả OAuth và API-key/cookie/token pool) trên `provider/model` hiện tại trước khi chuyển sang model kế tiếp trong Combo; hỗ trợ Combo lồng nhau đệ quy (`_expand_nested_combo`) và tự cắt bỏ lá đã xóa khỏi `config.yaml`.
-- **Thanh Quota Kép `5h`/`7d`, Huy Hiệu Hạng Thuê Bao & Nhập JSON Codex**: Hiển thị thanh tiến trình quota **`5h` và `7d`**, bộ đếm ngược hồi phục (`↻`), nút `Force Refresh`, tính năng **Import JSON** cho Codex (`POST /api/oauth/codex/import-json`), và huy hiệu hạng thuê bao (`Free`, `Plus`, `Pro`, `Ultra`, `Pro x5/x20/x50`, `Max 5x/20x`, `SuperGrok`, `Power`, v.v.) cho cả 9 provider OAuth.
+### 🔐 Quản Lý Đa Tài Khoản OAuth, Giao Thức Anti-Ban v2 (19 Provider) & Huy Hiệu Hạng Thuê Bao
+- **Giao thức OAuth Anti-Ban v2 trên 19 Provider OAuth / CLI / IDE (`app/oauth_antiban.py`)**: Mở rộng ghim phiên hội thoại (`AffinityStore` + `_SESSION_RR_CURSOR`) và cô lập hoàn toàn `httpx.AsyncClient` keep-alive pool theo từng tài khoản trên toàn bộ 19 định danh provider (`antigravity`, `gemini-cli`, `codex`, `claude`, `claude_code`, `claude-code`, `claudecode`, `kiro`, `cursor`, `github`, `copilot`, `github-copilot`, `grok-cli`, `qwen`, `qwen-code`, `commandcode`, `iflow`, `cline`, `kimi-coding`), kèm nhịp độ gửi riêng (`PROVIDER_ANTIBAN_PROFILES`: `kiro` `1.2s`, `antigravity`/`claude` `0.9s`, `codex` `0.8s`, `cursor`/`grok-cli`/`qwen` `0.7s`, `copilot` `0.6s`) và bộ sinh header SDK theo phiên (`headers_for_provider`, `build_cursor_checksum`).
+- **Tự động xoay hết đa Token/Cookie trên từng Model trong Combo**: `_mark_conn_failed_for_retry()` thử hết mọi kết nối khả dụng (cả OAuth và API-key/cookie/token pool) trên `provider/model` hiện tại trước khi chuyển sang model kế tiếp trong Combo; hỗ trợ Combo lồng nhau đệ quy (`_expand_nested_combo`), tự cắt bỏ lá đã xóa khỏi `config.yaml`, và chống gọi lặp `0ms` vào tài khoản đơn khóa (`widest <= 1`).
+- **Thanh Quota Kép `5h`/`7d`, Huy Hiệu Hạng Thuê Bao & Nhập JSON Codex**: Hiển thị thanh tiến trình quota **`5h` và `7d`**, bộ đếm ngược hồi phục (`↻`), nút `Force Refresh`, tính năng **Import JSON** cho Codex (`POST /api/oauth/codex/import-json`), và huy hiệu hạng thuê bao (`Free`, `Plus`, `Pro`, `Ultra`, `Pro x5/x20/x50`, `Max 5x/20x`, `SuperGrok`, `Power`, v.v.).
+
+### 🔄 Vòng Đời Dừng/Khởi Động Lại Không Gián Đoạn (Zero-Drop Stop/Restart) Trên Cả 6 Bề Mặt IDE/CLI (`v1.1.2`)
+- **Tự bảo vệ trên cả 6 bề mặt (`Antigravity App`, `Antigravity CLI`, `Blacksand Code`, `Blacksand Studio`, `Claude Code Desktop`, `Claude Code CLI`)**: `Test-ActiveIdeSession` trong `scripts/bslrouter.ps1` và `POST /api/system/shutdown` tự động chuyển các lệnh `stop`/`shutdown` không có `-ConfirmOffline` (`confirm_offline=1`) thành bàn giao khởi động sẵn không rớt kết nối (`<17ms` socket swap), giữ nguyên vẹn lượt suy luận của agent đang chạy.
+- **Xả luồng `45s`, khóa `expected_pid`, xác minh tiến trình kế nhiệm `rc=0` & đóng Keep-Alive Loopback**: `app/prewarm_handover.py` nạp trước toàn bộ `app.main` + `config.load()` trong khi tiến trình cũ vẫn phục vụ bình thường, chờ xả luồng đang chạy tối đa `45.0s`, xác minh `?expected_pid=<live_pid>` trên `/api/system/handover-exit`, kiểm tra tiến trình kế nhiệm trên `:6969` trong `app/watchdog.py` khi `rc == 0`, và gắn `Connection: close` cho mọi phản hồi loopback (bao gồm cả `/v1internal%3AstreamGenerateContent`).
 
 ### 🖥️ Tích Hợp Ứng Dụng Hợp Nhất (`Antigravity IDE/Desktop` + `Claude Code Desktop/CLI`)
 - **Antigravity (App / IDE) Trực Tiếp (`app/antigravity_patcher.py`)**: Patch trực tiếp `settings.json` (`jetski.cloudCodeUrl: http://127.0.0.1:6969`) và `resources/app.asar` (loại bỏ hoàn toàn proxy trung gian `:50999`), dùng Thanh công cụ Option A (`Start Integration` / `Stop Integration` + nút `Restart Antigravity to Apply`), và tách biệt hoàn toàn pool HTTP/2 native (`_ANTIGRAVITY_EGRESS_CLIENT`) khỏi pool OAuth của router (`_ROUTER_ANTIGRAVITY_EGRESS_CLIENT`) kèm cơ chế tự xoay IP (`rotate_google_ip_cache()`).
 - **Claude Code (Desktop / CLI) Trực Tiếp**: Sinh alias `claude-bsl-<N>` và slot tầng `claude-bsl-tier-{opus,sonnet,haiku,default}`, lọc độc quyền `/v1/models` khi bật `replace_builtin: true`, và đồng bộ nguyên tử vào `~/.claude/settings.json` cùng `%LOCALAPPDATA%\Claude-3p\configLibrary\<appliedId>.json` (`inferenceModels`).
 
-### 🔬 Kiểm Định Độ Xác Thực Model (Model Authenticity Testing — TraitMark V2/V3 + `tier_splitter` & Bộ Khớp Nội Họ 2 Giai Đoạn)
-- Đối chiếu chữ ký hành vi, đường cong năng lực, kim tri thức (knowledge needles), **5 làn V2/V3 chuyên sâu** (`discriminator`, `spatial_curve`, `token_jsd`, `hard_series`, cùng làn **`tier_splitter` 3 mũi nhọn chấm điểm tất định bằng Python không cần LLM judge**: `svg_compiler`, `constraint_sat`, `state_trace`) và **Bộ Khớp Nội Họ 2 Giai Đoạn (`_disambiguate_siblings`)** trên cả 7 họ model (`Claude`, `GPT`, `Gemini`, `Qwen`, `GLM`, `DeepSeek`, `Kimi`) kèm header `X-BSL-Authenticity-Probe: 1` để phát hiện ngay các trường hợp nhà cung cấp lén tráo model rẻ hơn (`Flash/Luna/Haiku` giả danh `Max/Pro/Opus/Argon`), lượng tử hóa nặng, hoặc giả danh model frontier.
+### 🔬 Kiểm Định Độ Xác Thực Model (Model Authenticity Testing — TraitMark V2/V3, `tier_splitter`, Bộ Khớp Nội Họ 2 Giai Đoạn & Phân Loại Nguồn Cung Claude 6 Nhánh)
+- Đối chiếu chữ ký hành vi, đường cong năng lực, kim tri thức (knowledge needles), **7 làn V2/V3 chuyên sâu ưu tiên theo sóng** (`tier_splitter` → `hard_series` → `discriminator` → `knowledge_bank` → `spatial_curve` → `capability_curve` → `tokenizer` / `token_jsd`), **Bộ Khớp Nội Họ 2 Giai Đoạn (`_disambiguate_siblings`)**, và **Bộ Phân Loại Nguồn Cung Claude 6 Nhánh (`app/authenticity/supply_lane.py`: `aws-bedrock`, `aws-kiro`, `claude-max`, `anthropic-api`, `hybrid-bedrock-anthropic`, `vertex-partner`)**. Tự động tắt adaptive thinking cho các probe có `max_tokens < 2048` để ngăn lỗi `504 zombie_empty_response` và bỏ qua hoàn toàn FEL/VAS khi có header `X-BSL-Authenticity-Probe: 1`.
 
 ### 📊 Quan Sát, Chuẩn Hóa Đếm Token/Cache & Loại Bỏ Lỗi Giả `499`
 - Loại bỏ các cuộc gọi giám khảo nội bộ (`provider="authenticity"`) và `pytest` khỏi SQLite `usage_events`.
@@ -1197,7 +1233,7 @@ Vision (phân tích ảnh), Docs Parser (trích text), Canvas (UI/canvas).
 
 ## Middleware Pipeline
 
-36 module middleware:
+38 module middleware:
 
 **Classification**: request_intent, category_classifier, coding_category_classifier, task_complexity
 
@@ -1205,15 +1241,15 @@ Vision (phân tích ảnh), Docs Parser (trích text), Canvas (UI/canvas).
 
 **Orchestration**: bsl_orchestrator, bsl_orchestrator_engine, bsl_orchestrator_gates, blacksand_orchestrator
 
-**Quality & Efficiency**: quality, efficiency, compaction, thinking_fallback, response_format_guard
+**Quality & Efficiency**: quality, efficiency, compaction, dedup_viewfile, thinking_fallback, response_format_guard
 
-**Stream Protection**: stream_guard, caching, glm_tools
+**Stream Protection & Provider Filter**: stream_guard, caching, glm_tools, kiro_filter_guard
 
 **Benchmark**: bsl_benchmark_sheet, bsl_lite_benchmark_sheet, bsl_agentic_benchmark_sheet
 
-**Tool Hygiene & Repair** (đợt 2026-09): anthropic_tools, tool_arg_repair, glm_parallel_guard, agentrouter_policy
+**Tool Hygiene & Repair** (đợt 2026-09–2026-11): anthropic_tools, tool_arg_repair, glm_parallel_guard, agentrouter_policy
 
-**Execution Integrity**: faithful_execution, fel_wiring, normalizer_shadow, responses_thread_store, gemini_last_role
+**Execution Integrity & Security**: faithful_execution, fel_wiring, response_guard, normalizer_shadow, responses_thread_store, gemini_last_role
 
 ---
 
@@ -1272,7 +1308,10 @@ Xem [config.example.yaml](../config.example.yaml) để có template hoàn chỉ
 | `POST /api/verify-key` | Quét tĩnh key/URL/header + kiểm tra SSRF + xác minh key trực tiếp (`blocked`, `scan_findings`) |
 | `GET /api/security/response-guard` | Đọc cấu hình `tools.response_guard` và thống kê telemetry phát hiện injection (`total_scans`, `flagged_count`, `by_category`, `by_provider`, `recent_flagged`) |
 | `POST /api/security/response-guard/clear` | Xóa lịch sử telemetry JSONL của Response Guard |
-| `GET/POST /api/authenticity/*` | Kiểm định độ xác thực model (`TraitMark V2/V3`) & quản lý chuẩn đóng băng |
+| `GET/POST /api/authenticity/*` | Kiểm định độ xác thực model (`TraitMark V2/V3` + `supply_lane`) & quản lý chuẩn đóng băng |
+| `POST /api/system/restart` / `POST /api/version/restart` | Khởi động lại bàn giao khởi động sẵn không rớt kết nối (`<17ms` socket swap) |
+| `POST /api/system/handover-exit?expected_pid=<pid>` | Thoát tiến trình cũ sau khi xác minh khớp `expected_pid` (`409 Conflict` nếu lệch PID) |
+| `POST /api/system/shutdown` | Tắt server tự bảo vệ (tự động chuyển thành bàn giao không gián đoạn trừ khi có `?confirm_offline=1`) |
 
 ---
 

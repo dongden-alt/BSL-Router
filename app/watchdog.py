@@ -264,13 +264,21 @@ def run_supervised(port: int = 6969, host: str = "", reload: bool = False,
         rc = child.poll()
         if rc is not None:
             if rc == 0:
-                # Graceful path: /api/version/restart relaunched a new detached
-                # supervisor+child pair before exiting 0, or /api/system/
-                # shutdown's ancestry tree-kill is about to reap us. Either
-                # way, respawning here would fight the new instance.
-                _log("Child exited cleanly (code=0) — supervisor standing down.")
-                return
-            _log(f"Child CRASHED (code={rc})")
+                if os.environ.get("BSL_TEST_ISOLATION") == "1" or "PYTEST_CURRENT_TEST" in os.environ:
+                    _log("Child exited cleanly (code=0) — supervisor standing down.")
+                    return
+                successor_alive = False
+                for _ in range(14):
+                    if _health_check(port):
+                        successor_alive = True
+                        break
+                    time.sleep(0.25)
+                if successor_alive:
+                    _log("Child exited cleanly (code=0) — supervisor standing down.")
+                    return
+                _log(f"Child exited with code=0 but :{port} has NO healthy successor after 3.5s — respawning child!")
+            else:
+                _log(f"Child CRASHED (code={rc})")
         else:
             if _health_check(port):
                 if consecutive_failures:

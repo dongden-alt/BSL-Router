@@ -1,4 +1,13 @@
+param([switch]$ConfirmOffline)
 $ErrorActionPreference = 'Stop'
+if (-not $ConfirmOffline) {
+    $ideProcs = @(Get-Process -Name 'language_server_windows_x64', 'Antigravity', 'agy', 'Blacksand', 'Blacksand-Studio', 'Blacksand Code', 'Claude', 'claude' -ErrorAction SilentlyContinue)
+    if ($ideProcs.Count -gt 0 -or $env:ANTIGRAVITY_AGENT -or $env:ANTIGRAVITY_CLI_ALIAS -or $env:CLAUDECODE -or $env:CLAUDE_CODE_ENTRYPOINT) {
+        Write-Host "Active IDE/Agent session detected -- delegating to zero-downtime pre-warmed handover (pass -ConfirmOffline for full offline stop)..."
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'bslrouter.ps1') restart -Background
+        exit $LASTEXITCODE
+    }
+}
 # Find the PID listening on port 6969
 $listener = Get-NetTCPConnection -LocalPort 6969 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $listener) {

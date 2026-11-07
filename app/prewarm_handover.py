@@ -59,28 +59,94 @@ def _get_active_streams(port: int) -> int:
         return 0
 
 
+def _get_listening_health_pid(port: int) -> int:
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=0.8) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            return int(data.get("pid", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _find_supervisor_root_pid(target_pid: int) -> int:
+    """Walk up parent chain on Windows if parent is an app.watchdog or app.prewarm_handover supervisor."""
+    if os.name != "nt" or target_pid <= 0:
+        return target_pid
+    try:
+        ps_cmd = (
+            f"$cur = {int(target_pid)}; "
+            "for ($i = 0; $i -lt 6; $i++) { "
+            "  $p = Get-CimInstance Win32_Process -Filter \"ProcessId = $cur\" -ErrorAction SilentlyContinue; "
+            "  if (-not $p -or -not $p.ParentProcessId) { break } "
+            "  $parent = Get-CimInstance Win32_Process -Filter \"ProcessId = $($p.ParentProcessId)\" -ErrorAction SilentlyContinue; "
+            "  if (-not $parent -or $parent.Name -ne 'python.exe') { break } "
+            "  $cmd = [string]$parent.CommandLine; "
+            "  if ($cmd -match 'app\\.dualstack_serve|app\\.watchdog|app\\.prewarm_handover') { $cur = [int]$parent.ProcessId } else { break } "
+            "} "
+            "Write-Output $cur"
+        )
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            timeout=2.5,
+        )
+        val = (res.stdout or "").strip()
+        if val.isdigit():
+            return int(val)
+    except Exception:
+        pass
+    return target_pid
+
+
 def _request_old_router_exit(port: int, old_pid: int) -> str:
-    """Trigger the old router process to exit cleanly with code 0."""
-    for endpoint in ("/api/system/handover-exit", "/api/studio-bridge/handover-exit", "/api/system/shutdown"):
+    """Trigger the old router process to exit cleanly with code 0.
+    Never calls /api/system/shutdown (which spawns a delayed bsl_kill.bat bomb),
+    and verifies expected_pid so a stale handover worker never kills a newer router PID.
+    """
+    current_health_pid = _get_listening_health_pid(port)
+    if old_pid > 0 and current_health_pid > 0 and current_health_pid != old_pid:
+        return f"already_replaced_by_{current_health_pid}"
+
+    pid_query = f"?expected_pid={int(old_pid)}" if old_pid > 0 else ""
+    for endpoint in (
+        f"/api/system/handover-exit{pid_query}",
+        f"/api/studio-bridge/handover-exit{pid_query}",
+    ):
         try:
             req = urllib.request.Request(f"http://127.0.0.1:{port}{endpoint}", method="POST")
-            with urllib.request.urlopen(req, timeout=1.2) as resp:
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
                 if 200 <= resp.status < 300:
-                    return endpoint
+                    return endpoint.split("?", 1)[0]
         except urllib.error.HTTPError as he:
+            if he.code == 409:
+                return "pid_mismatch_409"
             if he.code in (401, 403, 404):
                 continue
         except Exception:
             continue
 
     if old_pid > 0 and old_pid != os.getpid():
+        # Verify old_pid is still the one listening before using taskkill
+        recheck_pid = _get_listening_health_pid(port)
+        if recheck_pid > 0 and recheck_pid != old_pid:
+            return f"already_replaced_by_{recheck_pid}"
         try:
+            root_pid = _find_supervisor_root_pid(old_pid)
             subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(old_pid)],
+                ["taskkill", "/F", "/T", "/PID", str(root_pid)],
                 capture_output=True,
                 check=False,
-                timeout=2,
+                timeout=2.5,
             )
+            if root_pid != old_pid:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(old_pid)],
+                    capture_output=True,
+                    check=False,
+                    timeout=2.0,
+                )
             return "taskkill"
         except Exception:
             pass
@@ -135,6 +201,7 @@ def main() -> None:
     parser.add_argument("--old-pid", type=int, default=0)
     parser.add_argument("--port", type=int, default=6969)
     parser.add_argument("--state-file", type=str, default="")
+    parser.add_argument("--drain-timeout", type=float, default=45.0)
     args = parser.parse_args()
 
     os.chdir(ROUTER_DIR)
@@ -161,16 +228,38 @@ def main() -> None:
             str(args.port),
             "--state-file",
             str(args.state_file or ""),
+            "--drain-timeout",
+            str(args.drain_timeout),
         ]
-        child_proc = subprocess.Popen(child_cmd, cwd=ROUTER_DIR, env=child_env)
+        _child_flags = 0x08000000 if os.name == "nt" else 0
+        child_proc = subprocess.Popen(
+            child_cmd,
+            cwd=ROUTER_DIR,
+            env=child_env,
+            creationflags=_child_flags,
+        )
         _log_handover(
             f"[BSL-PrewarmSupervisor] Supervisor pid={os.getpid()} watching pre-warmed child pid={child_proc.pid} on :{args.port}"
         )
         rc = child_proc.wait()
         if rc == 0:
+            # Verify a successor is actually listening on :port before standing down
+            successor_pid = 0
+            for _ in range(12):
+                successor_pid = _get_listening_health_pid(int(args.port or 6969))
+                if successor_pid > 0 and successor_pid != child_proc.pid:
+                    break
+                time.sleep(0.20)
+            if successor_pid > 0:
+                _log_handover(
+                    f"[BSL-PrewarmSupervisor] Child pid={child_proc.pid} exited cleanly (rc=0) and successor pid={successor_pid} is serving :{args.port}; supervisor standing down."
+                )
+                return
             _log_handover(
-                f"[BSL-PrewarmSupervisor] Child pid={child_proc.pid} exited cleanly (rc=0); supervisor standing down."
+                f"[BSL-PrewarmSupervisor] Child pid={child_proc.pid} exited (rc=0) but :{args.port} has NO successor — engaging app.watchdog.run_supervised(port={args.port})!"
             )
+            from app.watchdog import run_supervised
+            run_supervised(port=int(args.port or 6969))
             return
         _log_handover(
             f"[BSL-PrewarmSupervisor] Child pid={child_proc.pid} exited unexpectedly (rc={rc}) — engaging app.watchdog.run_supervised(port={args.port})!"
@@ -197,22 +286,41 @@ def main() -> None:
 
     prewarm_ms = round((time.perf_counter() - t_start) * 1000.0, 1)
 
-    # Wait up to 3.5s for any short in-flight stream on the old process to finish
+    # Wait up to drain_timeout (default 45.0s) for any in-flight IDE LLM stream
+    # on the old process to finish completely before requesting socket handover.
     if args.old_pid > 0:
-        drain_deadline = time.perf_counter() + 3.5
+        drain_deadline = time.perf_counter() + max(1.0, float(args.drain_timeout or 45.0))
+        zero_streak = 0
         while time.perf_counter() < drain_deadline:
             if _get_active_streams(port) == 0:
-                break
-            time.sleep(0.10)
+                zero_streak += 1
+                if zero_streak >= 2:
+                    break
+                time.sleep(0.08)
+            else:
+                zero_streak = 0
+                time.sleep(0.15)
 
     exit_method = _request_old_router_exit(port, args.old_pid)
+    if exit_method.startswith("already_replaced_by_") or exit_method == "pid_mismatch_409":
+        _log_handover(
+            f"[BSL-PrewarmHandover] Aborting duplicate handover for old_pid={args.old_pid} ({exit_method}); standing down cleanly."
+        )
+        return
+
     sock, unlistening_gap_ms = _bind_dualstack_fast(port, timeout_s=8.0)
 
     lock_path = os.path.join(ROUTER_DIR, ".brain", "logs", f"router-{port}.lock")
+    handover_lock_path = os.path.join(ROUTER_DIR, ".brain", "logs", f"handover-{port}.lock")
     try:
         os.makedirs(os.path.dirname(lock_path), exist_ok=True)
         with open(lock_path, "w", encoding="ascii") as lfh:
             lfh.write(str(os.getpid()))
+    except Exception:
+        pass
+    try:
+        if os.path.exists(handover_lock_path):
+            os.unlink(handover_lock_path)
     except Exception:
         pass
 
