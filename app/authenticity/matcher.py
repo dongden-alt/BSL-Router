@@ -582,7 +582,16 @@ def match_submodel(
     if best_dims.get("boundary") is not None:
         bd = best_dims["boundary"]
         if bd < 0.5 and not abstain:
-            abstain = True
+            # When json_strict matches (bd >= 0.33) and a tier-ceiling lane
+            # confirms the model (>= 0.75), a stop_strict/stop_echo difference
+            # is gateway stop-sequence forwarding, not a weight mismatch.
+            if bd >= 0.33 and any(
+                isinstance(best_dims.get(_tc), (int, float)) and best_dims[_tc] >= 0.75
+                for _tc in ("tier_splitter", "hard_series", "capability_curve", "spatial_curve")
+            ):
+                pass
+            else:
+                abstain = True
         best_dims = dict(best_dims)
         best_dims["boundary"] = bd
 
@@ -606,7 +615,17 @@ def match_submodel(
         _v = best_dims.get(_d2)
         if _v is not None:
             if _v < _floor and not abstain:
-                abstain = True
+                # Proxy/gateway wrappers (e.g. system prompt padding or usage
+                # reporting offsets) can perturb tokenizer deltas even when the
+                # underlying model weights are genuine. Do not let tokenizer
+                # alone veto a candidate confirmed by a tier-ceiling lane.
+                if _d2 == "tokenizer" and any(
+                    isinstance(best_dims.get(_tc), (int, float)) and best_dims[_tc] >= 0.75
+                    for _tc in ("tier_splitter", "hard_series", "capability_curve", "spatial_curve")
+                ):
+                    pass
+                else:
+                    abstain = True
             if _d2 == "discriminator" and isinstance(_v, float) and _v < _floor:
                 _log_disc_veto_nearmiss(features, best_model, _v)
             best_dims = dict(best_dims)
@@ -684,8 +703,17 @@ def match_submodel(
         best_dims = dict(best_dims)
         best_dims["_stage2_tiebreak"] = _stage2_info
         _min_gap = min(0.09, max(0.052, round(_stage2_info["margin"] * 0.75, 3)))
+        _has_tier_ceiling_lane = any(
+            _tl in (_stage2_info.get("active_lanes") or ())
+            for _tl in ("tier_splitter", "hard_series", "spatial_curve", "capability_curve")
+        )
         if (best_score - runner_up_score) < _min_gap:
-            best_score = min(0.99, max(best_score, _stage2_info["winner_s2"]))
+            if _has_tier_ceiling_lane:
+                best_score = min(0.99, max(best_score, _stage2_info["winner_s2"]))
+            else:
+                # Without any tier-ceiling lane (e.g. only knowledge_bank /
+                # discriminator ran), do not inflate a ~0.74 candidate to 0.91.
+                best_score = min(0.99, max(best_score, runner_up_score + _min_gap))
             if (best_score - runner_up_score) < _min_gap:
                 runner_up_score = max(0.0, best_score - _min_gap)
 

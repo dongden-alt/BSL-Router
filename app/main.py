@@ -69,6 +69,7 @@ from app.middleware.caching import PromptCachingAdapter, pick_warmest_connection
 from app.scouts.vision import polyfill_vision, VisionPolyfillFailed
 from app.scouts.docs_parser import parse_documents
 from app.middleware.compaction import apply_compaction, _count_tokens
+from app.middleware.kiro_filter_guard import apply_kiro_egress_guards
 from app.middleware.efficiency import inject_turn_consolidation, inject_tool_batching
 from app.middleware.bsl_chat_router import _get_bsl_cfg, route_bsl_chat, _extract_route
 from app.middleware.bsl_lite_router import route_bsl_lite
@@ -1138,6 +1139,8 @@ def _replace_runtime_config(new_config: dict) -> None:
                     if not (isinstance(_conns, list) and _conns):
                         continue
                     if isinstance(_deletion, dict) and _deletion.get("id") == _pid:
+                        continue
+                    if _pid == "chat2api" and ("bslforge" in _new_prov or "bslforge" in _live_prov):
                         continue
                     _new_prov[_pid] = _pconf
                     print(
@@ -2471,10 +2474,46 @@ def _apply_fel_to_antigravity_native_body(request: Request, raw_body: bytes) -> 
         return raw_body, model_name, False
 
 
+
+def _apply_last_role_guard_to_native_body(raw_body: bytes) -> bytes:
+    """ERE-R5 (2026-10-30): Gemini generateContent rejects a trailing model turn.
+
+    The MAPPED path applies ensure_gemini_last_role before OpenAI conversion
+    (line ~17947), but the NATIVE passthrough forwarded raw_body verbatim -
+    missing the guard entirely.  This caused 100% of 'continue' requests
+    (where the IDE sends the conversation including the model's last response)
+    to 400 with 'Requests ending with a model turn are not supported.'
+
+    Parse -> fix -> re-serialize.  Fail-open: any error returns original bytes.
+    """
+    try:
+        payload = json.loads(raw_body)
+        if not isinstance(payload, dict):
+            return raw_body
+        inner = payload.get("request")
+        target = inner if isinstance(inner, dict) and isinstance(inner.get("contents"), list) else payload
+        contents = target.get("contents")
+        if not isinstance(contents, list) or not contents:
+            return raw_body
+        fixed = ensure_gemini_last_role(contents)
+        if fixed is contents:
+            return raw_body  # no change needed
+        target["contents"] = fixed
+        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    except Exception:
+        return raw_body
+
+
+
 async def _forward_antigravity_native(request: Request, is_stream: bool, raw_body: bytes):
     """Pass inference requests to Google without re-entering local BSL."""
     global _ANTIGRAVITY_EGRESS_CLIENT
     raw_body, _ag_fel_model, _ag_fel_on = _apply_fel_to_antigravity_native_body(request, raw_body)
+    # ERE-R5 (2026-10-30): the native passthrough MUST also guard the trailing
+    # role.  Without this, every conversation whose last content is a model turn
+    # (tool-call responses, 'continue' prompts) hits Google's 400 rejection:
+    # 'Requests ending with a model turn are not supported.'
+    raw_body = _apply_last_role_guard_to_native_body(raw_body)
     try:
         # Use the hosts-file-bypassing egress client so the native fallback reaches
         # the REAL Google servers even when daily-cloudcode-pa.googleapis.com is
@@ -3360,7 +3399,15 @@ def _invalidate_admin_session(token: str):
 #  - /admin: static files (HTML/CSS/JS must load to render login overlay)
 #  - /v1/, /anthropic/, /gemini/, /v1internal:: proxy traffic (protected by API key)
 #  - /api/auth/: login/logout/status must be reachable without session
-_PUBLIC_PATHS = {"/health", "/favicon.ico", "/callback", "/GetAvailableModels"}
+_PUBLIC_PATHS = {
+    "/health",
+    "/favicon.ico",
+    "/callback",
+    "/GetAvailableModels",
+    "/api/antifreeze/status",
+    "/api/system/handover-exit",
+    "/api/studio-bridge/handover-exit",
+}
 _PUBLIC_PREFIXES = (
     "/admin",
     "/v1/", "/v1beta/", "/v1alpha/", "/anthropic/", "/gemini/", "/v1internal:",
@@ -3375,6 +3422,19 @@ def _is_public_path(path: str) -> bool:
             return True
     return False
 
+def _with_loopback_close_header(request: Request, response: Response) -> Response:
+    """Prevent Go/Node loopback clients (e.g. Blacksand Code language_server_windows_x64.exe)
+    from pooling idle HTTP/1.1 Keep-Alive sockets across router PID restarts, which
+    otherwise trigger WSAECONNRESET (WinError 10054) on the next POST request."""
+    try:
+        path = request.url.path
+        if path.startswith("/v1internal:") or path == "/GetAvailableModels":
+            response.headers["Connection"] = "close"
+    except Exception:
+        pass
+    return response
+
+
 @app.middleware("http")
 async def admin_auth_middleware(request: Request, call_next):
     """Gate management API routes behind password auth when enabled.
@@ -3386,23 +3446,23 @@ async def admin_auth_middleware(request: Request, call_next):
     - All other /api/* routes require valid session cookie
     """
     if not _is_admin_auth_enabled():
-        return await call_next(request)
+        return _with_loopback_close_header(request, await call_next(request))
     
     path = request.url.path
     if _is_public_path(path):
-        return await call_next(request)
+        return _with_loopback_close_header(request, await call_next(request))
     
     # Gate management API routes
     if path.startswith("/api/"):
         session_token = request.cookies.get("bsl_admin_session")
         if _is_valid_admin_session(session_token):
-            return await call_next(request)
+            return _with_loopback_close_header(request, await call_next(request))
         return JSONResponse(
             {"error": "Unauthorized", "auth_required": True},
             status_code=401,
         )
     
-    return await call_next(request)
+    return _with_loopback_close_header(request, await call_next(request))
 
 
 # ---------------------------------------------------------------------------
@@ -3420,7 +3480,7 @@ async def favicon():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "pid": os.getpid()}
 
 def _git_version() -> str:
     """Return git describe version, or 'unknown'."""
@@ -3593,27 +3653,63 @@ async def update_status():
     """Poll update progress. Called every 1s by the frontend modal."""
     return _update_state
 
+def _spawn_prewarm_handover_restart(port: int = 6969) -> int:
+    """Spawn `python -m app.prewarm_handover --old-pid <my_pid> --port <port>` in an
+    isolated WMI process tree so the current router stays alive serving :6969 during the
+    ~5s module import phase, drains active streams, and hands over [::]:6969 in <15ms."""
+    import base64 as _b64
+    import subprocess as _sp
+    import sys as _sys_mod
+
+    my_pid = os.getpid()
+    if os.environ.get("BSL_TEST_ISOLATION") == "1":
+        return my_pid
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _venv_py = os.path.join(_root, ".venv", "Scripts", "python.exe")
+    if not os.path.exists(_venv_py):
+        _venv_py = _sys_mod.executable
+
+    cmd_line = f'"{_venv_py}" -m app.prewarm_handover --old-pid {my_pid} --port {int(port)}'
+    ps_cmd = cmd_line.replace("'", "''")
+    ps_cwd = _root.replace("'", "''")
+    ps_script = f"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{ CommandLine = '{ps_cmd}'; CurrentDirectory = '{ps_cwd}' }} | Out-Null"
+    encoded = _b64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
+
+    spawned = False
+    if os.name == "nt":
+        try:
+            res = _sp.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                cwd=_root,
+                capture_output=True,
+                timeout=6,
+            )
+            if res.returncode == 0:
+                spawned = True
+        except Exception:
+            spawned = False
+
+    if not spawned:
+        _env = os.environ.copy()
+        _env.pop("BSL_HANDOVER_SUPERVISED", None)
+        _env.pop("BSL_SUPERVISED", None)
+        _flags = (0x08000000 | _sp.CREATE_NEW_PROCESS_GROUP | 0x00000008) if os.name == "nt" else 0
+        _sp.Popen(
+            [_venv_py, "-m", "app.prewarm_handover", "--old-pid", str(my_pid), "--port", str(int(port))],
+            cwd=_root,
+            env=_env,
+            creationflags=_flags,
+            stdout=_sp.DEVNULL,
+            stderr=_sp.DEVNULL,
+            stdin=_sp.DEVNULL,
+            close_fds=True,
+        )
+    return my_pid
+
+
 @app.post("/api/version/restart")
 async def restart_server(request: Request):
-    """Restart the BSL Router server process — gracefully.
-
-    GRACEFUL RESTART (2026-08-24): the old implementation killed the process
-    1s after the call, murdering every in-flight IDE stream (observed: 3
-    concurrent streams died as "Server restarted before completion (stale
-    request)" 500s, and the IDE agent force-stopped). Now we WAIT for active
-    streams to drain before relaunching:
-      - 0 active streams  -> relaunch immediately (1s delay as before)
-      - N active streams  -> poll every 2s up to GRACEFUL_RESTART_MAX_WAIT_S;
-                             relaunch as soon as the count reaches 0
-    Returns immediately with the drain plan; the frontend keeps polling
-    /api/version/check as before.
-    """
-    import subprocess as _sp
-    import threading as _th
-
-    # AUDIT (2026-08-27): mystery restarts/disconnects today could not be
-    # traced once the dying process took its access log with it. Record WHO
-    # called this endpoint to .brain/logs/restart_audit.log (append-only).
+    """Restart the BSL Router server process via zero-downtime pre-warmed socket handover."""
     try:
         _audit = _Path(".brain/logs/restart_audit.log")
         _audit.parent.mkdir(parents=True, exist_ok=True)
@@ -3626,58 +3722,23 @@ async def restart_server(request: Request):
     except Exception:
         pass
 
-    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    _venv_python = os.path.join(_root, ".venv", "Scripts", "python.exe")
-    _port = 6969  # canonical; config-derived port is read at startup
+    _port = 6969
+    try:
+        _cfg_port = (cs_get_config() or {}).get("server", {}).get("port")
+        if isinstance(_cfg_port, int) and _cfg_port > 0:
+            _port = _cfg_port
+    except Exception:
+        pass
 
     _waiting = active_stream_count()
-    if _waiting:
-        print(
-            f"[GracefulRestart] { _waiting } active stream(s) — waiting up to "
-            f"{GRACEFUL_RESTART_MAX_WAIT_S}s for drain before relaunch",
-            flush=True,
-        )
-
-    def _delayed_restart():
-        import time as _time
-        _drained_at = _time.time()
-        while _time.time() - _drained_at < GRACEFUL_RESTART_MAX_WAIT_S:
-            if active_stream_count() == 0:
-                break
-            _time.sleep(2.0)
-        _remaining = active_stream_count()
-        if _remaining:
-            print(
-                f"[GracefulRestart] {GRACEFUL_RESTART_MAX_WAIT_S}s elapsed with "
-                f"{_remaining} stream(s) still active — relaunching anyway",
-                flush=True,
-            )
-        _time.sleep(1.0)
-        # Launch new uvicorn process in detached mode.
-        # SUCCESSOR PROTOCOL (2026-08-28 fork-bomb fix): mark the spawn so it
-        # (a) passes the supervision pre-gate (the old holder is still healthy
-        # while draining) and (b) waits out OUR drain window in the instance
-        # lock instead of standing down. Without this, the spawn re-entered
-        # supervision and became a SECOND supervisor — the fork-bomb that
-        # made restarts fight over :6969 for minutes.
-        _env = os.environ.copy()
-        _env["BSL_INTENDED_SUCCESSOR"] = "1"
-        _env.pop("BSL_SUPERVISED", None)
-        _sp.Popen(
-            # DUAL-STACK FIX (2026-08-27): bind [::] with IPV6_V6ONLY=0 so both
-            # ::1 (Windows localhost-first) and 127.0.0.1 clients are served by
-            # ONE socket. --host 0.0.0.0 left IPv6 clients ECONNREFUSED.
-            [_venv_python, "-m", "app.dualstack_serve", "--port", str(_port)],
-            cwd=_root,
-            env=_env,
-            creationflags=_sp.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
-            close_fds=True,
-        )
-        # Kill current process tree
-        os._exit(0)
-
-    _th.Thread(target=_delayed_restart, daemon=True).start()
-    return {"ok": True, "draining": bool(_waiting), "active_streams": _waiting}
+    old_pid = _spawn_prewarm_handover_restart(_port)
+    return {
+        "ok": True,
+        "mode": "prewarm_handover",
+        "old_pid": old_pid,
+        "draining": bool(_waiting),
+        "active_streams": _waiting,
+    }
 
 
 # ── Antigravity OAuth Callback (root-level, for Google redirect) ──────────
@@ -3860,6 +3921,8 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
             deleted_provider = new_config.get("_deleted_provider")
             if isinstance(deleted_provider, dict) and deleted_provider.get("id") == prov_id:
                 continue  # genuine deleteActiveProvider — let it through
+            if prov_id == "chat2api" and ("bslforge" in new_providers or "bslforge" in old_providers):
+                continue  # renamed to bslforge — never resurrect legacy chat2api
             old_conns_check = old_prov.get("connections")
             if isinstance(old_conns_check, list) and old_conns_check:
                 # Provider has live connections — restore it wholesale.
@@ -5267,6 +5330,10 @@ async def run_auth_test(request: Request):
     cfg.setdefault("probe_idle_s", 30)
     cfg.setdefault("probe_retries", 2)  # was 1; cold-start after restart needs 2
     cfg.setdefault("total_timeout_s", 240)
+    try:
+        cfg["router_config"] = load_config()
+    except Exception:
+        pass
 
     # Bug 3 fix: pass the MODE to the gate (it derives max_tier itself) instead
     # of setting cfg["max_tier"] which the gate never read. auto/normal run the
@@ -5791,10 +5858,40 @@ def _collect_router_kill_pids() -> list[int]:
     return kill_pids
 
 
+@app.post("/api/system/handover-exit")
+async def system_handover_exit(request: Request):
+    """Loopback-only clean exit endpoint invoked by `app.prewarm_handover` once the new
+    router instance has finished `config.load()` and drained all active streams."""
+    client_host = (request.client.host if request.client else "") or ""
+    if client_host not in ("127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"):
+        return JSONResponse({"error": "Forbidden"}, status_code=403)
+
+    def _do_clean_handover_exit():
+        time.sleep(0.025)
+        try:
+            _root = _os_module.path.dirname(_os_module.path.dirname(_os_module.path.abspath(__file__)))
+            _port = 6969
+            try:
+                _cfg_port = (cs_get_config() or {}).get("server", {}).get("port")
+                if isinstance(_cfg_port, int) and _cfg_port > 0:
+                    _port = _cfg_port
+            except Exception:
+                pass
+            _lock = _os_module.path.join(_root, ".brain", "logs", f"router-{_port}.lock")
+            if _os_module.path.exists(_lock):
+                _os_module.unlink(_lock)
+        except Exception:
+            pass
+        _os_module._exit(0)
+
+    _threading.Thread(target=_do_clean_handover_exit, daemon=True).start()
+    return JSONResponse({"ok": True, "exiting_pid": _os_module.getpid()})
+
+
 @app.post("/api/system/restart")
 async def system_restart(request: Request):
-    """Kill the current BSL Router backend process tree and immediately spawn a
-    fresh instance on the configured port (default 6969)."""
+    """Restart the BSL Router backend via zero-downtime pre-warmed socket handover
+    so active Blacksand Code streams and loopback connections never drop."""
     try:
         _audit = _Path(".brain/logs/restart_audit.log")
         _audit.parent.mkdir(parents=True, exist_ok=True)
@@ -5811,65 +5908,23 @@ async def system_restart(request: Request):
         if not _is_valid_admin_session(session_token):
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
-    def _delayed_system_restart():
-        time.sleep(0.8)
-        import subprocess as _sp
-        import tempfile as _tempfile
+    _port = 6969
+    try:
+        _cfg_port = (cs_get_config() or {}).get("server", {}).get("port")
+        if isinstance(_cfg_port, int) and _cfg_port > 0:
+            _port = _cfg_port
+    except Exception:
+        pass
 
-        kill_pids = _collect_router_kill_pids()
-        _root = _os_module.path.dirname(_os_module.path.dirname(_os_module.path.abspath(__file__)))
-        _venv_py = _os_module.path.join(_root, ".venv", "Scripts", "python.exe")
-        if not _os_module.path.exists(_venv_py):
-            import sys as _sys_mod
-            _venv_py = _sys_mod.executable
-        _port = 6969
-        try:
-            _cfg_port = (cs_get_config() or {}).get("server", {}).get("port")
-            if isinstance(_cfg_port, int) and _cfg_port > 0:
-                _port = _cfg_port
-        except Exception:
-            pass
-        _log_dir = _os_module.path.join(_root, ".brain", "logs")
-        _os_module.makedirs(_log_dir, exist_ok=True)
-        _out_log = _os_module.path.join(_log_dir, "app.out.log")
-        _err_log = _os_module.path.join(_log_dir, "app.err.log")
-        _lock_file = _os_module.path.join(_log_dir, f"router-{_port}.lock")
-
-        bat_path = _os_module.path.join(_tempfile.gettempdir(), 'bsl_restart.bat')
-        try:
-            with open(bat_path, 'w', encoding='utf-8') as f:
-                f.write('@echo off\n')
-                f.write('timeout /t 1 /nobreak >nul\n')
-                f.write(f'taskkill /F /T /PID {kill_pids[-1]} >nul 2>&1\n')
-                for pid in kill_pids:
-                    f.write(f'taskkill /F /PID {pid} >nul 2>&1\n')
-                f.write(f'del /F /Q "{_lock_file}" >nul 2>&1\n')
-                f.write('set PYTHONIOENCODING=utf-8\n')
-                f.write('set PYTHONUNBUFFERED=1\n')
-                f.write('set BSL_INTENDED_SUCCESSOR=1\n')
-                f.write('set BSL_SUPERVISED=\n')
-                f.write(f'cd /d "{_root}"\n')
-                f.write(
-                    f'start "" /B cmd /c ""{_venv_py}" -m app.dualstack_serve --port {_port} '
-                    f'>> "{_out_log}" 2>> "{_err_log}""\n'
-                )
-                f.write('del "%~f0"\n')
-            _sp.Popen(
-                ['cmd', '/c', bat_path],
-                cwd=_root,
-                creationflags=0x08000000 | _sp.CREATE_NEW_PROCESS_GROUP,
-                stdout=_sp.DEVNULL,
-                stderr=_sp.DEVNULL,
-                stdin=_sp.DEVNULL,
-                close_fds=True,
-            )
-        except Exception:
-            pass
-
-        _os_module._exit(0)
-
-    _threading.Thread(target=_delayed_system_restart, daemon=True).start()
-    return JSONResponse({"status": "restarting", "message": "BSL Router is restarting."})
+    old_pid = _os_module.getpid()
+    _threading.Thread(target=lambda: _spawn_prewarm_handover_restart(_port), daemon=True).start()
+    return JSONResponse({
+        "status": "restarting",
+        "mode": "prewarm_handover",
+        "old_pid": old_pid,
+        "active_streams": active_stream_count(),
+        "message": "BSL Router is pre-warming replacement instance (zero-downtime handover).",
+    })
 
 
 @app.post("/api/system/shutdown")
@@ -8518,11 +8573,22 @@ async def _accumulate_sse_stream(
         # A silent upstream is now simply awaited, exactly as 9router does.
         # Genuine failures still raise (RemoteProtocolError, ReadError, reset)
         # and are handled by the existing except blocks below.
-        while True:
+        _sse_byte_buf = b""
+        _sse_eof = False
+        while not _sse_eof:
             try:
                 _raw = await _aiter.__anext__()
+                _sse_byte_buf += _raw
+                if b"\n" not in _sse_byte_buf:
+                    continue
+                *_raw_lines, _sse_byte_buf = _sse_byte_buf.split(b"\n")
+                _txt = b"\n".join(_raw_lines).decode("utf-8", errors="replace")
             except StopAsyncIteration:
-                break
+                _sse_eof = True
+                if not _sse_byte_buf.strip():
+                    break
+                _txt = _sse_byte_buf.decode("utf-8", errors="replace")
+                _sse_byte_buf = b""
             # NOTE: the former `except asyncio.TimeoutError` branch is gone with
             # the `wait_for` wrapper that produced it. Nothing here imposes a
             # deadline any more, so that handler was unreachable code carrying a
@@ -8534,7 +8600,6 @@ async def _accumulate_sse_stream(
                         break
                 except Exception:
                     pass
-            _txt = _raw.decode("utf-8", errors="replace")
             if not _txt.strip():
                 continue
 
@@ -8651,7 +8716,11 @@ async def _accumulate_sse_stream(
                                 _a_cached = _a_stats["cached"]
                                 _a_cache_write = _a_stats["cache_write"]
                         elif _et == "message_start":
-                            _uu = _as_obj(_as_obj(_ev.get("message")).get("usage"))
+                            _msg_meta = _as_obj(_ev.get("message"))
+                            _mid = _msg_meta.get("id")
+                            if isinstance(_mid, str) and _mid.strip():
+                                _a_rid = _mid.strip()
+                            _uu = _as_obj(_msg_meta.get("usage"))
                             if _uu:
                                 _merge_usage_into_stats(_a_stats, _uu)
                                 _a_in = _a_stats["in"]
@@ -9026,6 +9095,39 @@ def _detect_inline_upstream_error(text: str) -> Optional[tuple[int, str]]:
         return 502, f"inline_upstream_error: {first_line[:240]}"
 
     return None
+
+
+def _explicit_sse_failure_event(data_json: Any) -> Optional[tuple[int, str]]:
+    """Classify an explicit upstream SSE failure event (response.failed / error).
+
+    REQ-1 (2026-10-30) centralization: the OpenAI, Anthropic, Gemini and a2o
+    stream lanes each carried a private copy of this extraction + status
+    classification. One shared classifier keeps them from drifting.
+    Returns (status_code, message) or None when the event is not an explicit
+    failure.
+    """
+    if not isinstance(data_json, dict) or data_json.get("type") not in ("response.failed", "error"):
+        return None
+    _err = ((data_json.get("response") or {}).get("error") or data_json.get("error") or {})
+    if not isinstance(_err, dict):
+        _err = {"message": str(_err)}
+    _msg = str(_err.get("message") or _err.get("code") or data_json.get("type") or "response.failed")
+    return codex_adapter.classify_codex_error_status(_err, _msg, default_status=503), _msg
+
+
+def _flag_post_content_explicit_sse_failure(stats: dict, _emit) -> None:
+    """REQ-1 (2026-10-30) P0: an explicit SSE failure (response.failed/error)
+    arrived AFTER content was already delivered. Cross-provider fallback is
+    forbidden post-emission, so route through the existing delivered-partial
+    state: set TRANSPORT_DIED_PARTIAL_FLAG so the post-loop AntiStop
+    continuation resumes the SAME provider/model from the accumulated partial
+    text. Proven continuation success restores 200 via the existing
+    continuation status guard; an unavailable/failed continuation leaves
+    stats' terminal error in place (exactly one terminal frame downstream).
+    The combo_infinite_retry=false opt-out contract is preserved by
+    should_splice_continuation's transport-death branch gate.
+    """
+    stats[TRANSPORT_DIED_PARTIAL_FLAG] = True
 
 
 def _detect_inline_upstream_error_from_sse_event(ev: Any) -> Optional[tuple[int, str]]:
@@ -9679,6 +9781,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         or model
     )
 
+    _is_auth_probe_req = bool(
+        request is not None
+        and (request.headers.get("x-bsl-authenticity-probe") or "").strip() == "1"
+    )
+    if _is_auth_probe_req and isinstance(body, dict):
+        body["_bsl_auth_probe"] = True
+
     # ── FEL-2a PRE-FLIGHT: clarity preprocess on the last user message ─────
     # Runs ONLY when tools.fel.enabled is truthy (resolve_fel → None otherwise,
     # so a disabled/malformed config costs one dict lookup and zero mutation).
@@ -9686,10 +9795,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # UI toggles) — the request-model family gates the whole pre-flight.
     # Guard flags ride request.state: once-per-request idempotency, and the
     # recovery re-dispatch frame (bsl_fel_recovered) never re-prepends context.
-    _fel = resolve_fel(config.get("tools", {}))
+    _fel = resolve_fel(config.get("tools", {})) if not _is_auth_probe_req else None
     _fel_req_family = _resolve_preflight_fel_family(model, config) if _fel is not None else ""
     if (
         _fel is not None
+        and not _is_auth_probe_req
         and _fel_family_enabled(config, _fel_req_family)
         and request is not None
         and isinstance(body, dict)
@@ -9961,7 +10071,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     if not provider_name:
         target_model, provider_name = resolve_alias(model, provider_name, config)
 
-    # Step 2: If no alias matched, scan all providers' model lists
+    # Step 2: If no alias matched (or alias resolved to a bare target_model without
+    # provider_name), scan all providers' model lists
     if not provider_name:
         # BROADCAST GUARD (2026-10-06): a bare (unqualified) model id that is
         # registered under MULTIPLE providers must NOT fan out across all of
@@ -9970,9 +10081,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         # 'provider/model' lane. Exact provider/model ids, namespaced ids,
         # aliases, and fuzzy hits are untouched (provider_name already set or
         # model already rewritten above).
-        _bare_matches = find_providers_for_model(model, config)
+        _scan_model = target_model or model
+        _bare_matches = find_providers_for_model(_scan_model, config)
         if len(_bare_matches) > 1:
-            return build_ambiguous_model_error(model, _bare_matches)
+            return build_ambiguous_model_error(_scan_model, _bare_matches)
         provider_name = _bare_matches[0] if _bare_matches else None
 
     # Step 3: Still no match -> return a clear, actionable error
@@ -10120,10 +10232,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     internal_request.model = target_model
 
     # Scout.docs_parser — extract and conditionally summarize document attachments
-    try:
-        internal_request = await parse_documents(internal_request, http_client, config)
-    except Exception as e:
-        print(f"Docs Parser Scout error (non-blocking): {e}")
+    if not _is_auth_probe_req:
+        try:
+            internal_request = await parse_documents(internal_request, http_client, config)
+        except Exception as e:
+            print(f"Docs Parser Scout error (non-blocking): {e}")
 
     # Scout.vision — polyfill vision capability for text-only models
     try:
@@ -10144,7 +10257,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # Middleware.compaction — Context Budget Guard (skip: anthropic/openai/gemini)
     # GAP-2c: Compaction is a BSL addition NOT in 9Router. Its model URL is also
     # currently broken. Gate it off for Gemini-path requests to match 9Router.
-    if not client_wants_gemini:
+    if not client_wants_gemini and not _is_auth_probe_req:
         try:
             internal_request = await apply_compaction(internal_request, http_client, config, provider_name=provider_name)
         except Exception as e:
@@ -10329,6 +10442,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         resolved_base_url = PROVIDER_DEFAULT_URLS.get(provider_name, '').rstrip('/')
     if not resolved_base_url:
         return JSONResponse({"error": f"No base URL configured for provider '{provider_name}'. Please set one in the admin panel."}, status_code=500)
+    if resolved_base_url.startswith("http://localhost:"):
+        resolved_base_url = "http://127.0.0.1:" + resolved_base_url[len("http://localhost:"):]
 
     # ── OAuth Token Refresh (systemic fix for recurring 401 loop) ────────
     # Every OAuth provider's access_token expires (~1h). Previously BSL used
@@ -10468,16 +10583,54 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
 
         # Phase 3: Reasoning Policy Engine — inject thinking config.
         # Prefer per-model field written by UI, fallback to legacy config.yaml map.
+        _is_auth_probe = bool(
+            request is not None
+            and (request.headers.get("x-bsl-authenticity-probe") or "").strip() == "1"
+        )
+        _auth_thinking_hdr = (
+            (request.headers.get("x-bsl-authenticity-thinking") or "").strip().lower()
+            if request is not None else ""
+        )
+        _probe_req_mt = int(getattr(internal_request, "max_tokens", 0) or 0)
+        _auth_thinking_off = bool(
+            _is_auth_probe and (
+                _auth_thinking_hdr == "off"
+                or (_auth_thinking_hdr == "" and 0 < _probe_req_mt < 2048)
+            )
+        )
         model_entry_thinking = None
         for m in provider_config.get("models", []):
             if m.get("id") == target_model:
                 model_entry_thinking = m.get("thinking")
                 break
         thinking_setting = model_entry_thinking or provider_config.get('thinking_config', {}).get(target_model, 'off')
+        if _is_auth_probe:
+            if _auth_thinking_off:
+                thinking_setting = "off"
+            elif str(thinking_setting).lower() in ("max", "xhigh", "high", "auto"):
+                thinking_setting = "low"
         upstream_payload = apply_thinking_to_anthropic_payload(
             upstream_payload, target_model, provider_name, thinking_setting
         )
+        if _is_auth_probe and _auth_thinking_off:
+            upstream_payload.pop("thinking", None)
+            upstream_payload.pop("output_config", None)
     else:
+        _is_auth_probe = bool(
+            request is not None
+            and (request.headers.get("x-bsl-authenticity-probe") or "").strip() == "1"
+        )
+        _auth_thinking_hdr = (
+            (request.headers.get("x-bsl-authenticity-thinking") or "").strip().lower()
+            if request is not None else ""
+        )
+        _probe_req_mt = int(getattr(internal_request, "max_tokens", 0) or 0)
+        _auth_thinking_off = bool(
+            _is_auth_probe and (
+                _auth_thinking_hdr == "off"
+                or (_auth_thinking_hdr == "" and 0 < _probe_req_mt < 2048)
+            )
+        )
         # For OpenAI and Gemini (via OpenAI compat), just dump the model back to dict
         upstream_payload = internal_request.model_dump(exclude_none=True)
         upstream_payload = propagate_prompt_cache_key(upstream_payload, internal_request)
@@ -10496,8 +10649,18 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # ChatCompletionRequest(extra="allow") intentionally preserves unknown client
     # fields, so these must be removed explicitly at the provider-egress boundary.
     upstream_payload.pop("_bsl_original_model", None)
+    upstream_payload.pop("_bsl_auth_probe", None)
     upstream_payload.pop("x_antigravity_user_agent", None)
     upstream_payload.pop("x_gemini_tool_mode", None)
+
+    # Kiro filter + context-window guard (app/middleware/kiro_filter_guard.py).
+    # Runs on the final wire payload so it sees the real provider. Fail-open.
+    _skip_kiro_guard = bool(
+        request is not None
+        and (request.headers.get("x-bsl-skip-kiro-guard") or "").strip() == "1"
+    )
+    if not _skip_kiro_guard:
+        upstream_payload = apply_kiro_egress_guards(upstream_payload, provider_name, target_model, config)
 
     # ── FEL-2a EGRESS: faithful-execution directives (tools.fel, default OFF).
     # Payload is final for its native wire shape here (after the caching
@@ -10508,7 +10671,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # (tools.fel.families) also skips directives + downstream recovery/stream
     # classification for families the operator turned off — the leaf's
     # family tag rides request.state so later stages reuse it.
-    _is_test_probe = bool(isinstance(body, dict) and body.get("_bsl_test_probe"))
+    _is_test_probe = bool((isinstance(body, dict) and body.get("_bsl_test_probe")) or _is_auth_probe)
     _fel_applied = False
     _fel_family_tag = detect_family(target_model, provider_name) if (_fel is not None and not _is_test_probe) else ""
     if _fel is not None and not _is_test_probe and _fel_family_enabled(config, _fel_family_tag):
@@ -10583,6 +10746,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         thinking_suffix = str(combo_thinking_override).lower()
     if _is_test_probe and provider_name == "codex":
         thinking_suffix = "low"
+    if _is_auth_probe:
+        if _auth_thinking_off:
+            thinking_suffix = "off"
+            reasoning_mode = None
+            reasoning_context = None
+        elif thinking_suffix in ("max", "xhigh", "high", "medium", "auto"):
+            thinking_suffix = "low"
 
     # Thinking config actually applied — recorded on every request log entry so
     # the console shows which reasoning knobs a call ran with. For gpt-5.6-sol
@@ -10642,7 +10812,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             )
     else:
         _mt_budget_cap = 65535
-        _mt_floor = int(config.get("tools", {}).get("max_tokens_floor", 65535))
+        if _is_auth_probe:
+            if _auth_thinking_off:
+                _mt_floor = _client_mt if _client_mt > 0 else 2048
+            else:
+                _mt_floor = _client_mt if _client_mt > 0 else 4096
+        else:
+            _mt_floor = int(config.get("tools", {}).get("max_tokens_floor", 65535))
         if _model_max_output_tokens > 0:
             upstream_payload["max_tokens"] = min(max(_client_mt, _mt_floor), _model_max_output_tokens)
         else:
@@ -10653,7 +10829,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     if is_qwen and int(upstream_payload.get("max_tokens", 0) or 0) > 65535:
         upstream_payload["max_tokens"] = 65535
         
-    if bool(re.search(r'kiro', f_val)):
+    if provider_name == 'kiro':
         # Kiro CodeWhisperer protocol: transform OpenAI payload → AWS JSON body
         # Pass the connection's profileArn (required by Kiro's /generateAssistantResponse).
         upstream_payload = kiro_adapter.openai_to_kiro(
@@ -10912,7 +11088,14 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         from app.compat.adapters.antigravity_upstream import (
             wrap_antigravity_upstream_client,
         )
-        client = wrap_antigravity_upstream_client(client, target_model)
+        _ag_plan_type = ""
+        if isinstance(active_conn, dict):
+            _ag_pdata = active_conn.get("provider_data")
+            if isinstance(_ag_pdata, dict):
+                _ag_plan_type = str(_ag_pdata.get("plan_type") or "")
+        client = wrap_antigravity_upstream_client(
+            client, target_model, plan_type=_ag_plan_type
+        )
     elif provider_name == 'commandcode':
         # CommandCode alpha lane (2026-09-17): /alpha/generate speaks the
         # Vercel AI SDK Data Stream Protocol, not OpenAI chat-completions.
@@ -11098,6 +11281,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # on a channel that rejects those params with a 400, we retry ONCE against
     # the SAME provider with a stripped payload instead of hard-failing.
     _thinking_retry_armed = payload_has_thinking(upstream_payload)
+    _oauth_401_retried = False
 
     async def _send_stream_with_thinking_fallback(stream_req=None, stream_payload=None):
         """Open a streaming upstream response, degrading thinking params on 400.
@@ -11137,130 +11321,138 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             raise TimeoutError(
                 f"upstream_header_timeout (waited {_hw_timeout:.0f}s for headers)"
             ) from None
-        # ── OAuth 401-Retry: force-refresh token and retry once ────────────
-        # If the upstream rejects with 401, the token may have expired between
-        # our pre-check and the actual send. Force-refresh and retry ONCE.
-        if (
-            _resp.status_code == 401
-            and active_conn.get('token_type') == 'oauth'
-            and not _oauth_401_retried
-        ):
-            _oauth_401_retried = True
-            _old_resp = _resp
-            try:
-                _forced_token = await ensure_fresh_token(
-                    provider_name, active_conn, provider_config, force=True
-                )
+        try:
+            # ── OAuth 401-Retry: force-refresh token and retry once ────────────
+            # If the upstream rejects with 401, the token may have expired between
+            # our pre-check and the actual send. Force-refresh and retry ONCE.
+            if (
+                _resp.status_code == 401
+                and active_conn.get('token_type') == 'oauth'
+                and not _oauth_401_retried
+            ):
+                _oauth_401_retried = True
+                _old_resp = _resp
+                try:
+                    _forced_token = await ensure_fresh_token(
+                        provider_name, active_conn, provider_config, force=True
+                    )
 
-                headers["Authorization"] = f"Bearer {_forced_token}"
-                _inject_provider_headers(headers, provider_name, active_conn, provider_config)
-                _active_req = _build_req(_active_payload)
-                print(
-                    f"[OAuth-401Retry] {provider_name}/{target_model} "
-                    f"force-refreshed token, retrying stream",
-                    flush=True,
-                )
-                # Open replacement BEFORE closing original so a raise
-                # leaves the caller with a valid (open) response.
-                _resp = await asyncio.wait_for(
-                    client.send(_active_req, stream=True),
-                    timeout=max(1.0, min(HEADER_WAIT_TIMEOUT, _chain_budget_remaining())),
-                )
-                await _old_resp.aclose()
-            except Exception as _oauth_retry_err:
-                print(
-                    f"[OAuth-401Retry] {provider_name} refresh+retry failed: "
-                    f"{_oauth_retry_err}",
-                    flush=True,
-                )
-                # _resp still points to _old_resp (open, status 401),
-                # safe for downstream consumers.
-        if _thinking_retry_armed and _resp.status_code == 400:
-            try:
-                _err_body = await _resp.aread()
-                _rej_text = _err_body.decode("utf-8", errors="replace")[:1000]
-                if is_thinking_param_rejection(_resp.status_code, _rej_text):
+                    headers["Authorization"] = f"Bearer {_forced_token}"
+                    _inject_provider_headers(headers, provider_name, active_conn, provider_config)
+                    _active_req = _build_req(_active_payload)
                     print(
-                        f"[ThinkingFallback] '{target_model}/{provider_name}' rejected thinking params "
-                        f"(400, stream) — retrying once with stripped payload",
+                        f"[OAuth-401Retry] {provider_name}/{target_model} "
+                        f"force-refreshed token, retrying stream",
                         flush=True,
                     )
-                    # Open replacement BEFORE closing original so a raise leaves
-                    # the caller with a valid (open) response for error handling.
-                    _new = await client.send(_build_req(strip_thinking(_active_payload)), stream=True)
-                    await _resp.aclose()
-                    _resp = _new
-                    _thinking_retry_armed = False
-            except Exception as _tf_err:
-                print(f"[ThinkingFallback] stream degrade-retry failed (non-blocking): {_tf_err}", flush=True)
-        if (
-            _resp.status_code in (400, 403)
-            and _fel is not None
-            and request is not None
-            and getattr(_fel, "reframe_escalate_on_inspection_fail", True)
-            and not getattr(request.state, "bsl_fel_context_escalated", False)
-            and not getattr(request.state, "bsl_fel_recovered", False)
-        ):
-            try:
-                _err_body = await _resp.aread()
-                _insp_text = _err_body.decode("utf-8", errors="replace")[:2000]
-                if is_data_inspection_wall(_resp.status_code, _insp_text):
-                    request.state.bsl_fel_context_escalated = True
-                    _escal_profile = ""
-                    if _fel.profile_header:
-                        _escal_profile = request.headers.get(_fel.profile_header, "") or ""
-                    import copy as _copy_mod
-                    _reframed_payload = _copy_mod.deepcopy(_active_payload)
-                    if _reframe_upstream_payload_in_place(
-                        _reframed_payload,
-                        _fel,
-                        _escal_profile,
-                        body=body if isinstance(body, dict) else None,
-                        model=target_model,
-                        provider=provider_name,
-                    ):
-                        _new = await client.send(_build_req(_reframed_payload), stream=True)
+                    # Open replacement BEFORE closing original so a raise
+                    # leaves the caller with a valid (open) response.
+                    _resp = await asyncio.wait_for(
+                        client.send(_active_req, stream=True),
+                        timeout=max(1.0, min(HEADER_WAIT_TIMEOUT, _chain_budget_remaining())),
+                    )
+                    await _old_resp.aclose()
+                except Exception as _oauth_retry_err:
+                    print(
+                        f"[OAuth-401Retry] {provider_name} refresh+retry failed: "
+                        f"{_oauth_retry_err}",
+                        flush=True,
+                    )
+                    # _resp still points to _old_resp (open, status 401),
+                    # safe for downstream consumers.
+            if _thinking_retry_armed and _resp.status_code == 400:
+                try:
+                    _err_body = await _resp.aread()
+                    _rej_text = _err_body.decode("utf-8", errors="replace")[:1000]
+                    if is_thinking_param_rejection(_resp.status_code, _rej_text):
+                        print(
+                            f"[ThinkingFallback] '{target_model}/{provider_name}' rejected thinking params "
+                            f"(400, stream) — retrying once with stripped payload",
+                            flush=True,
+                        )
+                        # Open replacement BEFORE closing original so a raise leaves
+                        # the caller with a valid (open) response for error handling.
+                        _new = await client.send(_build_req(strip_thinking(_active_payload)), stream=True)
                         await _resp.aclose()
                         _resp = _new
-                        _active_payload = _reframed_payload
-            except Exception as _fel_st_err:
-                print(f"[FEL] stream context-escalation failed (fail-open): {_fel_st_err}", flush=True)
-        # OAuth anti-ban G2/G6: feed the final status code to the backoff +
-        # usage governors. Fail-open: any error returns a no-op decision and
-        # never touches the live response. Cheap no-op for non-OAuth lanes.
-        try:
-            _oauth_antiban.govern_post_send(
-                provider_name=provider_name,
-                conn=active_conn if isinstance(active_conn, dict) else {},
-                conn_index=_active_conn_index,
-                status_code=getattr(_resp, "status_code", 0) or 0,
-                retry_after=None,
-                tokens_used=0.0,
-                config=config,
-            )
-        except Exception:
-            pass
-        try:
-            _capture_rate_limit_headers(provider_name, _active_conn_index, _resp.headers)
-        except Exception:
-            pass
-        # OAuth anti-ban G2/G6: feed the final status code + real token usage to
-        # the backoff + usage governors. Fail-open; cheap no-op for non-OAuth lanes.
-        try:
-            _usage_dict = _extract_usage(_resp) if hasattr(_resp, 'usage') else {}
-            _tokens = float((_usage_dict or {}).get("completion_tokens", 0) or 0)
-            _oauth_antiban.govern_post_send(
-                provider_name=provider_name,
-                conn=active_conn if isinstance(active_conn, dict) else {},
-                conn_index=_active_conn_index,
-                status_code=getattr(_resp, "status_code", 0) or 0,
-                retry_after=None,
-                tokens_used=_tokens,
-                config=config,
-            )
-        except Exception:
-            pass
-        return _resp
+                        _thinking_retry_armed = False
+                except Exception as _tf_err:
+                    print(f"[ThinkingFallback] stream degrade-retry failed (non-blocking): {_tf_err}", flush=True)
+            if (
+                _resp.status_code in (400, 403)
+                and _fel is not None
+                and request is not None
+                and getattr(_fel, "reframe_escalate_on_inspection_fail", True)
+                and not getattr(request.state, "bsl_fel_context_escalated", False)
+                and not getattr(request.state, "bsl_fel_recovered", False)
+            ):
+                try:
+                    _err_body = await _resp.aread()
+                    _insp_text = _err_body.decode("utf-8", errors="replace")[:2000]
+                    if is_data_inspection_wall(_resp.status_code, _insp_text):
+                        request.state.bsl_fel_context_escalated = True
+                        _escal_profile = ""
+                        if _fel.profile_header:
+                            _escal_profile = request.headers.get(_fel.profile_header, "") or ""
+                        import copy as _copy_mod
+                        _reframed_payload = _copy_mod.deepcopy(_active_payload)
+                        if _reframe_upstream_payload_in_place(
+                            _reframed_payload,
+                            _fel,
+                            _escal_profile,
+                            body=body if isinstance(body, dict) else None,
+                            model=target_model,
+                            provider=provider_name,
+                        ):
+                            _new = await client.send(_build_req(_reframed_payload), stream=True)
+                            await _resp.aclose()
+                            _resp = _new
+                            _active_payload = _reframed_payload
+                except Exception as _fel_st_err:
+                    print(f"[FEL] stream context-escalation failed (fail-open): {_fel_st_err}", flush=True)
+            # OAuth anti-ban G2/G6: feed the final status code to the backoff +
+            # usage governors. Fail-open: any error returns a no-op decision and
+            # never touches the live response. Cheap no-op for non-OAuth lanes.
+            try:
+                _oauth_antiban.govern_post_send(
+                    provider_name=provider_name,
+                    conn=active_conn if isinstance(active_conn, dict) else {},
+                    conn_index=_active_conn_index,
+                    status_code=getattr(_resp, "status_code", 0) or 0,
+                    retry_after=None,
+                    tokens_used=0.0,
+                    config=config,
+                )
+            except Exception:
+                pass
+            try:
+                _capture_rate_limit_headers(provider_name, _active_conn_index, _resp.headers)
+            except Exception:
+                pass
+            # OAuth anti-ban G2/G6: feed the final status code + real token usage to
+            # the backoff + usage governors. Fail-open; cheap no-op for non-OAuth lanes.
+            try:
+                _usage_dict = _extract_usage(_resp) if hasattr(_resp, 'usage') else {}
+                _tokens = float((_usage_dict or {}).get("completion_tokens", 0) or 0)
+                _oauth_antiban.govern_post_send(
+                    provider_name=provider_name,
+                    conn=active_conn if isinstance(active_conn, dict) else {},
+                    conn_index=_active_conn_index,
+                    status_code=getattr(_resp, "status_code", 0) or 0,
+                    retry_after=None,
+                    tokens_used=_tokens,
+                    config=config,
+                )
+            except Exception:
+                pass
+            return _resp
+        except BaseException:
+            if _resp is not None and hasattr(_resp, "aclose"):
+                try:
+                    await _resp.aclose()
+                except BaseException:
+                    pass
+            raise
 
     start_time = time.time()
     # Chain total deadline: PER-ENTRY RESET (BUG K).
@@ -11700,12 +11892,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             model=target_model,
                             provider=provider_name,
                         ):
-                            await _probe_resp.aclose()
                             _new_req = _build_req(_reframed_payload)
-                            _probe_resp = await asyncio.wait_for(
+                            _new_probe = await asyncio.wait_for(
                                 client.send(_new_req, stream=True),
                                 timeout=max(1.0, min(HEADER_WAIT_TIMEOUT, _chain_budget_remaining())),
                             )
+                            await _probe_resp.aclose()
+                            _probe_resp = _new_probe
                             upstream_payload = _reframed_payload
                             req = _new_req
                             if _probe_resp.status_code != 200:
@@ -11890,9 +12083,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     {"error": _exhausted_msg},
                     status_code=502,
                 )
-        except Exception as _probe_err:
+        except BaseException as _probe_base_err:
             if _probe_resp is not None:
-                await _probe_resp.aclose()
+                try:
+                    await _probe_resp.aclose()
+                except BaseException:
+                    pass
+                _probe_resp = None
+            if not isinstance(_probe_base_err, Exception):
+                raise
+            _probe_err = _probe_base_err
             obs.log_request(
                 provider=provider_name, model=target_model,
                 status=500, ttft=0,
@@ -12417,11 +12617,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                 if stats["ttft"] == 0.0:
                                                     stats["ttft"] = time.time() - start_time
                                             if isinstance(data_json, dict) and data_json.get("type") in ("response.failed", "error"):
-                                                _rf_err = ((data_json.get("response") or {}).get("error") or data_json.get("error") or {})
-                                                if not isinstance(_rf_err, dict):
-                                                    _rf_err = {"message": str(_rf_err)}
-                                                _rf_msg = str(_rf_err.get("message") or _rf_err.get("code") or data_json.get("type") or "response.failed")
-                                                _rf_sc = codex_adapter.classify_codex_error_status(_rf_err, _rf_msg, default_status=503)
+                                                _rf_sc, _rf_msg = _explicit_sse_failure_event(data_json)
                                                 if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
                                                     _codex_overload_attempt += 1
                                                     _codex_retry_overload = True
@@ -12438,6 +12634,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                     bench_leaf(config, provider_name, target_model, _rf_sc, _rf_msg, 0)
                                                     if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("codex_response_failed"):
                                                         raise _ComboFallbackNeeded(_rf_sc, _rf_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                                else:
+                                                    # REQ-1 (P0, 2026-10-30): content already emitted —
+                                                    # never splice a different provider into the live
+                                                    # answer; feed the explicit failure through the
+                                                    # existing same-provider delivered-partial
+                                                    # continuation instead.
+                                                    _flag_post_content_explicit_sse_failure(stats, _emit)
                                             _inl_raw = _detect_inline_upstream_error_from_sse_event(data_json) if not _emit.emitted else None
                                             if _inl_raw is not None:
                                                 _inl_sc, _inl_msg = _inl_raw
@@ -13172,11 +13375,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                         if stats["ttft"] == 0.0:
                                                             stats["ttft"] = time.time() - start_time
                                                     if isinstance(dj, dict) and dj.get("type") in ("response.failed", "error"):
-                                                        _rf_err = ((dj.get("response") or {}).get("error") or dj.get("error") or {})
-                                                        if not isinstance(_rf_err, dict):
-                                                            _rf_err = {"message": str(_rf_err)}
-                                                        _rf_msg = str(_rf_err.get("message") or _rf_err.get("code") or dj.get("type") or "response.failed")
-                                                        _rf_sc = codex_adapter.classify_codex_error_status(_rf_err, _rf_msg, default_status=503)
+                                                        _rf_sc, _rf_msg = _explicit_sse_failure_event(dj)
                                                         if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
                                                             _codex_overload_attempt += 1
                                                             _codex_retry_overload = True
@@ -13193,6 +13392,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                             bench_leaf(config, provider_name, target_model, _rf_sc, _rf_msg, 0)
                                                             if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("codex_response_failed"):
                                                                 raise _ComboFallbackNeeded(_rf_sc, _rf_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                                        else:
+                                                            # REQ-1 (P0, 2026-10-30): post-content explicit
+                                                            # failure — same-provider continuation only.
+                                                            _flag_post_content_explicit_sse_failure(stats, _emit)
                                                     _inl_ae = _detect_inline_upstream_error_from_sse_event(dj) if not _emit.emitted else None
                                                     if _inl_ae is not None:
                                                         _inl_sc, _inl_msg = _inl_ae
@@ -13709,8 +13912,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
 
             async def gemini_egress_stream():
                 resp = None
+                from app.compat.adapters.gemini import extract_openai_tool_schemas as _extract_gemini_schemas
                 state = {
-                    "is_antigravity": bool(request and "antigravity" in request.headers.get("user-agent", "").lower())
+                    "is_antigravity": bool(request and "antigravity" in request.headers.get("user-agent", "").lower()),
+                    "tool_schemas": _extract_gemini_schemas(body.get("tools") if isinstance(body, dict) else None),
                 }
                 emitted_model_data = False
                 # BUG N (2026-08-13): PRE-RENDER BUFFER. Thought-only frames
@@ -13913,11 +14118,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             if stats["ttft"] == 0.0:
                                                 stats["ttft"] = time.time() - start_time
                                         if isinstance(dj, dict) and dj.get("type") in ("response.failed", "error"):
-                                            _rf_err = ((dj.get("response") or {}).get("error") or dj.get("error") or {})
-                                            if not isinstance(_rf_err, dict):
-                                                _rf_err = {"message": str(_rf_err)}
-                                            _rf_msg = str(_rf_err.get("message") or _rf_err.get("code") or dj.get("type") or "response.failed")
-                                            _rf_sc = codex_adapter.classify_codex_error_status(_rf_err, _rf_msg, default_status=503)
+                                            _rf_sc, _rf_msg = _explicit_sse_failure_event(dj)
                                             if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
                                                 _codex_overload_attempt += 1
                                                 _codex_retry_overload = True
@@ -13933,6 +14134,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             bench_leaf(config, provider_name, target_model, _rf_sc, _rf_msg, 0)
                                             if not _emit.emitted:
                                                 _raise_gemini_combo_fallback(_rf_sc, _rf_msg, _emit)
+                                            else:
+                                                # REQ-1 (P0, 2026-10-30): post-content explicit
+                                                # failure — same-provider continuation only.
+                                                _flag_post_content_explicit_sse_failure(stats, _emit)
                                         _inl_gem = _detect_inline_upstream_error_from_sse_event(dj) if not _emit.emitted else None
                                         if _inl_gem is not None:
                                             _inl_sc, _inl_msg = _inl_gem
@@ -14990,6 +15195,18 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                         elif line.startswith("data: "):
                                             try:
                                                 dj = json.loads(line[6:])
+                                                _exp_a2o = _explicit_sse_failure_event(dj)
+                                                if _exp_a2o is not None and _emit.emitted:
+                                                    # REQ-1 (P0, 2026-10-30): this lane previously
+                                                    # ignored explicit response.failed/error events
+                                                    # after emission. Post-content, cross-provider
+                                                    # fallback is forbidden — flag the delivered-
+                                                    # partial state so the post-loop same-provider
+                                                    # continuation resumes from partial text.
+                                                    _exp_a2o_sc, _exp_a2o_msg = _exp_a2o
+                                                    stats["status"] = _exp_a2o_sc
+                                                    stats["error"] = _exp_a2o_msg
+                                                    _flag_post_content_explicit_sse_failure(stats, _emit)
                                                 _inl_a2o = _detect_inline_upstream_error_from_sse_event(dj) if not _emit.emitted else None
                                                 if _inl_a2o is not None:
                                                     _inl_sc, _inl_msg = _inl_a2o
@@ -15468,7 +15685,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 )
                 _bs_elapsed = time.time() - _bs_t0
                 if _bs_resp.status_code != 200:
-                    if _bs_elapsed < 2.0 and _bs_resp.status_code in (400, 404, 405, 415, 422, 501):
+                    if (
+                        _bs_elapsed < 2.0
+                        and _bs_resp.status_code in (400, 404, 405, 415, 422, 501)
+                        and provider_name != "antigravity"
+                    ):
                         await _bs_resp.aclose()
                         print(
                             f"[StreamBuffer:{_label}] '{target_model}/{provider_name}' "
@@ -15512,6 +15733,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # non-stream call on immediate (<2s) stream rejection.
             if _apply_stream_buffer:
                 _sb_t0 = time.time()
+                _sb_resp = None
                 try:
                     # Non-mutating copy — S3/S6 retries read upstream_payload.
                     _sb_payload = {**upstream_payload, "stream": True}
@@ -15526,24 +15748,37 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         # Immediate rejection (<2s): upstream doesn't support
                         # stream or rejected the payload. Fall back to real
                         # non-stream call (safe — no 524 risk at <2s).
-                        # Never re-dial the same connection on 401/402/403/429/5xx.
-                        if _sb_elapsed < 2.0 and _sb_resp.status_code in (400, 404, 405, 415, 422, 501):
+                        # Never re-dial the same connection on 401/402/403/429/5xx,
+                        # and never re-dial antigravity (whose non-stream send uses
+                        # the exact same v1internal:streamGenerateContent SSE endpoint).
+                        if (
+                            _sb_elapsed < 2.0
+                            and _sb_resp.status_code in (400, 404, 405, 415, 422, 501)
+                            and provider_name != "antigravity"
+                        ):
+                            _sb_code = _sb_resp.status_code
                             await _sb_resp.aclose()
+                            _sb_resp = None
                             print(
                                 f"[StreamBuffer] '{target_model}/{provider_name}' stream rejected "
-                                f"({_sb_resp.status_code} in {_sb_elapsed:.1f}s) — fail-open to non-stream",
+                                f"({_sb_code} in {_sb_elapsed:.1f}s) — fail-open to non-stream",
                                 flush=True,
                             )
-                            resp = await client.send(req)
+                            resp = await asyncio.wait_for(
+                                client.send(req),
+                                timeout=max(1.0, min(NONSTREAM_TOTAL_BUDGET, _chain_budget_remaining())),
+                            )
                         else:
                             # Late error (>2s): likely upstream issue during
                             # generation. Don't retry non-stream (would 524).
                             # Copy error body into a real-looking response.
+                            _sb_status = _sb_resp.status_code
                             _sb_err_body = await _sb_resp.aread()
                             await _sb_resp.aclose()
+                            _sb_resp = None
                             _sb_err_text = _sb_err_body.decode("utf-8", errors="replace")
                             resp = _SyntheticResponse(
-                                _sb_resp.status_code,
+                                _sb_status,
                                 {"error": _sb_err_text[:1000]},
                                 _sb_err_text[:1000],
                             )
@@ -15558,6 +15793,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             _label="buf",
                             _thinking_info=thinking_info,
                         )
+                        _sb_resp = None
                         print(
                             f"[StreamBuffer] '{target_model}/{provider_name}' buffered "
                             f"({_assembled['usage']['completion_tokens']} tokens in {time.time() - _sb_t0:.1f}s)",
@@ -15592,6 +15828,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     # Synthesize a 504 so the normal combo fallback logic below
                     # can advance to the next entry instead of propagating as an
                     # unhandled 500 to the client.
+                    if _sb_resp is not None:
+                        try:
+                            await _sb_resp.aclose()
+                        except BaseException:
+                            pass
+                        _sb_resp = None
                     _sb_err_text = str(_sb_http_err)
                     print(
                         f"[StreamBuffer] '{target_model}/{provider_name}' "
@@ -15599,21 +15841,44 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         flush=True,
                     )
                     resp = _SyntheticResponse(504, {"error": _sb_err_text[:1000]})
+                except (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException, httpx.TransportError, ConnectionError) as _sb_trans_err:
+                    # Upstream header timeout, pool timeout, or TCP/TLS transport failure:
+                    # Do NOT print a noisy traceback or re-dial `client.send(req)` against
+                    # the same dead upstream/exhausted pool. Synthesize a 502/504 immediately
+                    # so the combo fallback chain advances cleanly.
+                    if _sb_resp is not None:
+                        try:
+                            await _sb_resp.aclose()
+                        except BaseException:
+                            pass
+                        _sb_resp = None
+                    _is_to = isinstance(_sb_trans_err, (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException))
+                    _syn_code = 504 if _is_to else 502
+                    _sb_trans_msg = f"{type(_sb_trans_err).__name__}: {_sb_trans_err}"
+                    print(
+                        f"[StreamBuffer] '{target_model}/{provider_name}' upstream transport/timeout "
+                        f"({_sb_trans_msg}) — synthesizing {_syn_code} for combo fallback",
+                        flush=True,
+                    )
+                    resp = _SyntheticResponse(_syn_code, {"error": _sb_trans_msg[:1000]}, _sb_trans_msg[:1000])
                 except Exception as _sb_exc:
+                    if _sb_resp is not None:
+                        try:
+                            await _sb_resp.aclose()
+                        except BaseException:
+                            pass
+                        _sb_resp = None
                     import traceback as _tb
                     print(
                         f"[StreamBuffer] '{target_model}/{provider_name}' dispatch failed: {_sb_exc} - fail-open to non-stream",
                         flush=True,
                     )
                     _tb.print_exc()
-                    # Defense-in-depth (2026-09-06): the fail-open re-send sends
-                    # the SAME request, so if the original failure was a
-                    # build/send-time fault (e.g. ValueError: Illegal header
-                    # value), the re-send re-raises it and the exception escapes
-                    # as an unhandled 500. Synthesize a 504 instead so the combo
-                    # fallback chain can advance to the next entry.
                     try:
-                        resp = await client.send(req)
+                        resp = await asyncio.wait_for(
+                            client.send(req),
+                            timeout=max(1.0, min(NONSTREAM_TOTAL_BUDGET, _chain_budget_remaining())),
+                        )
                     except Exception as _sb_retry_exc:
                         print(
                             f"[StreamBuffer] '{target_model}/{provider_name}' fail-open re-send failed: {_sb_retry_exc} "
@@ -16555,8 +16820,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # punctuation), retry ONCE with 2x max_tokens. If retry is longer,
             # replace original.
             # Both: ALWAYS ON, fail-open, max 1 retry, non-streaming only.
-            _anti_stop_enabled = True
-            _quality_gate_enabled = True
+            _anti_stop_enabled = not _is_auth_probe
+            _quality_gate_enabled = not _is_auth_probe
 
             if resp.status_code == 200 and (_anti_stop_enabled or _quality_gate_enabled):
                 try:
@@ -16725,8 +16990,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             if client_wants_gemini:
                 if resp.status_code == 200:
                     try:
+                        from app.compat.adapters.gemini import extract_openai_tool_schemas as _extract_gemini_schemas
                         openai_json = _normalized_json if _normalized_json is not None else resp.json()
-                        gemini_json = openai_response_to_gemini(openai_json, model=target_model)
+                        gemini_json = openai_response_to_gemini(
+                            openai_json,
+                            model=target_model,
+                            tool_schemas=_extract_gemini_schemas(body.get("tools") if isinstance(body, dict) else None),
+                        )
                         _log_nonstream_success(openai_json)
                         return JSONResponse(gemini_json, status_code=200)
                     except Exception as e:

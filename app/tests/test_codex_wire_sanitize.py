@@ -105,3 +105,46 @@ def test_chat_shaped_payload_openai_path_unchanged():
     assert not any(
         r.rule == "codex_responses_wire_sanitize" for r in prov.records
     )
+
+
+def test_responses_wire_sanitize_bounds_long_call_id():
+    """Responses input[] items with call_id > 64 chars are bounded to <= 64 chars."""
+    long_id = "call_" + ("a" * 80)
+    payload = {
+        "input": [
+            {"type": "function_call", "call_id": long_id, "name": "read_file", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": long_id, "output": "ok"},
+        ],
+        "model": "gpt-6-astra",
+        "store": False,
+        "stream": True,
+        "reasoning": {"effort": "high"},
+    }
+    prov = Provenance()
+    out = _apply_gpt5(payload, _ctx(), prov, CONTRACTS[0])
+    c0 = out["input"][0]["call_id"]
+    c1 = out["input"][1]["call_id"]
+    assert len(c0) <= 64
+    assert c0 == c1
+
+
+def test_agentrouter_gpt56_sol_tools_sets_reasoning_effort_none():
+    """AgentRouter gpt-5.6-sol with function tools must set reasoning_effort='none'."""
+    ctx = ThinkingContext(
+        f_val="agentrouter/gpt-5.6-sol",
+        effort="max",
+        reasoning_mode="pro",
+        reasoning_context="all_turns",
+        wire_format="openai",
+    )
+    payload = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "model": "gpt-5.6-sol",
+        "tools": [{"type": "function", "function": {"name": "read_file"}}],
+        "reasoning": {"effort": "high"},
+    }
+    prov = Provenance()
+    out = _apply_gpt5(payload, ctx, prov, CONTRACTS[0])
+    assert out.get("reasoning_effort") == "none"
+    assert "reasoning" not in out
+

@@ -207,7 +207,10 @@ async def discover_models(
             for m in data["data"]:
                 model_id = m.get("id") if isinstance(m, dict) else str(m)
                 if model_id:
-                    models.append({"id": model_id, "object": "model", "owned_by": provider_id})
+                    entry = {"id": model_id, "object": "model", "owned_by": provider_id}
+                    if isinstance(m, dict) and isinstance(m.get("owned_by"), str) and m["owned_by"].strip():
+                        entry["upstream_owned_by"] = m["owned_by"].strip()
+                    models.append(entry)
         
         # Gemini format: {"models": [{"name": "models/gemini-pro"}, ...]}
         elif isinstance(data, dict) and "models" in data:

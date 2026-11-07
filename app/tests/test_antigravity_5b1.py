@@ -390,7 +390,7 @@ def test_t5_streaming_tool_call_accumulates_then_emits_function_call():
     finish = emitted[2]["response"]
     part = finish["candidates"][0]["content"]["parts"][0]
     assert part["functionCall"]["name"] == "get_weather"
-    assert part["functionCall"]["args"] == {"city": "NYC", "toolSummary": "Executing get_weather", "toolAction": "Running get_weather"}
+    assert part["functionCall"]["args"] == {"city": "NYC"}
     assert finish["candidates"][0]["finishReason"] == "STOP"
 
 
@@ -446,7 +446,7 @@ def test_t5_complete_tool_call_still_emits_function_call_after_guard():
     emitted = [openai_chunk_to_gemini(c, state) for c in chunks]
     part = emitted[2]["response"]["candidates"][0]["content"]["parts"][0]
     assert part["functionCall"]["name"] == "get_weather"
-    assert part["functionCall"]["args"] == {"city": "NYC", "toolSummary": "Executing get_weather", "toolAction": "Running get_weather"}
+    assert part["functionCall"]["args"] == {"city": "NYC"}
     assert emitted[2]["response"]["candidates"][0]["finishReason"] == "STOP"
 
 
@@ -825,6 +825,214 @@ def test_inline_upstream_error_detected_and_fails_over():
         "choices": [{"index": 0, "message": {"role": "assistant", "content": wb_err_text}, "finish_reason": "stop"}],
     }
     assert main_mod._detect_inline_upstream_error_from_response(openai_ns_resp) == hit
+
+
+
+
+def test_antigravity_tool_metadata_and_orphaned_parallel_calls_regression():
+    """Regression (2026-10-29): Root-cause fixes for Antigravity App tool call errors
+    across `workbuddy/*` (GLM-5.3, DeepSeek-V4.1, Kimi-K3) and `codex/*` OAuth models:
+    1. `_inject_tool_metadata` MUST NOT inject `toolAction` on any tool (Antigravity
+       rejects `run_command` with `additional properties 'toolAction' not allowed`),
+       and MUST NOT inject `toolSummary` on non-`run_command` tools like `read_file`
+       (Antigravity rejects `read_file` with `additional properties 'toolAction', 'toolSummary' not allowed`).
+    2. Poisoned historical `functionCall` parts carrying `toolAction`/`toolSummary` are
+       stripped on ingress (`gemini_request_to_openai`), and lowercase/snake_case parameter
+       aliases (`path` -> `Path`, `command` -> `CommandLine`) + stringified ints (`"5000"` -> `5000`)
+       are coerced when `tool_schemas` is present.
+    3. When a parallel tool call batch is aborted mid-batch by Antigravity IDE (leaving
+       2 `functionCall`s in the model turn and only 1 `functionResponse` in the user turn),
+       both `gemini_request_to_openai` and `codex_adapter.openai_to_responses` synthesize
+       the missing `tool` / `function_call_output` item so Codex never fails with
+       `400 No tool output found for function call call_read_file_2.`.
+    4. Mid-reasoning phantom tool calls scraped out of `<thinking>` before subsequent
+       `reasoning_content` deltas are discarded when real post-reasoning tool calls exist.
+    5. Malformed `<name>run_command><arguments>{...}</arguments><name>run_command</name>`
+       blocks in `glm_tools` extract `run_command` cleanly instead of fusing tags into the tool name.
+    """
+    from app.compat.adapters.gemini import (
+        extract_openai_tool_schemas,
+        gemini_request_to_openai,
+        openai_chunk_to_gemini,
+        unwrap_request,
+    )
+    from app.codex_adapter import openai_to_responses
+    from app.middleware.glm_tools import normalize_glm_tool_calls
+
+    ag_tools = [{
+        "functionDeclarations": [
+            {
+                "name": "read_file",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "Path": {"type": "STRING"},
+                        "StartLine": {"type": "INTEGER"},
+                        "EndLine": {"type": "INTEGER"},
+                    },
+                    "required": ["Path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "run_command",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "CommandLine": {"type": "STRING"},
+                        "WaitMsBeforeAsync": {"type": "INTEGER"},
+                        "IsDaemon": {"type": "BOOLEAN"},
+                        "toolSummary": {"type": "STRING"},
+                    },
+                    "required": ["CommandLine", "WaitMsBeforeAsync", "toolSummary"],
+                    "additionalProperties": False,
+                },
+            },
+        ]
+    }]
+
+    # (A) Ingress: 2 parallel `read_file` calls in model turn, only 1 `functionResponse`
+    # in user turn (exact Step 61 -> Step 62 GPT-Sol / codex failure from transcript.jsonl).
+    wrapper = _wrapper(
+        [
+            {"role": "user", "parts": [{"text": "read two files"}]},
+            {
+                "role": "model",
+                "parts": [
+                    {
+                        "functionCall": {
+                            "name": "read_file",
+                            "args": {
+                                "Path": "a.py",
+                                "toolSummary": "Executing read_file",
+                                "toolAction": "Running read_file",
+                            },
+                        }
+                    },
+                    {
+                        "functionCall": {
+                            "name": "read_file",
+                            "args": {
+                                "Path": "b.py",
+                                "toolSummary": "Executing read_file",
+                                "toolAction": "Running read_file",
+                            },
+                        }
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "read_file",
+                            "response": {
+                                "error": "Error invalid tool call: additional properties 'toolAction', 'toolSummary' not allowed"
+                            },
+                        }
+                    },
+                    {"text": "Remember the tool call above failed."},
+                ],
+            },
+        ],
+        tools=ag_tools,
+    )
+    ob = gemini_request_to_openai(unwrap_request(wrapper), "gpt-5.6-sol")
+    asst_msg = ob["messages"][1]
+    assert len(asst_msg["tool_calls"]) == 2
+    assert json.loads(asst_msg["tool_calls"][0]["function"]["arguments"]) == {"Path": "a.py"}
+    assert json.loads(asst_msg["tool_calls"][1]["function"]["arguments"]) == {"Path": "b.py"}
+
+    tool_msgs = [m for m in ob["messages"] if m["role"] == "tool"]
+    assert len(tool_msgs) == 2
+    assert tool_msgs[0]["tool_call_id"] == "call_read_file_1"
+    assert tool_msgs[1]["tool_call_id"] == "call_read_file_2"
+    assert ob["messages"][-1] == {"role": "user", "content": "Remember the tool call above failed."}
+
+    # Also verify codex_adapter.openai_to_responses repairs raw unpaired function_call items directly:
+    raw_unpaired = {
+        "model": "gpt-5.6-sol",
+        "messages": [
+            {"role": "user", "content": "read two files"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_read_file_1", "type": "function", "function": {"name": "read_file", "arguments": '{"Path":"a.py"}'}},
+                    {"id": "call_read_file_2", "type": "function", "function": {"name": "read_file", "arguments": '{"Path":"b.py"}'}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_read_file_1", "content": '{"error":"invalid"}'},
+            {"role": "user", "content": "retry"},
+        ],
+    }
+    codex_resp = openai_to_responses(raw_unpaired)
+    fc_ids = [x["call_id"] for x in codex_resp["input"] if x.get("type") == "function_call"]
+    fco_ids = [x["call_id"] for x in codex_resp["input"] if x.get("type") == "function_call_output"]
+    assert fc_ids == ["call_read_file_1", "call_read_file_2"]
+    assert sorted(fco_ids) == ["call_read_file_1", "call_read_file_2"]
+
+    # (B) Egress stream: mid-reasoning phantom `<tool_use>` ignored, aliases + types coerced,
+    # `read_file` gets NO `toolAction`/`toolSummary`, `run_command` gets `toolSummary` + `WaitMsBeforeAsync` and NO `toolAction`.
+    tool_schemas = extract_openai_tool_schemas(ob["tools"])
+    state = {"is_antigravity": True, "tool_schemas": tool_schemas}
+    stream_chunks = [
+        {"id": "c1", "model": "deepseek-v4.1-flash", "choices": [{"index": 0, "delta": {"reasoning_content": "Let me check why read_file failed..."}, "finish_reason": None}]},
+        {"id": "c1", "model": "deepseek-v4.1-flash", "choices": [{"index": 0, "delta": {"tool_calls": [
+            {"index": 0, "id": "call_phantom", "type": "function", "function": {"name": "read_file", "arguments": '{"Path":"wrong_from_thinking.py"}'}}
+        ]}, "finish_reason": None}]},
+        {"id": "c1", "model": "deepseek-v4.1-flash", "choices": [{"index": 0, "delta": {"reasoning_content": " Now I will emit the real tool calls."}, "finish_reason": None}]},
+        {"id": "c1", "model": "deepseek-v4.1-flash", "choices": [{"index": 0, "delta": {"tool_calls": [
+            {"index": 1, "id": "call_real_1", "type": "function", "function": {"name": "read_file", "arguments": json.dumps({"path": '"d:\\Projects\\a.py"', "StartLine": "1", "EndLine": "50", "toolAction": "bad", "toolSummary": "bad"})}},
+            {"index": 2, "id": "call_real_2", "type": "function", "function": {"name": "run_command><arguments>", "arguments": '{"command": "git status", "WaitMsBeforeAsync": "5000", "IsDaemon": "false", "toolAction": "bad"}'}}
+        ]}, "finish_reason": None}]},
+        {"id": "c1", "model": "deepseek-v4.1-flash", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+    emitted = [openai_chunk_to_gemini(c, state) for c in stream_chunks]
+    final_parts = emitted[-1]["response"]["candidates"][0]["content"]["parts"]
+    fc_out = [p["functionCall"] for p in final_parts if "functionCall" in p]
+    assert len(fc_out) == 2
+    assert fc_out[0] == {
+        "name": "read_file",
+        "args": {
+            "Path": r"d:\Projects\a.py",
+            "StartLine": 1,
+            "EndLine": 50,
+        },
+    }
+    assert fc_out[1] == {
+        "name": "run_command",
+        "args": {
+            "CommandLine": "git status",
+            "WaitMsBeforeAsync": 5000,
+            "IsDaemon": False,
+            "toolSummary": "Executing run_command",
+        },
+    }
+
+    # (C) GLM malformed `<name>run_command><arguments>{...}</arguments><name>run_command</name>`
+    malformed_glm_resp = {
+        "id": "glm-1",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": (
+                    "<tool_call><name>run_command><arguments>"
+                    '{"CommandLine": "Get-ChildItem", "WaitMsBeforeAsync": 5000, "toolSummary": "List files"}'
+                    "</arguments><name>run_command</name></tool_call>"
+                ),
+            },
+            "finish_reason": "stop",
+        }],
+    }
+    norm_glm, _changed = normalize_glm_tool_calls(malformed_glm_resp)
+    assert _changed is True
+    tcs = norm_glm["choices"][0]["message"]["tool_calls"]
+    assert len(tcs) == 1
+    assert tcs[0]["function"]["name"] == "run_command"
+    assert json.loads(tcs[0]["function"]["arguments"])["CommandLine"] == "Get-ChildItem"
 
 
 if __name__ == "__main__":

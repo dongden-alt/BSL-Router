@@ -51,6 +51,91 @@ class RetryAdvance:
 
 
 # ---------------------------------------------------------------------------
+# Shared recursive alias resolver (depth-bounded + cycle-safe)
+# ---------------------------------------------------------------------------
+
+ALIAS_MAX_DEPTH = 8
+
+
+def _resolve_alias_chain(
+    model: str,
+    provider_name: Optional[str],
+    config: dict,
+    initial_thinking: Optional[str] = None,
+    max_depth: int = ALIAS_MAX_DEPTH,
+) -> tuple[str, Optional[str], Optional[str], bool]:
+    """Recursively resolve `model` through `config['aliases']`.
+
+    Stops when:
+      - `provider_name` becomes concrete (and not `"__combo__"`),
+      - `current_model` matches a configured combo alias,
+      - `current_model` is not in `aliases`,
+      - a cycle is detected via `visited`, or
+      - `max_depth` hops are reached.
+
+    Returns `(resolved_model, resolved_provider, effective_thinking, matched_any)`.
+    """
+    if provider_name or not isinstance(model, str) or not model:
+        return model, provider_name, initial_thinking, False
+
+    aliases = config.get("aliases") if isinstance(config, dict) else None
+    if not isinstance(aliases, dict) or model not in aliases:
+        return model, provider_name, initial_thinking, False
+
+    combo_ids = {
+        c.get("alias")
+        for c in (config.get("combos") or [])
+        if isinstance(c, dict) and c.get("alias")
+    }
+    providers = config.get("providers") if isinstance(config, dict) else {}
+    if not isinstance(providers, dict):
+        providers = {}
+
+    curr_model = model
+    curr_provider: Optional[str] = None
+    eff_thinking = initial_thinking
+    visited: set[str] = set()
+    matched_any = False
+
+    for _ in range(max_depth):
+        if curr_model in visited or curr_model not in aliases:
+            break
+        alias_cfg = aliases.get(curr_model)
+        if not isinstance(alias_cfg, dict):
+            break
+        visited.add(curr_model)
+        matched_any = True
+
+        next_model = alias_cfg.get("model") or curr_model
+        next_provider = alias_cfg.get("provider")
+        alias_thinking = alias_cfg.get("thinking")
+        if eff_thinking is None and alias_thinking is not None:
+            eff_thinking = alias_thinking
+
+        if not next_provider and isinstance(next_model, str) and "/" in next_model:
+            maybe_prov, maybe_mod = next_model.split("/", 1)
+            if maybe_prov in providers:
+                next_provider = maybe_prov
+                next_model = maybe_mod
+
+        curr_model = next_model
+        if next_provider == "__combo__":
+            if curr_model in combo_ids:
+                curr_provider = "__combo__"
+                break
+            curr_provider = None
+        elif next_provider:
+            curr_provider = next_provider
+            break
+        else:
+            curr_provider = None
+            if curr_model in combo_ids:
+                break
+
+    return curr_model, curr_provider, eff_thinking, matched_any
+
+
+# ---------------------------------------------------------------------------
 # Step -1: Legacy alias -> combo redirect
 # ---------------------------------------------------------------------------
 
@@ -59,7 +144,7 @@ def resolve_combo_alias_redirect(
     provider_name: Optional[str],
     config: dict,
 ) -> tuple[str, bool]:
-    """Check if a legacy alias intentionally targets a Combo alias.
+    """Check if a legacy alias (including multi-hop alias chains) targets a Combo alias.
 
     UI selectors store Combo selections as provider=\"__combo__\" so exact MITM
     model keys (for example gemini-default) can route to configured fallback
@@ -67,13 +152,18 @@ def resolve_combo_alias_redirect(
 
     Returns (possibly_redirected_model, redirected: bool).
     """
-    if not provider_name and model in config.get("aliases", {}):
-        alias_config = config["aliases"][model]
-        alias_target = alias_config.get("model", model)
-        alias_provider = alias_config.get("provider")
-        combo_ids = {c.get("alias") for c in config.get("combos", []) if isinstance(c, dict)}
-        if alias_target in combo_ids and (not alias_provider or alias_provider == "__combo__"):
-            return alias_target, True
+    if not provider_name and isinstance(model, str):
+        resolved_model, resolved_prov, _thinking, matched = _resolve_alias_chain(
+            model, provider_name, config
+        )
+        if matched:
+            combo_ids = {
+                c.get("alias")
+                for c in config.get("combos", [])
+                if isinstance(c, dict) and c.get("alias")
+            }
+            if resolved_model in combo_ids and (not resolved_prov or resolved_prov == "__combo__"):
+                return resolved_model, True
     return model, False
 
 
@@ -212,11 +302,17 @@ def _parse_chain_entry(
             cm_target = maybe_model
             chain_model = maybe_model
 
-    # Legacy alias support: combo aliases stay bare by design.
-    if not cm_provider and chain_model in config.get("aliases", {}):
-        alias_cfg = config["aliases"][chain_model]
-        cm_target = alias_cfg.get("model", chain_model)
-        cm_provider = alias_cfg.get("provider")
+    # Legacy alias support (recursive, cycle-safe): combo aliases stay bare by design.
+    if not cm_provider and isinstance(chain_model, str) and chain_model in config.get("aliases", {}):
+        resolved_target, resolved_provider, resolved_thinking, matched = _resolve_alias_chain(
+            chain_model, None, config, initial_thinking=cm_thinking
+        )
+        if matched:
+            cm_target = resolved_target
+            cm_provider = None if resolved_provider == "__combo__" else resolved_provider
+            cm_thinking = resolved_thinking
+            if not cm_provider:
+                chain_model = resolved_target
 
     return chain_model, cm_target, cm_provider, cm_thinking
 
@@ -579,12 +675,15 @@ def resolve_alias(
     provider_name: Optional[str],
     config: dict,
 ) -> tuple[Optional[str], Optional[str]]:
-    """Look up model in config aliases. Returns (target_model, provider_name)."""
-    if not provider_name and model in config.get("aliases", {}):
-        alias_config = config["aliases"][model]
-        target_model = alias_config.get("model", model)
-        provider_name = alias_config.get("provider")
-        return target_model, provider_name
+    """Look up model in config aliases (recursively, cycle-safe). Returns (target_model, provider_name)."""
+    if not provider_name and isinstance(model, str) and model in config.get("aliases", {}):
+        target_model, resolved_provider, _thinking, matched = _resolve_alias_chain(
+            model, provider_name, config
+        )
+        if matched:
+            if resolved_provider == "__combo__":
+                resolved_provider = None
+            return target_model, resolved_provider
     return None, provider_name
 
 

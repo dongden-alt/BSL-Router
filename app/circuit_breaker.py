@@ -122,6 +122,8 @@ def _classify_for_breaker(status_code: int, error_msg: Optional[str]) -> str:
         return "rate_limit"
     if status_code in (401, 402, 403):
         return "auth"
+    if status_code == 404 and "requested entity was not found" in msg:
+        return "auth"
 
     # 2. Non-penalizing: client disconnects are never the upstream's fault.
     for marker in NON_PENALIZING_MARKERS:
@@ -450,6 +452,25 @@ class CircuitBreaker:
                                     _explicit_reset = True
                             except Exception:
                                 pass
+                        else:
+                            _m_hms = re.search(
+                                r"resets\s+in\s+(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+(?:\.\d+)?)s)?",
+                                str(error_msg),
+                                re.IGNORECASE,
+                            )
+                            if _m_hms and any(_m_hms.groups()):
+                                try:
+                                    _h = float(_m_hms.group(1) or 0)
+                                    _m = float(_m_hms.group(2) or 0)
+                                    _sec = float(_m_hms.group(3) or 0)
+                                    _s = _h * 3600.0 + _m * 60.0 + _sec
+                                    if _s > _cooldown:
+                                        _cooldown = min(_s, 18000.0)
+                                        _explicit_reset = True
+                                except Exception:
+                                    pass
+                elif classification == "auth" and status_code == 404:
+                    _cooldown = max(_cooldown, 3600.0)
                 entry["open_until"] = now + _cooldown
                 if classification == "rate_limit" and (
                     _explicit_reset or "usage_limit_reached" in str(error_msg or "").lower()

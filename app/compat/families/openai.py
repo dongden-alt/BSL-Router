@@ -19,17 +19,21 @@ must NOT be emitted. Live AgentRouter probe for gpt-5.6-sol:
 So on the anthropic wire the contract strips foreign keys and is a no-op.
 
 Tools note (2026-09-30): a payload carrying a non-empty `tools` list gets
-NO reasoning_effort/reasoning at all — AgentRouter's gpt-6-astra lane
-400s on reasoning_effort + function tools in /v1/chat/completions
-("Function tools with reasoning_effort are not supported ... use
-/v1/responses or set reasoning_effort to 'none'"). Astra has no "off"
-(the model thinks by default), so omitting the effort on tool-carrying
-requests is safe — the model's default effort stays on.
+NO reasoning_effort/reasoning at all for gpt-6-astra — AgentRouter's
+gpt-6-astra lane 400s on reasoning_effort + function tools in
+/v1/chat/completions ("Function tools with reasoning_effort are not
+supported ... use /v1/responses or set reasoning_effort to 'none'").
+Astra has no "off" (the model thinks by default), so omitting the effort
+on tool-carrying requests is safe. For AgentRouter gpt-5.x (gpt-5.6-sol),
+omitting reasoning_effort still triggers the 400 because the server
+defaults effort ON unless reasoning_effort="none" is explicitly set.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 
+from app.compat.adapters.gemini import bound_tool_call_id
 from app.compat.families._base import (
     Contract,
     Provenance,
@@ -48,6 +52,35 @@ _OPENAI_REASONING_KEYS = (
     "output_config",
     "thinking",
 )
+
+_AGENTROUTER_FAMILY_RE = re.compile(r"^agentrouter(?:[-_][a-z0-9_]+)?(?:/|$)", re.IGNORECASE)
+_AGENTROUTER_GPT_SOL_OR_61_RE = re.compile(r"gpt-?(?:5(?:\.\d+)?|6\.1)\b", re.IGNORECASE)
+
+
+def _has_function_tools(payload: Dict[str, Any]) -> bool:
+    """Return True iff payload carries at least one OpenAI function tool definition."""
+    tools = payload.get("tools")
+    if isinstance(tools, list) and tools:
+        for t in tools:
+            if isinstance(t, dict) and (
+                t.get("type") == "function" or isinstance(t.get("function"), dict)
+            ):
+                return True
+    functions = payload.get("functions")
+    if isinstance(functions, list) and any(isinstance(f, dict) for f in functions):
+        return True
+    return False
+
+
+def _is_agentrouter_gpt_sol_or_61(f_val: str, model: str = "") -> bool:
+    """True for AgentRouter-family lanes serving GPT-5.x or GPT-6.1 (excludes gpt-6-astra)."""
+    f_low = str(f_val or "").strip().lower()
+    if not _AGENTROUTER_FAMILY_RE.match(f_low):
+        return False
+    combined = f"{f_low} {str(model or '').strip().lower()}"
+    if "astra" in combined:
+        return False
+    return bool(_AGENTROUTER_GPT_SOL_OR_61_RE.search(combined))
 
 
 def _apply_gpt5(
@@ -76,6 +109,13 @@ def _apply_gpt5(
         if isinstance(reasoning, dict) and reasoning.get("mode") == "pro":
             reasoning.pop("mode", None)
             mode_popped = True
+        inp_list = payload.get("input")
+        if isinstance(inp_list, list):
+            for _item in inp_list:
+                if isinstance(_item, dict):
+                    _cid = _item.get("call_id")
+                    if isinstance(_cid, str) and len(_cid) > 64:
+                        _item["call_id"] = bound_tool_call_id(_cid)
         n_before = len(prov.records)
         payload = prov.apply(
             payload, contract, "codex_responses_wire_sanitize", strip_vals
@@ -117,8 +157,16 @@ def _apply_gpt5(
     # tool-carrying request suppress the OpenAI reasoning controls
     # entirely (strip any pre-existing keys, emit nothing new); the
     # model's default effort applies.
-    tools = payload.get("tools")
-    if isinstance(tools, list) and tools:
+    # For AgentRouter gpt-5.x / gpt-6.1 (e.g. agentrouter/gpt-5.6-sol,
+    # agentrouter/gpt-6.1-sol), omitting reasoning_effort still 400s when
+    # function tools are present because the upstream defaults reasoning on;
+    # explicitly set reasoning_effort="none" and strip nested reasoning.
+    if _has_function_tools(payload):
+        if _is_agentrouter_gpt_sol_or_61(ctx.f_val or "", str(payload.get("model") or "")):
+            sol_vals: Dict[str, Any] = {"reasoning_effort": "none"}
+            if "reasoning" in payload:
+                sol_vals["reasoning"] = None
+            return prov.apply(payload, contract, "tools_reasoning_strip", sol_vals)
         strip_vals = {k: None for k in ("reasoning_effort", "reasoning") if k in payload}
         if strip_vals:
             return prov.apply(payload, contract, "tools_reasoning_strip", strip_vals)

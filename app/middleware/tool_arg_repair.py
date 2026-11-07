@@ -281,6 +281,14 @@ def _ladder_candidates(args_str: str) -> List[str]:
             for _cand6 in ("{" + _base6, _close_truncation("{" + _base6)):
                 if _cand6 not in candidates:
                     candidates.append(_cand6)
+    # Step 7 (2026-10-29) -- collapse accidental double-double-quoted string
+    # values emitted by non-native models (`{"path": ""d:\Projects\a.py""}`).
+    if '""' in args_str:
+        _dq_re = re.compile(r'(:\s*)""([^"]+?)""(?=\s*[,}\]])')
+        for _base7 in [args_str] + list(candidates):
+            _s7 = _dq_re.sub(r'\1"\2"', _base7)
+            if _s7 != _base7 and _s7 not in candidates:
+                candidates.append(_s7)
     return candidates
 
 

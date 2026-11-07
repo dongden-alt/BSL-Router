@@ -76,12 +76,22 @@ async def call_with_backoff(client, endpoint, api_key, model_id, probe, timeout_
     """run_probe with exponential-ish backoff on throttle/5xx/transport errors.
     Returns the LAST ProbeResult (never raises)."""
     r = None
+    is_mock = isinstance(getattr(client, "transport", None), httpx.MockTransport)
+    pid = str((probe or {}).get("id", ""))
+    # Stream long-form reasoning probes (tier_splitter / hard_series) on live
+    # transports so extended-thinking models never hit scalar ReadTimeout.
+    use_stream = (not is_mock) and pid.startswith(("ts_", "hm_")) and (extra or {}).get("stream") is not False
     for attempt in range(len(gaps) + 1):
-        if not isinstance(getattr(client, "transport", None), httpx.MockTransport):
+        if not is_mock:
             await _pace()
         try:
-            r = await run_probe(client, endpoint, api_key, model_id, probe,
-                                timeout_s, extra=extra, retries=0)
+            if use_stream:
+                r = await run_probe(client, endpoint, api_key, model_id, probe,
+                                    timeout_s, extra=extra, retries=0,
+                                    ttft_s=timeout_s, idle_s=min(float(timeout_s), 45.0))
+            else:
+                r = await run_probe(client, endpoint, api_key, model_id, probe,
+                                    timeout_s, extra=extra, retries=0)
         except Exception:
             r = None
         code = getattr(r, "status_code", 0) if r is not None else 0
@@ -877,7 +887,9 @@ async def _judge_hard_answer(judge: tuple, task: str, answer: str,
                "messages": [{"role": "user", "content": prompt}],
                "max_tokens": 300, "temperature": 0, "stream": False}
     headers = {"Authorization": f"Bearer {api_key}",
-               "Content-Type": "application/json"}
+               "Content-Type": "application/json",
+               "X-BSL-Authenticity-Probe": "1",
+               "X-BSL-Authenticity-Thinking": "off"}
     try:
         if client is not None:
             resp = await client.post(url, json=payload, headers=headers, timeout=timeout_s)
@@ -1633,58 +1645,99 @@ async def run_standard_v2(client, endpoint, api_key, model_id,
         return res
 
     _cap_k = 1 if live else 4
-    # tokenizer fans out 4 baseline + len(TOKENIZER_STRINGS) calls; live run
-    # 2026-10-12 measured 4-29s per call -> ~5 waves > the flat 90s budget
-    # (`tokenizer: TimeoutError_after_90s`). Size it by job count too.
-    await _lane("tokenizer",
-                run_tokenizer_fingerprint(client, endpoint, api_key, model_id,
-                                          min(timeout_s, 180),
-                                          concurrency=concurrency, gaps=gaps),
-                jobs=4 + len(TOKENIZER_STRINGS))
-    await _lane("capability_curve",
-                run_capability_curve(client, endpoint, api_key, model_id,
-                                     timeout_s, k=_cap_k, rng=rng,
-                                     concurrency=concurrency, gaps=gaps),
-                jobs=len(CAPABILITY_TIERS) * _cap_k)
-    await _lane("knowledge_bank",
-                run_knowledge_bank(client, endpoint, api_key, model_id,
-                                   timeout_s, k=1 if live else 3,
-                                   sample=36 if live else None, rng=rng,
-                                   concurrency=concurrency, gaps=gaps))
-    await _lane("discriminator",
-                run_discriminator(client, endpoint, api_key, model_id,
-                                  timeout_s, k=1 if live else 2,
-                                  concurrency=concurrency, gaps=gaps))
-    # spatial_curve (2026-10-19): geometric/spatial tiers, same payload shape
-    # as capability_curve so similarity_curve is reused unchanged. Harvest
-    # deepens to k=2 (mirrors run_discriminator); live stays cheap at k=1.
     _sp_k = 1 if live else 2
-    await _lane("spatial_curve",
-                run_spatial_curve(client, endpoint, api_key, model_id,
-                                  timeout_s, k=_sp_k, rng=rng,
-                                  concurrency=concurrency, gaps=gaps),
-                jobs=len(SPATIAL_TIERS) * _sp_k)
-    # hard_series (2026-10-20): verified hard-math tiers + (harvest only)
-    # judge-graded expert probes. The judged half needs an external judge lane;
-    # judge=None -> judge-free math half only, no `judged` sub-key.
     _hs_k = 1 if live else 2
-    await _lane("hard_series",
-                run_hard_series(client, endpoint, api_key, model_id,
-                                timeout_s, k=_hs_k, rng=rng,
-                                concurrency=concurrency, gaps=gaps,
-                                judge=judge),
-                jobs=len(HARD_MATH_TIERS) * _hs_k
-                     + (len(HARD_JUDGED_PROBES) if judge else 0))
-    # tier_splitter (2026-10-24): 3-prong judge-free cross-family capability
-    # ceiling lane (svg_compiler + constraint_sat + state_trace). Splits
-    # budget/flash/luna/haiku vs mid/plus/sonnet/sol vs flagship/max/pro/opus
-    # across all 7 families without any external judge call.
     _ts_k = 1 if live else 2
-    await _lane("tier_splitter",
-                run_tier_splitter(client, endpoint, api_key, model_id,
-                                  timeout_s, k=_ts_k, rng=rng,
-                                  concurrency=concurrency, gaps=gaps),
-                jobs=len(TIER_SPLITTER_PRONGS) * _ts_k)
+    _kb_jobs = 36 if live else len(KNOWLEDGE_BANK) * 3
+    _disc_jobs = len(SCHEMA_PROBES) * (1 if live else 2)
+    _is_mock_client = (
+        client is None
+        or isinstance(
+            getattr(client, "_transport", None) or getattr(client, "transport", None),
+            httpx.MockTransport,
+        )
+    )
+    if live and not _is_mock_client:
+        # Live HTTP runs prioritize the fastest, highest-signal sub-version
+        # discriminators first so outer budget pressure never starves
+        # tier_splitter / hard_series behind 80+ lower-signal probes.
+        await _lane("tier_splitter",
+                    run_tier_splitter(client, endpoint, api_key, model_id,
+                                      timeout_s, k=_ts_k, rng=rng,
+                                      concurrency=concurrency, gaps=gaps),
+                    jobs=len(TIER_SPLITTER_PRONGS) * _ts_k)
+        await _lane("hard_series",
+                    run_hard_series(client, endpoint, api_key, model_id,
+                                    timeout_s, k=_hs_k, rng=rng,
+                                    concurrency=concurrency, gaps=gaps,
+                                    judge=judge),
+                    jobs=len(HARD_MATH_TIERS) * _hs_k
+                         + (len(HARD_JUDGED_PROBES) if judge else 0))
+        await _lane("discriminator",
+                    run_discriminator(client, endpoint, api_key, model_id,
+                                      timeout_s, k=1 if live else 2,
+                                      concurrency=concurrency, gaps=gaps),
+                    jobs=_disc_jobs)
+        await _lane("knowledge_bank",
+                    run_knowledge_bank(client, endpoint, api_key, model_id,
+                                       timeout_s, k=1 if live else 3,
+                                       sample=36 if live else None, rng=rng,
+                                       concurrency=concurrency, gaps=gaps),
+                    jobs=_kb_jobs)
+        await _lane("spatial_curve",
+                    run_spatial_curve(client, endpoint, api_key, model_id,
+                                      timeout_s, k=_sp_k, rng=rng,
+                                      concurrency=concurrency, gaps=gaps),
+                    jobs=len(SPATIAL_TIERS) * _sp_k)
+        await _lane("capability_curve",
+                    run_capability_curve(client, endpoint, api_key, model_id,
+                                         timeout_s, k=_cap_k, rng=rng,
+                                         concurrency=concurrency, gaps=gaps),
+                    jobs=len(CAPABILITY_TIERS) * _cap_k)
+        await _lane("tokenizer",
+                    run_tokenizer_fingerprint(client, endpoint, api_key, model_id,
+                                              min(timeout_s, 180),
+                                              concurrency=concurrency, gaps=gaps),
+                    jobs=4 + len(TOKENIZER_STRINGS))
+    else:
+        await _lane("tokenizer",
+                    run_tokenizer_fingerprint(client, endpoint, api_key, model_id,
+                                              min(timeout_s, 180),
+                                              concurrency=concurrency, gaps=gaps),
+                    jobs=4 + len(TOKENIZER_STRINGS))
+        await _lane("capability_curve",
+                    run_capability_curve(client, endpoint, api_key, model_id,
+                                         timeout_s, k=_cap_k, rng=rng,
+                                         concurrency=concurrency, gaps=gaps),
+                    jobs=len(CAPABILITY_TIERS) * _cap_k)
+        await _lane("knowledge_bank",
+                    run_knowledge_bank(client, endpoint, api_key, model_id,
+                                       timeout_s, k=1 if live else 3,
+                                       sample=36 if live else None, rng=rng,
+                                       concurrency=concurrency, gaps=gaps),
+                    jobs=_kb_jobs)
+        await _lane("discriminator",
+                    run_discriminator(client, endpoint, api_key, model_id,
+                                      timeout_s, k=1 if live else 2,
+                                      concurrency=concurrency, gaps=gaps),
+                    jobs=_disc_jobs)
+        await _lane("spatial_curve",
+                    run_spatial_curve(client, endpoint, api_key, model_id,
+                                      timeout_s, k=_sp_k, rng=rng,
+                                      concurrency=concurrency, gaps=gaps),
+                    jobs=len(SPATIAL_TIERS) * _sp_k)
+        await _lane("hard_series",
+                    run_hard_series(client, endpoint, api_key, model_id,
+                                    timeout_s, k=_hs_k, rng=rng,
+                                    concurrency=concurrency, gaps=gaps,
+                                    judge=judge),
+                    jobs=len(HARD_MATH_TIERS) * _hs_k
+                         + (len(HARD_JUDGED_PROBES) if judge else 0))
+        await _lane("tier_splitter",
+                    run_tier_splitter(client, endpoint, api_key, model_id,
+                                      timeout_s, k=_ts_k, rng=rng,
+                                      concurrency=concurrency, gaps=gaps),
+                    jobs=len(TIER_SPLITTER_PRONGS) * _ts_k)
     if _lane_gaps:
         out["lane_gaps"] = _lane_gaps
     return out

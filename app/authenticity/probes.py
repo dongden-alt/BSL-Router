@@ -25,6 +25,7 @@ class ProbeResult:
     finish_reason: str = ""    # choices[0].finish_reason (V6a boundary signature)
     timing_profile: dict = None  # V7 streamed timing: {ttft_ms, chunk_count, ...}
     usage: dict = None         # v2: upstream usage {prompt_tokens, completion_tokens, ...}
+    response_id: str = ""      # upstream message ID (e.g. msg_bdrk_01... vs msg_01...)
 
 
 TIER1_PROBES = [
@@ -220,6 +221,7 @@ async def run_probe(
     ttft_s=None,
     idle_s=None,
     retries: int = 0,
+    extra_headers: dict | None = None,
 ) -> ProbeResult:
     """Spend-guarded entry point (see spend_guard.py). Inactive unless a harvest
     driver enabled it; then billed lanes are answered from the disk cache when
@@ -240,7 +242,7 @@ async def run_probe(
                                error="budget_exhausted")
     r = await _run_probe_network(client, endpoint_base, api_key, model_id, probe,
                                  timeout_s, extra, ttft_s=ttft_s, idle_s=idle_s,
-                                 retries=retries)
+                                 retries=retries, extra_headers=extra_headers)
     if guarded and r is not None:
         try:
             _sg.store(model_id, probe, extra, asdict(r))
@@ -261,6 +263,7 @@ async def _run_probe_network(
     ttft_s=None,
     idle_s=None,
     retries: int = 0,
+    extra_headers: dict | None = None,
 ) -> ProbeResult:
     """Execute a single probe against an endpoint. NEVER raises.
 
@@ -283,7 +286,7 @@ async def _run_probe_network(
     if not stream_mode:
         return await _run_probe_scalar(
             client, endpoint_base, api_key, model_id, probe,
-            timeout_s, extra, retries)
+            timeout_s, extra, retries, extra_headers=extra_headers)
 
     t0 = time.monotonic()
     base = endpoint_base.rstrip("/")
@@ -302,6 +305,8 @@ async def _run_probe_network(
         "Content-Type": "application/json",
         "X-BSL-Authenticity-Probe": "1",
     }
+    if extra_headers:
+        headers.update(extra_headers)
     ttft_deadline = float(ttft_s)
     idle_deadline = float(idle_s) if idle_s is not None else float(timeout_s)
 
@@ -335,6 +340,7 @@ async def _run_probe_network(
                 thinking_parts: list = []
                 finish_reason = ""
                 usage_seen = None
+                response_id = ""
                 line_iter = resp.aiter_lines().__aiter__()
                 # FIX E (2026-10-13): __anext__ RAISES StopAsyncIteration at
                 # end of stream -- it never returns None. Upstreams that close
@@ -375,8 +381,12 @@ async def _run_probe_network(
                         obj = json.loads(data_str)
                     except Exception:
                         continue
-                    if isinstance(obj, dict) and isinstance(obj.get("usage"), dict):
-                        usage_seen = obj["usage"]
+                    if isinstance(obj, dict):
+                        if isinstance(obj.get("usage"), dict):
+                            usage_seen = obj["usage"]
+                        _oid = obj.get("id")
+                        if isinstance(_oid, str) and _oid and (not response_id or response_id.startswith("chatcmpl-bsl-")):
+                            response_id = _oid
                     c, th, fin = _sse_chunk(obj)
                     if c:
                         content_parts.append(c)
@@ -391,7 +401,8 @@ async def _run_probe_network(
                         thinking="".join(thinking_parts),
                         latency_ms=int((time.monotonic() - t0) * 1000),
                         finish_reason=finish_reason,
-                        usage=usage_seen), attempt=n)
+                        usage=usage_seen,
+                        response_id=response_id), attempt=n)
         except Exception as exc:
             _err = str(exc)[:200] or f"{type(exc).__name__} (no message)"
             return _record_probe_telemetry(
@@ -418,6 +429,7 @@ def _parse_json_body(probe: dict, status_code: int, body: bytes,
     ch = choices[0] if choices and isinstance(choices[0], dict) else {}
     msg = ch.get("message", {}) or {}
     _usage = data.get("usage") if isinstance(data, dict) else None
+    _resp_id = str(data.get("id") or "") if isinstance(data, dict) else ""
     return ProbeResult(
         probe_id=pid, tier=0, status_code=status_code,
         content=msg.get("content", "") or "",
@@ -426,6 +438,7 @@ def _parse_json_body(probe: dict, status_code: int, body: bytes,
         logprobs=ch.get("logprobs"),
         finish_reason=ch.get("finish_reason") or "",
         usage=_usage if isinstance(_usage, dict) else None,
+        response_id=_resp_id,
     )
 
 
@@ -438,6 +451,8 @@ async def _run_probe_scalar(
     timeout_s: int = 30,
     extra: dict | None = None,
     retries: int = 0,
+    *,
+    extra_headers: dict | None = None,
 ) -> ProbeResult:
     """Legacy non-stream probe path (V5 logprob tail and callers that pass
     no ttft_s). Whole-response scalar timeout; retries like the streamed
@@ -461,14 +476,17 @@ async def _run_probe_scalar(
             }
             if extra:
                 payload.update(extra)
+            hdrs = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "X-BSL-Authenticity-Probe": "1",
+            }
+            if extra_headers:
+                hdrs.update(extra_headers)
             resp = await client.post(
                 url,
                 json=payload,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "X-BSL-Authenticity-Probe": "1",
-                },
+                headers=hdrs,
                 timeout=timeout_s,
             )
             latency_ms = int((time.monotonic() - t0) * 1000)

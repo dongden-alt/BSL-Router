@@ -178,6 +178,8 @@ async def judge_scores(
             _hdrs = {
                 "Authorization": f"Bearer {judge_key}",
                 "Content-Type": "application/json",
+                "X-BSL-Authenticity-Probe": "1",
+                "X-BSL-Authenticity-Thinking": "off",
             }
             resp = None
             for _gap in (*JUDGE_BACKOFF_GAPS, None):
@@ -292,7 +294,9 @@ async def _judge_once(judge_endpoint, judge_key, judge_model, judge_prompt,
                     "stream": False,
                 },
                 headers={"Authorization": f"Bearer {judge_key}",
-                         "Content-Type": "application/json"},
+                         "Content-Type": "application/json",
+                         "X-BSL-Authenticity-Probe": "1",
+                         "X-BSL-Authenticity-Thinking": "off"},
                 timeout=timeout_s,
             )
         if resp.status_code != 200:
@@ -943,8 +947,9 @@ def list_testable_standards(standards_dir) -> dict:
     # testable list — matching the gitignore whitelist.
     import re as _re
     _PRIV = _re.compile(r'(^|[/\-_])(mintrouter|vsllm-o|vsllm-r|pix4k|a6api|sharellm|'
-                        r'workbuddy|zai-web\d|chat2api|antigravity|arena-web|'
-                        r'deepseek-web|qwen-web|mimo-web|codex|ds|zhipu)([/\-_]|$)', _re.I)
+                        r'workbuddy|zai-web\d|chat2api|antigravity|'
+                        r'(?:arena|deepseek|qwen|mimo|zai|workbuddy|qoder|intern|gemini|chatgpt|claude|perplexity|grok)-(?:paid|free|guest|web\d*)|'
+                        r'codex|ds|zhipu)([/\-_]|$)', _re.I)
     def _display(s):
         sub = s.get("sub_model", "")
         fam = s.get("family", "")

@@ -17,13 +17,13 @@ from typing import Optional
 # ── Trusted anchors per family ────────────────────────────────────────────
 # gold = unwrapped vendor API. reference = real-weights wrapper.
 TRUSTED_ANCHORS = {
-    "glm":      {"gold": ["aibox/zhipu"],      "reference": ["chat2api/zai-web1", "chat2api/zai-web2"]},
-    "kimi":     {"gold": ["aibox/kimi"],        "reference": ["chat2api/workbuddy-web"]},
-    "deepseek": {"gold": ["aibox/ds"],          "reference": ["chat2api/deepseek-web"]},
-    "qwen":     {"gold": ["aibox/qwen"],        "reference": ["chat2api/qwen-web"]},
-    "claude":   {"gold": [],                    "reference": ["chat2api/claude-web", "chat2api/arena-web", "mintrouter"]},
-    "gpt":      {"gold": [],                    "reference": ["codex"]},
-    "gemini":   {"gold": [],                    "reference": ["antigravity"]},
+    "glm":      {"gold": ["aibox/zhipu"],      "reference": ["chat2api/zai-free", "chat2api/zai-guest", "chat2api/zai-web1", "chat2api/zai-web2"]},
+    "kimi":     {"gold": ["aibox/kimi"],        "reference": ["chat2api/workbuddy-paid", "chat2api/workbuddy-free", "chat2api/workbuddy-web"]},
+    "deepseek": {"gold": ["aibox/ds"],          "reference": ["chat2api/deepseek-free", "chat2api/deepseek-web"]},
+    "qwen":     {"gold": ["aibox/qwen"],        "reference": ["chat2api/qwen-free", "chat2api/qoder-paid", "chat2api/qoder-free", "chat2api/qwen-web"]},
+    "claude":   {"gold": [],                    "reference": ["chat2api/claude-paid", "chat2api/claude-free", "chat2api/arena-free", "chat2api/claude-web", "chat2api/arena-web", "mintrouter"]},
+    "gpt":      {"gold": [],                    "reference": ["codex", "chat2api/chatgpt-paid"]},
+    "gemini":   {"gold": [],                    "reference": ["antigravity", "chat2api/gemini-paid"]},
     # hunyuan / mimo: no trusted in-router anchor yet → deferred (see NOTE)
 }
 

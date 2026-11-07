@@ -17,7 +17,7 @@
     ],
     "judged_by": "codex/gpt-6-astra",
     "source_tag": "",
-    "anchor_lane": "mintrouter/claude-opus-5-5"
+    "anchor_lane": "pix4k/claude-opus-5.5"
   },
   "identity": {
     "self_claim_model": "Claude Opus 5.5",
@@ -40,30 +40,30 @@
     "refusal_identity": ""
   },
   "knowledge": {
-    "cutoff_year": 0,
-    "cutoff_month": 0,
+    "cutoff_year": 2025,
+    "cutoff_month": 2,
     "known_facts": [
       {
-        "fact": "A papal conclave elected the first U.S.-born pope after Pope Francis died on April 21, 2025.",
-        "needle": "May 8, 2025 — Cardinal Robert Prevost elected, took the name Leo XIV"
+        "fact": "Donald Trump won the November 2024 U.S. presidential election and was inaugurated as the 47th President on January 20, 2025.",
+        "needle": "January 20, 2025"
       },
       {
-        "fact": "Israel launched large-scale airstrikes on Iranian nuclear and military sites, which led to a 12-day war.",
-        "needle": "June 13, 2025 — Israel's \"Operation Rising Lion\""
+        "fact": "The Syrian government of Bashar al-Assad collapsed when Damascus fell to rebel forces in December 2024.",
+        "needle": "December 2024"
       },
       {
-        "fact": "The United States struck Iranian nuclear facilities, and a ceasefire was announced about two days later.",
-        "needle": "June 22, 2025 — \"Operation Midnight Hammer,\" B-2 bombers hit Fordow, Natanz and "
+        "fact": "Former U.S. President Jimmy Carter died in Plains, Georgia at age 100 on December 29, 2024.",
+        "needle": "December 29, 2024"
       }
     ],
     "post_cutoff_unknown": [
       {
-        "fact": "The winner and final score of the 2026 FIFA World Cup final (hosted by the US, Canada, and Mexico, June–July 2026).",
-        "needle": "The winner and final score of the 2026 FIFA World Cup final (hosted by the US, C"
+        "fact": "The winner and final score of the 2026 FIFA World Cup final (hosted by the US, Canada, and Mexico, June-July 2026).",
+        "needle": "2026 FIFA World Cup"
       },
       {
-        "fact": "The final medal standings and top-performing nations at the Milan–Cortina 2026 Winter Olympics (February 2026).",
-        "needle": "The final medal standings and top-performing nations at the Milan–Cortina 2026 W"
+        "fact": "The final medal standings and top-performing nations at the Milan-Cortina 2026 Winter Olympics (February 2026).",
+        "needle": "2026 Winter Olympics"
       }
     ],
     "capability_boundary": {
@@ -114,11 +114,12 @@
   "structural": {
     "tokenizer_signature": {
       "boundary_signature": {
-        "stop_strict": false,
-        "stop_echo": true,
+        "stop_strict": true,
+        "stop_echo": false,
         "finish_reason": "stop",
         "json_strict": true,
-        "json_mode": "supported"
+        "json_mode": "supported",
+        "stop_mode": "ok"
       },
       "stability_profile": {
         "probe_id": "stability_poem_sea",

@@ -1032,4 +1032,24 @@ def test_sig14b_unsigned_dropped_not_shipped(capsys):
     fr_names = [p["functionResponse"]["name"] for p in fr_parts]
     assert "ghost" not in fr_names
     assert "read" in fr_names
+    assert contents[-1]["role"] == "user"
+
+
+def test_sig14c_envelope_never_ends_with_model_turn():
+    """ERE-R5 + Layer A (2026-10-30): openai_to_cloudcode_envelope must never
+    emit a contents list ending with role=='model', whether due to an unsigned
+    tool_call drop or a trailing assistant turn."""
+    _reset_sig_cache()
+    model = "gemini-pro-agent"
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "partial reply"},
+        ],
+    }
+    env = openai_to_cloudcode_envelope(body, model)
+    contents = env["request"]["contents"]
+    assert contents[-1]["role"] == "user"
+
 

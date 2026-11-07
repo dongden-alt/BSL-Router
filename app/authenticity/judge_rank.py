@@ -144,7 +144,9 @@ async def rank_candidates(
                    "messages": [{"role": "user", "content": prompt}],
                    "max_tokens": 300, "temperature": 0}
         headers = {"Authorization": f"Bearer {judge_key}",
-                   "Content-Type": "application/json"}
+                   "Content-Type": "application/json",
+                   "X-BSL-Authenticity-Probe": "1",
+                   "X-BSL-Authenticity-Thinking": "off"}
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as client:
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code != 200:

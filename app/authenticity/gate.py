@@ -257,10 +257,10 @@ async def authenticity_check(
                 return verdict
 
             # Tier 2 (if enabled and within time budget)
+            tier2_results = []
             max_tier = config.get("max_tier", 2)
             if max_tier >= 2 and _budget_ok("cutoff", "capability"):
                 _progress("tier2", "Deep · cutoff/capability probes")
-                tier2_results = []
                 for probe in TIER2_PROBES:
                     _check_cancel()
                     result = await run_probe(
@@ -685,6 +685,43 @@ async def authenticity_check(
                             raise
                         logger.warning("judge tie-break failed (fail-open): %s", _jt_exc)
 
+            # ── SUPPLY-LANE CLASSIFICATION (Claude Max vs Kiro vs Bedrock) ──
+            _supply_lane_info: dict = {}
+            _is_claude_family = (
+                scope_info.get("family") == "claude"
+                or (family_verdict is not None and family_verdict.family == "claude")
+            )
+            if _is_claude_family:
+                try:
+                    from .supply_lane import (
+                        classify_claude_supply_lane,
+                        inspect_provider_supply_hints,
+                        run_supply_lane_probes,
+                    )
+                    _resp_ids = [
+                        r.response_id
+                        for r in (tier1_results + tier2_results)
+                        if getattr(r, "response_id", "")
+                    ]
+                    _cfg_hints = inspect_provider_supply_hints(
+                        model_id, config.get("router_config") if isinstance(config, dict) else None
+                    )
+                    _is_mock = isinstance(getattr(client, "_transport", None), httpx.MockTransport)
+                    _active_supply = {}
+                    if not _is_mock and config.get("enable_supply_lane_probes", True):
+                        _progress("supply_lane", "Verifying supply lane (Bedrock / Kiro / Claude Max)")
+                        _active_supply = await run_supply_lane_probes(
+                            client, endpoint_base, api_key, model_id,
+                            timeout_s=min(float(probe_timeout), 20.0),
+                        )
+                    _supply_lane_info = classify_claude_supply_lane(
+                        response_ids=_resp_ids,
+                        active_probes=_active_supply,
+                        config_hints=_cfg_hints,
+                    )
+                except Exception as _sl_exc:
+                    logger.warning("supply_lane classification failed (fail-open): %s", _sl_exc)
+
         # ── LANE STATUS AUDIT (2026-10-12) ───────────────────────────────
         # A null match dimension must NEVER be silent. Every budget-guarded
         # lane above is skipped WITHOUT a log line when the clock runs out,
@@ -801,6 +838,10 @@ async def authenticity_check(
         # a 10-null result report ran_full_battery=true.
         verdict.evidence["lane_status"] = lane_status
         verdict.evidence["evidence_complete"] = not _missing
+        if _supply_lane_info:
+            verdict.supply_lane = _supply_lane_info.get("supply_lane", "")
+            verdict.supply_lane_label = _supply_lane_info.get("supply_lane_label", "")
+            verdict.evidence["supply_lane"] = _supply_lane_info
         if not _no_cache:
             cache.put(endpoint_base, model_id, verdict, reference_hint=reference_hint)
         _progress("done", verdict.verdict)

@@ -197,8 +197,23 @@ def _call_from_parsed_obj(parsed: Dict[str, Any], index: int = 0) -> Optional[Di
 # BATCH may repeat the name/arguments pair several times inside one block, so
 # this must be findall -- a single re.search silently keeps only the first call
 # and discards the rest of the batch.
-_PXML_NAME_RE = re.compile(r"<name>\s*(.*?)\s*</name>", re.DOTALL | re.IGNORECASE)
-_PXML_ARGS_RE = re.compile(r"<arguments>\s*(.*?)\s*</arguments>", re.DOTALL | re.IGNORECASE)
+# Match only valid tool identifier characters inside <name>...</name> (or up to a
+# malformed '>' / '<' when the closing </name> tag was omitted by the model, e.g.
+# `<name>run_command><arguments>{...}</arguments><name>run_command</name>`).
+# Using `.*?` with DOTALL previously spanned across `<arguments>` to the trailing
+# `</name>`, fusing the entire XML block into a bogus tool name!
+_PXML_NAME_RE = re.compile(
+    r"<name>\s*([A-Za-z0-9_.:-]+)(?:\s*</name>|\s*>[\s\S]*?(?=<arguments\b|<arg_key\b)|\s*(?=<))",
+    re.DOTALL | re.IGNORECASE,
+)
+_PXML_ARGS_RE = re.compile(
+    r"<arguments>\s*(.*?)\s*(?:</arguments>|(?=<name\b|</tool_use|</tool_call|$))",
+    re.DOTALL | re.IGNORECASE,
+)
+_GLM_ARG_KV_RE = re.compile(
+    r"<arg_key>\s*(?P<k>[^<]+?)\s*</arg_key>\s*<arg_value>\s*(?P<v>.*?)\s*</arg_value>",
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 def _parse_pseudo_xml_calls(text: str) -> List[Dict[str, Any]]:
@@ -213,11 +228,29 @@ def _parse_pseudo_xml_calls(text: str) -> List[Dict[str, Any]]:
         return []
     args_all = [m.group(1).strip() for m in _PXML_ARGS_RE.finditer(text)]
 
+    # If the model emitted `<name>run_command><arguments>{...}</arguments><name>run_command</name>`
+    # (two `<name>` tags around a single `<arguments>` block with the same tool name),
+    # collapse the trailing closing `<name>` duplicate so we don't emit a second `{}` call.
+    if len(names) == len(args_all) + 1 and len(names) >= 2 and names[-1] == names[-2]:
+        names = names[:-1]
+
+    # Support GLM native `<arg_key>k</arg_key><arg_value>v</arg_value>` when `<arguments>` is absent.
+    if not args_all and "<arg_key>" in text:
+        kv_params: Dict[str, Any] = {}
+        for km in _GLM_ARG_KV_RE.finditer(text):
+            k = km.group("k").strip()
+            if k:
+                kv_params[k] = _coerce_param_value(km.group("v").strip())
+        if kv_params:
+            args_all = [json.dumps(kv_params, ensure_ascii=False)]
+
     calls: List[Dict[str, Any]] = []
     for i, name in enumerate(names):
-        if not name:
+        if not name or name.upper() in ("TOOL_NAME", "FUNCTION_NAME", "EXAMPLE_TOOL"):
             continue
         args_str = args_all[i] if i < len(args_all) else "{}"
+        if args_str.strip() == '{"arg_name": "arg_value"}' or args_str.strip() == '{"arg_name":"arg_value"}':
+            continue
         call = _tool_call_dict(name, args_str, i)
         if call:
             calls.append(call)

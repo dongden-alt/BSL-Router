@@ -76,6 +76,8 @@ class RealityVerdict:
     confidence_level: str = "very_low"
     family: str = ""                 # detected/confirmed family
     focus: str = ""                  # narrowed sub-model hint (if any)
+    supply_lane: str = ""            # claude-max | aws-kiro | aws-bedrock | anthropic-api | hybrid-bedrock-anthropic | vertex-partner
+    supply_lane_label: str = ""      # human-readable supply-lane badge
     modifications: list = field(default_factory=list)  # list[Modification]
     evidence: dict = field(default_factory=dict)
     latency_ms: int = 0
@@ -120,6 +122,8 @@ class RealityVerdict:
             "confidence_level": self.confidence_level,
             "family": self.family,
             "focus": self.focus,
+            "supply_lane": self.supply_lane,
+            "supply_lane_label": self.supply_lane_label,
             "modifications": [m.to_dict() for m in self.modifications],
             "evidence": self.evidence,
             "latency_ms": self.latency_ms,
@@ -224,10 +228,22 @@ def _build_conclusions(v) -> None:
             auth_conf = v.confidence
             if behavior_scores and str(v.identified_as or v.family) in behavior_scores:
                 auth_conf = max(auth_conf, max(0.0, min(1.0, float(behavior_scores[str(v.identified_as or v.family)]))))
-            auth_rationale = (
-                f"Style signals match family '{v.identified_as or v.family}', but no frozen "
-                f"standard exists for the exact sub-version - cannot confirm REAL or FAKE."
-            )
+            if v.closest_candidates:
+                _top_c = ", ".join(
+                    f"{c.get('id', '?')} ({int(round(float(c.get('score', 0.0)) * 100))}%)"
+                    for c in v.closest_candidates[:2]
+                    if c.get("id")
+                )
+                auth_rationale = (
+                    f"Style signals match family '{v.identified_as or v.family}', "
+                    f"but sub-version signals were too close or incomplete across sibling standards "
+                    f"({_top_c}) to confirm an exact sub-version as REAL or FAKE."
+                )
+            else:
+                auth_rationale = (
+                    f"Style signals match family '{v.identified_as or v.family}', but no frozen "
+                    f"standard exists for the exact sub-version - cannot confirm REAL or FAKE."
+                )
         else:
             auth_conf = v.confidence
             _already_deep = bool(ev.get("ran_full_battery"))

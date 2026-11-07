@@ -456,16 +456,38 @@ def openai_to_cloudcode_envelope(
                 # Emit ONE throttled diagnostic (never raise).
                 _warn_dropped_unsigned_once(model)
                 dropped_call_ids.add(call_id)
+                if not any(isinstance(p, dict) and p.get("text") and not p.get("thought") for p in parts):
+                    parts.append({"text": "Understood. Proceeding with the workspace inspection."})
 
         if role == "tool":
             call_id = msg.get("tool_call_id") or ""
-            # Layer A (2026-09-26): if the paired functionCall was dropped
-            # above (unsignable), skip this functionResponse entirely. Gemini
-            # pairs fc+fr, and an orphan fr for a dropped fc is itself a 400
-            # risk. OpenAI message order puts the assistant tool_calls message
-            # before its tool responses, so dropped_call_ids is already
-            # populated in this same single pass.
+            # Layer A (2026-09-26) + ERE-R5 (2026-10-30): if the paired
+            # functionCall was dropped above (unsignable), never emit an
+            # orphan functionResponse part (which 400s on Gemini), AND never
+            # drop the user turn completely (which leaves a trailing model
+            # turn and triggers ``400: Requests ending with a model turn are
+            # not supported``). Convert the tool output into a plain-text user
+            # part so turn alternation and tool output are both preserved.
             if call_id in dropped_call_ids:
+                tool_name = (
+                    call_names.get(call_id)
+                    or _name_from_call_id(call_id)
+                    or "tool"
+                )
+                raw_res = str(msg.get("content") or "").strip()
+                fallback_text = (
+                    f"Prior step output (`{tool_name}`):\n{raw_res}\n"
+                    if raw_res
+                    else "(continue)"
+                )
+                prev = contents[-1] if contents else None
+                if isinstance(prev, dict) and prev.get("role") == "user" and not prev.get("__fr__"):
+                    prev["parts"].append({"text": fallback_text})
+                else:
+                    contents.append({
+                        "role": "user",
+                        "parts": [{"text": fallback_text}],
+                    })
                 continue
             tool_name = (
                 call_names.get(call_id)
@@ -514,6 +536,15 @@ def openai_to_cloudcode_envelope(
         # the skip happens before append, so this is belt-and-suspenders.)
         if not c.get("parts"):
             c["parts"] = [{"text": ""}]
+
+    # ERE-R5 (2026-10-30): Cloud Code Gemini v1internal strictly rejects
+    # payloads ending with a model turn ("Requests ending with a model turn
+    # are not supported."). Enforce ensure_gemini_last_role on egress.
+    try:
+        from app.middleware.gemini_last_role import ensure_gemini_last_role
+        contents = ensure_gemini_last_role(contents)
+    except Exception:
+        pass
 
     request_obj: Dict[str, Any] = {
         "sessionId": f"bsl-{uuid.uuid4().hex[:12]}",
@@ -878,6 +909,50 @@ class _TranslatedStreamResponse:
         await self._inner.aclose()
 
 
+# Google Cloud Code Pro-tier accounts receive `'gemini-4-argon-disabled'` in
+# `fetchAvailableModels` and return HTTP 404 (`Requested entity was not found`)
+# when calling `gemini-4-argon-{low,medium,high}` (only Ultra-tier accounts
+# unlock `gemini-4-argon-*`). Map `gemini-4-argon-*` to the Pro account's
+# highest available Gemini 3.8 reasoning tier (`gemini-3.8-flash-{low,medium,high}`)
+# proactively when `plan_type != "Ultra"`, and reactively on HTTP 404.
+_PRO_TIER_ARGON_FALLBACK_MAP: Dict[str, str] = {
+    "gemini-4-argon-low": "gemini-3.8-flash-low",
+    "gemini-4-argon-medium": "gemini-3.8-flash-medium",
+    "gemini-4-argon-high": "gemini-3.8-flash-high",
+    "gemini-4-argon": "gemini-3.8-flash-high",
+}
+_ARGON_DISABLED_AUTH_HASHES: "OrderedDict[str, float]" = OrderedDict()
+_ARGON_DISABLED_LOCK = threading.Lock()
+
+
+def _auth_token_digest(headers: Any) -> str:
+    try:
+        if hasattr(headers, "items"):
+            for k, v in headers.items():
+                if str(k).lower() == "authorization" and v:
+                    return hashlib.sha256(str(v).encode("utf-8", errors="ignore")).hexdigest()[:16]
+    except Exception:
+        pass
+    return ""
+
+
+def _is_argon_disabled_for_auth(auth_digest: str) -> bool:
+    if not auth_digest:
+        return False
+    with _ARGON_DISABLED_LOCK:
+        return auth_digest in _ARGON_DISABLED_AUTH_HASHES
+
+
+def _mark_argon_disabled_for_auth(auth_digest: str) -> None:
+    if not auth_digest:
+        return
+    with _ARGON_DISABLED_LOCK:
+        _ARGON_DISABLED_AUTH_HASHES[auth_digest] = time.time()
+        _ARGON_DISABLED_AUTH_HASHES.move_to_end(auth_digest)
+        while len(_ARGON_DISABLED_AUTH_HASHES) > 64:
+            _ARGON_DISABLED_AUTH_HASHES.popitem(last=False)
+
+
 class AntigravityUpstreamClient:
     """httpx-client facade: OpenAI in/out, Cloud Code on the wire.
 
@@ -887,9 +962,10 @@ class AntigravityUpstreamClient:
     chunks (stream) or one aggregated OpenAI completion (non-stream).
     """
 
-    def __init__(self, inner: Any, model: str):
+    def __init__(self, inner: Any, model: str, *, plan_type: Optional[str] = None):
         self._inner = inner
         self._model = model
+        self._plan_type = (plan_type or "").strip()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -919,6 +995,13 @@ class AntigravityUpstreamClient:
         if not model or "/" in model:
             model = self._model
 
+        auth_digest = _auth_token_digest(headers)
+        if model in _PRO_TIER_ARGON_FALLBACK_MAP and (
+            (self._plan_type and self._plan_type.lower() != "ultra")
+            or _is_argon_disabled_for_auth(auth_digest)
+        ):
+            model = _PRO_TIER_ARGON_FALLBACK_MAP[model]
+
         envelope = openai_to_cloudcode_envelope(payload, model)
 
         # Rewrite {base}/chat/completions -> {base}/v1internal:streamGenerateContent?alt=sse
@@ -943,11 +1026,45 @@ class AntigravityUpstreamClient:
             **kw,
         )
 
+    def _try_build_argon_404_fallback_request(self, request: Any) -> Optional[Any]:
+        try:
+            raw_content = getattr(request, "content", None)
+            if not isinstance(raw_content, (bytes, bytearray)):
+                return None
+            env = json.loads(raw_content.decode("utf-8", errors="replace"))
+            if not isinstance(env, dict):
+                return None
+            req_model = str(env.get("model") or "").strip()
+            fallback_model = _PRO_TIER_ARGON_FALLBACK_MAP.get(req_model)
+            if not fallback_model:
+                return None
+            _mark_argon_disabled_for_auth(_auth_token_digest(getattr(request, "headers", None)))
+            env["model"] = fallback_model
+            hdrs = dict(getattr(request, "headers", {}) or {})
+            hdrs.pop("content-length", None)
+            hdrs.pop("Content-Length", None)
+            return self._inner.build_request(
+                getattr(request, "method", "POST"),
+                str(getattr(request, "url", "")),
+                headers=hdrs,
+                content=json.dumps(env, sort_keys=True).encode("utf-8"),
+            )
+        except Exception:
+            return None
+
     # ── response direction ──────────────────────────────────────────────
 
     async def send(self, request: Any, *, stream: bool = False, **kw: Any):
         if stream:
             resp = await self._inner.send(request, stream=True, **kw)
+            if resp.status_code == 404:
+                fb_req = self._try_build_argon_404_fallback_request(request)
+                if fb_req is not None:
+                    try:
+                        await resp.aclose()
+                    except Exception:
+                        pass
+                    resp = await self._inner.send(fb_req, stream=True, **kw)
             if resp.status_code != 200:
                 return resp
             return _TranslatedStreamResponse(resp, self._model_of(request))
@@ -955,6 +1072,14 @@ class AntigravityUpstreamClient:
         # Non-stream: still use the SSE verb (the only live-verified one),
         # then aggregate through the translator into one OpenAI completion.
         resp = await self._inner.send(request, stream=True, **kw)
+        if resp.status_code == 404:
+            fb_req = self._try_build_argon_404_fallback_request(request)
+            if fb_req is not None:
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
+                resp = await self._inner.send(fb_req, stream=True, **kw)
         if resp.status_code != 200:
             try:
                 await resp.aread()
@@ -984,6 +1109,8 @@ class AntigravityUpstreamClient:
         return self._model
 
 
-def wrap_antigravity_upstream_client(inner: Any, model: str) -> AntigravityUpstreamClient:
+def wrap_antigravity_upstream_client(
+    inner: Any, model: str, *, plan_type: Optional[str] = None
+) -> AntigravityUpstreamClient:
     """Public entry: wrap the egress client for one antigravity target model."""
-    return AntigravityUpstreamClient(inner, model)
+    return AntigravityUpstreamClient(inner, model, plan_type=plan_type)

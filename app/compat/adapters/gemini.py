@@ -226,29 +226,514 @@ def _split_tool_args_documents(raw_args: str) -> "list[str]":
         return []
 
 
-def _inject_tool_metadata(args: Any, tool_name: str) -> Dict[str, Any]:
-    """Inject required IDE metadata fields into functionCall args.
+_TOOL_NAME_CLEAN_RE = re.compile(r"^([A-Za-z0-9_.:-]+)")
+_PLACEHOLDER_TOOL_NAMES = frozenset({
+    "TOOL_NAME",
+    "FUNCTION_NAME",
+    "EXAMPLE_TOOL",
+    "YOUR_TOOL_NAME",
+})
 
-    The Antigravity IDE validates tool calls against a schema that requires
-    `toolSummary` and `toolAction` fields. Many models (DeepSeek, Qwen, GLM, etc.)
-    don't generate these metadata fields because they're not part of the actual
-    tool parameters — they're IDE-internal validation metadata. This causes the
-    IDE to reject valid tool calls with "required field toolSummary is missing".
+# Canonical parameter schemas for built-in Antigravity IDE tools.
+# Antigravity's language_server validates every functionCall.args with strict
+# `additionalProperties: false`. Injecting unknown keys (`toolAction` on any
+# tool, or `toolSummary` on non-`run_command` tools) causes immediate client
+# rejection: `Error invalid tool call: invalid arguments: - additional properties ... not allowed`.
+_ANTIGRAVITY_KNOWN_TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
+    "run_command": {
+        "properties": {
+            "CommandLine": "string",
+            "WaitMsBeforeAsync": "integer",
+            "IsDaemon": "boolean",
+            "toolSummary": "string",
+            "Cwd": "string",
+            "SafeToAutoRun": "boolean",
+        },
+        "required": ("CommandLine", "WaitMsBeforeAsync", "toolSummary"),
+        "aliases": {
+            "command": "CommandLine",
+            "cmd": "CommandLine",
+            "command_line": "CommandLine",
+            "commandLine": "CommandLine",
+            "wait_ms": "WaitMsBeforeAsync",
+            "waitMsBeforeAsync": "WaitMsBeforeAsync",
+            "wait_ms_before_async": "WaitMsBeforeAsync",
+            "is_daemon": "IsDaemon",
+            "isDaemon": "IsDaemon",
+            "tool_summary": "toolSummary",
+        },
+        "strict": True,
+    },
+    "read_file": {
+        "properties": {
+            "Path": "string",
+            "StartLine": "integer",
+            "EndLine": "integer",
+            "ByteOffset": "integer",
+        },
+        "required": ("Path",),
+        "aliases": {
+            "path": "Path",
+            "file_path": "Path",
+            "filePath": "Path",
+            "file": "Path",
+            "start_line": "StartLine",
+            "startLine": "StartLine",
+            "end_line": "EndLine",
+            "endLine": "EndLine",
+            "byte_offset": "ByteOffset",
+            "byteOffset": "ByteOffset",
+        },
+        "strict": True,
+    },
+    "write_file": {
+        "properties": {
+            "Path": "string",
+            "Content": "string",
+            "Overwrite": "boolean",
+            "Append": "boolean",
+            "ArtifactMetadata": "object",
+        },
+        "required": ("Path", "Content"),
+        "aliases": {
+            "path": "Path",
+            "file_path": "Path",
+            "filePath": "Path",
+            "content": "Content",
+            "overwrite": "Overwrite",
+            "append": "Append",
+            "artifact_metadata": "ArtifactMetadata",
+            "artifactMetadata": "ArtifactMetadata",
+        },
+        "strict": True,
+    },
+    "edit_file": {
+        "properties": {
+            "Path": "string",
+            "Target": "string",
+            "Replacement": "string",
+            "ArtifactMetadata": "object",
+        },
+        "required": ("Path", "Target", "Replacement"),
+        "aliases": {
+            "path": "Path",
+            "file_path": "Path",
+            "filePath": "Path",
+            "target": "Target",
+            "old_string": "Target",
+            "old_str": "Target",
+            "replacement": "Replacement",
+            "new_string": "Replacement",
+            "new_str": "Replacement",
+            "artifact_metadata": "ArtifactMetadata",
+            "artifactMetadata": "ArtifactMetadata",
+        },
+        "strict": True,
+    },
+    "manage_task": {
+        "properties": {
+            "Action": "string",
+            "TaskId": "string",
+            "Input": "string",
+        },
+        "required": ("Action",),
+        "aliases": {
+            "action": "Action",
+            "task_id": "TaskId",
+            "taskId": "TaskId",
+            "input": "Input",
+        },
+        "strict": True,
+    },
+    "invoke_subagent": {
+        "properties": {
+            "TypeName": "string",
+            "Role": "string",
+            "Prompt": "string",
+            "Model": "string",
+            "Workspace": "string",
+        },
+        "required": ("TypeName", "Role", "Prompt"),
+        "aliases": {
+            "type_name": "TypeName",
+            "typeName": "TypeName",
+            "role": "Role",
+            "prompt": "Prompt",
+            "model": "Model",
+            "workspace": "Workspace",
+        },
+        "strict": True,
+    },
+    "define_subagent": {
+        "properties": {
+            "Name": "string",
+            "Description": "string",
+            "SystemPrompt": "string",
+            "EnableMCPTools": "boolean",
+            "EnableSubagentTools": "boolean",
+            "EnableWriteTools": "boolean",
+        },
+        "required": ("Name", "Description", "SystemPrompt"),
+        "aliases": {
+            "name": "Name",
+            "description": "Description",
+            "system_prompt": "SystemPrompt",
+            "systemPrompt": "SystemPrompt",
+        },
+        "strict": True,
+    },
+    "manage_subagents": {
+        "properties": {
+            "Action": "string",
+            "ConversationIds": "array",
+        },
+        "required": ("Action",),
+        "aliases": {
+            "action": "Action",
+            "conversation_ids": "ConversationIds",
+            "conversationIds": "ConversationIds",
+        },
+        "strict": True,
+    },
+    "send_message": {
+        "properties": {
+            "Recipient": "string",
+            "Message": "string",
+        },
+        "required": ("Recipient", "Message"),
+        "aliases": {
+            "recipient": "Recipient",
+            "message": "Message",
+        },
+        "strict": True,
+    },
+    "schedule": {
+        "properties": {
+            "Prompt": "string",
+            "DurationSeconds": "integer",
+            "CronExpression": "string",
+            "IsDaemon": "boolean",
+            "MaxIterations": "integer",
+            "TimerCondition": "string",
+        },
+        "required": ("Prompt",),
+        "aliases": {
+            "prompt": "Prompt",
+            "duration_seconds": "DurationSeconds",
+            "durationSeconds": "DurationSeconds",
+            "cron_expression": "CronExpression",
+            "cronExpression": "CronExpression",
+            "is_daemon": "IsDaemon",
+            "isDaemon": "IsDaemon",
+            "max_iterations": "MaxIterations",
+            "maxIterations": "MaxIterations",
+            "timer_condition": "TimerCondition",
+            "timerCondition": "TimerCondition",
+        },
+        "strict": True,
+    },
+    "search_web": {
+        "properties": {
+            "query": "string",
+            "domain": "string",
+        },
+        "required": ("query",),
+        "aliases": {
+            "Query": "query",
+            "Domain": "domain",
+        },
+        "strict": True,
+    },
+    "search_marketplace": {
+        "properties": {
+            "queries": "array",
+            "kind": "string",
+            "limit": "integer",
+        },
+        "required": ("queries",),
+        "aliases": {
+            "Queries": "queries",
+            "Kind": "kind",
+            "Limit": "limit",
+        },
+        "strict": True,
+    },
+    "ask_question": {
+        "properties": {
+            "questions": "array",
+        },
+        "required": ("questions",),
+        "aliases": {
+            "Questions": "questions",
+        },
+        "strict": True,
+    },
+    "call_mcp_tool": {
+        "properties": {
+            "ServerName": "string",
+            "ToolName": "string",
+            "Arguments": "object",
+        },
+        "required": ("ServerName", "ToolName", "Arguments"),
+        "aliases": {
+            "server_name": "ServerName",
+            "serverName": "ServerName",
+            "tool_name": "ToolName",
+            "toolName": "ToolName",
+            "arguments": "Arguments",
+            "args": "Arguments",
+        },
+        "strict": True,
+    },
+    "list_resources": {
+        "properties": {
+            "ServerName": "string",
+        },
+        "required": ("ServerName",),
+        "aliases": {
+            "server_name": "ServerName",
+            "serverName": "ServerName",
+        },
+        "strict": True,
+    },
+    "read_resource": {
+        "properties": {
+            "ServerName": "string",
+            "Uri": "string",
+        },
+        "required": (),
+        "aliases": {
+            "server_name": "ServerName",
+            "serverName": "ServerName",
+            "uri": "Uri",
+        },
+        "strict": True,
+    },
+}
 
-    This function injects defaults when missing, ensuring ALL models can produce
-    IDE-compatible tool calls.
 
-    Args:
-        args: The parsed functionCall args dict (may be empty or missing keys)
-        tool_name: The tool name for generating default metadata values
+def _sanitize_tool_name(raw_name: Any, tool_schemas: Optional[Dict[str, Any]] = None) -> str:
+    """Extract a clean tool identifier when malformed tags/attrs fuse onto a tool name."""
+    if not isinstance(raw_name, str):
+        return ""
+    s = raw_name.strip()
+    if not s:
+        return ""
+    m = _TOOL_NAME_CLEAN_RE.match(s)
+    clean = m.group(1) if m else s
+    if isinstance(tool_schemas, dict) and tool_schemas and clean not in tool_schemas:
+        low = clean.lower()
+        for k in tool_schemas:
+            if k.lower() == low:
+                return k
+    return clean
 
-    Returns:
-        The args dict with toolSummary and toolAction populated if missing
+
+def _is_bogus_tool_call(
+    name: str,
+    args: Any,
+    tool_schemas: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return True if a tool call is a prompt-template placeholder or undeclared noise."""
+    if not name or name.upper() in _PLACEHOLDER_TOOL_NAMES:
+        return True
+    if not _TOOL_NAME_CLEAN_RE.match(name):
+        return True
+    if isinstance(args, dict) and args == {"arg_name": "arg_value"}:
+        return True
+    if isinstance(tool_schemas, dict) and tool_schemas:
+        if name not in tool_schemas and name not in _ANTIGRAVITY_KNOWN_TOOL_SCHEMAS:
+            return True
+    return False
+
+
+def extract_openai_tool_schemas(tools: Any) -> Dict[str, Dict[str, Any]]:
+    """Build a `{tool_name: {properties: {k: type}, required: (...)}}` map from OpenAI tools."""
+    out: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(tools, list):
+        return out
+    for t in tools:
+        if not isinstance(t, dict):
+            continue
+        fn = t.get("function") if isinstance(t.get("function"), dict) else t
+        name = fn.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        name = name.strip()
+        params = fn.get("parameters") or fn.get("parametersJsonSchema") or {}
+        if not isinstance(params, dict):
+            continue
+        raw_props = params.get("properties")
+        props: Dict[str, str] = {}
+        if isinstance(raw_props, dict):
+            for pk, pv in raw_props.items():
+                if isinstance(pv, dict) and isinstance(pv.get("type"), str):
+                    props[pk] = pv["type"].lower()
+                else:
+                    props[pk] = "any"
+        req_list = params.get("required")
+        req_tuple = tuple(req_list) if isinstance(req_list, list) else ()
+        out[name] = {
+            "properties": props,
+            "required": req_tuple,
+            "aliases": _ANTIGRAVITY_KNOWN_TOOL_SCHEMAS.get(name, {}).get("aliases", {}),
+            "strict": bool(
+                params.get("additionalProperties") is False
+                or name in _ANTIGRAVITY_KNOWN_TOOL_SCHEMAS
+            ),
+        }
+    return out
+
+
+def _coerce_arg_value(val: Any, expected_type: str, key_name: str = "") -> Any:
+    """Coerce stringified scalars/containers into the JSON type expected by the tool schema."""
+    if expected_type == "integer":
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, int):
+            res = val
+        elif isinstance(val, float) and val.is_integer():
+            res = int(val)
+        elif isinstance(val, str):
+            s = val.strip()
+            if s.lstrip("-").isdigit():
+                res = int(s)
+            else:
+                return val
+        else:
+            return val
+        if key_name == "WaitMsBeforeAsync":
+            return max(500, min(10000, res))
+        return res
+
+    if expected_type == "boolean":
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            s = val.strip().lower()
+            if s == "true":
+                return True
+            if s == "false":
+                return False
+        return val
+
+    if expected_type == "string":
+        if isinstance(val, str) and len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+            try:
+                inner = json.loads(val)
+                if isinstance(inner, str):
+                    return inner
+            except Exception:
+                return val[1:-1]
+        return val
+
+    if expected_type == "object":
+        if isinstance(val, str):
+            s = val.strip()
+            if s.startswith("{") and s.endswith("}"):
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    pass
+        return val
+
+    if expected_type == "array":
+        if isinstance(val, str):
+            s = val.strip()
+            if s.startswith("[") and s.endswith("]"):
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, list):
+                        return parsed
+                except Exception:
+                    pass
+        return val
+
+    return val
+
+
+def _inject_tool_metadata(
+    args: Any,
+    tool_name: str,
+    tool_schemas: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Sanitize, coerce, and backfill IDE metadata fields on functionCall args.
+
+    Root-cause fix (2026-10-29):
+    Antigravity IDE (`language_server.exe`) validates every `functionCall.args`
+    against that tool's declared JSON Schema with strict `additionalProperties: false`.
+    - `toolAction` is NOT a valid property on ANY Antigravity tool. Unconditionally
+      injecting `toolAction` caused 100% of `run_command` calls to fail with:
+      `invalid arguments: - additional properties 'toolAction' not allowed`.
+    - `toolSummary` is ONLY a valid property on `run_command` (or tools whose
+      schema explicitly declares `toolSummary`). Injecting `toolSummary` on
+      `read_file`, `write_file`, `edit_file`, `call_mcp_tool`, etc. caused 100%
+      of those calls to fail with:
+      `invalid arguments: - additional properties 'toolAction', 'toolSummary' not allowed`.
     """
     if not isinstance(args, dict):
         args = {}
-    args.setdefault("toolSummary", f"Executing {tool_name}")
-    args.setdefault("toolAction", f"Running {tool_name}")
+    else:
+        args = dict(args)
+
+    clean_name = _sanitize_tool_name(tool_name, tool_schemas) or tool_name
+    explicit_schema = (
+        tool_schemas.get(clean_name)
+        if isinstance(tool_schemas, dict) and clean_name in tool_schemas
+        else None
+    )
+    schema = explicit_schema or _ANTIGRAVITY_KNOWN_TOOL_SCHEMAS.get(clean_name)
+
+    props: Dict[str, str] = (schema.get("properties") if isinstance(schema, dict) else None) or {}
+    required = (schema.get("required") if isinstance(schema, dict) else None) or ()
+    aliases: Dict[str, str] = (schema.get("aliases") if isinstance(schema, dict) else None) or {}
+    is_strict = bool(schema.get("strict")) if isinstance(schema, dict) else False
+
+    # 1. Remap common lowercase/snake_case parameter aliases when canonical key is absent.
+    #    Only remap when explicit tool_schemas is active or for `run_command` so synthetic
+    #    unit tests calling `read_file({"path": "a.py"})` without schemas retain `path`.
+    if aliases and (explicit_schema is not None or clean_name == "run_command"):
+        for alias_key, canonical_key in list(aliases.items()):
+            if alias_key in args and canonical_key in props and alias_key not in props:
+                if canonical_key not in args:
+                    args[canonical_key] = args.pop(alias_key)
+                else:
+                    args.pop(alias_key, None)
+
+    # 2. Strip poisoned/hallucinated `toolAction` unless explicitly in tool schema.
+    if "toolAction" not in props:
+        args.pop("toolAction", None)
+    else:
+        args.setdefault("toolAction", f"Running {clean_name}")
+
+    # 3. Only inject `toolSummary` for `run_command` or tools whose schema declares it;
+    #    strip `toolSummary` from tools whose schema does not allow it.
+    if clean_name == "run_command" or "toolSummary" in props:
+        if not isinstance(args.get("toolSummary"), str) or not args["toolSummary"].strip():
+            args["toolSummary"] = f"Executing {clean_name}"
+    else:
+        args.pop("toolSummary", None)
+
+    # 4. Backfill required `run_command` defaults when omitted by non-native models.
+    if clean_name == "run_command" or "WaitMsBeforeAsync" in required:
+        if "WaitMsBeforeAsync" not in args or args["WaitMsBeforeAsync"] is None:
+            args["WaitMsBeforeAsync"] = 5000
+
+    # 5. Strip unknown additional properties when explicit strict schema is provided.
+    if is_strict and props and explicit_schema is not None:
+        for k in list(args.keys()):
+            if k not in props:
+                args.pop(k, None)
+
+    # 6. Coerce argument value types to match schema expectations.
+    if props:
+        for k, v in list(args.items()):
+            expected_t = props.get(k)
+            if expected_t:
+                args[k] = _coerce_arg_value(v, expected_t, key_name=k)
+
     return args
 
 
@@ -575,11 +1060,22 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
     # functionResponse to it via this FIFO queue.
     _tool_call_seq = 0
     _pending_calls: list = []  # FIFO of (name, call_id) awaiting a functionResponse
+    _req_tool_schemas = extract_openai_tool_schemas(openai_tools)
+
+    def _flush_orphaned_pending_calls() -> None:
+        while _pending_calls:
+            _orphan_name, _orphan_id = _pending_calls.pop(0)
+            openai_body["messages"].append({
+                "role": "tool",
+                "tool_call_id": _orphan_id,
+                "content": json.dumps({
+                    "error": f"Tool call '{_orphan_name}' was skipped or failed client validation."
+                }),
+            })
 
     # ── contents → messages ─────────────────────────────────────────────
-    for content in (req.get("contents") or []):
-        if not isinstance(content, dict):
-            continue
+    _raw_contents = [c for c in (req.get("contents") or []) if isinstance(c, dict)]
+    for _ci, content in enumerate(_raw_contents):
         role = content.get("role", "user")
         # §8.1: a content carrying functionResponse is re-roled to user.
         parts = content.get("parts") or []
@@ -592,6 +1088,14 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
             openai_role = "assistant"
         else:
             openai_role = role  # "user" → user, else passthrough
+
+        # If a previous model turn emitted functionCall(s) that were never paired
+        # with a functionResponse (e.g. parallel batch aborted on client validation
+        # error), synthesize tool-role error responses before the next turn starts
+        # so strict upstreams (Codex Responses, Anthropic, OpenAI) never reject the
+        # history with `400 No tool output found for function call ...`.
+        if not has_fn_response and _pending_calls:
+            _flush_orphaned_pending_calls()
 
         msg: Dict[str, Any] = {"role": openai_role}
         text_parts: list = []
@@ -609,13 +1113,24 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
                 name = fc.get("name") if isinstance(fc, dict) else None
                 if not isinstance(name, str) or not name.strip():
                     continue
-                name = name.strip()
+                name = _sanitize_tool_name(name.strip(), _req_tool_schemas)
+                if not name:
+                    continue
                 args = fc.get("args") or fc.get("arguments") or {}
-                # Unique id per invocation (see FIFO note above). The monotonic
-                # suffix guarantees uniqueness across the whole conversation while
-                # keeping the readable tool name for debugging.
-                _tool_call_seq += 1
-                _call_id = _mint_tool_call_id(name, _tool_call_seq)
+                if isinstance(args, dict):
+                    args = _inject_tool_metadata(args, name, _req_tool_schemas)
+                # Preserve explicit non-empty functionCall.id (or part.id) when
+                # present, bounded to <=64 chars; otherwise mint a globally
+                # unique id per invocation.
+                _explicit_fc_id = (
+                    (fc.get("id") if isinstance(fc, dict) else None)
+                    or part.get("id")
+                )
+                if isinstance(_explicit_fc_id, str) and _explicit_fc_id.strip():
+                    _call_id = bound_tool_call_id(_explicit_fc_id.strip())
+                else:
+                    _tool_call_seq += 1
+                    _call_id = _mint_tool_call_id(name, _tool_call_seq)
                 _tc: Dict[str, Any] = {
                     "id": _call_id,
                     "type": "function",
@@ -639,19 +1154,34 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
             # functionResponse → OpenAI tool-role message (§3)
             if "functionResponse" in part:
                 fr = part["functionResponse"] or {}
-                name = fr.get("name", "")
-                resp = fr.get("response")
+                name = fr.get("name", "") if isinstance(fr, dict) else ""
+                if isinstance(name, str) and name.strip():
+                    name = _sanitize_tool_name(name.strip(), _req_tool_schemas) or name.strip()
+                resp = fr.get("response") if isinstance(fr, dict) else None
                 result = resp.get("result", resp) if isinstance(resp, dict) else resp
-                # Pair by NAME first (oldest pending call with the same tool name),
-                # so parallel calls answered out of order still map correctly.
-                # Fall back to global FIFO, then to a fresh unique id if nothing is
-                # pending (e.g. history truncated before the originating call).
+                # Pair by explicit functionResponse.id (or part.id) FIRST when present,
+                # then by NAME (oldest pending call with the same tool name),
+                # then fall back to global FIFO, then to a fresh unique id.
+                _explicit_fr_id = (
+                    (fr.get("id") if isinstance(fr, dict) else None)
+                    or part.get("id")
+                )
                 _matched_id = None
-                for _qi, (_qname, _qid) in enumerate(_pending_calls):
-                    if _qname == name:
-                        _matched_id = _qid
-                        _pending_calls.pop(_qi)
-                        break
+                if isinstance(_explicit_fr_id, str) and _explicit_fr_id.strip():
+                    _bounded_fr_id = bound_tool_call_id(_explicit_fr_id.strip())
+                    for _qi, (_qname, _qid) in enumerate(_pending_calls):
+                        if _qid == _bounded_fr_id:
+                            _matched_id = _qid
+                            _pending_calls.pop(_qi)
+                            break
+                    if _matched_id is None:
+                        _matched_id = _bounded_fr_id
+                if _matched_id is None:
+                    for _qi, (_qname, _qid) in enumerate(_pending_calls):
+                        if _qname == name:
+                            _matched_id = _qid
+                            _pending_calls.pop(_qi)
+                            break
                 if _matched_id is None and _pending_calls:
                     _matched_id = _pending_calls.pop(0)[1]
                 if _matched_id is None:
@@ -718,7 +1248,31 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
         if has_fn_response:
             for tr in tool_results:
                 openai_body["messages"].append(tr)
-            # Nothing else left for this block.
+            # If the next content block does NOT carry additional functionResponse
+            # parts for the same batch, any remaining _pending_calls were skipped
+            # by the IDE (e.g. when the first parallel call failed schema validation).
+            _next_has_fn_resp = (
+                (_ci + 1 < len(_raw_contents))
+                and any(
+                    isinstance(p, dict) and "functionResponse" in p
+                    for p in (_raw_contents[_ci + 1].get("parts") or [])
+                )
+            )
+            if not _next_has_fn_resp and _pending_calls:
+                _flush_orphaned_pending_calls()
+            # If the client packed follow-up user text or images into the same
+            # content block after functionResponse, preserve them as a user message.
+            if text_parts or image_parts:
+                _follow_msg: Dict[str, Any] = {"role": "user"}
+                if image_parts:
+                    _clist = []
+                    if text_parts:
+                        _clist.append({"type": "text", "text": "\n".join(text_parts)})
+                    _clist.extend(image_parts)
+                    _follow_msg["content"] = _clist
+                else:
+                    _follow_msg["content"] = "\n".join(text_parts)
+                openai_body["messages"].append(_follow_msg)
             continue
 
         # Assemble the main message for this content block.
@@ -865,11 +1419,17 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
     rc = delta.get("reasoning_content")
     if rc:
         parts.append({"thought": True, "text": rc})
+        # Any tool_call slot already accumulated BEFORE subsequent reasoning_content
+        # deltas was scraped out of the middle of `<thinking>` by upstream toolbridge
+        # while the model was still thinking (quoting a prior failed call or template).
+        for _existing_slot in state["toolCallAccum"].values():
+            _existing_slot["from_reasoning"] = True
 
     # content → {text} (§4a)
     content = delta.get("content")
     if content:
         parts.append({"text": content})
+        state["hasVisibleContent"] = True
 
     # tool_calls accumulate by index across chunks (§4a)
     #
@@ -974,9 +1534,25 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
     # On finish: flush accumulated tool calls to functionCall parts.
     truncated_tool_call = False
     if finish:
+        _tool_schemas = state.get("tool_schemas")
+        _dedup_seen: set = set()
+        _has_post_reasoning_calls = any(
+            not _s.get("from_reasoning")
+            and not _is_bogus_tool_call(
+                _sanitize_tool_name(_s.get("name"), _tool_schemas) or "tool",
+                {},
+                _tool_schemas,
+            )
+            for _s in state["toolCallAccum"].values()
+        )
         for idx in sorted(state["toolCallAccum"].keys()):
             slot = state["toolCallAccum"][idx]
-            name = slot["name"] or "tool"
+            # If upstream toolbridge scraped a quoted `<tool_use>` out of mid-`<thinking>`
+            # and the model subsequently emitted real post-thinking tool calls (or visible
+            # content), discard the mid-thinking phantom call.
+            if slot.get("from_reasoning") and (_has_post_reasoning_calls or state.get("hasVisibleContent")):
+                continue
+            name = _sanitize_tool_name(slot["name"], _tool_schemas) or "tool"
             raw_args = slot["args"]
             try:
                 args = json.loads(raw_args) if raw_args else {}
@@ -1027,7 +1603,10 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
                             flush=True,
                         )
                         for _doc in split_docs:
-                            _doc_args = _inject_tool_metadata(json.loads(_doc), name)
+                            _doc_parsed = json.loads(_doc)
+                            if _is_bogus_tool_call(name, _doc_parsed, _tool_schemas):
+                                continue
+                            _doc_args = _inject_tool_metadata(_doc_parsed, name, _tool_schemas)
                             _fc_part_split: Dict[str, Any] = {
                                 "functionCall": {"name": name, "args": _doc_args}
                             }
@@ -1053,11 +1632,18 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
                     flush=True,
                 )
                 args = repaired_args
-            # §8.16: inject Antigravity IDE metadata when model omits it.
-            # The IDE validates tool calls against a schema requiring toolSummary
-            # and toolAction. Many models (DeepSeek, Qwen, GLM) don't generate
-            # these metadata fields — inject defaults to prevent IDE rejection.
-            args = _inject_tool_metadata(args, name)
+            if _is_bogus_tool_call(name, args, _tool_schemas):
+                continue
+            args = _inject_tool_metadata(args, name, _tool_schemas)
+            if state.get("is_antigravity") or _tool_schemas:
+                try:
+                    _dedup_key = (name, json.dumps(args, sort_keys=True))
+                except Exception:
+                    _dedup_key = None
+                if _dedup_key is not None:
+                    if _dedup_key in _dedup_seen:
+                        continue
+                    _dedup_seen.add(_dedup_key)
             _fc_part: Dict[str, Any] = {"functionCall": {"name": name, "args": args}}
             _tsig = slot.get("sig")
             if isinstance(_tsig, str) and _tsig:
@@ -1211,7 +1797,11 @@ def _base_gemini_response(state: Dict[str, Any], parts: list, finish_reason: Opt
     return obj
 
 
-def openai_response_to_gemini(openai_resp: Dict[str, Any], model: str) -> Dict[str, Any]:
+def openai_response_to_gemini(
+    openai_resp: Dict[str, Any],
+    model: str,
+    tool_schemas: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Render a non-streaming OpenAI completion as a single Gemini response (§4b).
 
     Returns the wrapped `{"response": {candidates, usageMetadata, modelVersion, responseId}}`.
@@ -1236,7 +1826,9 @@ def openai_response_to_gemini(openai_resp: Dict[str, Any], model: str) -> Dict[s
         # rejected by Gemini-side validators (mirror of L1/L2 guards above).
         if not isinstance(fn_name, str) or not fn_name.strip():
             continue
-        fn_name = fn_name.strip()
+        fn_name = _sanitize_tool_name(fn_name.strip(), tool_schemas)
+        if not fn_name:
+            continue
         raw_args = fn.get("arguments", "{}")
         try:
             args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
@@ -1253,8 +1845,9 @@ def openai_response_to_gemini(openai_resp: Dict[str, Any], model: str) -> Dict[s
             else:
                 _TOOL_ARG_STATS["dropped"] += 1
                 args = {}
-        # §8.16: inject Antigravity IDE metadata when model omits it.
-        args = _inject_tool_metadata(args, fn_name)
+        if _is_bogus_tool_call(fn_name, args, tool_schemas):
+            continue
+        args = _inject_tool_metadata(args, fn_name, tool_schemas)
         _fc_part: Dict[str, Any] = {"functionCall": {"name": fn_name, "args": args}}
         # thought_signature twin (Gemini 3.1-Pro 400 fix): re-emit the inline
         # signature as a camelCase sibling on the non-stream part as well.

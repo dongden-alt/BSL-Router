@@ -158,6 +158,83 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
             out_role = role if role in ("user", "developer") else "user"
             input_parts.append({"role": out_role, "content": content or ""})
 
+    # Enforce strict 1-to-1 pairing between `function_call` and `function_call_output`
+    # items in `input_parts` (2026-10-29 / 2026-10-30 fix).
+    # When a client (e.g. Antigravity IDE) aborts a parallel tool-call batch after
+    # the first call fails client-side schema validation, history has N `function_call`
+    # items on the assistant turn but only 1 `function_call_output` item on the user
+    # turn. Codex Responses rejects any unpaired call with HTTP 400:
+    #   `{"detail": "No tool output found for function call call_read_file_2."}`
+    # Uses occurrence-count semantics (not set-only) so duplicate call_ids with
+    # unequal call/output counts are detected, and reconciles an unambiguous 1:1
+    # missing call + 1 orphan output by rewriting the orphan output's call_id.
+    from collections import Counter as _Counter
+    _fc_counts = _Counter(
+        item.get("call_id")
+        for item in input_parts
+        if isinstance(item, dict) and item.get("type") == "function_call" and item.get("call_id")
+    )
+    _fco_counts = _Counter(
+        item.get("call_id")
+        for item in input_parts
+        if isinstance(item, dict) and item.get("type") == "function_call_output" and item.get("call_id")
+    )
+    _missing_fc_counts = _fc_counts - _fco_counts
+    _orphan_fco_counts = _fco_counts - _fc_counts
+
+    # Unambiguous 1:1 reconciliation: 1 missing function_call + 1 orphan function_call_output
+    if sum(_missing_fc_counts.values()) == 1 and sum(_orphan_fco_counts.values()) == 1:
+        _target_cid = next(iter(_missing_fc_counts))
+        _orphan_cid = next(iter(_orphan_fco_counts))
+        for _item in reversed(input_parts):
+            if (
+                isinstance(_item, dict)
+                and _item.get("type") == "function_call_output"
+                and _item.get("call_id") == _orphan_cid
+            ):
+                _item["call_id"] = _target_cid
+                break
+        _missing_fc_counts.clear()
+        _orphan_fco_counts.clear()
+
+    if _missing_fc_counts:
+        _repaired_parts: list[dict[str, Any]] = []
+        _seen_fc_counts: _Counter[str] = _Counter()
+        _pending_group_missing: list[str] = []
+        for _item in input_parts:
+            _itype = _item.get("type") if isinstance(_item, dict) else None
+            if _itype == "function_call":
+                _repaired_parts.append(_item)
+                _cid = _item.get("call_id")
+                if _cid:
+                    _seen_fc_counts[_cid] += 1
+                    if _seen_fc_counts[_cid] > _fco_counts[_cid]:
+                        _pending_group_missing.append(_cid)
+                continue
+            # Flush synthetic outputs right after the contiguous `function_call` block
+            if _pending_group_missing and _itype != "function_call":
+                for _mcid in _pending_group_missing:
+                    _repaired_parts.append({
+                        "type": "function_call_output",
+                        "call_id": _mcid,
+                        "output": json.dumps({
+                            "error": "Tool execution was skipped or aborted by client validation."
+                        }),
+                    })
+                _pending_group_missing.clear()
+            _repaired_parts.append(_item)
+        if _pending_group_missing:
+            for _mcid in _pending_group_missing:
+                _repaired_parts.append({
+                    "type": "function_call_output",
+                    "call_id": _mcid,
+                    "output": json.dumps({
+                        "error": "Tool execution was skipped or aborted by client validation."
+                    }),
+                })
+            _pending_group_missing.clear()
+        input_parts = _repaired_parts
+
     instructions = "\n\n".join(system_texts) if system_texts else None
 
     body: dict[str, Any] = {

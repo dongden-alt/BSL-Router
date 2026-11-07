@@ -223,11 +223,18 @@ class TestNoRegressions:
         assert fc[0]["functionCall"]["args"]["path"] == "a.p"
 
     def test_ide_metadata_is_injected_into_repaired_args(self):
-        """§8.16 injection must still apply after a repair."""
-        parts, _finish = _drive([("read_file", ['{"path": "a.p'])])
-        assert len(parts) == 1
-        args = parts[0]["args"]
-        assert "toolSummary" in args and "toolAction" in args
+        """§8.16 injection applies `toolSummary` + `WaitMsBeforeAsync` to `run_command`
+        while keeping `read_file` free of forbidden `toolAction`/`toolSummary`."""
+        parts, _finish = _drive([
+            ("read_file", ['{"path": "a.p']),
+            ("run_command", ['{"CommandLine": "git status']),
+        ])
+        assert len(parts) == 2
+        read_args = parts[0]["args"]
+        assert "toolAction" not in read_args and "toolSummary" not in read_args
+        run_args = parts[1]["args"]
+        assert "toolSummary" in run_args and run_args["WaitMsBeforeAsync"] == 5000
+        assert "toolAction" not in run_args
 
     def test_text_and_reasoning_parts_unaffected(self):
         state = _new_state()

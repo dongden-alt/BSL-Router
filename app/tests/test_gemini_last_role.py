@@ -90,3 +90,38 @@ def test_garbage_input_returned_unchanged_no_raise():
     assert out[-1]["parts"][0]["text"] == "(continue)"
     # pure function contract: exception inside never escapes
     assert glm.ensure_gemini_last_role({"role": "assistant"}) == {"role": "assistant"}
+
+
+def test_model_last_with_function_call_preserves_call_and_appends_ack():
+    contents = [
+        {"role": "user", "parts": [{"text": "check status"}]},
+        {
+            "role": "model",
+            "parts": [
+                {"functionCall": {"name": "read_file", "args": {"Path": "a.txt"}}},
+            ],
+        },
+    ]
+    out = ensure_gemini_last_role(contents)
+    assert len(out) == 3
+    assert out[1] == contents[1]
+    assert out[2]["role"] == "user"
+    assert out[2]["parts"][0]["functionResponse"]["name"] == "read_file"
+    assert out[2]["parts"][1]["text"] == "(continue)"
+
+
+def test_model_last_with_function_response_reroles_to_user_preserving_parts():
+    """§8.1: Antigravity IDE can tag functionResponse turns with role='model'.
+    ensure_gemini_last_role must re-role the trailing turn to 'user' in place
+    without wiping out its functionResponse parts."""
+    fr_part = {"functionResponse": {"name": "read_file", "response": {"output": "lines 1-10"}}}
+    contents = [
+        {"role": "user", "parts": [{"text": "go"}]},
+        {"role": "model", "parts": [{"functionCall": {"name": "read_file", "args": {"Path": "a.py"}}}]},
+        {"role": "model", "parts": [fr_part]},
+    ]
+    out = ensure_gemini_last_role(contents)
+    assert len(out) == 3
+    assert out[-1]["role"] == "user"
+    assert out[-1]["parts"] == [fr_part]
+

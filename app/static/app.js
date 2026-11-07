@@ -496,6 +496,7 @@ async function handleRestart() {
         btn.disabled = true;
         btn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Restarting...`;
     }
+    let oldPid = 0;
     try {
         const res = await fetch('/api/system/restart', { method: 'POST' });
         if (!res.ok) {
@@ -506,24 +507,30 @@ async function handleRestart() {
             }
             return;
         }
-        showToast('Restarting BSL Router — waiting for server to come back online...');
+        const restartData = await res.json().catch(() => ({}));
+        oldPid = Number(restartData.old_pid || 0);
+        showToast('Restarting BSL Router (zero-downtime pre-warmed handover)...');
     } catch (err) {
         showToast('Restarting BSL Router — waiting for server to come back online...');
     }
 
-    // Wait 2.5s for the old process to exit, then poll /health until the new process responds
+    // Poll /health until the pre-warmed replacement PID takes over :6969
     setTimeout(() => {
         let attempts = 0;
-        const maxAttempts = 30;
+        const maxAttempts = 40;
         const pollTimer = setInterval(async () => {
             attempts += 1;
             try {
                 const healthRes = await fetch('/health', { cache: 'no-store' });
                 if (healthRes.ok) {
-                    clearInterval(pollTimer);
-                    showToast('BSL Router restarted successfully!');
-                    setTimeout(() => location.reload(), 500);
-                    return;
+                    const healthData = await healthRes.json().catch(() => ({}));
+                    const currentPid = Number(healthData.pid || 0);
+                    if (!oldPid ? attempts >= 6 : (currentPid > 0 && currentPid !== oldPid)) {
+                        clearInterval(pollTimer);
+                        showToast('BSL Router restarted successfully!');
+                        setTimeout(() => location.reload(), 350);
+                        return;
+                    }
                 }
             } catch (_) {
                 // Still restarting
@@ -536,8 +543,8 @@ async function handleRestart() {
                     btn.innerHTML = origHtml;
                 }
             }
-        }, 1000);
-    }, 2500);
+        }, 500);
+    }, 800);
 }
 
 async function handleShutdown() {
@@ -3700,6 +3707,11 @@ window.saveProviderModal = () => {
     if (oldId && oldId !== id) {
         globalConfig.providers[id] = globalConfig.providers[oldId];
         delete globalConfig.providers[oldId];
+        // Flag the old provider ID as intentionally deleted so the backend
+        // stale-save guards (_apply_connections_stale_save_guard &
+        // _replace_runtime_config) do not resurrect the old provider ID
+        // alongside the renamed provider.
+        globalConfig._deleted_provider = { id: oldId };
 
         // Keep all provider references consistent after a key rename.
         if (globalConfig.aliases) {
@@ -4942,6 +4954,7 @@ function _authReportHTML(v) {
         ${v.identified_as ? `<span><strong>Identified as:</strong> ${_authEsc(v.identified_as)}${v.submodel_match ? '' : ' <span style="color:var(--text-muted)">(family only — sub-version unconfirmed)</span>'}</span>` : ''}
         ${v.family ? `<span><strong>Family:</strong> ${_authEsc(v.family)}</span>` : ''}
         ${v.focus ? `<span><strong>Focus:</strong> ${_authEsc(v.focus)}</span>` : ''}
+        ${(v.supply_lane_label || v.supply_lane) ? `<span><strong>Supply Lane:</strong> <span class="auth-conf-badge" style="border-color:#38bdf8;color:#38bdf8">${_authEsc(v.supply_lane_label || v.supply_lane)}</span></span>` : ''}
       </div>
       ${conclusionsHTML}
       ${candsHTML}
@@ -4955,7 +4968,7 @@ function _authStandardsHTML(list) {
     const qualColor = { full: '#10b981', family_only: '#f59e0b', hollow: '#ef4444' };
     // Same public/private rule as the backend: private = source_tag set OR a
     // provider token anywhere in sub_model (slash/dash/bare).
-    const PRIV = /(^|[/\-_])(mintrouter|vsllm-o|vsllm-r|pix4k|a6api|sharellm|workbuddy|zai-web\d|chat2api|antigravity|arena-web|deepseek-web|qwen-web|mimo-web|codex|ds|zhipu)([/\-_]|$)/i;
+    const PRIV = /(^|[/\-_])(mintrouter|vsllm-o|vsllm-r|pix4k|a6api|sharellm|workbuddy|zai-web\d|chat2api|antigravity|(?:arena|deepseek|qwen|mimo|zai|workbuddy|qoder|intern|gemini|chatgpt|claude|perplexity|grok)-(?:paid|free|guest|web\d*)|codex|ds|zhipu)([/\-_]|$)/i;
     const isPriv = s => ((s.source_tag || '').trim()) || PRIV.test(s.sub_model || '');
     const canon = list.filter(s => !isPriv(s));
     const priv = list.filter(s => isPriv(s));

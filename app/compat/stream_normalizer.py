@@ -647,6 +647,7 @@ class StreamNormalizer:
         Anthropic-compatible provider (GLM, Kimi) via BSL.
         """
         created = int(time.time())
+        stream_id = f"chatcmpl-bsl-{created}"
         buffer = ""
         # C5 fix (2026-09-06): incremental UTF-8 decoder — a network split
         # mid-codepoint must be held across chunks, not raise (mirrors the
@@ -685,6 +686,8 @@ class StreamNormalizer:
 
                         if event_type == "message_start":
                             _msg = _as_obj(data.get("message"))
+                            if _msg.get("id"):
+                                stream_id = str(_msg["id"])
                             _start_usage = _msg.get("usage") or {}
                             if _start_usage:
                                 if _start_usage.get("prompt_tokens"):
@@ -702,7 +705,7 @@ class StreamNormalizer:
 
                             if delta_type == "text_delta":
                                 yield self._encode_openai_chunk({
-                                    "id": f"chatcmpl-bsl-{created}",
+                                    "id": stream_id,
                                     "object": "chat.completion.chunk",
                                     "created": created,
                                     "model": self.model_name,
@@ -720,7 +723,7 @@ class StreamNormalizer:
                                 thinking_text = delta.get("thinking", "")
                                 if thinking_text:
                                     yield self._encode_openai_chunk({
-                                        "id": f"chatcmpl-bsl-{created}",
+                                        "id": stream_id,
                                         "object": "chat.completion.chunk",
                                         "created": created,
                                         "model": self.model_name,
@@ -736,7 +739,7 @@ class StreamNormalizer:
                                 partial = delta.get("partial_json", "")
                                 if partial and current_tool_id:
                                     yield self._encode_openai_chunk({
-                                        "id": f"chatcmpl-bsl-{created}",
+                                        "id": stream_id,
                                         "object": "chat.completion.chunk",
                                         "created": created,
                                         "model": self.model_name,
@@ -762,7 +765,7 @@ class StreamNormalizer:
                                 # Synthesize only when the upstream omitted one.
                                 # Emit start chunk (arguments: "" init slot in accumulator)
                                 yield self._encode_openai_chunk({
-                                    "id": f"chatcmpl-bsl-{created}",
+                                    "id": stream_id,
                                     "object": "chat.completion.chunk",
                                     "created": created,
                                     "model": self.model_name,
@@ -787,7 +790,7 @@ class StreamNormalizer:
                                 if existing_input:
                                     args_str = json.dumps(existing_input, ensure_ascii=False)
                                     yield self._encode_openai_chunk({
-                                        "id": f"chatcmpl-bsl-{created}",
+                                        "id": stream_id,
                                         "object": "chat.completion.chunk",
                                         "created": created,
                                         "model": self.model_name,
@@ -828,7 +831,7 @@ class StreamNormalizer:
                                 elif _usage.get("completion_tokens") is not None:
                                     output_tokens = int(_usage.get("completion_tokens") or output_tokens)
                             _finish_payload: Dict[str, Any] = {
-                                "id": f"chatcmpl-bsl-{created}",
+                                "id": stream_id,
                                 "object": "chat.completion.chunk",
                                 "created": created,
                                 "model": self.model_name,
@@ -865,7 +868,7 @@ class StreamNormalizer:
             # Fallback for providers (like vsllm-claude/grok-4.5) that drop the message_delta terminal
             finish = "tool_calls" if current_tool_index >= 0 else "stop"
             yield self._encode_openai_chunk({
-                "id": f"chatcmpl-bsl-{created}",
+                "id": stream_id,
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": self.model_name,

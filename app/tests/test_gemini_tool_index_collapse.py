@@ -70,7 +70,7 @@ def _function_calls(frames):
 # every functionCall so the Antigravity IDE schema validation passes. They are
 # NOT model-authored, so argument comparisons must strip them; otherwise every
 # assertion here would fail regardless of whether the accumulator is correct.
-META_FIELDS = ("toolSummary", "toolAction")
+META_FIELDS = ("toolSummary", "toolAction", "WaitMsBeforeAsync")
 
 
 def _model_args(args):
@@ -148,9 +148,14 @@ def test_fragmented_arguments_do_not_concatenate_across_calls(with_index):
         assert _model_args(c["args"]) == ARGSETS[i], (
             "call %d args corrupted (cross-slot concatenation): %r" % (i, c["args"])
         )
-        # The IDE-required meta fields must still be present on every call.
-        for field in META_FIELDS:
-            assert field in c["args"], "call %d missing %s" % (i, field)
+        # Only `run_command` may receive injected `toolSummary`/`WaitMsBeforeAsync`;
+        # `toolAction` is never injected because Antigravity IDE rejects it on all tools.
+        assert "toolAction" not in c["args"]
+        if c["name"] == "run_command":
+            assert "toolSummary" in c["args"]
+            assert "WaitMsBeforeAsync" in c["args"]
+        else:
+            assert "toolSummary" not in c["args"]
 
 
 def test_index_less_slots_are_distinct_not_collapsed():
