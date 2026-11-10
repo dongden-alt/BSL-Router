@@ -225,7 +225,9 @@ def test_multi_provider_session_rhythm_headers_and_cursor_checksum():
     assert copilot_h["Openai-Intent"] == "conversation-panel"
 
     ag_h = rhythm.headers_for_provider("antigravity", "sess-1", "acct-ag")
-    assert ag_h["X-Goog-Api-Client"].startswith("gl-node/")
+    assert ag_h == {}
+    gcli_h = rhythm.headers_for_provider("gemini-cli", "sess-1", "acct-gcli")
+    assert gcli_h["X-Goog-Api-Client"].startswith("gl-node/")
 
     # govern_pre_send scores human (>=0.75) for real OAuth connections
     decision = asyncio.run(
@@ -241,4 +243,64 @@ def test_multi_provider_session_rhythm_headers_and_cursor_checksum():
     assert decision["grade"] == "human"
     assert decision["score"] >= 0.85
     assert "session_id" in decision["headers"]
+
+
+def test_antigravity_envelope_and_terminal_tos_ban_isolation():
+    from app.compat.adapters.antigravity_upstream import (
+        AntigravityUpstreamClient,
+        openai_to_cloudcode_envelope,
+    )
+    from app.circuit_breaker import CircuitBreaker
+
+    payload = {"messages": [{"role": "user", "content": "hello world"}]}
+    env_a = openai_to_cloudcode_envelope(payload, "gemini-4-argon", account_id="id:acct-A")
+    env_b = openai_to_cloudcode_envelope(payload, "gemini-4-argon", account_id="id:acct-B")
+
+    # Never emit literal "bsl-" watermarks on the wire
+    assert not env_a["requestId"].startswith("bsl-")
+    assert not env_a["request"]["sessionId"].startswith("bsl-")
+    # Different accounts must never share fallback project or sessionId
+    assert env_a["project"] != env_b["project"]
+    assert env_a["request"]["sessionId"] != env_b["request"]["sessionId"]
+
+    # AntigravityUpstreamClient strips leaked CLI/proxy headers
+    class _DummyInner:
+        def build_request(self, method, url, headers=None, content=None, **kw):
+            return {"headers": headers, "content": content}
+
+    wrapped = AntigravityUpstreamClient(
+        _DummyInner(), "gemini-4-argon", project="real-proj-123", account_id="id:acct-A"
+    )
+    req = wrapped.build_request(
+        "POST",
+        "https://daily-cloudcode-pa.googleapis.com/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer tok",
+            "X-Goog-Api-Client": "gl-node/22.14.0",
+            "Client-Metadata": "ideType=IDE_UNSPECIFIED",
+            "x-request-source": "local",
+        },
+        content=payload,
+    )
+    lower_keys = {k.lower() for k in req["headers"]}
+    assert "x-goog-api-client" not in lower_keys
+    assert "client-metadata" not in lower_keys
+    assert "x-request-source" not in lower_keys
+
+    # Terminal ToS 403 ban on one model quarantines the connection across ALL models
+    cb = CircuitBreaker({"circuit_breaker": {"enabled": True, "recovery_timeout": 30}})
+    cb.record_outcome(
+        "antigravity",
+        "gemini-4-argon-low",
+        1,
+        403,
+        error_msg="This service has been disabled in this account for violation of Terms of Service.",
+    )
+    is_open_same, rem_same = cb.is_open("antigravity", "gemini-4-argon-low", 1)
+    is_open_other, rem_other = cb.is_open("antigravity", "gemini-4-argon", 1)
+    is_open_healthy, _ = cb.is_open("antigravity", "gemini-4-argon", 0)
+    assert is_open_same is True and rem_same > 3600
+    assert is_open_other is True and rem_other > 3600
+    assert is_open_healthy is False
+
 

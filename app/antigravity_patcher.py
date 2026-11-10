@@ -122,11 +122,80 @@ def pack_asar(header, files):
     return struct.pack("<4I", 4, header_size, header_size - 4, len(encoded)) + encoded + b"\0" * padding + b"".join(chunks)
 
 
+def _router_root_dir():
+    return str(Path(__file__).resolve().parents[1])
+
+
+def _build_resilient_bridge_js(url):
+    target_json = json.dumps(url)
+    health_json = json.dumps(url + "/health")
+    root_json = json.dumps(_router_root_dir())
+    return (
+        "try { if (!globalThis.__bslBridgeServer) { "
+        "const http = require('http'), https = require('https'), fs = require('fs'), path = require('path'), cp = require('child_process'); "
+        f"const bslTarget = new URL({target_json}); "
+        "let lastSpawnMs = 0; "
+        "const maybeAutoStart = () => { try { "
+        "const now = Date.now(); if (now - lastSpawnMs < 30000) return; lastSpawnMs = now; "
+        f"const root = process.env.BSL_ROUTER_ROOT || {root_json}; "
+        "if (fs.existsSync(path.join(root, '.brain', 'logs', 'manual-stop.flag'))) return; "
+        "const ps1 = path.join(root, 'scripts', 'bslrouter.ps1'); "
+        "if (fs.existsSync(ps1)) { cp.spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', ps1, 'start'], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); } "
+        "} catch {} }; "
+        f"const checkHealth = () => {{ try {{ const req = http.get({health_json}, {{ timeout: 800 }}, res => {{ globalThis.__bslRouterAlive = (res.statusCode === 200); res.resume(); }}); req.on('error', () => {{ const was = globalThis.__bslRouterAlive; globalThis.__bslRouterAlive = false; if (was === undefined) maybeAutoStart(); }}); req.on('timeout', () => {{ req.destroy(); globalThis.__bslRouterAlive = false; }}); }} catch {{}} }}; "
+        "checkHealth(); try { setInterval(checkHealth, 3000).unref(); } catch {} "
+        "const srv = http.createServer((req, res) => { "
+        "const chunks = []; req.on('data', c => chunks.push(c)); req.on('end', () => { "
+        "const body = Buffer.concat(chunks); "
+        "const pathStr = req.url || '/'; "
+        "const isGenerate = pathStr.includes(':generateContent') || pathStr.includes(':streamGenerateContent') || pathStr.includes(':generateChat') || pathStr.includes(':streamGenerateChat') || pathStr.includes(':completeCode') || pathStr.includes(':tabChat'); "
+        "const forwardNative = () => { "
+        "const isGenLang = pathStr.startsWith('/v1beta') || pathStr.startsWith('/v1alpha'); "
+        "const host = isGenLang ? 'generativelanguage.googleapis.com' : 'daily-cloudcode-pa.googleapis.com'; "
+        "const hdrs = { ...req.headers, host }; delete hdrs['connection']; "
+        "const uReq = https.request({ hostname: host, port: 443, path: pathStr, method: req.method, headers: hdrs, servername: host }, uRes => { res.writeHead(uRes.statusCode || 502, uRes.headers); uRes.pipe(res); }); "
+        "uReq.on('error', err => { if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { code: 502, message: err.message, status: 'UNAVAILABLE' } })); }); "
+        "uReq.end(body); }; "
+        "if (globalThis.__bslRouterAlive === false) { maybeAutoStart(); return forwardNative(); } "
+        "const lReq = http.request({ hostname: bslTarget.hostname, port: bslTarget.port, path: pathStr, method: req.method, headers: { ...req.headers, host: bslTarget.host }, timeout: isGenerate ? 180000 : 8000 }, lRes => { "
+        "if (!isGenerate && (lRes.statusCode === 502 || lRes.statusCode === 503 || lRes.statusCode === 504)) { lRes.resume(); return forwardNative(); } "
+        "globalThis.__bslRouterAlive = true; res.writeHead(lRes.statusCode || 200, lRes.headers); lRes.pipe(res); }); "
+        "lReq.on('error', () => { globalThis.__bslRouterAlive = false; maybeAutoStart(); forwardNative(); }); "
+        "lReq.on('timeout', () => { lReq.destroy(); if (!isGenerate) { globalThis.__bslRouterAlive = false; forwardNative(); } }); "
+        "lReq.end(body); }); }); "
+        "srv.listen(0, '127.0.0.1', () => { try { globalThis.__bslBridgeUrl = 'http://127.0.0.1:' + srv.address().port; } catch {} }); "
+        "srv.unref(); globalThis.__bslBridgeServer = srv; } } catch {} "
+    )
+
+
 def _patch_language_server(source, url):
     if MARKER in source:
         raise ValueError("Backup is already BSL-patched; refusing to use it as vendor source")
     pattern = r'((?:async\s+)?(?:function\s+startLanguageServer\s*\([^)]*\)|startLanguageServer\s*\([^)]*\))\s*\{)'
-    injection = MARKER + "\nconst __bslRouterUrl = (typeof options === 'object' && options && options.wsl) ? undefined : " + json.dumps(url) + ";\n"
+    target_json = json.dumps(url)
+    health_json = json.dumps(url + "/health")
+    root_json = json.dumps(_router_root_dir())
+    resolver_iife = (
+        "(function() { "
+        "if (typeof options === 'object' && options && options.wsl) return undefined; "
+        "if (globalThis.__bslBridgeUrl) return globalThis.__bslBridgeUrl; "
+        f"const target = {target_json}; "
+        "try { "
+        "const cp = require('child_process'), fs = require('fs'), path = require('path'); "
+        "const probe = (ms, waitErrMs) => { "
+        f"const code = `const http=require('http');const fail=()=>setTimeout(()=>process.exit(1),${{waitErrMs||0}});const req=http.get({health_json},{{timeout:${{ms}}}},res=>{{process.exit(res.statusCode===200?0:1)}});req.on('error',fail);req.on('timeout',()=>{{req.destroy();fail()}});`; "
+        "const r = cp.spawnSync(process.execPath, ['-e', code], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: ms + (waitErrMs || 0) + 500, windowsHide: true }); "
+        "return Boolean(r && r.status === 0); }; "
+        "if (probe(600, 0)) { globalThis.__bslRouterAlive = true; return target; } "
+        f"const root = process.env.BSL_ROUTER_ROOT || {root_json}; "
+        "const ps1 = path.join(root, 'scripts', 'bslrouter.ps1'); "
+        "if (fs.existsSync(ps1) && !fs.existsSync(path.join(root, '.brain', 'logs', 'manual-stop.flag'))) { "
+        "try { cp.spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', ps1, 'start'], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); "
+        "for (let i = 0; i < 7; i++) { if (probe(700, 450)) { globalThis.__bslRouterAlive = true; return target; } } } catch {} } "
+        "globalThis.__bslRouterAlive = false; return undefined; "
+        "} catch {} return target; })()"
+    )
+    injection = MARKER + "\nconst __bslRouterUrl = " + resolver_iife + ";\n"
     source, count = re.subn(pattern, lambda m: m[0] + injection, source, count=1)
     if not count:
         raise ValueError("Unsupported languageServer.js: startLanguageServer not found")
@@ -149,13 +218,27 @@ def _patch_language_server(source, url):
 def _patch_main(source, url):
     if MARKER in source:
         raise ValueError("Backup is already BSL-patched")
+    # Self-heal if a prior partial strip left an unclosed onBeforeRequest try-block in original.app.asar
+    source = re.sub(
+        r"(?:[A-Za-z_$][\w$]*\.)*app\.whenReady\(\)\.then\(\(\)\s*=>\s*\{\s*require\('electron'\)\.session\.defaultSession\.webRequest\.onBeforeRequest\(\(details,\s*callback\)\s*=>\s*\{\s*try\s*\{[\s\S]*?callback\(\{\}\);\s*\}\);\s*\}\);\s*\n?",
+        "",
+        source,
+    )
     match = re.search(r'(?P<app>(?:[A-Za-z_$][\w$]*\.)*app)\s*\.whenReady\s*\(', source)
     if not match:
         raise ValueError("Unsupported main.js: app.whenReady not found")
     app_expression = match.group("app")
+    bridge_js = _build_resilient_bridge_js(url)
     # Register before the application's ready handlers. Requiring Electron here
     # avoids relying on the bundler's local variable names for session.
-    hook = MARKER + "\n" + app_expression + ".whenReady().then(() => { require('electron').session.defaultSession.webRequest.onBeforeRequest((details, callback) => { try { const u = new URL(details.url); const lsPort = require('./languageServer').getLsPort(); if (['127.0.0.1', 'localhost'].includes(u.hostname) && (!lsPort || Number(u.port) === Number(lsPort))) { if (u.pathname.endsWith('LanguageServerService/SetCloudCodeURL')) return callback({cancel:true}); if (u.pathname.endsWith('LanguageServerService/GetAvailableModels')) return callback({redirectURL:" + json.dumps(url + "/GetAvailableModels?ls=") + " + encodeURIComponent(details.url)}); } } catch {} callback({}); }); });\n"
+    hook = (
+        MARKER + "\n"
+        + bridge_js
+        + app_expression
+        + ".whenReady().then(() => { require('electron').session.defaultSession.webRequest.onBeforeRequest((details, callback) => { try { const u = new URL(details.url); const lsPort = require('./languageServer').getLsPort(); if (['127.0.0.1', 'localhost'].includes(u.hostname) && (!lsPort || Number(u.port) === Number(lsPort))) { if (u.pathname.endsWith('LanguageServerService/SetCloudCodeURL')) return callback({cancel:true}); if (globalThis.__bslRouterAlive !== false && u.pathname.endsWith('LanguageServerService/GetAvailableModels')) return callback({redirectURL:"
+        + json.dumps(url + "/GetAvailableModels?ls=")
+        + " + encodeURIComponent(details.url)}); } } catch {} callback({}); }); });\n"
+    )
     return source[:match.start()] + hook + source[match.start():]
 
 

@@ -1693,6 +1693,8 @@ _ANTIGRAVITY_INTEGRATION_LOCK = asyncio.Lock()
 # Lazy singleton — built on first use so startup import order doesn't matter.
 _ANTIGRAVITY_EGRESS_CLIENT: Optional[httpx.AsyncClient] = None
 _ROUTER_ANTIGRAVITY_EGRESS_CLIENT: Optional[httpx.AsyncClient] = None
+_ROUTER_ANTIGRAVITY_ACCOUNT_CLIENTS: Dict[str, httpx.AsyncClient] = {}
+_ANTIGRAVITY_ACCOUNT_PROJECTS: Dict[str, str] = {}
 google_egress_client: Optional[httpx.AsyncClient] = None
 
 
@@ -1711,14 +1713,75 @@ def _get_antigravity_egress_client() -> httpx.AsyncClient:
     return _ANTIGRAVITY_EGRESS_CLIENT
 
 
-def _get_router_antigravity_egress_client() -> httpx.AsyncClient:
-    """Return the dedicated egress client for router-model upstream traffic."""
+def _get_router_antigravity_egress_client(
+    account_key: Optional[str] = None,
+    proxy_url: Optional[str] = None,
+) -> httpx.AsyncClient:
+    """Return a per-account egress client for router-model upstream traffic.
+
+    Each Antigravity OAuth account gets its own isolated httpx.AsyncClient so
+    multiple Google accounts never multiplex over the same keep-alive TCP/TLS
+    socket (which links healthy Ultra accounts with ToS-banned accounts at the
+    connection level). When ``proxy_url`` is configured (e.g. resolved from
+    ``proxyhub://auto`` to a Proxy Hub residential lane), builds a dedicated
+    proxied client per ``(account_key, proxy_url)`` pair.
+    """
     if google_egress_client is not None:
         return google_egress_client
+    acct = str(account_key or "").strip()
+    norm_proxy = str(proxy_url or "").strip()
+    use_proxy = bool(norm_proxy and norm_proxy.lower() != "direct")
+    if acct or use_proxy:
+        cache_key = f"{acct or 'anon'}|{norm_proxy if use_proxy else 'direct'}"
+        client = _ROUTER_ANTIGRAVITY_ACCOUNT_CLIENTS.get(cache_key)
+        if client is None or getattr(client, "is_closed", False):
+            client = (
+                _build_hardened_client(norm_proxy)
+                if use_proxy
+                else build_google_egress_client()
+            )
+            _ROUTER_ANTIGRAVITY_ACCOUNT_CLIENTS[cache_key] = client
+            while len(_ROUTER_ANTIGRAVITY_ACCOUNT_CLIENTS) > 32:
+                oldest_k = next(iter(_ROUTER_ANTIGRAVITY_ACCOUNT_CLIENTS))
+                if oldest_k == cache_key:
+                    break
+                _ROUTER_ANTIGRAVITY_ACCOUNT_CLIENTS.pop(oldest_k, None)
+        return client
     global _ROUTER_ANTIGRAVITY_EGRESS_CLIENT
     if _ROUTER_ANTIGRAVITY_EGRESS_CLIENT is None:
         _ROUTER_ANTIGRAVITY_EGRESS_CLIENT = build_google_egress_client()
     return _ROUTER_ANTIGRAVITY_EGRESS_CLIENT
+
+
+def _resolve_antigravity_conn_project(conn: Optional[dict], account_id: str = "") -> str:
+    """Resolve the Cloud Code companion project ID for one Antigravity connection."""
+    if isinstance(conn, dict):
+        pd = conn.get("provider_data")
+        if isinstance(pd, dict):
+            proj = str(pd.get("project_id") or pd.get("projectId") or "").strip()
+            if proj:
+                return proj
+        proj = str(conn.get("project_id") or conn.get("projectId") or "").strip()
+        if proj:
+            return proj
+        tok = str(conn.get("api_key") or conn.get("access_token") or "").strip()
+        if tok:
+            sub_Map = globals().get("_ANTIGRAVITY_SUB_CACHE")
+            if isinstance(sub_Map, dict):
+                cached = sub_Map.get(tok[:32])
+                if isinstance(cached, tuple) and len(cached) >= 2 and isinstance(cached[1], dict):
+                    cp = cached[1].get("cloudaicompanionProject")
+                    if isinstance(cp, dict) and cp.get("id"):
+                        proj = str(cp["id"]).strip()
+                    elif isinstance(cp, str) and cp.strip():
+                        proj = cp.strip()
+                    if proj:
+                        if isinstance(pd, dict):
+                            pd["project_id"] = proj
+                        return proj
+    if account_id and account_id in _ANTIGRAVITY_ACCOUNT_PROJECTS:
+        return _ANTIGRAVITY_ACCOUNT_PROJECTS[account_id]
+    return ""
 
 
 def _antigravity_integration_settings(config_data=None) -> dict:
@@ -3013,6 +3076,10 @@ def _effective_egress_proxy(
     just makes it reachable per connection. Logs one [ProxyBypass] line only
     when a configured proxy is actually suppressed, so the bypass lane is
     observable in the same style as [SSLCertHint].
+
+    Unified Proxy Hub link support (``proxyhub://auto``): automatically resolves
+    a collision-free, `/24` & ASN-orthogonal lane from ``@studio/proxy-hub`` per
+    connection within ``provider_name``.
     """
     proxy_url = active_conn.get("proxy_url") if isinstance(active_conn, dict) else None
     if _connection_wants_proxy_bypass(active_conn):
@@ -3023,6 +3090,51 @@ def _effective_egress_proxy(
                 flush=True,
             )
         return None
+    if isinstance(proxy_url, str) and proxy_url.strip():
+        from app.proxy_hub_bridge import is_unified_proxy_link, resolve_unified_proxy_url
+
+        if is_unified_proxy_link(proxy_url):
+            try:
+                return resolve_unified_proxy_url(
+                    proxy_url,
+                    active_conn,
+                    provider_name=provider_name,
+                    config=cs_get_config(),
+                )
+            except Exception as _ph_err:
+                print(
+                    f"[ProxyHub] resolve fail-open for provider={provider_name or '?'}: {_ph_err}",
+                    flush=True,
+                )
+                return None
+    elif isinstance(active_conn, dict) and provider_name:
+        try:
+            cfg = cs_get_config()
+            prov_cfg = (cfg.get("providers") or {}).get(provider_name) if isinstance(cfg, dict) else None
+            if isinstance(prov_cfg, dict):
+                prov_proxy = str(prov_cfg.get("proxy_url") or "").strip()
+                if prov_proxy:
+                    from app.proxy_hub_bridge import is_unified_proxy_link, resolve_unified_proxy_url
+
+                    if is_unified_proxy_link(prov_proxy):
+                        return resolve_unified_proxy_url(
+                            prov_proxy,
+                            active_conn,
+                            provider_name=provider_name,
+                            config=cfg,
+                        )
+                    return prov_proxy
+                if prov_cfg.get("auto_proxy_hub") is True:
+                    from app.proxy_hub_bridge import UNIFIED_PROXY_HUB_URI, resolve_unified_proxy_url
+
+                    return resolve_unified_proxy_url(
+                        UNIFIED_PROXY_HUB_URI,
+                        active_conn,
+                        provider_name=provider_name,
+                        config=cfg,
+                    )
+        except Exception:
+            pass
     return proxy_url
 
 
@@ -4136,6 +4248,13 @@ def _apply_connections_stale_save_guard(old_config, new_config) -> None:
                     old_match.get("refresh_token") or ""
                 ).strip():
                     body_conn["refresh_token"] = old_match["refresh_token"]
+                if (
+                    "proxy_lane_meta" not in body_conn
+                    and isinstance(old_match.get("proxy_lane_meta"), dict)
+                    and str(body_conn.get("proxy_url") or "").strip()
+                    == str(old_match.get("proxy_url") or "").strip()
+                ):
+                    body_conn["proxy_lane_meta"] = copy.deepcopy(old_match["proxy_lane_meta"])
             merged.append(body_conn)
             seen.add(bid)
 
@@ -4373,6 +4492,15 @@ async def update_config(request: Request):
         except Exception:
             pass
 
+        # Auto-allocate collision-free Proxy Hub lanes for any connection using
+        # the unified link (proxyhub://auto) before persisting config.
+        try:
+            from app.proxy_hub_bridge import apply_proxy_hub_allocations_to_config
+
+            apply_proxy_hub_allocations_to_config(new_config)
+        except Exception as _ph_alloc_err:
+            print(f"[ProxyHub] config save allocation warning: {_ph_alloc_err}", flush=True)
+
         _replace_runtime_config(new_config)
         if "claude_code_integration" in new_config:
             _sync_claude_code_settings(new_config)
@@ -4394,6 +4522,98 @@ async def update_config(request: Request):
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/proxy-hub/status")
+async def proxy_hub_status():
+    """Return Proxy Hub availability, healthy lane counts, and per-provider allocations."""
+    from app.proxy_hub_bridge import get_proxy_hub_status_summary
+
+    return JSONResponse(get_proxy_hub_status_summary(cs_get_config()))
+
+
+@app.post("/api/proxy-hub/allocate/{provider_id}")
+async def proxy_hub_allocate_provider(provider_id: str, request: Request):
+    """Auto-assign ``proxyhub://auto`` and distinct Proxy Hub lanes to all keys in ``provider_id``."""
+    from app.config_state import get_mutable_config
+    from app.proxy_hub_bridge import (
+        UNIFIED_PROXY_HUB_URI,
+        allocate_provider_lanes,
+        is_unified_proxy_link,
+    )
+
+    body = {}
+    try:
+        raw = await request.body()
+        if raw:
+            body = json.loads(raw)
+    except Exception:
+        body = {}
+
+    overwrite_existing = bool(body.get("overwrite_existing", True))
+    unified_uri = str(body.get("proxy_url") or UNIFIED_PROXY_HUB_URI).strip()
+    if not is_unified_proxy_link(unified_uri):
+        unified_uri = UNIFIED_PROXY_HUB_URI
+
+    cfg = get_mutable_config()
+    providers = cfg.get("providers") if isinstance(cfg, dict) else None
+    if not isinstance(providers, dict) or provider_id not in providers:
+        return JSONResponse({"error": f"Provider '{provider_id}' not found"}, status_code=404)
+
+    prov_cfg = providers[provider_id]
+    if isinstance(prov_cfg, dict):
+        prov_cfg["proxy_url"] = unified_uri
+        prov_cfg["auto_proxy_hub"] = True
+    conns = prov_cfg.get("connections") if isinstance(prov_cfg, dict) else None
+    if not isinstance(conns, list) or not conns:
+        _replace_runtime_config(cfg)
+        return JSONResponse(
+            {
+                "status": "success",
+                "provider": provider_id,
+                "proxy_url": unified_uri,
+                "allocated": 0,
+                "connections": [],
+            }
+        )
+
+    for c in conns:
+        if not isinstance(c, dict):
+            continue
+        cur = str(c.get("proxy_url") or "").strip()
+        if overwrite_existing or not cur or is_unified_proxy_link(cur):
+            c["proxy_url"] = unified_uri
+            if overwrite_existing:
+                c.pop("proxy_lane_meta", None)
+
+    assigned = allocate_provider_lanes(
+        provider_id, conns, config=cfg, auto_assign_unconfigured=True
+    )
+    _replace_runtime_config(cfg)
+    try:
+        _oauth_antiban.reset_all()
+    except Exception:
+        pass
+
+    summary = []
+    for idx, c in enumerate(conns):
+        if isinstance(c, dict):
+            summary.append(
+                {
+                    "index": idx,
+                    "name": c.get("name") or c.get("email") or f"Connection #{idx + 1}",
+                    "proxy_url": c.get("proxy_url"),
+                    "proxy_lane_meta": c.get("proxy_lane_meta"),
+                }
+            )
+    return JSONResponse(
+        {
+            "status": "success",
+            "provider": provider_id,
+            "allocated": len(assigned),
+            "connections": summary,
+        }
+    )
 
 
 # ── BSL Matrix UI API ─────────────────────────────────────────────────────────
@@ -6517,7 +6737,16 @@ async def _test_antigravity_model(provider: str, model: str):
             obs.log_request(provider, model, 404, 0, 0, 0, 0, config, error_msg=err, request_id=_req_id)
             return JSONResponse({"ok": False, "error": err}, status_code=404)
 
-        active_conn, _ = resolve_active_connection(config, provider, model)
+        active_conn = None
+        active_idx = None
+        _used_custom_resolver = False
+        try:
+            active_conn, active_idx = resolve_active_connection(
+                config, provider, model, breaker=get_breaker()
+            )
+        except TypeError:
+            _used_custom_resolver = True
+            active_conn, active_idx = resolve_active_connection(config, provider, model)
         if not active_conn:
             err = "Antigravity has no active connections"
             obs.log_request(provider, model, 500, 0, 0, 0, 0, config, error_msg=err, request_id=_req_id)
@@ -6565,9 +6794,42 @@ async def _test_antigravity_model(provider: str, model: str):
                 # dispatcher entirely and probe Google Cloud Code directly with
                 # the fresh token, mirroring _forward_antigravity_native's
                 # egress path (validated origin + hosts-bypassing client).
-                return await _test_antigravity_model_native(
+                native_resp = await _test_antigravity_model_native(
                     provider, model, token, config, _req_id, _t0
                 )
+                _n_status = getattr(native_resp, "status_code", 200)
+                if _n_status in (401, 403, 429) and active_idx is not None and not _used_custom_resolver:
+                    _raw_err = getattr(native_resp, "body", b"")
+                    _err_txt = _raw_err.decode("utf-8", errors="replace") if isinstance(_raw_err, (bytes, bytearray)) else str(_raw_err)
+                    _cb = get_breaker()
+                    if _cb is not None:
+                        _cb.record_outcome(provider, model, active_idx, _n_status, error_msg=_err_txt)
+                    _tried_indices = {active_idx}
+                    _conns_list = prov.get("connections") if isinstance(prov, dict) else []
+                    for _ in range(max(0, len(_conns_list or []) - 1)):
+                        try:
+                            _next_conn, _next_idx = resolve_active_connection(
+                                config, provider, model, breaker=_cb
+                            )
+                        except TypeError:
+                            break
+                        if not _next_conn or _next_idx is None or _next_idx in _tried_indices:
+                            break
+                        _tried_indices.add(_next_idx)
+                        _next_tok = await ensure_fresh_token(provider, _next_conn, prov)
+                        if not _next_tok:
+                            continue
+                        native_resp = await _test_antigravity_model_native(
+                            provider, model, _next_tok, config, _req_id, _t0
+                        )
+                        _n_status = getattr(native_resp, "status_code", 200)
+                        if _n_status < 400:
+                            break
+                        if _n_status in (401, 403, 429) and _cb is not None:
+                            _raw_err2 = getattr(native_resp, "body", b"")
+                            _err_txt2 = _raw_err2.decode("utf-8", errors="replace") if isinstance(_raw_err2, (bytes, bytearray)) else str(_raw_err2)
+                            _cb.record_outcome(provider, model, _next_idx, _n_status, error_msg=_err_txt2)
+                return native_resp
             # The model is itself a routable BSL target: probe it directly
             # through the dispatcher (replaces the blunt first-mapping fallback
             # that misrouted probes to an unrelated combo's alias).
@@ -11256,7 +11518,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # hosts-file-bypassing egress client), so the flag is a no-op there.
     _egress_proxy = _effective_egress_proxy(active_conn, provider_name)
     if provider_name == "antigravity" or _upstream_host in _ANTIGRAVITY_NATIVE_HOSTS:
-        client = _get_router_antigravity_egress_client()
+        _ag_acct_id = ""
+        try:
+            _ag_acct_id = _oauth_antiban.extract_account_id(active_conn, conn_idx or 0)
+        except Exception:
+            _ag_acct_id = ""
+        try:
+            client = _get_router_antigravity_egress_client(_ag_acct_id, _egress_proxy)
+        except TypeError:
+            client = _get_router_antigravity_egress_client()
         # Cloud Code upstream adapter (2026-08-23): the antigravity host serves
         # ONLY v1internal:* RPC verbs — /chat/completions gets an HTML 404.
         # Wrap the egress client so OpenAI-canonical payloads are forged into
@@ -11272,9 +11542,19 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             _ag_pdata = active_conn.get("provider_data")
             if isinstance(_ag_pdata, dict):
                 _ag_plan_type = str(_ag_pdata.get("plan_type") or "")
-        client = wrap_antigravity_upstream_client(
-            client, target_model, plan_type=_ag_plan_type
-        )
+        _ag_project = _resolve_antigravity_conn_project(active_conn, _ag_acct_id)
+        try:
+            client = wrap_antigravity_upstream_client(
+                client,
+                target_model,
+                plan_type=_ag_plan_type,
+                project=_ag_project or None,
+                account_id=_ag_acct_id or None,
+            )
+        except TypeError:
+            client = wrap_antigravity_upstream_client(
+                client, target_model, plan_type=_ag_plan_type
+            )
     elif provider_name == 'commandcode':
         # CommandCode alpha lane (2026-09-17): /alpha/generate speaks the
         # Vercel AI SDK Data Stream Protocol, not OpenAI chat-completions.
@@ -19951,8 +20231,23 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                                 )
                 detected_plan = _normalize_oauth_tier(provider, None, conn, raw_data) or detected_plan
         elif token and provider in ("antigravity", "gemini-cli"):
+            from app.circuit_breaker import is_terminal_account_ban
+            _cb_inst = get_breaker()
+            _is_banned_conn = bool(
+                (isinstance(conn, dict) and conn.get("enabled") is False)
+                or pd.get("tos_banned") is True
+                or (_cb_inst is not None and f"{provider_id}/{conn_index}" in getattr(_cb_inst, "banned_connections", {}))
+            )
+            if _is_banned_conn:
+                result = _merge_oauth_windows(provider_id, conn_index, active)
+                if detected_plan:
+                    result["plan"] = detected_plan
+                _OAUTH_PROBE_CACHE[key] = (now, result)
+                return result
             project_id = str(pd.get("project_id") or pd.get("projectId") or conn.get("project_id") or conn.get("projectId") or "").strip()
             from app.utils.google_cloudcode_egress import google_cloudcode_sync_post
+            ag_ua = getattr(_ag_upstream_contract, "ANTIGRAVITY_UPSTREAM_UA", "antigravity/ide/2.1.1 windows/amd64")
+            _probe_proxy = _effective_egress_proxy(conn, provider_id)
             sub_cache_key = token[:32]
             sub_cached = _ANTIGRAVITY_SUB_CACHE.get(sub_cache_key)
             sub_data = sub_cached[1] if (sub_cached and not force and now - sub_cached[0] < 300.0) else None
@@ -19960,13 +20255,22 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                 try:
                     sub_resp = google_cloudcode_sync_post(
                         "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
-                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "antigravity/1.23.2 darwin/arm64"},
+                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": ag_ua},
                         json={"metadata": {"ideType": "ANTIGRAVITY"}, "mode": 1},
                         timeout=4.5,
+                        proxy_url=_probe_proxy,
                     )
                     if sub_resp.status_code == 200 and isinstance(sub_resp.json(), dict):
                         sub_data = sub_resp.json()
                         _ANTIGRAVITY_SUB_CACHE[sub_cache_key] = (now, sub_data)
+                    elif sub_resp.status_code in (401, 403) and is_terminal_account_ban(sub_resp.status_code, getattr(sub_resp, "text", "")):
+                        if isinstance(conn, dict):
+                            conn.setdefault("provider_data", {})["tos_banned"] = True
+                        if _cb_inst is not None:
+                            _cb_inst.record_outcome(provider_id, "_quota", conn_index, sub_resp.status_code, error_msg=getattr(sub_resp, "text", ""))
+                        result = _merge_oauth_windows(provider_id, conn_index, active)
+                        _OAUTH_PROBE_CACHE[key] = (now, result)
+                        return result
                 except Exception:
                     sub_data = None
             if isinstance(sub_data, dict):
@@ -19977,15 +20281,33 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                         project_id = str(cp["id"]).strip()
                     elif isinstance(cp, str) and cp.strip():
                         project_id = cp.strip()
+            if project_id and isinstance(conn, dict):
+                _conn_pd = conn.get("provider_data")
+                if not isinstance(_conn_pd, dict):
+                    _conn_pd = {}
+                    conn["provider_data"] = _conn_pd
+                if not _conn_pd.get("project_id"):
+                    _conn_pd["project_id"] = project_id
+                try:
+                    _acct_key = _oauth_antiban.extract_account_id(conn, conn_index)
+                    if _acct_key:
+                        _ANTIGRAVITY_ACCOUNT_PROJECTS[_acct_key] = project_id
+                except Exception:
+                    pass
 
             url = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
-            ag_ua = getattr(_ag_upstream_contract, "ANTIGRAVITY_UPSTREAM_UA", "antigravity/hub/2.24.0 windows/amd64")
             response = google_cloudcode_sync_post(
                 url,
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": ag_ua},
                 json={"project": project_id} if project_id else {},
                 timeout=4.5,
+                proxy_url=_probe_proxy,
             )
+            if response.status_code in (401, 403) and is_terminal_account_ban(response.status_code, getattr(response, "text", "")):
+                if isinstance(conn, dict):
+                    conn.setdefault("provider_data", {})["tos_banned"] = True
+                if _cb_inst is not None:
+                    _cb_inst.record_outcome(provider_id, "_quota", conn_index, response.status_code, error_msg=getattr(response, "text", ""))
             data = response.json() if response.status_code == 200 else {}
             if not isinstance(data, dict):
                 data = {}
@@ -20325,6 +20647,8 @@ async def force_refresh_oauth_provider(provider_id: str):
         for idx, c in enumerate(conns):
             if not isinstance(c, dict):
                 continue
+            if c.get("enabled") is False or (c.get("provider_data") or {}).get("tos_banned") is True:
+                continue
             if c.get("refresh_token"):
                 try:
                     _oauth_mod._last_refresh_at.pop(provider_id, None)
@@ -20350,10 +20674,17 @@ _QUOTA_REFRESH_FAIL_TS: dict[tuple[str, str], float] = {}
 async def _ensure_and_probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, prov_cfg: dict, force: bool = False) -> dict:
     """Refresh expired OAuth tokens before probing upstream quota so status stays synced."""
     global _QUOTA_REFRESH_LOCK
+    _is_disabled_or_banned = bool(
+        isinstance(conn, dict)
+        and (
+            conn.get("enabled") is False
+            or ((conn.get("provider_data") or {}).get("tos_banned") is True)
+        )
+    )
     try:
         from app import oauth as _oauth_mod
         has_token = bool(str(conn.get("access_token") or conn.get("api_key") or "").strip())
-        if conn.get("refresh_token") and (not has_token or _oauth_mod._is_token_expired(conn.get("expires_at"))):
+        if not _is_disabled_or_banned and conn.get("refresh_token") and (not has_token or _oauth_mod._is_token_expired(conn.get("expires_at"))):
             fail_key = (str(provider_id), str(conn.get("id") or conn_index))
             now_ts = time.time()
             last_fail = _QUOTA_REFRESH_FAIL_TS.get(fail_key, 0.0)

@@ -7,7 +7,39 @@ Mọi thay đổi đáng chú ý của BSL Router được ghi lại trong file 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-**🌐 [English](#112---2026-11-07)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+**🌐 [English](#113---2026-11-10)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+
+---
+
+## [1.1.3] - 2026-11-10
+
+> **Release `v1.1.3`:** Provider-Level Unified Proxy Hub Link (`proxyhub://auto`) & Per-Provider 4-Pass Orthogonal Lane Allocator (`@studio/proxy-hub` `/24` IPv4 Subnet, ASN, & URnetwork Account Isolation across Sibling OAuth Accounts / API Keys), Antigravity OAuth Anti-Ban Fingerprint Hardening (Strict `_ANTIGRAVITY_FAMILY` vs `_GEMINI_CLI_FAMILY` Separation, Account-Scoped `project_id` & `sessionId` UUIDv5, `"bsl-"` Watermark Removal, Sliding 10s Burst Cooldown, & Terminal ToS-Ban `24h` Connection Quarantine), Per-Account TCP/TLS Socket Partitioning Across Inference & Quota Probes (`_ROUTER_ANTIGRAVITY_ACCOUNT_CLIENTS` & `_SYNC_CLIENTS_BY_ACCOUNT`), Fixed OAuth Onboarding (`_onboard_antigravity` Inverted `if project_id:` Bug), and Resilient Antigravity ASAR Bridge Fail-Open & Auto-Boot Guards.
+
+### 🇬🇧 English — Fixed & Added
+
+- **Provider-Level Unified Proxy Hub Link (`proxyhub://auto`) & Per-Provider Orthogonal Lane Allocator (`app/proxy_hub_bridge.py`, `app/main.py`, `app/oauth.py`, `app/static/index.html`, `app/static/app.js`, `app/tests/test_proxy_hub_auto_allocation.py`):**
+  - **Unified Proxy Hub Link Syntax (`parse_unified_proxy_link`):** Added `proxyhub://auto` ( plus `proxyhub://hot`, `proxyhub://c1`, `proxyhub://standby`, `proxyhub://local`, and query filters `?country=XX&protocol=socks5`) configured once at the **Provider level** (`providers.<id>.proxy_url = "proxyhub://auto"`).
+  - **4-Pass Collision-Free Per-Provider Allocator (`allocate_provider_lanes`):** Automatically assigns every OAuth account / API key inside the same provider to a distinct, non-colliding Proxy Hub lane from `@studio/proxy-hub` (`lanes_state.json` & `urnetwork_vault.json`):
+    - **Hard Exclusions:** Never allocates blacklisted `NL` exits or low-quota (`< 5.0%` / `quota_low: true`) lanes.
+    - **Sticky Pre-Pass:** Preserves existing keys' assigned `proxy_lane_meta.lane_id` when new keys/accounts are added so existing accounts never hop IPs.
+    - **Pass 1 (Strict Orthogonality):** Enforces distinct `lane_id`, distinct `urnetwork_account_id`, distinct IPv4 `/24` subnet (`a.b.c.0/24`), and distinct ASN (`ASxxxx`).
+    - **Pass 2–4:** Falls back progressively through Account + `/24` orthogonality, distinct lane/URL, and deterministic modulo wrap-around.
+  - **Provider-Level Admin UI & REST API (`GET /api/proxy-hub/status`, `POST /api/proxy-hub/allocate/{provider_id}`):** Moved proxy configuration from the per-key modal to the Provider level (`#p-proxy` in `#add-provider-modal` and the inline **Provider Proxy** bar with **`⚡ Auto Proxy Hub`** on every OAuth and API-key provider detail page), rendering per-connection lane badges (`⚡ ProxyHub · lane-001 (JP · 82.108.198.101)`).
+
+- **Antigravity OAuth Anti-Ban Fingerprint Hardening, Per-Account Socket Isolation, & Terminal ToS-Ban Quarantine (`app/oauth_antiban.py`, `app/compat/adapters/antigravity_upstream.py`, `app/circuit_breaker.py`, `app/oauth.py`, `app/utils/google_cloudcode_egress.py`, `app/main.py`, `app/tests/test_oauth_antiban_wiring.py`):**
+  - **Eliminated IDE + Node.js CLI Chimera Headers (`app/oauth_antiban.py`, `app/compat/adapters/antigravity_upstream.py`):** Split `_ANTIGRAVITY_FAMILY` from `_GEMINI_CLI_FAMILY` so `antigravity` requests use pure `ANTIGRAVITY_UPSTREAM_UA` without injecting `X-Goog-Api-Client: gl-node/22.14.0` or `Client-Metadata: ideType=IDE_UNSPECIFIED`, stripped `"bsl-"` watermarks from `requestId` (`agent-<uuid4>`) and `sessionId`, and scoped fallback `project` and `sessionId` per account via `uuid.uuid5`.
+  - **Per-Account TCP/TLS Socket & Proxy Isolation Across Inference and Quota Probes (`app/main.py`, `app/utils/google_cloudcode_egress.py`):** Partitioned `_ROUTER_ANTIGRAVITY_ACCOUNT_CLIENTS` and `_SYNC_CLIENTS_BY_ACCOUNT` by `(account_key, proxy_url)` and wired `_effective_egress_proxy` into `_probe_oauth_quota` (`loadCodeAssist` & `retrieveUserQuotaSummary`) so multiple Google accounts never multiplex over a shared socket and quota probes exit through the exact same Proxy Hub lane as inference.
+  - **Fixed Inverted OAuth Onboarding & Added Terminal ToS-Ban Quarantine (`app/oauth.py`, `app/circuit_breaker.py`):** Fixed `if not project_id:` in `_post_exchange_antigravity` so new OAuth logins properly run `_onboard_antigravity`, removed `"x-request-source": "local"`, added a sliding `10s` burst cooldown in `CadenceGovernor.wait_turn`, and added `is_terminal_account_ban()` (`banned_connections` `24h` provider-wide quarantine on `violation of Terms of Service` / `ACCOUNT_DISABLED`).
+
+- **Resilient Antigravity ASAR Bridge Fail-Open & Auto-Boot Guards (`app/antigravity_patcher.py`, `app/tests/test_app_integration.py`):**
+  - Added `_build_resilient_bridge_js()` in `app/antigravity_patcher.py` so the patched Antigravity IDE language-server bridge health-checks `:6969/health`, respects `.brain/logs/manual-stop.flag`, auto-starts `scripts/bslrouter.ps1` when needed, and fails open directly to native Google Cloud Code when `:6969` is offline.
+
+### 🇻🇳 Tiếng Việt — Đã Sửa & Bổ Sung Trong `v1.1.3`
+
+- **Liên Kết Proxy Hub Hợp Nhất Cấp Provider (`proxyhub://auto`) & Bộ Phân Bổ Làn Proxy Trực Giao (`app/proxy_hub_bridge.py`, `app/main.py`, `app/oauth.py`, `app/static/index.html`, `app/static/app.js`):**
+  - Cấu hình `proxyhub://auto` một lần duy nhất ở **cấp Provider** (trong hộp thoại `Edit Provider` hoặc thanh **Provider Proxy** trên trang chi tiết của mọi provider OAuth như `Antigravity`, `Claude`, `Codex` và API Key), tự động phân bổ mỗi tài khoản/key trong cùng provider sang một làn Proxy Hub riêng biệt (`lane-001`, `lane-003`, `lane-005`...), cách ly hoàn toàn dải mạng `/24` IPv4, ASN và tài khoản URnetwork, đồng thời loại bỏ vùng `NL` và các làn có dung lượng `< 5%`.
+- **Gia Cố Chống Khóa Tài Khoản (Anti-Ban) Antigravity OAuth & Cô Lập Socket/Proxy Theo Tài Khoản (`app/oauth_antiban.py`, `app/compat/adapters/antigravity_upstream.py`, `app/circuit_breaker.py`, `app/oauth.py`, `app/utils/google_cloudcode_egress.py`, `app/main.py`):**
+  - Tách biệt hoàn toàn dấu vân tay `_ANTIGRAVITY_FAMILY` khỏi `_GEMINI_CLI_FAMILY`, xóa tiền tố `"bsl-"` khỏi `requestId`/`sessionId`, cô lập `project_id`, socket TCP/TLS và làn Proxy Hub riêng cho từng tài khoản trên cả luồng suy luận lẫn luồng kiểm tra hạn mức (`/api/quota/status`), sửa lỗi điều kiện `_onboard_antigravity` khi đăng nhập OAuth mới, và tự động cách ly `24h` các tài khoản bị khóa ToS (`banned_connections`).
 
 ---
 

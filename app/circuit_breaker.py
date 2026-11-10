@@ -186,6 +186,25 @@ def _classify_for_breaker(status_code: int, error_msg: Optional[str]) -> str:
     return "unknown_error"
 
 
+TERMINAL_ACCOUNT_BAN_MARKERS = (
+    "violation of terms of service",
+    "disabled in this account",
+    "this service has been disabled",
+    "account_disabled",
+    "account_suspended",
+    "account_deactivated",
+    "organization_disabled",
+)
+
+
+def is_terminal_account_ban(status_code: int, error_msg: Optional[str]) -> bool:
+    """Return True when an upstream error indicates a terminal account/ToS ban."""
+    if status_code not in (401, 403) and not error_msg:
+        return False
+    msg = (error_msg or "").lower()
+    return any(marker in msg for marker in TERMINAL_ACCOUNT_BAN_MARKERS)
+
+
 class CircuitBreaker:
     """
     Manages per-connection circuit breaker state.
@@ -218,6 +237,10 @@ class CircuitBreaker:
         # {"ts": epoch, "model": model_id}. Powers the admin UI's "which key
         # is serving right now" indicator. In-memory, lost on restart.
         self.last_used: Dict[str, Dict[str, Any]] = {}
+        # Connection-wide terminal ban quarantine: key="{provider}/{conn_index}" →
+        # {"open_until": epoch, "reason": str, "status_code": int, "since": epoch}.
+        # Ensures a ToS-banned account is skipped across ALL models, not just one.
+        self.banned_connections: Dict[str, Dict[str, Any]] = {}
 
     @property
     def settings(self) -> Dict[str, Any]:
@@ -297,12 +320,19 @@ class CircuitBreaker:
         if not self.enabled:
             return False, None
 
+        now = time.time()
+        ban_info = self.banned_connections.get(self._dim_key(provider, conn_index))
+        if isinstance(ban_info, dict):
+            ban_until = float(ban_info.get("open_until", 0.0) or 0.0)
+            if now < ban_until:
+                return True, ban_until - now
+            self.banned_connections.pop(self._dim_key(provider, conn_index), None)
+
         key = self._key(provider, model, conn_index)
         entry = self.state.get(key)
         if entry is None:
             return False, None
 
-        now = time.time()
         current = entry.get("state", "CLOSED")
 
         if current == "OPEN":
@@ -343,11 +373,14 @@ class CircuitBreaker:
             return healthy
 
         # All OPEN — fall back to least-recently-failed to avoid deadlock.
-        # Sort by last_failure_time ascending (oldest failure = least suspect).
+        # Sort non-terminally-banned connections ahead of ToS-banned connections,
+        # then by last_failure_time ascending (oldest failure = least suspect).
         def _sort_key(entry):
-            key = self._key(provider, model, entry["index"])
+            idx = entry["index"]
+            is_banned = 1 if self._dim_key(provider, idx) in self.banned_connections else 0
+            key = self._key(provider, model, idx)
             s = self.state.get(key, {})
-            return s.get("last_failure_time", 0.0)
+            return (is_banned, s.get("last_failure_time", 0.0))
 
         print(
             f"[CircuitBreaker] All {len(connections)} connections OPEN for "
@@ -409,6 +442,7 @@ class CircuitBreaker:
                 # A live success un-dims the key: the account demonstrably
                 # works again (requirement: dim clears on whatever comes first).
                 self.dim.pop(self._dim_key(provider, conn_index), None)
+                self.banned_connections.pop(self._dim_key(provider, conn_index), None)
                 # If this was a HALF_OPEN probe and it succeeded, the CLOSED
                 # transition above already handles recovery.
                 return
@@ -471,6 +505,14 @@ class CircuitBreaker:
                                     pass
                 elif classification == "auth" and status_code == 404:
                     _cooldown = max(_cooldown, 3600.0)
+                if is_terminal_account_ban(status_code, error_msg):
+                    _cooldown = max(_cooldown, 86400.0)
+                    self.banned_connections[self._dim_key(provider, conn_index)] = {
+                        "open_until": now + _cooldown,
+                        "since": now,
+                        "status_code": status_code,
+                        "reason": str(error_msg or "")[:300],
+                    }
                 entry["open_until"] = now + _cooldown
                 if classification == "rate_limit" and (
                     _explicit_reset or "usage_limit_reached" in str(error_msg or "").lower()
@@ -583,6 +625,7 @@ class CircuitBreaker:
             entry["consecutive_failures"] = 0
             entry["open_until"] = 0.0
         self.dim.clear()
+        self.banned_connections.clear()
 
     def reset_connection(self, provider: str, conn_index: int) -> None:
         """Forget every breaker entry + dim for one key (admin toggle off→on).
@@ -606,6 +649,7 @@ class CircuitBreaker:
             del self.state[k]
         self.dim.pop(self._dim_key(provider, idx), None)
         self.last_used.pop(self._dim_key(provider, idx), None)
+        self.banned_connections.pop(self._dim_key(provider, idx), None)
 
     def record_selection(
         self, provider: str, model: str, conn_index: int
@@ -654,7 +698,22 @@ class CircuitBreaker:
                 })
             except Exception:
                 continue
-        return {"dimmed": dim_entries, "last_used": used_entries}
+        banned_entries = []
+        for dk, info in self.banned_connections.items():
+            try:
+                provider, idx = dk.rsplit("/", 1)
+                open_until = float(info.get("open_until", 0.0) or 0.0)
+                if now >= open_until:
+                    continue
+                banned_entries.append({
+                    "provider": provider,
+                    "conn_index": int(idx),
+                    "remaining_seconds": round(max(0.0, open_until - now), 1),
+                    "reason": info.get("reason", ""),
+                })
+            except Exception:
+                continue
+        return {"dimmed": dim_entries, "last_used": used_entries, "banned_connections": banned_entries}
 
 
 # ── Module-level singleton ──────────────────────────────────────────────

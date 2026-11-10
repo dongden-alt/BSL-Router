@@ -498,8 +498,8 @@ def _google_project_id(value: Any) -> str:
     return ""
 
 
-async def _onboard_antigravity(access_token: str, headers: dict[str, str], tier_id: str) -> None:
-    for _ in range(10):
+async def _onboard_antigravity(access_token: str, headers: dict[str, str], tier_id: str) -> str:
+    for _ in range(4):
         try:
             client = _get_oauth_client_for_url(_GOOGLE_ONBOARD_USER_URL)
             response = await client.post(
@@ -507,11 +507,15 @@ async def _onboard_antigravity(access_token: str, headers: dict[str, str], tier_
                 headers=headers,
                 json={"tierId": tier_id, "metadata": _google_metadata()},
             )
-            if response.is_success and isinstance(response.json(), dict) and response.json().get("done") is True:
-                return
+            if response.is_success and isinstance(response.json(), dict):
+                body = response.json()
+                proj = _google_project_id(body.get("response") if isinstance(body.get("response"), dict) else body)
+                if body.get("done") is True or proj:
+                    return proj
         except (httpx.HTTPError, ValueError):
-            return
-        await asyncio.sleep(5)
+            return ""
+        await asyncio.sleep(2)
+    return ""
 
 
 async def _post_exchange_antigravity(tokens: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -523,11 +527,10 @@ async def _post_exchange_antigravity(tokens: dict[str, Any], config: dict[str, A
         "User-Agent": config["loadCodeAssistUserAgent"],
         "X-Goog-Api-Client": config["loadCodeAssistApiClient"],
         "Client-Metadata": config["loadCodeAssistClientMetadata"],
-        "x-request-source": "local",
     }
     user_info = await _get_json(
         f"{config['userInfoUrl']}?alt=json",
-        {"Authorization": f"Bearer {access_token}", "x-request-source": "local"},
+        {"Authorization": f"Bearer {access_token}"},
     )
     project_id = ""
     tier_id = "legacy-tier"
@@ -545,8 +548,11 @@ async def _post_exchange_antigravity(tokens: dict[str, Any], config: dict[str, A
                     break
     except (httpx.HTTPError, ValueError) as exc:
         print(f"[OAuth] Antigravity loadCodeAssist failed: {exc}", flush=True)
-    if project_id:
-        asyncio.create_task(_onboard_antigravity(access_token, headers, tier_id))
+    if not project_id:
+        try:
+            project_id = await _onboard_antigravity(access_token, headers, tier_id)
+        except Exception:
+            project_id = ""
     return {
         "userInfo": user_info,
         "projectId": project_id,
@@ -1161,6 +1167,9 @@ def _save_connection(provider: str, flow_type: str, access_token: str, refresh_t
             # references (breaker state, rotation) stay coherent.
             _prev_snapshot = copy.deepcopy(connections[_keep])
             connection["id"] = connections[_keep].get("id") or connection_id
+            for _pf in ("proxy_url", "proxy_lane_meta", "proxy_bypass"):
+                if _pf in _prev_snapshot and _pf not in connection:
+                    connection[_pf] = copy.deepcopy(_prev_snapshot[_pf])
             for _i in reversed(_matches):
                 if _i == _keep:
                     connections[_i] = connection
@@ -1176,6 +1185,31 @@ def _save_connection(provider: str, flow_type: str, access_token: str, refresh_t
                 )
     if _replaced_at < 0:
         connections.append(connection)
+    try:
+        from app.proxy_hub_bridge import (
+            UNIFIED_PROXY_HUB_URI,
+            allocate_provider_lanes,
+            is_unified_proxy_link,
+        )
+        _prov_proxy = str(provider_config.get("proxy_url") or "").strip()
+        _has_sibling_unified = (
+            bool(provider_config.get("auto_proxy_hub"))
+            or is_unified_proxy_link(_prov_proxy)
+            or any(
+                isinstance(_c, dict) and is_unified_proxy_link(_c.get("proxy_url"))
+                for _c in connections
+                if _c is not connection
+            )
+        )
+        if not connection.get("proxy_url"):
+            if _prov_proxy:
+                connection["proxy_url"] = _prov_proxy
+            elif _has_sibling_unified:
+                connection["proxy_url"] = UNIFIED_PROXY_HUB_URI
+        if _has_sibling_unified or is_unified_proxy_link(connection.get("proxy_url")):
+            allocate_provider_lanes(provider, connections, config=config, auto_assign_unconfigured=True)
+    except Exception as _ph_exc:
+        print(f"[OAuth] Proxy Hub auto-allocation warning for {provider}: {_ph_exc}", flush=True)
     try:
         main_app._replace_runtime_config(config)
     except OSError as exc:

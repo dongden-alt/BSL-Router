@@ -51,6 +51,40 @@ ANTIGRAVITY_UPSTREAM_UA = "antigravity/ide/2.1.1 windows/amd64"
 ANTIGRAVITY_DEFAULT_PROJECT = "ungoogly-rite-fd7ql"
 ANTIGRAVITY_STREAM_URL_PATH = "/v1internal:streamGenerateContent?alt=sse"
 
+_FALLBACK_PROJECT_ADJECTIVES = (
+    "amber", "arctic", "astral", "breezy", "calm", "cedar", "civic", "cobalt",
+    "coral", "crisp", "dapper", "delta", "ember", "fable", "feral", "flint",
+    "focal", "frost", "gilded", "glade", "granite", "halcyon", "harbor", "ionic",
+    "ivory", "jade", "kestrel", "lapis", "linear", "lunar", "maple", "meadow",
+)
+_FALLBACK_PROJECT_NOUNS = (
+    "anchor", "Avenue", "beacon", "canyon", "cipher", "comet", "compass", "crest",
+    "current", "dynamo", "echo", "falcon", "fjord", "forge", "glacier", "grove",
+    "haven", "horizon", "lantern", "ledger", "matrix", "meridian", "nexus", "orbit",
+    "pioneer", "prism", "quartz", "ridge", "signal", "summit", "tensor", "vertex",
+)
+_FALLBACK_PROJECT_ALNUM = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def _account_scoped_fallback_project(account_id: Optional[str]) -> str:
+    """Return a deterministic per-account Cloud Code project slug when project_id is unknown.
+
+    Avoids multiplexing N OAuth accounts under a single shared hardcoded
+    project string (which links all accounts into one cohort on Cloud Code),
+    while staying stable across turns for the same account.
+    """
+    acct = str(account_id or "").strip()
+    if not acct:
+        return ANTIGRAVITY_DEFAULT_PROJECT
+    digest = uuid.uuid5(uuid.NAMESPACE_OID, f"ag-cloudcode-project:{acct}").bytes
+    adj = _FALLBACK_PROJECT_ADJECTIVES[digest[0] % len(_FALLBACK_PROJECT_ADJECTIVES)].lower()
+    noun = _FALLBACK_PROJECT_NOUNS[digest[1] % len(_FALLBACK_PROJECT_NOUNS)].lower()
+    suffix = "".join(
+        _FALLBACK_PROJECT_ALNUM[b % len(_FALLBACK_PROJECT_ALNUM)]
+        for b in digest[2:7]
+    )
+    return f"{adj}-{noun}-{suffix}"
+
 # reasoning_effort (OpenAI vocab) → thinkingConfig.thinkingBudget (Gemini).
 # Inverse of app.compat.adapters.gemini._budget_to_effort thresholds.
 _EFFORT_TO_BUDGET = {
@@ -350,7 +384,11 @@ def _tool_result_payload(content: Any) -> Any:
 
 
 def openai_to_cloudcode_envelope(
-    openai_body: Dict[str, Any], model: str, project: Optional[str] = None
+    openai_body: Dict[str, Any],
+    model: str,
+    project: Optional[str] = None,
+    *,
+    account_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Translate an OpenAI-canonical chat payload into the Cloud Code envelope.
 
@@ -563,10 +601,11 @@ def openai_to_cloudcode_envelope(
                 _ag_sess_seed = f"{model}|{_sys_anchor}|{_first_part[:256]}"
         except Exception:
             _ag_sess_seed = None
+    _acct_scope = str(account_id or "").strip()
     _ag_session_id = (
-        f"bsl-{uuid.uuid5(uuid.NAMESPACE_DNS, f'bsl-ag-session:{_ag_sess_seed}').hex[:12]}"
+        str(uuid.uuid5(uuid.NAMESPACE_OID, f"ag-session:{_acct_scope or 'default'}:{_ag_sess_seed}"))
         if _ag_sess_seed
-        else f"bsl-{uuid.uuid4().hex[:12]}"
+        else str(uuid.uuid4())
     )
 
     request_obj: Dict[str, Any] = {
@@ -618,10 +657,16 @@ def openai_to_cloudcode_envelope(
     if gc:
         request_obj["generationConfig"] = gc
 
+    effective_project = (
+        project.strip()
+        if isinstance(project, str) and project.strip()
+        else (_account_scoped_fallback_project(_acct_scope) if _acct_scope else ANTIGRAVITY_DEFAULT_PROJECT)
+    )
+
     return {
         "model": model,
-        "project": (project if isinstance(project, str) and project else ANTIGRAVITY_DEFAULT_PROJECT),
-        "requestId": f"bsl-{uuid.uuid4().hex[:16]}",
+        "project": effective_project,
+        "requestId": f"agent-{uuid.uuid4()}",
         "userAgent": "antigravity",
         "requestType": "agent",
         "request": request_obj,
@@ -985,10 +1030,20 @@ class AntigravityUpstreamClient:
     chunks (stream) or one aggregated OpenAI completion (non-stream).
     """
 
-    def __init__(self, inner: Any, model: str, *, plan_type: Optional[str] = None):
+    def __init__(
+        self,
+        inner: Any,
+        model: str,
+        *,
+        plan_type: Optional[str] = None,
+        project: Optional[str] = None,
+        account_id: Optional[str] = None,
+    ):
         self._inner = inner
         self._model = model
         self._plan_type = (plan_type or "").strip()
+        self._project = (project or "").strip()
+        self._account_id = (account_id or "").strip()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -1025,7 +1080,12 @@ class AntigravityUpstreamClient:
         ):
             model = _PRO_TIER_ARGON_FALLBACK_MAP[model]
 
-        envelope = openai_to_cloudcode_envelope(payload, model)
+        envelope = openai_to_cloudcode_envelope(
+            payload,
+            model,
+            project=self._project or None,
+            account_id=self._account_id or None,
+        )
 
         # Rewrite {base}/chat/completions -> {base}/v1internal:streamGenerateContent?alt=sse
         base = _httpx.URL(str(url)) if _httpx else None
@@ -1037,7 +1097,8 @@ class AntigravityUpstreamClient:
         else:  # pragma: no cover — httpx missing, tests only
             rpc = str(url)
 
-        hdrs = {k: v for k, v in (headers or {}).items() if k.lower() != "user-agent"}
+        _strip_hdrs = {"user-agent", "x-goog-api-client", "client-metadata", "x-request-source"}
+        hdrs = {k: v for k, v in (headers or {}).items() if k.lower() not in _strip_hdrs}
         hdrs["User-Agent"] = ANTIGRAVITY_UPSTREAM_UA
         hdrs.setdefault("Content-Type", "application/json")
 
@@ -1133,7 +1194,18 @@ class AntigravityUpstreamClient:
 
 
 def wrap_antigravity_upstream_client(
-    inner: Any, model: str, *, plan_type: Optional[str] = None
+    inner: Any,
+    model: str,
+    *,
+    plan_type: Optional[str] = None,
+    project: Optional[str] = None,
+    account_id: Optional[str] = None,
 ) -> AntigravityUpstreamClient:
     """Public entry: wrap the egress client for one antigravity target model."""
-    return AntigravityUpstreamClient(inner, model, plan_type=plan_type)
+    return AntigravityUpstreamClient(
+        inner,
+        model,
+        plan_type=plan_type,
+        project=project,
+        account_id=account_id,
+    )

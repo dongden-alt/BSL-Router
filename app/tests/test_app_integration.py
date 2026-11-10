@@ -532,3 +532,19 @@ def test_claude_catalog_and_inference(monkeypatch):
     cfg["claude_code_integration"]["enabled"] = False
     assert main._resolve_claude_code_alias(cfg, "claude-bsl-1") is None
     assert not any(m["id"].startswith("claude-bsl-") for m in json.loads(asyncio.run(main.list_models()).body)["data"])
+
+
+def test_resilient_bridge_fail_open_and_auto_boot_guards():
+    ls_src = "function startLanguageServer(options) { const args = ['--api_server_url', 'https://generativelanguage.googleapis.com', '--cloud_code_endpoint', 'https://daily-cloudcode-pa.googleapis.com']; return args; }"
+    patched_ls = patcher._patch_language_server(ls_src, "http://127.0.0.1:7777")
+    assert "if (globalThis.__bslBridgeUrl) return globalThis.__bslBridgeUrl;" in patched_ls
+    assert "ELECTRON_RUN_AS_NODE" in patched_ls
+    assert "manual-stop.flag" in patched_ls
+    assert "globalThis.__bslRouterAlive = false; return undefined;" in patched_ls
+
+    main_src = "app.whenReady().then(() => {});"
+    patched_main = patcher._patch_main(main_src, "http://127.0.0.1:7777")
+    assert "globalThis.__bslBridgeServer" in patched_main
+    assert "daily-cloudcode-pa.googleapis.com" in patched_main
+    assert "generativelanguage.googleapis.com" in patched_main
+    assert "if (globalThis.__bslRouterAlive !== false && u.pathname.endsWith('LanguageServerService/GetAvailableModels'))" in patched_main

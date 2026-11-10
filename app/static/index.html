@@ -140,10 +140,6 @@
                         <input type="password" class="input" id="conn-key" placeholder="sk-..."><button class="btn btn-outline" onclick="verifyConnectionKey(this)" type="button">Check</button>
                     </div>
                 </div>
-                <div class="form-group">
-                    <label>Proxy URL <span style="color:var(--text-muted);font-weight:400;">(optional, e.g. socks5://user:pass@1.2.3.4:1080)</span></label>
-                    <input type="text" class="input" id="conn-proxy" placeholder="http:// or socks5://">
-                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-outline" onclick="closeConnModal()">Cancel</button>
@@ -204,6 +200,14 @@
                 <div class="form-group">
                     <label>API Key <span style="color:var(--text-muted);font-weight:400">(optional, can add later)</span></label>
                     <input type="password" class="input" id="p-key" placeholder="sk-...">
+                </div>
+                <div class="form-group">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                        <label style="margin-bottom:0;">Proxy URL <span style="color:var(--text-muted);font-weight:400;">(provider-level unified proxy)</span></label>
+                        <button class="btn btn-outline" type="button" style="font-size:11px;padding:2px 8px;display:inline-flex;align-items:center;gap:4px;" onclick="setProviderModalProxyHubLink()" title="Use unified Proxy Hub link (proxyhub://auto) — auto-allocates each key in this provider to a distinct Proxy Hub lane">⚡ Auto Proxy Hub</button>
+                    </div>
+                    <input type="text" class="input" id="p-proxy" placeholder="proxyhub://auto or http:// / socks5://">
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Unified Link: <code>proxyhub://auto</code> auto-allocates every key in this provider to a different Proxy Hub lane (/24 &amp; ASN isolated).</div>
                 </div>
                 <div class="form-group">
                     <label>Header Profile <span style="color:var(--text-muted);font-weight:400">(Hồ sơ Header)</span></label>

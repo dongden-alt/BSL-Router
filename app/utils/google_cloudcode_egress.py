@@ -588,11 +588,35 @@ def build_google_egress_sync_client() -> httpx.Client:
 
 _SYNC_CLIENT_LOCK = threading.Lock()
 _SYNC_CLIENT: Optional[httpx.Client] = None
+_SYNC_CLIENTS_BY_ACCOUNT: dict[str, httpx.Client] = {}
 _ORIG_HTTPX_POST = httpx.post
 
 
-def _get_google_egress_sync_client() -> httpx.Client:
+def _get_google_egress_sync_client(account_key: str = "", proxy_url: Optional[str] = None) -> httpx.Client:
     global _SYNC_CLIENT
+    acct = (account_key or "").strip()
+    norm_proxy = str(proxy_url or "").strip()
+    use_proxy = bool(norm_proxy and norm_proxy.lower() != "direct")
+    if acct or use_proxy:
+        cache_key = f"{acct or 'anon'}|{norm_proxy}" if use_proxy else acct
+        with _SYNC_CLIENT_LOCK:
+            client = _SYNC_CLIENTS_BY_ACCOUNT.get(cache_key)
+            if client is None or getattr(client, "is_closed", False):
+                if use_proxy:
+                    client = httpx.Client(
+                        proxy=norm_proxy,
+                        timeout=_UPSTREAM_TIMEOUT,
+                        trust_env=False,
+                    )
+                else:
+                    client = build_google_egress_sync_client()
+                _SYNC_CLIENTS_BY_ACCOUNT[cache_key] = client
+                while len(_SYNC_CLIENTS_BY_ACCOUNT) > 32:
+                    oldest = next(iter(_SYNC_CLIENTS_BY_ACCOUNT))
+                    if oldest == cache_key:
+                        break
+                    _SYNC_CLIENTS_BY_ACCOUNT.pop(oldest, None)
+            return client
     if _SYNC_CLIENT is None:
         with _SYNC_CLIENT_LOCK:
             if _SYNC_CLIENT is None:
@@ -606,10 +630,17 @@ def google_cloudcode_sync_post(
     headers: Optional[dict] = None,
     json: Optional[object] = None,
     timeout: float = 4.5,
+    account_key: str = "",
+    proxy_url: Optional[str] = None,
 ) -> httpx.Response:
     """Send a synchronous POST to an allowlisted Google Cloud Code endpoint using
-    the hosts-file-bypassing client, while honoring test monkeypatches on httpx.post."""
+    a per-account hosts-file-bypassing (or proxied) client, while honoring test monkeypatches on httpx.post."""
     if httpx.post is not _ORIG_HTTPX_POST or hasattr(httpx.post, "_mock_name"):
         return httpx.post(url, headers=headers, json=json, timeout=timeout)
-    client = _get_google_egress_sync_client()
+    acct = (account_key or "").strip()
+    if not acct and isinstance(headers, dict):
+        auth = str(headers.get("Authorization") or headers.get("authorization") or "").strip()
+        if auth:
+            acct = auth[:40]
+    client = _get_google_egress_sync_client(acct, proxy_url=proxy_url)
     return client.post(url, headers=headers, json=json, timeout=timeout)

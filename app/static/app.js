@@ -1516,6 +1516,7 @@ function renderProviderDetail() {
                 </div>
             </div>
         </div>
+        ${_renderProviderProxyBarHtml(p)}
         ${connCount > 0 ? `
         <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
             <span style="font-size:12px; color:var(--text-muted); font-weight:500;">${connCount} account${connCount > 1 ? 's' : ''}</span>
@@ -1537,7 +1538,7 @@ function renderProviderDetail() {
                         </span>
                         <span style="font-size:11px; background:#f3f4f6; color:var(--text-muted); padding:2px 6px; border-radius:4px; font-weight:500;">${isOAuth ? 'OAuth' : 'Web'}</span>
                         ${conn.expires_at ? `<span data-conn-exp="${idx}" style="font-size:11px; color:var(--text-muted);" title="Expires: ${new Date(conn.expires_at).toLocaleString()}">Exp: ${new Date(conn.expires_at).toLocaleDateString()}</span>` : ''}
-                        ${conn.proxy_url ? `<span style="font-size:11px; background:#fff7ed; color:#c2410c; padding:2px 6px; border-radius:4px; font-weight:500;" title="${conn.proxy_url}">Proxy</span>` : ''}
+                        ${_renderProxyBadgeHtml(conn)}
                         <div data-quota-slot="${idx}" style="display:flex; align-items:center; gap:6px;"></div>
                         <span style="font-size:11px; color:var(--text-muted);">#${idx + 1}</span>
                     </div>
@@ -1598,6 +1599,7 @@ function renderProviderDetail() {
                 </div>
             </div>
         </div>
+        ${_renderProviderProxyBarHtml(p)}
         ${connCount > 0 ? `
         <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
             <span style="font-size:12px; color:var(--text-muted); font-weight:500;">${connCount} key${connCount > 1 ? 's' : ''}</span>
@@ -1616,7 +1618,7 @@ function renderProviderDetail() {
                         </span>
                         <span style="font-size:11px; background:#f3f4f6; color:var(--text-muted); padding:2px 6px; border-radius:4px; font-weight:500;">API Key</span>
                         ${!conn.api_key ? `<span style="font-size:11px; color:var(--text-muted); font-style:italic;">No API Key set</span>` : ''}
-                        ${conn.proxy_url ? `<span style="font-size:11px; background:#fff7ed; color:#c2410c; padding:2px 6px; border-radius:4px; font-weight:500;" title="${conn.proxy_url}">Proxy</span>` : ''}
+                        ${_renderProxyBadgeHtml(conn)}
                         <div data-quota-slot="${idx}" style="display:flex; align-items:center; gap:6px;"></div>
                         <span style="font-size:11px; color:var(--text-muted);">#${idx + 1}</span>
                     </div>
@@ -3495,7 +3497,6 @@ window.openConnModal = (idx = -1) => {
             setUrlFieldNotice('conn-url', 'conn-url-notice', { corrected: false, error: '' });
         }
         document.getElementById('conn-key').value = conn.api_key || '';
-        document.getElementById('conn-proxy').value = conn.proxy_url || '';
         document.getElementById('conn-modal-title').textContent = 'Edit Connection';
         document.querySelector('#add-conn-modal .modal-footer .btn-primary').textContent = 'Save Changes';
     } else {
@@ -3504,7 +3505,6 @@ window.openConnModal = (idx = -1) => {
         document.getElementById('conn-url').value = '';
         setUrlFieldNotice('conn-url', 'conn-url-notice', { corrected: false, error: '' });
         document.getElementById('conn-key').value = '';
-        document.getElementById('conn-proxy').value = '';
         document.getElementById('conn-modal-title').textContent = 'Add Connection';
         document.querySelector('#add-conn-modal .modal-footer .btn-primary').textContent = 'Add Connection';
     }
@@ -3513,13 +3513,151 @@ window.openConnModal = (idx = -1) => {
 
 window.closeConnModal = () => document.getElementById('add-conn-modal').classList.remove('active');
 
+window._resolveProviderProxyValue = (p) => {
+    if (!p || typeof p !== 'object') return '';
+    if (typeof p.proxy_url === 'string' && p.proxy_url.trim()) return p.proxy_url.trim();
+    if (p.auto_proxy_hub) return 'proxyhub://auto';
+    const firstWithProxy = (p.connections || []).find(c => c && typeof c.proxy_url === 'string' && c.proxy_url.trim());
+    return firstWithProxy ? firstWithProxy.proxy_url.trim() : '';
+};
+
+window._renderProviderProxyBarHtml = (p) => {
+    const curProxy = _resolveProviderProxyValue(p);
+    const escaped = curProxy.replace(/"/g, '&quot;');
+    return `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;margin-bottom:12px;background:#f8fafc;border:1px solid var(--border-color);border-radius:8px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:8px;min-width:180px;">
+            <span style="font-size:12px;font-weight:600;color:var(--text-main);">Provider Proxy</span>
+            <span style="font-size:11px;color:var(--text-muted);">(applies to all accounts/keys; <code>proxyhub://auto</code> isolates each key to its own lane)</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:280px;justify-content:flex-end;">
+            <input type="text" class="input" id="provider-proxy-input" value="${escaped}" placeholder="proxyhub://auto or http:// / socks5://" style="height:32px;font-size:12px;padding:4px 10px;max-width:340px;" onkeydown="if(event.key==='Enter'){event.preventDefault();saveProviderProxyFromInput();}">
+            <button class="btn btn-outline" type="button" style="font-size:11px;font-weight:600;padding:5px 10px;white-space:nowrap;" onclick="setAndSaveProviderProxy('proxyhub://auto')" title="Use unified Proxy Hub link (proxyhub://auto) — auto-allocates every account/key in this provider to a different Proxy Hub lane">⚡ Auto Proxy Hub</button>
+            <button class="btn btn-primary" type="button" style="font-size:11px;font-weight:600;padding:5px 12px;white-space:nowrap;" onclick="saveProviderProxyFromInput()">Save Proxy</button>
+            ${curProxy ? `<button class="btn btn-outline" type="button" style="font-size:11px;padding:5px 8px;color:var(--text-muted);" onclick="setAndSaveProviderProxy('')" title="Clear provider proxy">Clear</button>` : ''}
+        </div>
+    </div>`;
+};
+
+window.setProviderModalProxyHubLink = () => {
+    const input = document.getElementById('p-proxy');
+    if (input) {
+        input.value = 'proxyhub://auto';
+        input.focus();
+    }
+};
+
+window.saveProviderProxyFromInput = () => {
+    const input = document.getElementById('provider-proxy-input');
+    const val = input ? input.value.trim() : '';
+    setAndSaveProviderProxy(val);
+};
+
+window._refreshProviderProxyHubBadges = (providerId) => {
+    if (!providerId || !globalConfig || !globalConfig.providers || !globalConfig.providers[providerId]) return;
+    const pConfig = globalConfig.providers[providerId];
+    setTimeout(() => {
+        fetch('/api/proxy-hub/status')
+            .then(r => r.ok ? r.json() : null)
+            .then(st => {
+                if (st && st.provider_allocations && st.provider_allocations[providerId]) {
+                    const rows = st.provider_allocations[providerId];
+                    rows.forEach(r => {
+                        if (pConfig.connections && pConfig.connections[r.index] && r.lane_meta && r.lane_meta.lane_id) {
+                            pConfig.connections[r.index].proxy_lane_meta = r.lane_meta;
+                        }
+                    });
+                    renderActiveTab();
+                }
+            })
+            .catch(() => {});
+    }, 250);
+};
+
+window.setAndSaveProviderProxy = async (proxyValue, providerId = activeProviderId) => {
+    if (!providerId || !globalConfig || !globalConfig.providers || !globalConfig.providers[providerId]) return;
+    const cleanVal = String(proxyValue || '').trim();
+    const pConfig = globalConfig.providers[providerId];
+    const isUnified = cleanVal.toLowerCase().startsWith('proxyhub://') || cleanVal.toLowerCase().startsWith('proxy-hub://') || cleanVal.toLowerCase().startsWith('hub://');
+
+    if (cleanVal) {
+        pConfig.proxy_url = cleanVal;
+        pConfig.auto_proxy_hub = isUnified;
+    } else {
+        delete pConfig.proxy_url;
+        delete pConfig.auto_proxy_hub;
+    }
+
+    (pConfig.connections || []).forEach(c => {
+        if (!c || typeof c !== 'object') return;
+        if (cleanVal) {
+            c.proxy_url = cleanVal;
+        } else {
+            delete c.proxy_url;
+        }
+        delete c.proxy_lane_meta;
+    });
+
+    if (isUnified) {
+        // Try the dedicated backend allocator first; also saveConfig() so it works even before router restart
+        saveConfig();
+        try {
+            const res = await fetch(`/api/proxy-hub/allocate/${encodeURIComponent(providerId)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ overwrite_existing: true, proxy_url: cleanVal }),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (Array.isArray(pConfig.connections) && Array.isArray(data.connections)) {
+                    data.connections.forEach((row) => {
+                        if (pConfig.connections[row.index]) {
+                            pConfig.connections[row.index].proxy_url = row.proxy_url || cleanVal;
+                            pConfig.connections[row.index].proxy_lane_meta = row.proxy_lane_meta || null;
+                        }
+                    });
+                }
+            }
+        } catch (_) {}
+        renderActiveTab();
+        _refreshProviderProxyHubBadges(providerId);
+        return;
+    }
+
+    saveConfig();
+    renderActiveTab();
+};
+
+window._renderProxyBadgeHtml = (conn, providerObj = null) => {
+    const p = providerObj || (globalConfig && globalConfig.providers ? globalConfig.providers[activeProviderId] : null);
+    const raw = String((conn && conn.proxy_url) || (p && p.proxy_url) || '').trim();
+    if (!raw) return '';
+    const isUnified = raw.toLowerCase().startsWith('proxyhub://') || raw.toLowerCase().startsWith('proxy-hub://') || raw.toLowerCase().startsWith('hub://');
+    const meta = conn && conn.proxy_lane_meta && typeof conn.proxy_lane_meta === 'object' ? conn.proxy_lane_meta : null;
+    if (meta && meta.lane_id) {
+        const country = meta.country || 'XX';
+        const ipPart = meta.exit_ip ? ` · ${meta.exit_ip}` : '';
+        const orgPart = meta.org ? ` · ${meta.org}` : '';
+        const tip = `${raw} → ${meta.lane_id} (${country}${ipPart}${orgPart})`;
+        return `<span style="font-size:11px; background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe; padding:2px 6px; border-radius:4px; font-weight:600;" title="${tip.replace(/"/g, '&quot;')}">⚡ ProxyHub · ${meta.lane_id} (${country}${ipPart})</span>`;
+    }
+    if (isUnified) {
+        return `<span style="font-size:11px; background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe; padding:2px 6px; border-radius:4px; font-weight:600;" title="${raw.replace(/"/g, '&quot;')} (auto-allocates distinct Proxy Hub lane per key)">⚡ ProxyHub · Auto</span>`;
+    }
+    return `<span style="font-size:11px; background:#fff7ed; color:#c2410c; padding:2px 6px; border-radius:4px; font-weight:500;" title="${raw.replace(/"/g, '&quot;')}">Proxy</span>`;
+};
+
+window.allocateProviderProxyHubLanes = async (providerId = activeProviderId) => {
+    await setAndSaveProviderProxy('proxyhub://auto', providerId);
+};
+
 window.saveConnection = () => {
     const name = document.getElementById('conn-name').value.trim();
     const key = document.getElementById('conn-key').value.trim();
-    const proxyUrl = document.getElementById('conn-proxy').value.trim();
 
     const pConfig = globalConfig.providers[activeProviderId];
     const isCustom = pConfig.type === 'custom';
+    const inheritedProxy = _resolveProviderProxyValue(pConfig);
 
     // Resolve effective base URL using the inheritance chain so the user is
     // never forced to re-enter a URL the provider/connection already owns:
@@ -3533,9 +3671,6 @@ window.saveConnection = () => {
         if (normalized.error) return;
         url = normalized.value;
         if (!url) {
-            // Inherit from siblings / known provider / provider-level base_url
-            // so the user is never forced to re-enter it. Persist the inherited
-            // value on the connection so the backend routes consistently.
             url = resolveBaseUrl(activeProviderId, editingConnIdx >= 0 ? editingConnIdx : (pConfig.connections || []).length, editingConnIdx);
             if (!url) {
                 alert('Base URL is required for custom providers. Add one to the first connection or set a provider base URL.');
@@ -3551,17 +3686,18 @@ window.saveConnection = () => {
             }
         }
     }
-    // For known providers: don't store URL in connection — backend resolves from PROVIDER_DEFAULT_URLS
 
     if (editingConnIdx >= 0) {
         pConfig.connections[editingConnIdx].name = name;
         if (isCustom) pConfig.connections[editingConnIdx].base_url = url;
         pConfig.connections[editingConnIdx].api_key = key;
-        pConfig.connections[editingConnIdx].proxy_url = proxyUrl;
+        if (inheritedProxy && !pConfig.connections[editingConnIdx].proxy_url) {
+            pConfig.connections[editingConnIdx].proxy_url = inheritedProxy;
+        }
     } else {
         const conn = { name, api_key: key, enabled: true };
         if (isCustom) conn.base_url = url;
-        if (proxyUrl) conn.proxy_url = proxyUrl;
+        if (inheritedProxy) conn.proxy_url = inheritedProxy;
         pConfig.connections.push(conn);
         // Orphan-key coverage: extend every model's allow-list with the new index
         const newIdx = pConfig.connections.length - 1;
@@ -3576,6 +3712,9 @@ window.saveConnection = () => {
     saveConfig();
     closeConnModal();
     renderActiveTab();
+    if (inheritedProxy && inheritedProxy.toLowerCase().startsWith('proxyhub://')) {
+        _refreshProviderProxyHubBadges(activeProviderId);
+    }
 };
 
 window.toggleCustomHeadersField = () => {
@@ -3595,6 +3734,7 @@ window.openProviderModal = (type = 'text', providerId = null) => {
     const formatInput = document.getElementById('p-format');
     const urlInput = document.getElementById('p-url');
     const keyInput = document.getElementById('p-key');
+    const proxyInput = document.getElementById('p-proxy');
     const titleEl = document.querySelector('#add-provider-modal .modal-header h3');
     const saveBtn = document.getElementById('provider-modal-save-btn');
 
@@ -3603,6 +3743,7 @@ window.openProviderModal = (type = 'text', providerId = null) => {
     prefixInput.disabled = false;
     urlInput.value = '';
     keyInput.value = '';
+    if (proxyInput) proxyInput.value = '';
     setUrlFieldNotice('p-url', 'p-url-notice', { corrected: false, error: '' });
 
     const headerProfileSelect = document.getElementById('p-header-profile');
@@ -3626,6 +3767,7 @@ window.openProviderModal = (type = 'text', providerId = null) => {
             normalizeUrlField('p-url', 'p-url-notice', formatInput.value, false);
         }
         keyInput.value = firstConn.api_key || '';
+        if (proxyInput) proxyInput.value = _resolveProviderProxyValue(p);
         if (p.connections && p.connections.length >= 1) {
             keyInput.placeholder = 'Leave blank to keep existing key — a different key adds a new connection';
         }
@@ -3667,6 +3809,8 @@ window.saveProviderModal = () => {
     if (normalizedUrl.error) return;
     const url = normalizedUrl.value || document.getElementById('p-url').value.trim();
     const key = document.getElementById('p-key').value.trim();
+    const proxyInputEl = document.getElementById('p-proxy');
+    const providerProxyUrl = proxyInputEl ? proxyInputEl.value.trim() : '';
 
     if (!name) {
         alert("Provider Name is required.");
@@ -3799,9 +3943,33 @@ window.saveProviderModal = () => {
         }
     }
 
+    if (providerProxyUrl) {
+        const isUnified = providerProxyUrl.toLowerCase().startsWith('proxyhub://') || providerProxyUrl.toLowerCase().startsWith('proxy-hub://') || providerProxyUrl.toLowerCase().startsWith('hub://');
+        globalConfig.providers[id].proxy_url = providerProxyUrl;
+        globalConfig.providers[id].auto_proxy_hub = isUnified;
+        (globalConfig.providers[id].connections || []).forEach(c => {
+            if (!c || typeof c !== 'object') return;
+            if (c.proxy_url !== providerProxyUrl) {
+                c.proxy_url = providerProxyUrl;
+                delete c.proxy_lane_meta;
+            }
+        });
+    } else {
+        delete globalConfig.providers[id].proxy_url;
+        delete globalConfig.providers[id].auto_proxy_hub;
+        (globalConfig.providers[id].connections || []).forEach(c => {
+            if (!c || typeof c !== 'object') return;
+            delete c.proxy_url;
+            delete c.proxy_lane_meta;
+        });
+    }
+
     closeProviderModal();
     showProviderDetail(id);
     saveConfig();
+    if (providerProxyUrl && providerProxyUrl.toLowerCase().startsWith('proxyhub://')) {
+        _refreshProviderProxyHubBadges(id);
+    }
 };
 
 function renderEndpointTab() {

@@ -94,7 +94,8 @@ _DEFAULT_CLIENT_CACHE = 64
 
 _CLAUDE_FAMILY = frozenset({"claude", "claude_code", "claude-code", "claudecode"})
 _COPILOT_FAMILY = frozenset({"github", "copilot", "github-copilot"})
-_ANTIGRAVITY_FAMILY = frozenset({"antigravity", "gemini-cli"})
+_ANTIGRAVITY_FAMILY = frozenset({"antigravity"})
+_GEMINI_CLI_FAMILY = frozenset({"gemini-cli"})
 _QWEN_FAMILY = frozenset({"qwen", "qwen-code"})
 
 # Per-provider anti-ban cadence & concurrency profiles (2026 protocol research):
@@ -640,6 +641,7 @@ class CadenceGovernor:
     def __init__(self) -> None:
         self._locks: Dict[str, Any] = {}
         self._last: Dict[str, float] = {}
+        self._recent: Dict[str, List[float]] = {}
         self._guard = threading.Lock()
 
     def _lock_for(self, account: str):
@@ -672,10 +674,16 @@ class CadenceGovernor:
             async with lock:
                 now = monotonic()
                 last = self._last.get(account)
+                recent = [t for t in self._recent.get(account, []) if now - t <= 10.0]
                 if last is None:
                     self._last[account] = now
+                    recent.append(now)
+                    self._recent[account] = recent
                     return 0.0
                 target = float(min_interval) * (1.0 + random.uniform(0.0, max(0.0, jitter)))
+                if float(min_interval) > 0 and len(recent) >= 4:
+                    burst_penalty = min(4.0, 1.2 * (len(recent) - 3))
+                    target += burst_penalty * (1.0 + random.uniform(0.0, max(0.0, jitter)))
                 gap = now - last
                 wait = target - gap
                 if wait > 0:
@@ -684,6 +692,9 @@ class CadenceGovernor:
                 else:
                     wait = 0.0
                 self._last[account] = now
+                recent = [t for t in recent if now - t <= 10.0]
+                recent.append(now)
+                self._recent[account] = recent
                 return wait
         except Exception:
             return 0.0
@@ -929,11 +940,19 @@ class ClaudeSessionRhythm:
                     "X-GitHub-Api-Version": "2025-04-01",
                     "X-Request-Id": str(uuid.uuid4()),
                 }
-            if pname in _ANTIGRAVITY_FAMILY:
+            if pname in _GEMINI_CLI_FAMILY:
                 return {
                     "X-Goog-Api-Client": "gl-node/22.14.0",
                     "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
                 }
+            if pname in _ANTIGRAVITY_FAMILY:
+                # NEVER inject Node.js / Gemini CLI chimera headers onto Antigravity
+                # IDE traffic: AntigravityUpstreamClient sets User-Agent:
+                # antigravity/ide/2.1.1 windows/amd64 and userAgent: "antigravity"
+                # inside the Cloud Code envelope. Sending gl-node/22.14.0 +
+                # ideType=IDE_UNSPECIFIED,pluginType=GEMINI alongside the IDE UA
+                # is a deterministic proxy chimera fingerprint on Cloud Code.
+                return {}
             if pname in _QWEN_FAMILY:
                 return {
                     "X-DashScope-Client": "qwen-code/0.2.1",
