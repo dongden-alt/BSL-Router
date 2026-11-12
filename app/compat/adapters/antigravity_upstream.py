@@ -408,6 +408,8 @@ def openai_to_cloudcode_envelope(
     # during the subsequent tool pass (OpenAI order guarantees this ordering
     # in a single build pass).
     dropped_call_ids: set = set()
+    dropped_call_args: Dict[str, str] = {}
+    unpaired_dropped_summaries: Dict[str, str] = {}
     seq = 0
 
     for msg in (body.get("messages") or []):
@@ -422,6 +424,7 @@ def openai_to_cloudcode_envelope(
             continue
 
         parts: List[Dict[str, Any]] = []
+        had_dropped_tool_calls = False
         content = msg.get("content")
         if isinstance(content, str):
             if content:
@@ -484,42 +487,44 @@ def openai_to_cloudcode_envelope(
                 _fc_part["thoughtSignature"] = _tsig
                 parts.append(_fc_part)
             else:
-                # Layer A (2026-09-26): still unsigned after ALL fallbacks.
-                # Shipping this part is exactly what triggers Google's
-                # ``INVALID_ARGUMENT: Function call is missing a
-                # thought_signature`` 400, which deterministically recurs on
-                # every retry (the request body itself is invalid). DROP the
-                # functionCall part and record its call_id so the paired
-                # functionResponse below is also skipped (no orphan fr).
-                # Emit ONE throttled diagnostic (never raise).
+                # Layer A (2026-09-26) + Zero-Contagion Fold (2026-11-12):
+                # Still unsigned after ALL fallbacks. Drop the unsigned
+                # functionCall part and fold its call+result into the user turn
+                # WITHOUT injecting synthetic model prose (which poisons
+                # induction heads into emitting plain-text pseudo-tool summaries
+                # on long multi-step loops).
                 _warn_dropped_unsigned_once(model)
                 dropped_call_ids.add(call_id)
-                if not any(isinstance(p, dict) and p.get("text") and not p.get("thought") for p in parts):
-                    parts.append({"text": "Understood. Proceeding with the workspace inspection."})
+                had_dropped_tool_calls = True
+                args_preview = json.dumps(args, ensure_ascii=False)[:320] if args else ""
+                dropped_call_args[call_id] = args_preview
+                unpaired_dropped_summaries[call_id] = (
+                    f"[Interrupted prior tool call: `{name}` {args_preview}]".strip()
+                )
 
         if role == "tool":
             call_id = msg.get("tool_call_id") or ""
-            # Layer A (2026-09-26) + ERE-R5 (2026-10-30): if the paired
-            # functionCall was dropped above (unsignable), never emit an
-            # orphan functionResponse part (which 400s on Gemini), AND never
-            # drop the user turn completely (which leaves a trailing model
-            # turn and triggers ``400: Requests ending with a model turn are
-            # not supported``). Convert the tool output into a plain-text user
-            # part so turn alternation and tool output are both preserved.
             if call_id in dropped_call_ids:
+                unpaired_dropped_summaries.pop(call_id, None)
                 tool_name = (
                     call_names.get(call_id)
                     or _name_from_call_id(call_id)
                     or "tool"
                 )
+                args_hint = dropped_call_args.get(call_id, "")
+                header = (
+                    f"Prior step output (`{tool_name}` {args_hint}):"
+                    if args_hint
+                    else f"Prior step output (`{tool_name}`):"
+                )
                 raw_res = str(msg.get("content") or "").strip()
                 fallback_text = (
-                    f"Prior step output (`{tool_name}`):\n{raw_res}\n"
+                    f"{header}\n{raw_res}\n"
                     if raw_res
-                    else "(continue)"
+                    else f"{header} (completed)\n"
                 )
                 prev = contents[-1] if contents else None
-                if isinstance(prev, dict) and prev.get("role") == "user" and not prev.get("__fr__"):
+                if isinstance(prev, dict) and prev.get("role") == "user":
                     prev["parts"].append({"text": fallback_text})
                 else:
                     contents.append({
@@ -556,12 +561,39 @@ def openai_to_cloudcode_envelope(
                 })
             continue
 
+        if role == "assistant" and had_dropped_tool_calls and not parts:
+            # Pure unsigned tool-call turn with zero assistant prose: omit the
+            # synthetic model turn altogether so adjacent user context + folded
+            # tool output coalesce cleanly without few-shot plain-text contagion.
+            continue
+
+        if role != "assistant" and unpaired_dropped_summaries:
+            parts.insert(0, {"text": "\n".join(unpaired_dropped_summaries.values()) + "\n"})
+            unpaired_dropped_summaries.clear()
+
         if not parts:
             parts = [{"text": ""}]
+        target_role = "model" if role == "assistant" else "user"
+        prev = contents[-1] if contents else None
+        if (
+            target_role == "user"
+            and isinstance(prev, dict)
+            and prev.get("role") == "user"
+        ):
+            prev["parts"].extend(parts)
+            continue
         contents.append({
-            "role": "model" if role == "assistant" else "user",
+            "role": target_role,
             "parts": parts,
         })
+
+    if unpaired_dropped_summaries:
+        summary_txt = "\n".join(unpaired_dropped_summaries.values()) + "\nContinue."
+        if contents and contents[-1].get("role") == "user":
+            contents[-1]["parts"].append({"text": summary_txt})
+        else:
+            contents.append({"role": "user", "parts": [{"text": summary_txt}]})
+        unpaired_dropped_summaries.clear()
 
     for c in contents:
         c.pop("__fr__", None)
@@ -988,6 +1020,10 @@ _PRO_TIER_ARGON_FALLBACK_MAP: Dict[str, str] = {
     "gemini-4-argon-medium": "gemini-3.8-flash-medium",
     "gemini-4-argon-high": "gemini-3.8-flash-high",
     "gemini-4-argon": "gemini-3.8-flash-high",
+    "gemini-4-carbon-low": "gemini-3.8-flash-low",
+    "gemini-4-carbon-medium": "gemini-3.8-flash-medium",
+    "gemini-4-carbon-high": "gemini-3.8-flash-high",
+    "gemini-4-carbon": "gemini-3.8-flash-high",
 }
 _ARGON_DISABLED_AUTH_HASHES: "OrderedDict[str, float]" = OrderedDict()
 _ARGON_DISABLED_LOCK = threading.Lock()
