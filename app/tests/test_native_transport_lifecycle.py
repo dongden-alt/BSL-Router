@@ -6,6 +6,7 @@ import pathlib
 import re
 
 import httpx
+import pytest
 
 
 def _bridge():
@@ -18,6 +19,8 @@ def _bridge():
         / "hooks"
         / "bsl-studio-runtime-bridge.py"
     )
+    if not path.is_file():
+        pytest.skip("Optional Studio runtime bridge checkout is not installed")
     spec = importlib.util.spec_from_file_location("bsl_studio_bridge_test", path.resolve())
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
