@@ -139,6 +139,8 @@ def test_oauth_5h_and_weekly_quota_headers_and_probes():
 
     _OAUTH_QUOTA.clear()
     _OAUTH_PROBE_CACHE.clear()
+    from app.main import _OAUTH_LAST_GOOD
+    _OAUTH_LAST_GOOD.clear()
     oauth_antiban._CONNECTION_USAGE.clear()
 
     # 1. Claude unified 5h & 7d headers
@@ -154,6 +156,8 @@ def test_oauth_5h_and_weekly_quota_headers_and_probes():
             "anthropic-ratelimit-unified-7d-reset": str(future_7d),
         },
     )
+    from app.utils.quota_live import account_key
+    _OAUTH_QUOTA["claude"][0]["account_key"] = account_key({"access_token": ""}, 0)
     q_claude = _probe_oauth_quota("claude", 0, {"access_token": ""}, force=True)
     assert q_claude["five_hour"]["label"] == "5h"
     assert q_claude["five_hour"]["remaining_pct"] == 75.0
@@ -173,6 +177,7 @@ def test_oauth_5h_and_weekly_quota_headers_and_probes():
             "x-codex-secondary-reset-after-seconds": "172800",
         },
     )
+    _OAUTH_QUOTA["codex"][1]["account_key"] = account_key({"access_token": ""}, 1)
     q_codex = _probe_oauth_quota("codex", 1, {"access_token": ""}, force=True)
     assert q_codex["five_hour"]["remaining_pct"] == 82.0
     assert 3500 <= q_codex["five_hour"]["reset_in_seconds"] <= 3605
@@ -200,13 +205,12 @@ def test_oauth_5h_and_weekly_quota_headers_and_probes():
         assert q_probe["five_hour"]["remaining_pct"] == 87.5
         assert q_probe["weekly"]["remaining_pct"] == 70.0
 
-    # 4. Universal local sliding-window fallback when no upstream API or header exists
+    # 4. Local request accounting remains an estimate when upstream is unavailable.
     oauth_antiban._CONNECTION_USAGE[("grok-cli", 0)] = deque([(time.monotonic() - 600, 100_000.0)])
     q_local = _probe_oauth_quota("grok-cli", 0, {"access_token": ""}, force=True)
-    assert "five_hour" in q_local and "weekly" in q_local
-    assert q_local["five_hour"]["remaining_pct"] == 95.0
-    assert q_local["five_hour"]["reset_in_seconds"] > 17000
-    assert q_local["weekly"]["remaining_pct"] > 99.0
+    assert q_local["remaining_pct"] is None
+    assert q_local["source"] == "unavailable"
+    assert q_local["estimate"]["five_hour"]["observed_requests"] == 1
 
 
 def test_ui_static_contract_for_oauth_round_robin_and_dual_quota_bars():

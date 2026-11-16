@@ -547,4 +547,94 @@ def test_resilient_bridge_fail_open_and_auto_boot_guards():
     assert "globalThis.__bslBridgeServer" in patched_main
     assert "daily-cloudcode-pa.googleapis.com" in patched_main
     assert "generativelanguage.googleapis.com" in patched_main
+    assert "if (forwarded || res.headersSent || res.writableEnded) return; forwarded = true;" in patched_main
+    assert "const safeWriteHead = (code, hdrs) =>" in patched_main
     assert "if (globalThis.__bslRouterAlive !== false && u.pathname.endsWith('LanguageServerService/GetAvailableModels'))" in patched_main
+    # Crucible R1-01 & R1-02: Verify exact canonical M417..M528 placeholder map + offline 429->gemini-3-flash->gemini-2.5-flash cascade
+    assert "'MODEL_PLACEHOLDER_M437':'gemini-4-carbon-medium'" in patched_main
+    assert "'MODEL_PLACEHOLDER_M438':'gemini-4-carbon-low'" in patched_main
+    assert "'MODEL_PLACEHOLDER_M417':'gemini-4-argon-high'" in patched_main
+    assert "'MODEL_PLACEHOLDER_M419':'gemini-4-argon-low'" in patched_main
+    assert "'MODEL_PLACEHOLDER_M527':'gemini-4-hydrogen-low'" in patched_main
+    assert "'MODEL_PLACEHOLDER_M526':'gemini-4-hydrogen-medium'" in patched_main
+    assert "const nativeFbChain = ['gemini-3-flash', 'gemini-2.5-flash'];" in patched_main
+
+
+def test_quota_saver_validation_and_reserved_hydrogen_slots(monkeypatch, tmp_path):
+    cfg = config()
+    cfg["combos"] = [
+        {"alias": "Deepseek-V4-Flash", "chain": ["fake/model"]},
+        {"alias": "GLM", "chain": ["fake/model"]},
+    ]
+    monkeypatch.setattr(main, "cs_get_config", lambda: cfg)
+    monkeypatch.setattr(main, "_replace_runtime_config", lambda c: None)
+    monkeypatch.setattr(main, "_QUOTA_SAVER_PERSISTENT_PATH", tmp_path / "quota-saver-config.json")
+    monkeypatch.setattr(main, "_STUDIO_RUNTIME_STATE_PATH", tmp_path / "nonexistent-runtime-state.json")
+    # Crucible R3-05: Hydrogen placeholder slots 525..528 must be reserved against custom model collisions
+    assert {525, 526, 527, 528} <= main._AG_RESERVED_INDICES
+    res = asyncio.run(
+        main.app_integration_antigravity_quota_saver(
+            request(
+                "/api/app-integration/antigravity/quota-saver",
+                {
+                    "enabled": True,
+                    "mode": "external_first",
+                    "fast_native_model": "gemini-3-flash",
+                    "routine_native_model": "gemini-4-hydrogen-medium",
+                    "offload_subagents": True,
+                    "strict_hydrogen_parity": True,
+                    "fallback_models": [
+                        {"target": "GLM", "display_name": "GLM Priority 1", "enabled": True},
+                        {"target": "Deepseek-V4-Flash", "display_name": "DS Priority 2", "enabled": True},
+                    ],
+                },
+            )
+        )
+    )
+    assert res.status_code == 200
+    body = json.loads(res.body)
+    assert body["ok"] is True
+    qs = body["quota_saver"]
+    assert qs["mode"] == "external_first"
+    assert qs["fast_native_model"] == "gemini-3-flash"
+    assert [m["target"] for m in qs["fallback_models"]] == ["GLM", "Deepseek-V4-Flash"]
+    assert qs["strict_parity_contract"]["history_thought_signature_sanitizer"] is True
+    assert qs["strict_parity_contract"]["intra_native_flash_bucket_cascade"] is True
+    saved_disk = json.loads((tmp_path / "quota-saver-config.json").read_text(encoding="utf-8"))
+    assert saved_disk["enabled"] is True
+    assert saved_disk["mode"] == "external_first"
+    assert saved_disk["offload_tool_followups"] is False
+
+
+def test_quota_saver_tool_loop_followup_offload_and_offline_bridge(monkeypatch, tmp_path):
+    cfg = config()
+    monkeypatch.setattr(main, "cs_get_config", lambda: cfg)
+    monkeypatch.setattr(main, "_replace_runtime_config", lambda c: None)
+    monkeypatch.setattr(main, "_QUOTA_SAVER_PERSISTENT_PATH", tmp_path / "quota-saver-config.json")
+    monkeypatch.setattr(main, "_STUDIO_RUNTIME_STATE_PATH", tmp_path / "nonexistent-runtime-state.json")
+
+    res = asyncio.run(
+        main.app_integration_antigravity_quota_saver(
+            request(
+                "/api/app-integration/antigravity/quota-saver",
+                {
+                    "enabled": True,
+                    "mode": "native_first",
+                    "routine_native_model": "gemini-4-hydrogen-medium",
+                    "offload_subagents": True,
+                    "offload_tool_followups": True,
+                    "strict_hydrogen_parity": True,
+                },
+            )
+        )
+    )
+    assert res.status_code == 200
+    qs = json.loads(res.body)["quota_saver"]
+    assert qs["offload_tool_followups"] is True
+    assert qs["strict_parity_contract"]["tool_loop_followup_offload"] is True
+    saved_disk = json.loads((tmp_path / "quota-saver-config.json").read_text(encoding="utf-8"))
+    assert saved_disk["offload_tool_followups"] is True
+
+    patched_main = patcher._patch_main("app.whenReady().then(() => {});", "http://127.0.0.1:7777")
+    assert "qs.offload_tool_followups === true" in patched_main
+    assert "lastIsToolCont" in patched_main

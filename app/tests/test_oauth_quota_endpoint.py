@@ -23,6 +23,9 @@ def _import_mod():
 def quota_state(monkeypatch):
     """Isolate the module-level globals the endpoint reads and block quota HTTP calls."""
     mod = _import_mod()
+    from app.utils.quota_live import QuotaCache
+    monkeypatch.setattr(mod, "_QUOTA_LIVE_CACHE", QuotaCache())
+    mod._OAUTH_LAST_GOOD.clear()
     mod._OAUTH_QUOTA.clear()
     mod._OAUTH_PROBE_CACHE.clear()
     mod._QUOTA_CACHE["providers"] = {}
@@ -49,49 +52,49 @@ def test_oauth_merge_full(monkeypatch, quota_state):
         {"name": "c1", "refresh_token": "rt1"},
     ])
     monkeypatch.setattr(mod, "cs_get_config", lambda: cfg)
+    from app.utils.quota_live import account_key
     mod._OAUTH_QUOTA["claude"] = {
-        0: {"remaining_pct": 73.5, "metric": "tokens", "window_reset": None, "updated_at": 1234.0},
-        1: {"remaining_pct": 12.0, "metric": "requests", "window_reset": None, "updated_at": 5678.0},
+        0: {"remaining_pct": 73.5, "metric": "tokens", "window_reset": None, "updated_at": 1234.0, "account_key": account_key(cfg["providers"]["claude"]["connections"][0], 0)},
+        1: {"remaining_pct": 12.0, "metric": "requests", "window_reset": None, "updated_at": 5678.0, "account_key": account_key(cfg["providers"]["claude"]["connections"][1], 1)},
     }
     resp = asyncio.run(mod.get_quota_status_endpoint(provider="claude"))
     data = json.loads(resp.body)
-    assert data["cached"] is False  # forced recompute, not a stale serve
+    assert data["cached"] is True
     row = data["providers"]["claude"]
     assert isinstance(row, list) and len(row) == 2
-    assert row[0]["source"] == "oauth_live"
     assert row[0]["remaining_pct"] == 73.5
     assert row[0]["metric"] == "tokens"
-    assert row[1]["source"] == "oauth_live"
     assert row[1]["remaining_pct"] == 12.0
     assert row[1]["metric"] == "requests"
 
 
 def test_oauth_partial_registry(monkeypatch, quota_state):
-    """Only one of two OAuth connections has traffic; the other gets local windows."""
+    """Only one of two OAuth connections has provider data; the other stays unknown."""
     mod = quota_state
     cfg = _oauth_cfg([
         {"name": "c0", "access_token": "tok0"},
         {"name": "c1", "refresh_token": "rt1"},
     ])
     monkeypatch.setattr(mod, "cs_get_config", lambda: cfg)
-    mod._OAUTH_QUOTA["claude"] = {0: {"remaining_pct": 50.0, "metric": "tokens", "updated_at": 1.0}}
+    from app.utils.quota_live import account_key
+    mod._OAUTH_QUOTA["claude"] = {0: {"remaining_pct": 50.0, "metric": "tokens", "updated_at": 1.0, "account_key": account_key(cfg["providers"]["claude"]["connections"][0], 0)}}
     resp = asyncio.run(mod.get_quota_status_endpoint(provider="claude"))
     row = json.loads(resp.body)["providers"]["claude"]
-    assert row[0]["source"] == "oauth_live" and row[0]["remaining_pct"] == 50.0
-    assert row[1]["source"] == "oauth_window"
-    assert row[1]["remaining_pct"] == 100.0
+    assert row[0]["remaining_pct"] == 50.0
+    assert row[1]["remaining_pct"] is None
+    assert row[1]["source"] in ("unavailable", "oauth_upstream_stale")
 
 
 def test_oauth_cold_start_null(monkeypatch, quota_state):
-    """OAuth connection with no registry hit gets the local sliding-window fallback."""
+    """OAuth connection with no upstream observation remains unknown."""
     mod = quota_state
     cfg = _oauth_cfg([{"name": "c0", "access_token": "tok0"}])
     monkeypatch.setattr(mod, "cs_get_config", lambda: cfg)
     # _OAUTH_QUOTA intentionally empty for claude
     resp = asyncio.run(mod.get_quota_status_endpoint(provider="claude"))
     row = json.loads(resp.body)["providers"]["claude"]
-    assert row[0]["source"] == "oauth_window"
-    assert row[0]["remaining_pct"] == 100.0
+    assert row[0]["source"] == "unavailable"
+    assert row[0]["remaining_pct"] is None
 
 
 def test_oauth_index_guard_out_of_range(monkeypatch, quota_state):
@@ -102,8 +105,8 @@ def test_oauth_index_guard_out_of_range(monkeypatch, quota_state):
     mod._OAUTH_QUOTA["claude"] = {5: {"remaining_pct": 99.0, "metric": "tokens", "updated_at": 1.0}}
     resp = asyncio.run(mod.get_quota_status_endpoint(provider="claude"))
     row = json.loads(resp.body)["providers"]["claude"]
-    assert row[0]["source"] == "oauth_window"
-    assert row[0]["remaining_pct"] == 100.0
+    assert row[0]["source"] == "unavailable"
+    assert row[0]["remaining_pct"] is None
 
 
 def test_oauth_all_providers_path(monkeypatch, quota_state):
@@ -111,8 +114,9 @@ def test_oauth_all_providers_path(monkeypatch, quota_state):
     mod = quota_state
     cfg = _oauth_cfg([{"name": "c0", "access_token": "tok0"}])
     monkeypatch.setattr(mod, "cs_get_config", lambda: cfg)
-    mod._OAUTH_QUOTA["claude"] = {0: {"remaining_pct": 80.0, "metric": "tokens", "updated_at": 1.0}}
+    from app.utils.quota_live import account_key
+    mod._OAUTH_QUOTA["claude"] = {0: {"remaining_pct": 80.0, "metric": "tokens", "updated_at": 1.0, "account_key": account_key(cfg["providers"]["claude"]["connections"][0], 0)}}
     resp = asyncio.run(mod.get_quota_status_endpoint())
     data = json.loads(resp.body)
     row = data["providers"]["claude"]
-    assert isinstance(row, list) and row[0]["source"] == "oauth_live"
+    assert isinstance(row, list) and row[0]["remaining_pct"] == 80.0

@@ -908,6 +908,11 @@ OAUTH_PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
         # (the ``hub/2.24.0`` UA returned free-tier — wrong). With the
         # correct UA the account's subscription tier is respected and the
         # plan-gated models resolve for Ultra accounts.
+        # --- Gemini 4 Carbon ---
+        {"id": "gemini-4-carbon-high"},
+        {"id": "gemini-4-carbon-medium"},
+        {"id": "gemini-4-carbon-low"},
+        {"id": "gemini-4-carbon"},
         # --- Gemini 4 Argon ---
         {"id": "gemini-4-argon-high"},
         {"id": "gemini-4-argon-medium"},
@@ -2724,7 +2729,9 @@ async def ensure_fresh_token(
     # (N refreshes in <T seconds) are flagged as account theft. One refresh
     # per provider at a time, paced, with waiters coalescing on the leader.
     # force=True still respects the lock (401-retry bursts become one refresh).
-    async with await _provider_refresh_lock(provider_name):
+    from app.utils.quota_live import account_key
+    refresh_key = f"{provider_name}:{account_key(connection)}"
+    async with await _provider_refresh_lock(refresh_key):
         # Coalesce: the leader ahead of us may have already refreshed while we
         # waited on the lock. Detect via api_key mutation.
         current_token = connection.get("api_key", "")
@@ -2739,7 +2746,7 @@ async def ensure_fresh_token(
 
         # We're the next actual refresher — pace before calling the provider
         # so the upstream never sees burst patterns.
-        await _pace_refresh(provider_name)
+        await _pace_refresh(refresh_key)
 
         # Build the config dict for the refresh function.
         # For most providers, OAUTH_PROVIDERS[provider]["config"] has everything.
@@ -2749,7 +2756,7 @@ async def ensure_fresh_token(
             try:
                 raw = await refresh_fn(refresh_token, provider_data)
             except Exception as exc:
-                print(f"[OAuth] Kiro token refresh failed: {exc}", flush=True)
+                print(f"[OAuth] Kiro token refresh failed: {type(exc).__name__}", flush=True)
                 return stored_token
         else:
             oauth_entry = OAUTH_PROVIDERS.get(provider_name, {})
@@ -2757,7 +2764,7 @@ async def ensure_fresh_token(
             try:
                 raw = await refresh_fn(refresh_token, refresh_config)
             except Exception as exc:
-                print(f"[OAuth] {provider_name} token refresh failed: {exc}", flush=True)
+                print(f"[OAuth] {provider_name} token refresh failed: {type(exc).__name__}", flush=True)
                 return stored_token
 
         new_access_token = raw.get("access_token", "")

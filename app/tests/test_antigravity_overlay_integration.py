@@ -23,6 +23,9 @@ EXPECTED_AG_SLOTS = (
     "gemini-4-argon-low",
     "gemini-4-argon-medium",
     "gemini-4-argon-high",
+    "gemini-4-carbon-low",
+    "gemini-4-carbon-medium",
+    "gemini-4-carbon-high",
     "gemini-2.5-pro",
 )
 EXPECTED_AG_LABELS = (
@@ -30,6 +33,9 @@ EXPECTED_AG_LABELS = (
     "Gemini 4 Argon (Low)",
     "Gemini 4 Argon (Medium)",
     "Gemini 4 Argon (High)",
+    "Gemini 4 Carbon (Low)",
+    "Gemini 4 Carbon (Medium)",
+    "Gemini 4 Carbon (High)",
     "Gemini 2.5 Pro",
 )
 REMOVED_AG_SLOTS = (

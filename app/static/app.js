@@ -771,51 +771,46 @@ window.addEventListener('resize', function() {
 // so the user always knows the state without clicking a button.
 let _autoSaveTimer = null;
 let _autoSaveInFlight = false;
-// Set when a mutation arrives while a save is in flight; flushed once after it finishes.
-let _autoSaveDirty = false;
+// Serialize saves; each caller resolves only after its own write is confirmed.
+let _configSaveQueue = Promise.resolve();
 
-async function saveConfig() {
-    if (_autoSaveInFlight) {
-        // Queue one follow-up save so concurrent mutations are not dropped.
-        _autoSaveDirty = true;
-        return false;
-    }
-    _autoSaveInFlight = true;
-    _autoSaveDirty = false;
-    _setSaveIndicator('saving');
-    try {
-        const res = await fetch('/api/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(globalConfig)
-        });
-        if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            showToast(`Configuration save failed: ${data.error || res.statusText || 'request failed'}`, true);
+function saveConfig(overrides = null) {
+    const save = async () => {
+        _autoSaveInFlight = true;
+        _setSaveIndicator('saving');
+        const snapshot = JSON.parse(JSON.stringify(globalConfig));
+        if (overrides) Object.assign(snapshot, JSON.parse(JSON.stringify(overrides)));
+        try {
+            const res = await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(snapshot)
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.error || data.detail || res.statusText || 'request failed');
+            }
+            const saved = await res.json().catch(() => ({}));
+            if (overrides) Object.assign(globalConfig, JSON.parse(JSON.stringify(overrides)));
+            for (const key of ['combos', 'antigravity_integration', 'claude_code_integration']) {
+                if (Object.prototype.hasOwnProperty.call(saved, key)) globalConfig[key] = saved[key];
+            }
+            for (const flag of ['_deleted_connection', '_deleted_provider', '_deleted_model', '_deleted_models', '_renamed_combo']) {
+                if (JSON.stringify(globalConfig[flag]) === JSON.stringify(snapshot[flag])) delete globalConfig[flag];
+            }
+            _setSaveIndicator('saved');
+            return true;
+        } catch (err) {
+            showToast(`Configuration save failed: ${err.message || 'network error'}`, true);
             _setSaveIndicator('error');
             return false;
+        } finally {
+            _autoSaveInFlight = false;
         }
-        _setSaveIndicator('saved');
-        return true;
-    } catch (err) {
-        showToast(`Configuration save failed: ${err.message || 'network error'}`, true);
-        _setSaveIndicator('error');
-        return false;
-    } finally {
-        _autoSaveInFlight = false;
-        // One-shot transport flags for the backend connections merge guard
-        // (stale-save protection, app/main.py update_config). They ride along
-        // on exactly the POST that deletes a connection/provider, then are
-        // stripped — never persist into config.yaml or leak into a later save.
-        delete globalConfig._deleted_connection;
-        delete globalConfig._deleted_provider;
-        // If something mutated during the in-flight POST, save the latest snapshot once.
-        if (_autoSaveDirty) {
-            _autoSaveDirty = false;
-            // Fire-and-forget follow-up; nested call re-enters the same guard.
-            Promise.resolve().then(() => saveConfig());
-        }
-    }
+    };
+    const pending = _configSaveQueue.then(save, save);
+    _configSaveQueue = pending.then(() => undefined, () => undefined);
+    return pending;
 }
 
 function scheduleAutoSave() {
@@ -978,8 +973,8 @@ function _fmtQuotaReset(w) {
 }
 
 function _fmtSingleQuotaWindow(label, w) {
-    if (!w || typeof w !== 'object') return '';
-    const pct = Math.max(0, Math.min(100, Number(w.remaining_pct ?? 0)));
+    if (!w || typeof w !== 'object' || typeof w.remaining_pct !== 'number' || !Number.isFinite(w.remaining_pct)) return '';
+    const pct = Math.max(0, Math.min(100, w.remaining_pct));
     const fillClass = pct < 5 ? 'linear-gradient(90deg,#dc2626,#f87171)' : (pct < 20 ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#22c55e,#4ade80)');
     const txtColor = pct < 5 ? 'var(--danger)' : (pct < 20 ? '#b45309' : 'var(--text-main)');
     const resetTxt = _fmtQuotaReset(w);
@@ -993,6 +988,16 @@ function _fmtSingleQuotaWindow(label, w) {
         <span style="font-size:10px; font-weight:700; color:${txtColor}; white-space:nowrap;">${pct.toFixed(0)}%</span>
         ${resetTxt ? `<span style="font-size:10px; color:var(--text-muted); white-space:nowrap;">${resetTxt}</span>` : ''}
     </div>`;
+}
+
+function _fmtQuotaMeta(q) {
+    if (!q || typeof q !== 'object') return '';
+    const observed = Number(q.observed_at || q.updated_at);
+    const age = Number.isFinite(observed) ? Math.max(0, Math.round(Date.now() / 1000 - observed)) : null;
+    const ageText = age === null ? 'last observed: unknown' : `last observed: ${age}s ago`;
+    const source = q.source ? ` • ${q.source}` : '';
+    const state = q.stale ? ' • stale' : (q.error ? ` • ${q.error}` : '');
+    return `<span style="font-size:9px;color:var(--text-muted);white-space:nowrap;">${ageText}${source}${state}</span>`;
 }
 
 function _fmtQuotaBar(q) {
@@ -1011,15 +1016,21 @@ function _fmtQuotaBar(q) {
         return `<div data-quota-bar="1" style="display:inline-flex; align-items:center; gap:6px; flex-wrap:wrap;">
             ${renderGroup('google', 'Google', '#1d4ed8', '#eff6ff', '#bfdbfe')}
             ${renderGroup('claude', 'Claude', '#b45309', '#fffbeb', '#fde68a')}
+            ${_fmtQuotaMeta(q)}
         </div>`;
     }
     if (q.five_hour || q.weekly) {
         return `<div data-quota-bar="1" style="display:inline-flex; align-items:center; gap:6px; flex-wrap:wrap;">
             ${q.five_hour ? _fmtSingleQuotaWindow(q.five_hour.label || '5h', q.five_hour) : ''}
             ${q.weekly ? _fmtSingleQuotaWindow(q.weekly.label || '7d', q.weekly) : ''}
+            ${_fmtQuotaMeta(q)}
         </div>`;
     }
-    const pct = Math.max(0, Math.min(100, q.remaining_pct || 0));
+    if (typeof q.remaining_pct !== 'number' || !Number.isFinite(q.remaining_pct)) {
+        const state = q.refreshing ? 'Loading…' : (q.stale ? 'Stale' : (q.error ? 'Unavailable' : 'No upstream data'));
+        return `<span data-quota-bar="1" style="font-size:10px; color:var(--text-muted); font-style:italic;">${state}</span>`;
+    }
+    const pct = Math.max(0, Math.min(100, q.remaining_pct));
     const fillClass = pct < 5 ? 'linear-gradient(90deg,#dc2626,#f87171)' : (pct < 20 ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#22c55e,#4ade80)');
     const txtColor = pct < 5 ? 'var(--danger)' : (pct < 20 ? '#b45309' : 'var(--text-main)');
     return `<div data-quota-bar="1" style="display:flex; align-items:center; gap:5px;">
@@ -1027,6 +1038,7 @@ function _fmtQuotaBar(q) {
             <div style="height:100%; border-radius:3px; width:${pct}%; background:${fillClass};"></div>
         </div>
         <span style="font-size:11px; font-weight:700; color:${txtColor}; white-space:nowrap;">${pct.toFixed(0)}%</span>
+        ${_fmtQuotaMeta(q)}
     </div>`;
 }
 
@@ -1093,12 +1105,15 @@ function _renderTierBadgeHtml(plan) {
 }
 
 let _quotaFetchSeq = 0;
+let _quotaFetchInFlight = false;
 
 async function refreshQuotaBars(force = false) {
-    if (_quotaBarTimer) { clearInterval(_quotaBarTimer); _quotaBarTimer = null; }
+    if (_quotaFetchInFlight) return;
+    if (_quotaBarTimer) { clearTimeout(_quotaBarTimer); _quotaBarTimer = null; }
     if (currentView !== 'detail' || !activeProviderId) return;
     const reqSeq = ++_quotaFetchSeq;
     const targetProvId = activeProviderId;
+    _quotaFetchInFlight = true;
     try {
         const res = await fetch(`/api/quota/status?provider=${encodeURIComponent(targetProvId)}${force ? '&force=1' : ''}`);
         const data = await res.json();
@@ -1144,9 +1159,12 @@ async function refreshQuotaBars(force = false) {
                 slot.insertAdjacentHTML('beforeend', `<span data-quota-bar="1" style="font-size:10px; color:var(--text-muted); font-style:italic;">∤ no data</span>`);
             }
         });
-    } catch { /* fail-open */ }
-    if (reqSeq === _quotaFetchSeq) {
-        _quotaBarTimer = setInterval(refreshQuotaBars, 60000);
+    } catch { /* retain the last displayed snapshot on transport failure */ }
+    finally {
+        _quotaFetchInFlight = false;
+        if (currentView === 'detail' && activeProviderId) {
+            _quotaBarTimer = setTimeout(() => refreshQuotaBars(), 10000);
+        }
     }
 }
 window.refreshQuotaBars = refreshQuotaBars;
@@ -4113,11 +4131,23 @@ async function pollAppIntegrationStatus() {
         const response = await fetch('/api/app-integration/status', {cache:'no-store'});
         if (!response.ok) return;
         const data = await response.json();
-        const ag = document.getElementById('app-ag-status'), cc = document.getElementById('app-cc-status'), restartBtn = document.getElementById('app-ag-restart-btn');
+        const ag = document.getElementById('app-ag-status'), cc = document.getElementById('app-cc-status'), restartBtn = document.getElementById('app-ag-restart-btn'), qsPill = document.getElementById('app-ag-qs-status');
         if (restartBtn) restartBtn.style.display = data.antigravity.desktop_status === 'staged_restart_required' ? 'inline-flex' : 'none';
         if (ag) {
             ag.textContent = `${data.antigravity.enabled ? 'Enabled' : 'Stopped'} · Desktop: ${data.antigravity.desktop_status} · IDE: ${data.antigravity.ide.some(p => p.patched) ? 'patched' : 'not patched'}`;
             ag.classList.toggle('is-active', !!data.antigravity.enabled);
+        }
+        if (data.antigravity && data.antigravity.quota_saver) {
+            appIntegrationConfig('antigravity').quota_saver = data.antigravity.quota_saver;
+            if (qsPill) {
+                const qsOn = data.antigravity.quota_saver.enabled !== false;
+                const bTargets = data.antigravity.blacksand_desktop_targets || {};
+                const anyStaged = Object.values(bTargets).some(v => v === 'staged_restart_required');
+                qsPill.textContent = !qsOn
+                    ? 'Disabled · Direct Carbon/Argon'
+                    : (anyStaged ? 'Online Active · Offline Bridge Staged (App Restart Pending)' : 'Active · Offline-Persistent (Works if Router Off)');
+                qsPill.classList.toggle('is-active', qsOn);
+            }
         }
         if (cc) {
             cc.textContent = `${data.claude_code.enabled ? 'Enabled' : 'Disabled'} · ${data.claude_code.models} models`;
@@ -4145,6 +4175,132 @@ function appIntegrationModels(context) {
         </div>
     </article>`).join('')}</div>`;
 }
+function quotaSaverConfig() {
+    const ag = appIntegrationConfig('antigravity');
+    const qs = ag.quota_saver ||= {
+        enabled: true,
+        native_hydrogen_offload: true,
+        mode: 'native_first',
+        fast_native_model: 'gemini-4-hydrogen-low',
+        routine_native_model: 'gemini-4-hydrogen-medium',
+        offload_subagents: true,
+        offload_tool_followups: false,
+        strict_hydrogen_parity: true,
+        fallback_models: [
+            {target: 'Deepseek-V4-Flash', display_name: 'Deepseek-V4-Flash (BSL Forge Free)', enabled: true},
+            {target: 'GLM', display_name: 'GLM (Zhipu Agentic)', enabled: true},
+            {target: 'Qwen-Max', display_name: 'Qwen-Max (Coding & Tooling)', enabled: true},
+            {target: 'Kimi', display_name: 'Kimi K2.5 (Long Context)', enabled: true}
+        ]
+    };
+    qs.fallback_models ||= [];
+    return qs;
+}
+window.editQuotaSaver = async (action, indexOrField, value) => {
+    const qs = quotaSaverConfig(), fb = qs.fallback_models;
+    if (action === 'toggle_enabled') qs.enabled = !!value;
+    else if (action === 'field') qs[indexOrField] = value;
+    else if (action === 'remove') fb.splice(indexOrField, 1);
+    else if (action === 'move') {
+        const next = indexOrField + value;
+        if (next < 0 || next >= fb.length) return;
+        [fb[indexOrField], fb[next]] = [fb[next], fb[indexOrField]];
+    } else if (action === 'display_name' || action === 'enabled') {
+        if (fb[indexOrField]) fb[indexOrField][action] = value;
+    }
+    try {
+        const data = await appIntegrationRequest('/api/app-integration/antigravity/quota-saver', qs);
+        if (data && data.quota_saver) appIntegrationConfig('antigravity').quota_saver = data.quota_saver;
+        showToast(qs.enabled !== false ? 'Quota-Saver updated (Offline-Persistent)' : 'Quota-Saver disabled');
+    } catch (_) {
+        await saveAppIntegration('antigravity');
+    }
+    renderActiveTab();
+};
+function renderQuotaSaverSubmodule() {
+    const qs = quotaSaverConfig();
+    const isEnabled = qs.enabled !== false;
+    const isExternalFirst = qs.mode === 'external_first';
+    const isNativeOnly = qs.mode === 'native_only';
+    const fastOpts = [
+        ['gemini-4-hydrogen-low', 'Gemini 4 Hydrogen (Low — Fast & Compaction)'],
+        ['gemini-4-hydrogen-medium', 'Gemini 4 Hydrogen (Medium)'],
+        ['gemini-4-hydrogen-high', 'Gemini 4 Hydrogen (High)'],
+        ['gemini-3-flash', 'Gemini 3 Flash (Independent Quota Bucket)'],
+        ['gemini-2.5-flash', 'Gemini 2.5 Flash (Independent Quota Bucket)']
+    ].map(([k, lbl]) => `<option value="${k}" ${(qs.fast_native_model || 'gemini-4-hydrogen-low') === k ? 'selected' : ''}>${lbl}</option>`).join('');
+    const routineOpts = [
+        ['gemini-4-hydrogen-medium', 'Gemini 4 Hydrogen (Medium — Routine Simple Tasks)'],
+        ['gemini-4-hydrogen-high', 'Gemini 4 Hydrogen (High)'],
+        ['gemini-4-hydrogen-low', 'Gemini 4 Hydrogen (Low)'],
+        ['gemini-4-hydrogen-xhigh', 'Gemini 4 Hydrogen (XHigh)'],
+        ['gemini-3-flash', 'Gemini 3 Flash (Independent Quota Bucket)'],
+        ['gemini-2.5-flash', 'Gemini 2.5 Flash (Independent Quota Bucket)']
+    ].map(([k, lbl]) => `<option value="${k}" ${(qs.routine_native_model || 'gemini-4-hydrogen-medium') === k ? 'selected' : ''}>${lbl}</option>`).join('');
+    const modeOpts = [
+        ['native_first', 'Native Hydrogen First -> External Fallback List (Backup)'],
+        ['external_first', 'External Fallback List First -> Replace Gemini 4 Hydrogen'],
+        ['native_only', 'Native Google (gemini-4-hydrogen-*) Only']
+    ].map(([k, lbl]) => `<option value="${k}" ${(qs.mode || 'native_first') === k ? 'selected' : ''}>${lbl}</option>`).join('');
+    const fbListHtml = !qs.fallback_models.length
+        ? '<p class="app-integration-empty">No external fallback models configured. Click "+ Add Fallback Model" to select from your BSL Combos and Provider Models.</p>'
+        : `<div class="app-integration-model-list">${qs.fallback_models.map((model, index) => `<article class="app-integration-model-row">
+            <div class="app-integration-model-left">
+                <span class="app-integration-model-idx">#${index + 1}</span>
+                <input class="input app-integration-model-name" aria-label="Fallback display name" value="${agEsc(model.display_name || model.target)}" onchange="editQuotaSaver('display_name',${index},this.value)">
+                <code class="app-integration-target-pill">${agEsc(model.target)}</code>
+                <span class="app-integration-slot-pill">${isExternalFirst ? `Replace #${index + 1} · Strict Parity` : `Backup #${index + 1} · Strict Parity`}</span>
+            </div>
+            <div class="app-integration-model-right">
+                <label class="app-integration-toggle-label" style="font-size:12px;margin-right:4px;"><input type="checkbox" ${model.enabled !== false ? 'checked' : ''} onchange="editQuotaSaver('enabled',${index},this.checked)">Enabled</label>
+                <button class="btn btn-outline" style="padding:4px 8px;font-size:12px;" title="Move priority up" ${index === 0 ? 'disabled' : ''} onclick="editQuotaSaver('move',${index},-1)">↑</button>
+                <button class="btn btn-outline" style="padding:4px 8px;font-size:12px;" title="Move priority down" ${index === qs.fallback_models.length - 1 ? 'disabled' : ''} onclick="editQuotaSaver('move',${index},1)">↓</button>
+                <button class="btn btn-outline" style="padding:4px 10px;font-size:12px;color:var(--danger);border-color:rgba(239,68,68,0.35);" onclick="editQuotaSaver('remove',${index})">Remove</button>
+            </div>
+        </article>`).join('')}</div>`;
+    return `
+    <div class="app-integration-submodule" id="ag-quota-saver-submodule">
+        <div class="app-integration-submodule-header">
+            <div class="app-integration-title-group">
+                <h3 class="app-integration-submodule-title">Lightweight Task &amp; Subagent Quota-Saver (Carbon / Argon Shield)</h3>
+                <p class="app-integration-subtitle">Offload simple prompts, context compaction, and routine subagents to Native Google (<code>gemini-4-hydrogen-*</code>) or priority-ordered External Models. <strong>Offline-Persistent:</strong> native Hydrogen offload keeps working even when BSL Router is shut down until you click Disable here.</p>
+            </div>
+            <div class="app-integration-header-right">
+                <p id="app-ag-qs-status" class="app-integration-status-pill ${isEnabled ? 'is-active' : ''}">${isEnabled ? 'Active · Offline-Persistent (Works if Router Off)' : 'Disabled · Direct Carbon/Argon'}</p>
+                <button class="btn ${isEnabled ? 'btn-danger' : 'btn-primary'}" onclick="editQuotaSaver('toggle_enabled',0,${!isEnabled})">${isEnabled ? 'Disable Quota-Saver' : 'Enable Quota-Saver'}</button>
+            </div>
+        </div>
+        <div class="app-integration-toolbar" style="background:var(--bg-surface);">
+            <div class="app-integration-toolbar-actions" style="gap:16px;flex-wrap:wrap;">
+                <label class="app-integration-toggle-label"><input type="checkbox" ${qs.native_hydrogen_offload !== false ? 'checked' : ''} onchange="editQuotaSaver('field','native_hydrogen_offload',this.checked)"><span>Enable Native Google (<code>gemini-4-hydrogen-*</code>) Offload (Offline-Persistent)</span></label>
+                <label class="app-integration-toggle-label"><input type="checkbox" ${qs.offload_subagents !== false ? 'checked' : ''} onchange="editQuotaSaver('field','offload_subagents',this.checked)"><span>Offload Subagents (<code>invoke_subagent</code> &rarr; Hydrogen / External)</span></label>
+                <label class="app-integration-toggle-label"><input type="checkbox" ${qs.offload_tool_followups === true ? 'checked' : ''} onchange="editQuotaSaver('field','offload_tool_followups',this.checked)"><span>Offload Turn 2+ Tool Loops (Plan Carbon/Argon &rarr; Exec Hydrogen)</span></label>
+                <label class="app-integration-toggle-label"><input type="checkbox" ${qs.strict_hydrogen_parity !== false ? 'checked' : ''} onchange="editQuotaSaver('field','strict_hydrogen_parity',this.checked)"><span>Enforce Strict Hydrogen Parity on External Models</span></label>
+            </div>
+            <button class="btn btn-primary" onclick="openAddModelModal('antigravity_quota_saver')">+ Add Fallback Model</button>
+        </div>
+        <div class="app-integration-tier-grid" style="grid-template-columns:repeat(3, minmax(200px, 1fr));background:var(--bg-surface);margin-bottom:12px;">
+            <label class="app-integration-tier-field"><span>Lightweight &amp; Subagent Routing Mode</span><select class="input" onchange="editQuotaSaver('field','mode',this.value)">${modeOpts}</select></label>
+            <label class="app-integration-tier-field"><span>Fast / Compaction Native Model</span><select class="input" onchange="editQuotaSaver('field','fast_native_model',this.value)">${fastOpts}</select></label>
+            <label class="app-integration-tier-field"><span>Routine Simple Task Native Model</span><select class="input" onchange="editQuotaSaver('field','routine_native_model',this.value)">${routineOpts}</select></label>
+        </div>
+        <div class="app-integration-parity-bar">
+            <strong style="color:var(--text-main);">Strict Hydrogen Parity Contract:</strong>
+            <span class="app-integration-parity-pill">v1internal SSE Framing</span>
+            <span class="app-integration-parity-pill">Tool &amp; call_mcp_tool Bridge</span>
+            <span class="app-integration-parity-pill">Claude/Gemini Signature Projection</span>
+            <span class="app-integration-parity-pill">Intra-Native Flash Cascade</span>
+            <span class="app-integration-parity-pill">1M Context Anti-Lobotomy Shaper</span>
+            <span class="app-integration-parity-pill">Subagent Model="flash" Override</span>
+            <span class="app-integration-parity-pill">Turn-2+ Tool-Loop Saver (${qs.offload_tool_followups === true ? 'Active' : 'Opt-In'})</span>
+            <span class="app-integration-parity-pill">EN/VI Language Lock</span>
+        </div>
+        <div class="app-integration-section-head">
+            <span class="app-integration-section-title">External Fallback Models Priority List (${qs.fallback_models.length}) &mdash; ${isNativeOnly ? 'Standby (Native Only mode selected)' : (isExternalFirst ? 'Active Primary Replacement for gemini-4-hydrogen-* (#1 -> #N)' : 'Active Backup for gemini-4-hydrogen-* (#1 -> #N)')}</span>
+        </div>
+        ${fbListHtml}
+    </div>`;
+}
 function renderMitmTab() {
     const cc = appIntegrationConfig('claude_code');
     appIntegrationConfig('antigravity');
@@ -4171,6 +4327,7 @@ function renderMitmTab() {
             <span class="app-integration-section-title">Custom Models (${appIntegrationConfig('antigravity').custom_models.length})</span>
         </div>
         ${appIntegrationModels('antigravity')}
+        ${renderQuotaSaverSubmodule()}
         <details class="app-integration-details"><summary>Native model slot mappings (advanced)</summary>${renderAntigravityLegacySlots()}</details>
     </section>
     <section class="detail-card app-integration-card">
@@ -4204,6 +4361,9 @@ const AG_SLOTS=[
     {key:'gemini-4-argon-low',label:'Gemini 4 Argon (Low)'},
     {key:'gemini-4-argon-medium',label:'Gemini 4 Argon (Medium)'},
     {key:'gemini-4-argon-high',label:'Gemini 4 Argon (High)'},
+    {key:'gemini-4-carbon-low',label:'Gemini 4 Carbon (Low)'},
+    {key:'gemini-4-carbon-medium',label:'Gemini 4 Carbon (Medium)'},
+    {key:'gemini-4-carbon-high',label:'Gemini 4 Carbon (High)'},
     {key:'gemini-2.5-pro',label:'Gemini 2.5 Pro'}
 ];
 function agConfig(){if(!globalConfig.antigravity_integration||typeof globalConfig.antigravity_integration!=='object')globalConfig.antigravity_integration={};let c=globalConfig.antigravity_integration;if(!c.mappings||typeof c.mappings!=='object')c.mappings={};if(typeof c.enabled!=='boolean')c.enabled=false;return c;}
@@ -7377,7 +7537,7 @@ function toggleAdminPassword(enabled) {
 
 // ── Save hook: persist admin password before saving config ──
 const _originalSaveConfig = saveConfig;
-saveConfig = async function() {
+saveConfig = async function(overrides = null) {
     // Sync admin password from input to globalConfig before save
     const pwdInput = document.getElementById('admin-password-input');
     if (pwdInput) {
@@ -7389,7 +7549,7 @@ saveConfig = async function() {
         if (!globalConfig.admin) globalConfig.admin = {};
         globalConfig.admin.password = pwd;
     }
-    return _originalSaveConfig.call(this);
+    return _originalSaveConfig.call(this, overrides);
 };
 
 function renderToolsTab() {
@@ -10509,7 +10669,7 @@ function renderCombosTab() {
                         <div>
                             <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--text-main);">Combo Name</label>
                             <input type="text" id="combo-modal-alias" placeholder="e.g. coder-1" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 13px; outline: none; background: var(--bg-body); color: var(--text-main);">
-                            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Only letters, numbers, -, _ and . allowed</div>
+                            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Letters, numbers, spaces, and symbols are allowed except /</div>
                         </div>
                         
                         <div>
@@ -10604,9 +10764,9 @@ function renderCombosTab() {
                             <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
                         </div>
                         <div style="display: flex; flex-direction: column; gap: 4px;">
-                            <div style="font-size: 15px; font-weight: 600; color: var(--text-main);">${c.alias}</div>
+                            <div style="font-size: 15px; font-weight: 600; color: var(--text-main);">${agEsc(c.alias)}</div>
                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                                ${c.chain.map(m => `<span style="font-size: 11px; background: var(--bg-body); color: var(--text-muted); padding: 2px 8px; border-radius: 12px; border: 1px solid var(--border-color);">${getComboModelDisplay(m)}</span>`).join('')}
+                                ${c.chain.map(m => `<span style="font-size: 11px; background: var(--bg-body); color: var(--text-muted); padding: 2px 8px; border-radius: 12px; border: 1px solid var(--border-color);">${agEsc(getComboModelDisplay(m))}</span>`).join('')}
                             </div>
                         </div>
                     </div>
@@ -10626,7 +10786,7 @@ function renderCombosTab() {
                                 <span style="font-size:18px;line-height:14px;font-weight:700;">↓</span>
                                 Down
                             </button>
-                            <button class="btn" style="background: transparent; color: var(--text-muted); padding: 4px 8px; display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; border-radius: 6px;" onclick="copyComboAlias('${c.alias}')" title="Copy Alias">
+                            <button class="btn" style="background: transparent; color: var(--text-muted); padding: 4px 8px; display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; border-radius: 6px;" onclick="copyComboAlias(${idx})" title="Copy Alias">
                                 <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                                 Copy
                             </button>
@@ -10712,7 +10872,7 @@ window.openComboModal = function(idx = -1) {
         const c = globalConfig.combos[idx];
         document.getElementById('combo-modal-title').innerText = 'Edit Combo';
         document.getElementById('combo-modal-alias').value = c.alias;
-        tempComboModels = [...c.chain];
+        tempComboModels = JSON.parse(JSON.stringify(c.chain));
     } else {
         document.getElementById('combo-modal-title').innerText = 'Create Combo';
         document.getElementById('combo-modal-alias').value = '';
@@ -10768,14 +10928,14 @@ window.renderComboModalModels = function() {
             <div style="display:flex;align-items:flex-start;gap:8px;flex:1;min-width:0;">
                 <span style="font-size:11px;color:var(--text-muted);font-weight:700;flex-shrink:0;line-height:18px;">${i+1}</span>
                 <div style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1;">
-                    ${providerLabel ? `<span style="font-size:10px;color:var(--brand-color);font-weight:700;text-transform:uppercase;letter-spacing:0.25px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${providerLabel}</span>` : ''}
-                    <span title="${modelLabel}" style="font-size:12px;color:var(--text-main);font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${modelLabel}</span>
+                    ${providerLabel ? `<span style="font-size:10px;color:var(--brand-color);font-weight:700;text-transform:uppercase;letter-spacing:0.25px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${agEsc(providerLabel)}</span>` : ''}
+                    <span title="${agEsc(modelLabel)}" style="font-size:12px;color:var(--text-main);font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${agEsc(modelLabel)}</span>
                 </div>
             </div>
             <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
                 ${thinkingHtml}
-                <button class="btn btn-outline" title="Move up" aria-label="Move ${modelLabel} up" style="padding:3px 7px;font-size:11px;line-height:1;border-radius:6px;color:var(--text-muted);${i===0?'opacity:0.35;cursor:not-allowed;':'cursor:pointer;'}" onclick="moveComboModel(${i}, -1)" ${i===0?'disabled':''}>↑</button>
-                <button class="btn btn-outline" title="Move down" aria-label="Move ${modelLabel} down" style="padding:3px 7px;font-size:11px;line-height:1;border-radius:6px;color:var(--text-muted);${i===tempComboModels.length-1?'opacity:0.35;cursor:not-allowed;':'cursor:pointer;'}" onclick="moveComboModel(${i}, 1)" ${i===tempComboModels.length-1?'disabled':''}>↓</button>
+                <button class="btn btn-outline" title="Move up" aria-label="Move ${agEsc(modelLabel)} up" style="padding:3px 7px;font-size:11px;line-height:1;border-radius:6px;color:var(--text-muted);${i===0?'opacity:0.35;cursor:not-allowed;':'cursor:pointer;'}" onclick="moveComboModel(${i}, -1)" ${i===0?'disabled':''}>↑</button>
+                <button class="btn btn-outline" title="Move down" aria-label="Move ${agEsc(modelLabel)} down" style="padding:3px 7px;font-size:11px;line-height:1;border-radius:6px;color:var(--text-muted);${i===tempComboModels.length-1?'opacity:0.35;cursor:not-allowed;':'cursor:pointer;'}" onclick="moveComboModel(${i}, 1)" ${i===tempComboModels.length-1?'disabled':''}>↓</button>
                 <button class="btn" style="padding:3px;background:none;border:none;color:var(--danger);cursor:pointer;display:flex;align-items:center;margin-left:2px;" onclick="removeComboModel(${i})">
                     <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
@@ -10806,7 +10966,7 @@ window.openAddModelModal = function(context = 'combo') {
     addModelContext = context;
     if (!document.getElementById('add-model-modal')) renderCombosTab();
     const modal = document.getElementById('add-model-modal');
-    modal.querySelector('span[style*="margin-left: 12px"]').textContent = context === 'combo' ? 'Add Model to Combo' : 'Add Integration Model';
+    modal.querySelector('span[style*="margin-left: 12px"]').textContent = context === 'combo' ? 'Add Model to Combo' : (context === 'antigravity_quota_saver' ? 'Add Quota-Saver Fallback Model' : 'Add Integration Model');
     const searchInput = document.getElementById('add-model-search');
     if (searchInput) searchInput.value = '';
     renderAddModelList();
@@ -10819,6 +10979,15 @@ window.closeAddModelModal = function() {
 
 window.toggleModelInCombo = async function(modelRef) {
     if (addModelContext !== 'combo') {
+        if (addModelContext === 'antigravity_quota_saver') {
+            const qs = quotaSaverConfig(), target = integrationModelTarget(modelRef);
+            const idx = qs.fallback_models.findIndex(m => m.target === target);
+            if (idx < 0) qs.fallback_models.push({target, display_name: target, enabled: true});
+            else qs.fallback_models.splice(idx, 1);
+            await editQuotaSaver('sync', 0, null);
+            renderAddModelList();
+            return;
+        }
         const cfg = appIntegrationConfig(addModelContext), target = integrationModelTarget(modelRef);
         const index = cfg.custom_models.findIndex(m => m.target === target);
         if (index < 0) cfg.custom_models.push({target, display_name: target, enabled: true});
@@ -10895,19 +11064,19 @@ window.renderAddModelList = function() {
             <div>
                 <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
                     ${g.icon}
-                    <span style="font-size: 13px; font-weight: 600; color: var(--brand-color);">${g.name} <span style="color: var(--text-muted); font-size: 11px; font-weight: normal;">(${filteredModels.length})</span></span>
+                    <span style="font-size: 13px; font-weight: 600; color: var(--brand-color);">${agEsc(g.name)} <span style="color: var(--text-muted); font-size: 11px; font-weight: normal;">(${filteredModels.length})</span></span>
                 </div>
                 <div style="display: flex; flex-direction: column; gap: 4px;">
                     ${filteredModels.map(m => {
-                        const isSelected = addModelContext === 'combo' ? findComboRefIndex(tempComboModels, m.ref) !== -1 : appIntegrationConfig(addModelContext).custom_models.some(item => item.target === integrationModelTarget(m.ref));
+                        const isSelected = addModelContext === 'combo' ? findComboRefIndex(tempComboModels, m.ref) !== -1 : (addModelContext === 'antigravity_quota_saver' ? quotaSaverConfig().fallback_models.some(item => item.target === integrationModelTarget(m.ref)) : appIntegrationConfig(addModelContext).custom_models.some(item => item.target === integrationModelTarget(m.ref)));
                         const bg = isSelected ? 'var(--brand-light)' : 'var(--bg-body)';
                         const border = isSelected ? 'var(--brand-color)' : 'var(--border-color)';
                         const color = isSelected ? 'var(--brand-color)' : 'var(--text-main)';
                         const thinkingTag = (m.sub || '').split('·').pop().trim();
                         return `
-                            <div style="padding:7px 12px;border-radius:8px;border:1px solid ${border};background:${bg};color:${color};font-size:12px;cursor:pointer;user-select:none;transition:all 0.15s;display:flex;align-items:center;justify-content:space-between;gap:8px;" onclick="toggleModelInCombo('${m.ref.replace(/'/g, "\\'")}')">
-                                <span style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;font-size:13px;">${m.label}</span>
-                                ${thinkingTag && thinkingTag !== 'combo model' ? `<span style="font-size:9px;color:var(--text-muted);white-space:nowrap;flex-shrink:0;background:var(--bg-surface);padding:1px 6px;border-radius:8px;border:1px solid var(--border-color);">${thinkingTag}</span>` : ''}
+                            <div style="padding:7px 12px;border-radius:8px;border:1px solid ${border};background:${bg};color:${color};font-size:12px;cursor:pointer;user-select:none;transition:all 0.15s;display:flex;align-items:center;justify-content:space-between;gap:8px;" data-model-ref="${agEsc(m.ref)}" onclick="toggleModelInCombo(this.getAttribute('data-model-ref'))">
+                                <span style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;font-size:13px;">${agEsc(m.label)}</span>
+                                ${thinkingTag && thinkingTag !== 'combo model' ? `<span style="font-size:9px;color:var(--text-muted);white-space:nowrap;flex-shrink:0;background:var(--bg-surface);padding:1px 6px;border-radius:8px;border:1px solid var(--border-color);">${agEsc(thinkingTag)}</span>` : ''}
                             </div>
                         `;
                     }).join('')}
@@ -10941,42 +11110,49 @@ window.saveComboModal = async function() {
     const idx = parseInt(document.getElementById('combo-modal-idx').value, 10);
     
     if (!alias) return showToast('Please provide a combo name', true);
-    if (!/^[a-zA-Z0-9\-\_\.]+$/.test(alias)) return showToast('Invalid combo name', true);
+    if (alias.includes('/') || /[\r\n\t]/.test(alias)) return showToast('Combo name cannot contain /', true);
     if (tempComboModels.length === 0) return showToast('Please add at least one model', true);
     
-    if (!globalConfig.combos) globalConfig.combos = [];
-    
+    const combos = JSON.parse(JSON.stringify(globalConfig.combos || []));
+
     // Check duplicate alias
-    const existingIdx = globalConfig.combos.findIndex(c => c.alias === alias);
+    const existingIdx = combos.findIndex(c => c.alias === alias);
     if (existingIdx !== -1 && existingIdx !== idx) {
         return showToast('Combo name already exists', true);
     }
     
     if (idx >= 0) {
-        globalConfig.combos[idx].alias = alias;
-        globalConfig.combos[idx].chain = [...tempComboModels];
+        if (!combos[idx]) return showToast('Combo no longer exists; reopen the editor', true);
+        combos[idx].alias = alias;
+        combos[idx].chain = JSON.parse(JSON.stringify(tempComboModels));
     } else {
-        globalConfig.combos.push({ alias, chain: [...tempComboModels], strategy: 'fallback' });
+        combos.push({ alias, chain: JSON.parse(JSON.stringify(tempComboModels)), strategy: 'fallback' });
     }
-    
+
+    const rename = idx >= 0 && globalConfig.combos?.[idx]?.alias && globalConfig.combos[idx].alias !== alias
+        ? { from: globalConfig.combos[idx].alias, to: alias } : null;
+    const saved = await saveConfig(rename ? { combos, _renamed_combo: rename } : { combos });
+    if (!saved) return false;
     closeComboModal();
-    await saveGlobalConfig();
     renderActiveTab();
     showToast(idx >= 0 ? 'Combo updated' : 'Combo created');
+    return true;
 };
 
 window.deleteCombo = async function(idx) {
     if (!confirm('Delete this combo model?')) return;
-    globalConfig.combos.splice(idx, 1);
-    await saveGlobalConfig();
+    const combos = JSON.parse(JSON.stringify(globalConfig.combos || []));
+    combos.splice(idx, 1);
+    if (!await saveConfig({ combos })) return false;
     renderActiveTab();
     showToast('Combo deleted');
 };
 
 window.updateComboStrategy = async function(idx, strategy) {
     if (globalConfig.combos[idx]) {
-        globalConfig.combos[idx].strategy = strategy;
-        await saveGlobalConfig();
+        const combos = JSON.parse(JSON.stringify(globalConfig.combos || []));
+        combos[idx].strategy = strategy;
+        if (!await saveConfig({ combos })) { renderActiveTab(); return false; }
         showToast('Strategy updated');
     }
 };
@@ -10985,15 +11161,17 @@ window.moveComboListItem = async function(idx, dir) {
     if (!Array.isArray(globalConfig.combos)) return;
     const nextIdx = idx + dir;
     if (idx < 0 || nextIdx < 0 || idx >= globalConfig.combos.length || nextIdx >= globalConfig.combos.length) return;
-    const moved = globalConfig.combos[idx];
-    globalConfig.combos[idx] = globalConfig.combos[nextIdx];
-    globalConfig.combos[nextIdx] = moved;
-    await saveGlobalConfig();
+    const combos = JSON.parse(JSON.stringify(globalConfig.combos));
+    const moved = combos[idx];
+    combos[idx] = combos[nextIdx];
+    combos[nextIdx] = moved;
+    if (!await saveConfig({ combos })) return false;
     renderActiveTab();
     showToast(`Combo moved ${dir < 0 ? 'up' : 'down'}`);
 };
 
-window.copyComboAlias = function(alias) {
+window.copyComboAlias = function(idxOrAlias) {
+    const alias = typeof idxOrAlias === 'number' ? (globalConfig.combos?.[idxOrAlias]?.alias ?? '') : String(idxOrAlias ?? '');
     navigator.clipboard.writeText(alias).then(() => {
         showToast('Alias copied to clipboard');
     }).catch(() => {

@@ -107,6 +107,10 @@ _POOL_RETRIES = 2
 # candidate is tried. Exponential with a cap so multi-IP failover stays bounded.
 _EGRESS_BACKOFF_BASE_S = 0.5
 _EGRESS_BACKOFF_MAX_S = 3.0
+# A request must not spend a full connect timeout serially on every DNS answer.
+# This bounds address failover while leaving httpcore's per-attempt connect
+# timeout and TLS verification unchanged.
+_EGRESS_ADDRESS_TOTAL_BUDGET_S = 45.0
 
 
 def _is_safe_real_upstream_ip(value: str) -> bool:
@@ -197,6 +201,44 @@ def _stdlib_udp_dns_resolve(host: str) -> List[str]:
     return []
 
 
+def _doh_resolve(host: str) -> List[str]:
+    """DNS-over-HTTPS fallback using Google and Cloudflare DoH endpoints.
+
+    Works through HTTPS (port 443) which is almost never blocked, unlike raw
+    UDP DNS to 8.8.8.8. This is the last-resort resolver before giving up.
+    """
+    import json
+    import urllib.request
+    import ssl
+
+    doh_endpoints = [
+        "https://dns.google/resolve",
+        "https://cloudflare-dns.com/dns-query",
+    ]
+    for endpoint in doh_endpoints:
+        try:
+            url = f"{endpoint}?name={host}&type=A"
+            req = urllib.request.Request(
+                url,
+                headers={"Accept": "application/dns-json"},
+            )
+            ctx = ssl.create_default_context()
+            with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
+                data = json.loads(resp.read())
+            answers = data.get("Answer", [])
+            ips = []
+            for ans in answers:
+                if ans.get("type") == 1:  # A record
+                    ip = ans.get("data", "")
+                    if ip and _is_safe_real_upstream_ip(ip) and ip not in ips:
+                        ips.append(ip)
+            if ips:
+                return ips
+        except Exception:
+            continue
+    return []
+
+
 def _external_resolve(host: str) -> List[str]:
     """Raw external-DNS A-record lookup for ``host``.
 
@@ -230,6 +272,15 @@ def _external_resolve(host: str) -> List[str]:
     ips = _stdlib_udp_dns_resolve(host)
     if ips:
         return ips
+
+    # RECOVERY (2026-11-16): DNS-over-HTTPS fallback when all traditional
+    # resolvers fail. DoH uses port 443 (HTTPS) which is almost never blocked,
+    # unlike raw UDP to 8.8.8.8 which ISPs/firewalls can silently drop.
+    doh_ips = _doh_resolve(host)
+    if doh_ips:
+        logger.info("google-egress: DoH fallback resolved %s -> %s", host, doh_ips)
+        return doh_ips
+
     raise RuntimeError(f"external DNS lookup failed for {host}")
 
 
@@ -362,7 +413,13 @@ class HostsBypassBackend(httpcore.AsyncNetworkBackend):
         socket_options=None,
     ):
         if host in ALLOWED_GOOGLE_HOSTS:
-            ips = await asyncio.to_thread(resolve_google_ips, host)
+            deadline = time.monotonic() + min(timeout if timeout is not None else _EGRESS_ADDRESS_TOTAL_BUDGET_S,
+                                               _EGRESS_ADDRESS_TOTAL_BUDGET_S)
+            try:
+                ips = await asyncio.wait_for(asyncio.to_thread(resolve_google_ips, host),
+                                             max(0.001, deadline - time.monotonic()))
+            except asyncio.TimeoutError as exc:
+                raise httpcore.ConnectTimeout("Google DNS/address budget exhausted") from exc
             if not ips:
                 raise httpcore.ConnectError(
                     f"no safe public Google IP resolvable for {host}"
@@ -371,17 +428,21 @@ class HostsBypassBackend(httpcore.AsyncNetworkBackend):
             _attempt = 0
             for ip in ips:
                 try:
-                    stream = await self._inner.connect_tcp(
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise httpcore.ConnectTimeout("Google address failover budget exhausted")
+                    stream = await asyncio.wait_for(self._inner.connect_tcp(
                         ip,
                         port,
-                        timeout=timeout,
+                        timeout=min(remaining, 10.0),
                         local_address=local_address,
                         socket_options=socket_options,
-                    )
+                    ), remaining)
                     logger.info("google-egress connected %s:%s via %s", host, port, ip)
                     return stream
                 except Exception as exc:  # try the next failover candidate
-                    last_exc = exc
+                    last_exc = (httpcore.ConnectTimeout("Google address failover budget exhausted")
+                                if isinstance(exc, asyncio.TimeoutError) else exc)
                     _attempt += 1
                     logger.warning(
                         "google-egress connect failover: %s (%s), trying next "
@@ -400,7 +461,23 @@ class HostsBypassBackend(httpcore.AsyncNetworkBackend):
                             _EGRESS_BACKOFF_BASE_S * (2 ** (_attempt - 1)),
                             _EGRESS_BACKOFF_MAX_S,
                         )
-                        await asyncio.sleep(_delay)
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        await asyncio.sleep(min(_delay, remaining))
+
+            # RECOVERY (2026-11-16): All cached IPs failed ConnectError.
+            # Invalidate the hot cache so the NEXT request forces a fresh
+            # DNS resolve instead of retrying the same dead IPs for another
+            # 5 minutes (cache TTL).
+            with _cache_lock:
+                _RESOLVE_CACHE.pop(host, None)
+            rotate_google_ip_cache(host)
+            logger.error(
+                "google-egress: all %d IPs exhausted for %s; "
+                "cache invalidated for immediate re-resolve on next request",
+                len(ips), host,
+            )
             assert last_exc is not None
             raise last_exc
 
@@ -497,6 +574,8 @@ class HostsBypassSyncBackend(httpcore.NetworkBackend):
         socket_options=None,
     ):
         if host in ALLOWED_GOOGLE_HOSTS:
+            deadline = time.monotonic() + min(timeout if timeout is not None else _EGRESS_ADDRESS_TOTAL_BUDGET_S,
+                                               _EGRESS_ADDRESS_TOTAL_BUDGET_S)
             ips = resolve_google_ips(host)
             if not ips:
                 raise httpcore.ConnectError(
@@ -506,10 +585,13 @@ class HostsBypassSyncBackend(httpcore.NetworkBackend):
             _attempt = 0
             for ip in ips:
                 try:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise httpcore.ConnectTimeout("Google address failover budget exhausted")
                     stream = self._inner.connect_tcp(
                         ip,
                         port,
-                        timeout=timeout,
+                        timeout=min(remaining, 10.0),
                         local_address=local_address,
                         socket_options=socket_options,
                     )
@@ -530,7 +612,20 @@ class HostsBypassSyncBackend(httpcore.NetworkBackend):
                             _EGRESS_BACKOFF_BASE_S * (2 ** (_attempt - 1)),
                             _EGRESS_BACKOFF_MAX_S,
                         )
-                        time.sleep(_delay)
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(_delay, remaining))
+
+            # RECOVERY (2026-11-16): mirror async cache-invalidation
+            with _cache_lock:
+                _RESOLVE_CACHE.pop(host, None)
+            rotate_google_ip_cache(host)
+            logger.error(
+                "google-egress-sync: all %d IPs exhausted for %s; "
+                "cache invalidated",
+                len(ips), host,
+            )
             assert last_exc is not None
             raise last_exc
 

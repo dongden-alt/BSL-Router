@@ -1075,6 +1075,11 @@ input:checked + .slider:before { transform: translateX(16px); }
 .app-integration-empty { padding:20px 16px; text-align:center; font-size:13px; color:var(--text-muted); background:var(--bg-body); border:1px dashed var(--border-color); border-radius:10px; margin:0; }
 .app-integration-details { margin-top:16px; padding-top:14px; border-top:1px solid var(--border-color); }
 .app-integration-details > summary { cursor:pointer; font-size:12px; font-weight:600; color:var(--text-muted); user-select:none; margin-bottom:12px; }
+.app-integration-submodule { margin-top:18px; padding:18px 20px; background:var(--bg-body); border:1px solid var(--border-color); border-radius:10px; min-height:0; }
+.app-integration-submodule-header { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding-bottom:14px; margin-bottom:14px; border-bottom:1px solid var(--border-color); flex-wrap:wrap; }
+.app-integration-submodule-title { font-size:14px; font-weight:600; color:var(--text-main); margin:0 0 4px 0; display:flex; align-items:center; gap:8px; }
+.app-integration-parity-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 12px; margin-bottom:14px; background:var(--bg-surface); border:1px solid var(--border-color); border-radius:10px; font-size:11px; color:var(--text-muted); }
+.app-integration-parity-pill { display:inline-flex; align-items:center; gap:5px; padding:3px 8px; border-radius:6px; background:#ecfdf5; border:1px solid #a7f3d0; color:#047857; font-size:11px; font-weight:600; }
 
 /* ═══════════════════════════════════════════════════════════════════════════
    MOBILE RESPONSIVE LAYOUT — Hamburger Menu + Responsive Breakpoints

@@ -40,6 +40,8 @@ import yaml
 import json
 import time
 import uuid
+import math
+import hashlib
 from datetime import datetime
 from pathlib import Path as _Path
 import secrets as _secrets
@@ -929,6 +931,76 @@ _TERMINAL_RELAY_WALL_MARKERS = (
 )
 
 
+def _is_recoverable_content_filter_400(status_code, err_text) -> bool:
+    """True when an upstream 400 (or SSE error) reports content filtering
+    (`content_filter`, `Output blocked by content filtering policy`, etc.)
+    that is provider-specific and MUST advance the combo chain pre-commit."""
+    try:
+        if status_code not in (400, 403, 502) or not err_text:
+            return False
+        _low = err_text.lower() if isinstance(err_text, str) else str(err_text).lower()
+        return (
+            "content_filter" in _low
+            or "blocked by content filtering" in _low
+            or "content filtering policy" in _low
+        )
+    except Exception:
+        return False
+
+
+def _format_conn_account_id(conn: Any, conn_index: Any = None) -> str:
+    """Extract a clean, non-secret connection/account identifier for G0-6 forensics."""
+    idx_tag = f"conn#{conn_index}" if conn_index is not None else "conn#0"
+    if not isinstance(conn, dict):
+        return idx_tag
+    for k in ("email", "account", "account_email", "label", "name", "id"):
+        val = conn.get(k)
+        if isinstance(val, str) and val.strip():
+            return f"{idx_tag}({val.strip()[:80]})"
+    pdata = conn.get("provider_data")
+    if isinstance(pdata, dict):
+        for k in ("email", "account_id", "project_id", "username"):
+            val = pdata.get(k)
+            if isinstance(val, str) and val.strip():
+                return f"{idx_tag}({val.strip()[:80]})"
+    try:
+        acct = _oauth_antiban.extract_account_id(conn, conn_index or 0)
+        if isinstance(acct, str) and acct.strip():
+            return f"{idx_tag}({acct.strip()[:80]})"
+    except Exception:
+        pass
+    return idx_tag
+
+
+def _log_upstream_http_error_forensics(
+    status_code: Any,
+    provider_name: Any,
+    target_model: Any,
+    conn: Any,
+    conn_index: Any,
+    err_text: Any,
+) -> None:
+    """Emit structured forensic logs for mid-session HTTP 404 (G0-6) and HTTP 400 content_filter."""
+    try:
+        sc = int(status_code or 0)
+    except (TypeError, ValueError):
+        return
+    conn_id = _format_conn_account_id(conn, conn_index)
+    err_short = (str(err_text or "").replace("\n", " ").strip())[:220]
+    if sc == 404:
+        print(
+            f"[Upstream404] provider={provider_name} model={target_model} "
+            f"account={conn_id} status=404 err={err_short!r}",
+            flush=True,
+        )
+    elif sc == 400 and _is_recoverable_content_filter_400(sc, err_text):
+        print(
+            f"[ContentFilter400] provider={provider_name} model={target_model} "
+            f"account={conn_id} status=400 err={err_short!r} — advancing combo chain",
+            flush=True,
+        )
+
+
 def _is_terminal_relay_wall(status_code, err_text) -> bool:
     """True only for a status+body combo that is a hard provider wall.
 
@@ -945,6 +1017,8 @@ def _is_terminal_relay_wall(status_code, err_text) -> bool:
     """
     try:
         if not err_text:
+            return False
+        if _is_recoverable_content_filter_400(status_code, err_text):
             return False
         _low = err_text.lower() if isinstance(err_text, str) else str(err_text).lower()
         if not _low:
@@ -970,6 +1044,8 @@ def _is_unrecoverable_payload_400(status_code, err_text) -> bool:
     wrapping does not resend the identical rejected payload forever."""
     try:
         if status_code != 400 or not err_text:
+            return False
+        if _is_recoverable_content_filter_400(status_code, err_text):
             return False
         _low = err_text.lower() if isinstance(err_text, str) else str(err_text).lower()
         return any(m in _low for m in (
@@ -1647,6 +1723,9 @@ ANTIGRAVITY_INTEGRATION_SLOTS = (
     "gemini-4-argon-low",
     "gemini-4-argon-medium",
     "gemini-4-argon-high",
+    "gemini-4-carbon-low",
+    "gemini-4-carbon-medium",
+    "gemini-4-carbon-high",
     "gemini-2.5-pro",
 )
 _ANTIGRAVITY_INTEGRATION_SLOT_SET = frozenset(ANTIGRAVITY_INTEGRATION_SLOTS)
@@ -1927,11 +2006,130 @@ def _validate_antigravity_integration_config(config_data: dict) -> dict:
     }
     if "custom_models" in integration:
         config_data["antigravity_integration"]["custom_models"] = _validate_app_custom_models(config_data, integration["custom_models"])
+    if "quota_saver" in integration:
+        qs_validated = _validate_antigravity_quota_saver_config(config_data, integration["quota_saver"])
+        config_data["antigravity_integration"]["quota_saver"] = qs_validated
+        if "pytest" not in _sys.modules:
+            _sync_persistent_quota_saver_state(qs_validated)
     return config_data
 
 
+from pathlib import Path as _QSPath
+_QUOTA_SAVER_PERSISTENT_PATH = _QSPath.home() / ".gemini" / "blacksand-studio" / "quota-saver-config.json"
+_STUDIO_RUNTIME_STATE_PATH = _QSPath(os.environ.get("BSL_STUDIO_RUNTIME_STATE_PATH") or (_QSPath(__file__).resolve().parents[2] / "Studio Setup" / "packages" / "skills-hub" / "hooks" / "bsl-runtime-state.json"))
+_DEFAULT_ANTIGRAVITY_QUOTA_SAVER = {
+    "enabled": True,
+    "native_hydrogen_offload": True,
+    "mode": "native_first",
+    "fast_native_model": "gemini-4-hydrogen-low",
+    "routine_native_model": "gemini-4-hydrogen-medium",
+    "offload_subagents": True,
+    "offload_tool_followups": False,
+    "strict_hydrogen_parity": True,
+    "fallback_models": [
+        {"target": "Deepseek-V4-Flash", "display_name": "Deepseek-V4-Flash (BSL Forge Free)", "enabled": True},
+        {"target": "GLM", "display_name": "GLM (Zhipu Agentic)", "enabled": True},
+        {"target": "Qwen-Max", "display_name": "Qwen-Max (Coding & Tooling)", "enabled": True},
+        {"target": "Kimi", "display_name": "Kimi K2.5 (Long Context)", "enabled": True},
+    ],
+}
+
+
+def _validate_antigravity_quota_saver_config(config_data: dict, raw_qs) -> dict:
+    if raw_qs is None:
+        raw_qs = {}
+    if not isinstance(raw_qs, dict):
+        raise ValueError("antigravity_integration.quota_saver must be an object.")
+    enabled = bool(raw_qs.get("enabled", True))
+    native_hydrogen_offload = bool(raw_qs.get("native_hydrogen_offload", True))
+    mode = str(raw_qs.get("mode", "native_first") or "native_first").strip().lower()
+    if mode not in ("native_first", "external_first", "native_only"):
+        mode = "native_first"
+    fast_native_model = str(raw_qs.get("fast_native_model", "gemini-4-hydrogen-low") or "gemini-4-hydrogen-low").strip()
+    if fast_native_model not in ("gemini-4-hydrogen-low", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-high", "gemini-3-flash", "gemini-2.5-flash"):
+        fast_native_model = "gemini-4-hydrogen-low"
+    routine_native_model = str(raw_qs.get("routine_native_model", "gemini-4-hydrogen-medium") or "gemini-4-hydrogen-medium").strip()
+    if routine_native_model not in ("gemini-4-hydrogen-medium", "gemini-4-hydrogen-high", "gemini-4-hydrogen-low", "gemini-4-hydrogen-xhigh", "gemini-3-flash", "gemini-2.5-flash"):
+        routine_native_model = "gemini-4-hydrogen-medium"
+    offload_subagents = bool(raw_qs.get("offload_subagents", True))
+    offload_tool_followups = bool(raw_qs.get("offload_tool_followups", False))
+    strict_hydrogen_parity = bool(raw_qs.get("strict_hydrogen_parity", True))
+    raw_fallbacks = raw_qs.get("fallback_models")
+    if raw_fallbacks is None:
+        raw_fallbacks = list(_DEFAULT_ANTIGRAVITY_QUOTA_SAVER["fallback_models"])
+    if not isinstance(raw_fallbacks, list):
+        raise ValueError("quota_saver.fallback_models must be a list.")
+    seen_targets = set()
+    fallback_models = []
+    for item in raw_fallbacks:
+        if not isinstance(item, dict):
+            continue
+        target = str(item.get("target") or "").strip()
+        if not target or target in seen_targets:
+            continue
+        if (config_data.get("combos") or config_data.get("providers")) and not _is_known_antigravity_mapping_target(config_data, target):
+            continue
+        seen_targets.add(target)
+        display_name = str(item.get("display_name") or target).strip() or target
+        fb_enabled = bool(item.get("enabled", True))
+        fallback_models.append({
+            "target": target,
+            "display_name": display_name,
+            "enabled": fb_enabled,
+        })
+    return {
+        "enabled": enabled,
+        "native_hydrogen_offload": native_hydrogen_offload,
+        "mode": mode,
+        "fast_native_model": fast_native_model,
+        "routine_native_model": routine_native_model,
+        "offload_subagents": offload_subagents,
+        "offload_tool_followups": offload_tool_followups,
+        "strict_hydrogen_parity": strict_hydrogen_parity,
+        "fallback_models": fallback_models,
+    }
+
+
+def _sync_persistent_quota_saver_state(qs_cfg: dict) -> dict:
+    payload = {
+        **qs_cfg,
+        "strict_parity_contract": {
+            "v1internal_sse_framing": True,
+            "tool_and_mcp_schema_bridge": True,
+            "history_thought_signature_sanitizer": True,
+            "claude_gemini_signature_projection": True,
+            "intra_native_flash_bucket_cascade": True,
+            "context_1m_anti_lobotomy_shaper": True,
+            "subagent_invoke_flash_override": bool(qs_cfg.get("offload_subagents", True)),
+            "tool_loop_followup_offload": bool(qs_cfg.get("offload_tool_followups", False)),
+            "no_unsolicited_chinese_lock": True,
+        },
+        "offline_bridge_ready": True,
+    }
+    try:
+        _QUOTA_SAVER_PERSISTENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_p = _QUOTA_SAVER_PERSISTENT_PATH.with_suffix(".json.tmp")
+        tmp_p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp_p, _QUOTA_SAVER_PERSISTENT_PATH)
+    except Exception:
+        pass
+    try:
+        if _STUDIO_RUNTIME_STATE_PATH.exists():
+            rt = json.loads(_STUDIO_RUNTIME_STATE_PATH.read_text(encoding="utf-8"))
+            if isinstance(rt, dict):
+                rt.setdefault("optionALayers", {})["smartQuotaSaverRouting"] = bool(qs_cfg.get("enabled", True))
+                rt["quotaSaverConfig"] = payload
+                tmp_rt = _STUDIO_RUNTIME_STATE_PATH.with_suffix(".json.tmp")
+                tmp_rt.write_text(json.dumps(rt, indent=2), encoding="utf-8")
+                os.replace(tmp_rt, _STUDIO_RUNTIME_STATE_PATH)
+    except Exception:
+        pass
+    return payload
+
+
+
 _CLAUDE_SETTINGS_PATH = None
-_AG_RESERVED_INDICES = {16,18,19,20,21,26,28,35,36,37,50,71,72,73,84,187,198,318,319,320,322,417,418,419}
+_AG_RESERVED_INDICES = {16,18,19,20,21,26,28,35,36,37,50,71,72,73,84,187,198,318,319,320,322,417,418,419,427,437,438,525,526,527,528}
 
 
 def _validate_app_custom_models(config_data, entries, claude=False):
@@ -2515,7 +2713,7 @@ async def _afz_registry_only_guard(raw_agen, stream_id):
         await unregister_stream(stream_id)
 
 
-def _afz_passthrough_guard(raw_agen, content_type, *, protocol="openai", allow_deadline_frames=True):
+def _afz_passthrough_guard(raw_agen, content_type, *, protocol="openai", allow_deadline_frames=True, deadline_s=None):
     """Wrap a RAW upstream passthrough body for force-stop visibility.
 
     Returns (stream_id, body_generator). Unlike the SSE egress sites, raw
@@ -2538,7 +2736,7 @@ def _afz_passthrough_guard(raw_agen, content_type, *, protocol="openai", allow_d
     _afz_sid = next_stream_id()
     _is_sse = isinstance(content_type, str) and "text/event-stream" in content_type.lower()
     if allow_deadline_frames and _is_sse:
-        return _afz_sid, afz_guard(raw_agen, _afz_sid, protocol=protocol)
+        return _afz_sid, afz_guard(raw_agen, _afz_sid, protocol=protocol, **({"deadline_s": deadline_s} if deadline_s is not None else {}))
     return _afz_sid, _afz_registry_only_guard(raw_agen, _afz_sid)
 
 
@@ -2619,6 +2817,12 @@ def _apply_last_role_guard_to_native_body(raw_body: bytes) -> bytes:
 async def _forward_antigravity_native(request: Request, is_stream: bool, raw_body: bytes):
     """Pass inference requests to Google without re-entering local BSL."""
     global _ANTIGRAVITY_EGRESS_CLIENT
+    try:
+        _parsed_native = json.loads(raw_body)
+        _native_model = _parsed_native.get("model", "") if isinstance(_parsed_native, dict) else ""
+    except (ValueError, TypeError, AttributeError):
+        _native_model = ""
+    _record_native_ide_inference(request, _native_model)
     raw_body, _ag_fel_model, _ag_fel_on = _apply_fel_to_antigravity_native_body(request, raw_body)
     # ERE-R5 (2026-10-30): the native passthrough MUST also guard the trailing
     # role.  Without this, every conversation whose last content is a model turn
@@ -2686,6 +2890,10 @@ async def _forward_antigravity_native(request: Request, is_stream: bool, raw_bod
                     _wrap_egress_stream(upstream_response.aiter_raw(), model=_ag_fel_model, provider="antigravity"),
                     upstream_response.headers.get("content-type", ""),
                     protocol="gemini",
+                    deadline_s=0,  # FIX (2026-11-16): Disable 600s hard deadline for native Gemini passthrough.
+                                   # Agentic tasks with large contexts legitimately take 10+ min.
+                                   # The IDE's own Shield16 timeout (150s per attempt, 3 attempts) manages retries.
+                                   # kill-registry is still active so force-stop works.
                 )
                 return StreamingResponse(
                     _afz_body,
@@ -3489,6 +3697,7 @@ async def lifespan(app: FastAPI):
 
     print("BSL Router Initialized. Connection pool active.")
     yield
+    await _QUOTA_LIVE_CACHE.close()
     watchdog_task.cancel()
     log_rotation_task.cancel()
     staged_asar_task.cancel()
@@ -3570,7 +3779,7 @@ _PUBLIC_PATHS = {
 }
 _PUBLIC_PREFIXES = (
     "/admin",
-    "/v1/", "/v1beta/", "/v1alpha/", "/anthropic/", "/gemini/", "/v1internal:",
+    "/v1/", "/v1beta/", "/v1alpha/", "/anthropic/", "/gemini/", "/v1internal:", "/v1internal/",
     "/api/auth/",
 )
 
@@ -4399,6 +4608,77 @@ def _apply_models_stale_save_guard(old_config, new_config) -> None:
             )
 
 
+def _reconcile_combo_alias_changes(old_config: dict, new_config: dict) -> None:
+    """Migrate references only for proven renames and deliberate deletions."""
+    explicit_rename = new_config.pop("_renamed_combo", None)
+    old_combos = old_config.get("combos", [])
+    new_combos = new_config.get("combos", [])
+    def aliases(combos):
+        return {c["alias"] for c in combos if isinstance(c, dict) and isinstance(c.get("alias"), str)} if isinstance(combos, list) else set()
+    old_aliases, new_aliases = aliases(old_combos), aliases(new_combos)
+    renames: dict[str, str] = {}
+    if isinstance(explicit_rename, dict):
+        src, dst = explicit_rename.get("from"), explicit_rename.get("to")
+        if isinstance(src, str) and isinstance(dst, str) and src in old_aliases and dst in new_aliases and src != dst and src not in new_aliases:
+            renames[src] = dst
+    if isinstance(old_combos, list) and isinstance(new_combos, list) and len(old_combos) == len(new_combos):
+        candidates = []
+        for old, new in zip(old_combos, new_combos):
+            if not isinstance(old, dict) or not isinstance(new, dict):
+                continue
+            src, dst = old.get("alias"), new.get("alias")
+            if isinstance(src, str) and isinstance(dst, str) and src != dst and src not in new_aliases and dst not in old_aliases:
+                candidates.append((src, dst))
+        for src, dst in candidates:
+            if sum(s == src for s, _ in candidates) == 1 and sum(d == dst for _, d in candidates) == 1 and dst not in renames.values():
+                renames.setdefault(src, dst)
+    deleted = old_aliases - new_aliases - set(renames) if "combos" in new_config else set()
+    def migrate(value):
+        return renames.get(value, value) if isinstance(value, str) else value
+    def entries(section, key, prune=False):
+        rows = section.get(key)
+        if not isinstance(rows, list):
+            return
+        if prune:
+            rows = [r for r in rows if not isinstance(r, dict) or r.get("target") not in deleted]
+            section[key] = rows
+        for row in rows:
+            if isinstance(row, dict):
+                row["target"] = migrate(row.get("target"))
+                if row.get("display_name") in renames:
+                    row["display_name"] = renames[row["display_name"]]
+    ag = new_config.get("antigravity_integration")
+    if isinstance(ag, dict):
+        mappings = ag.get("mappings")
+        if isinstance(mappings, dict):
+            ag["mappings"] = {k: migrate(v) for k, v in mappings.items()}
+        entries(ag, "custom_models", True)
+        if isinstance(ag.get("quota_saver"), dict):
+            entries(ag["quota_saver"], "fallback_models")
+    cc = new_config.get("claude_code_integration")
+    if isinstance(cc, dict):
+        if "default_model" in cc:
+            cc["default_model"] = "" if cc["default_model"] in deleted else migrate(cc["default_model"])
+        if isinstance(cc.get("tier_slots"), dict):
+            cc["tier_slots"] = {k: "" if v in deleted else migrate(v) for k, v in cc["tier_slots"].items()}
+        entries(cc, "custom_models", True)
+    for key in ("aliases", "claude_code_aliases"):
+        if isinstance(new_config.get(key), dict):
+            new_config[key] = {k: migrate(v) for k, v in new_config[key].items()}
+    for combo in new_combos if isinstance(new_combos, list) else []:
+        if not isinstance(combo, dict) or not isinstance(combo.get("chain"), list):
+            continue
+        chain = []
+        for item in combo["chain"]:
+            if isinstance(item, str):
+                item = migrate(item)
+            elif isinstance(item, dict) and not item.get("provider"):
+                item = dict(item, model=migrate(item.get("model")))
+            chain.append(item)
+        kept = [item for item in chain if not (isinstance(item, str) and item in deleted) and not (isinstance(item, dict) and not item.get("provider") and item.get("model") in deleted)]
+        combo["chain"] = kept or chain
+
+
 @app.post("/api/config")
 async def update_config(request: Request):
     try:
@@ -4444,6 +4724,7 @@ async def update_config(request: Request):
             new_config["error_prevention_state"] = config["error_prevention_state"]
 
         new_config = normalize_custom_text_provider_urls(new_config)
+        _reconcile_combo_alias_changes(config, new_config)
         new_config = _validate_antigravity_integration_config(new_config)
         new_config = _validate_claude_code_integration_config(new_config)
 
@@ -4517,7 +4798,12 @@ async def update_config(request: Request):
         except Exception:
             pass
 
-        return JSONResponse({"status": "success"})
+        return JSONResponse({
+            "status": "success",
+            "combos": new_config.get("combos", []),
+            "antigravity_integration": new_config.get("antigravity_integration"),
+            "claude_code_integration": new_config.get("claude_code_integration"),
+        })
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
@@ -9337,13 +9623,27 @@ class _ComboFallbackNeeded(Exception):
     re-invokes _process_chat_completion with the preserved retry state, and
     yields the replacement stream without falling through to native Google.
     """
-    def __init__(self, status_code: int, err_text: str, retry_state: dict, backoff: float = 0.0):
+    def __init__(
+        self,
+        status_code: int,
+        err_text: str,
+        retry_state: dict,
+        backoff: float = 0.0,
+        continuation_body: dict = None,
+        skip_mark_failed: bool = False,
+        prefixed_frames: list = None,
+        expected_leaf_model: str = "",
+    ):
         self.status_code = status_code
         self.err_text = err_text
         self.retry_state = retry_state
         # NEVER-STOP RETRY (2026-08-31): seconds the guarded catch handler
         # sleeps before recursing into the wrapped pass. 0 = plain advance.
         self.backoff = backoff
+        self.continuation_body = continuation_body
+        self.skip_mark_failed = skip_mark_failed
+        self.prefixed_frames = prefixed_frames
+        self.expected_leaf_model = expected_leaf_model
         super().__init__(err_text)
 
 
@@ -9545,14 +9845,27 @@ def _explicit_sse_failure_event(data_json: Any) -> Optional[tuple[int, str]]:
     stream lanes each carried a private copy of this extraction + status
     classification. One shared classifier keeps them from drifting.
     Returns (status_code, message) or None when the event is not an explicit
-    failure.
+    failure. Also recognizes bare OpenAI SSE `{"error": {...}}` frames (such as
+    400 `content_filter` / `Output blocked by content filtering policy`) that
+    omit a top-level `"type"` key.
     """
-    if not isinstance(data_json, dict) or data_json.get("type") not in ("response.failed", "error"):
+    if not isinstance(data_json, dict):
+        return None
+    _has_explicit_type = data_json.get("type") in ("response.failed", "error")
+    _has_bare_error = (
+        bool(data_json.get("error"))
+        and "choices" not in data_json
+        and "candidates" not in data_json
+    )
+    if not _has_explicit_type and not _has_bare_error:
         return None
     _err = ((data_json.get("response") or {}).get("error") or data_json.get("error") or {})
     if not isinstance(_err, dict):
         _err = {"message": str(_err)}
     _msg = str(_err.get("message") or _err.get("code") or data_json.get("type") or "response.failed")
+    _code_str = str(_err.get("code") or "").lower()
+    if "content_filter" in _code_str or _is_recoverable_content_filter_400(400, _msg):
+        return 400, _msg
     return codex_adapter.classify_codex_error_status(_err, _msg, default_status=503), _msg
 
 
@@ -10091,24 +10404,43 @@ def _anthropic_egress_openai_source(provider_name: str, raw_source):
     return raw_source
 
 
+GEMINI_PRECOMMIT_REFUSAL_CHAR_WINDOW = 160
+_PURE_PROSE_REFUSAL_START_RE = re.compile(
+    r"^\s*(?:"
+    r"I(?:'m|\s+am)\s+sorry,\s+but\s+I\s+can(?:'t|not)"
+    r"|I\s+can(?:'t|not)\s+(?:assist|help|fulfill|provide|comply)"
+    r"|Sorry,\s+I\s+can(?:'t|not)\s+(?:assist|fulfill|comply)"
+    r")",
+    re.IGNORECASE,
+)
+
+
 def _gemini_frame_commits_transcript(frame: dict, no_output_notice: str) -> bool:
-    """True for visible text or functionCall parts, never invisible scaffolding."""
+    """True for visible non-thought text or functionCall/media parts, never invisible scaffolding or pure thoughts."""
     from app.compat.adapters.gemini import gemini_frame_has_content
 
     node = frame.get("response", frame) if isinstance(frame, dict) else {}
     parts = [
         part
         for candidate in (node.get("candidates") or [])
+        if isinstance(candidate, dict)
         for part in ((candidate.get("content") or {}).get("parts") or [])
         if isinstance(part, dict)
     ]
     has_visible_text = any(
-        part.get("text") != no_output_notice and (part.get("text") or "").strip()
+        part.get("thought") is not True
+        and part.get("text") != no_output_notice
+        and (part.get("text") or "").strip()
         for part in parts
         if isinstance(part.get("text"), str)
     )
-    has_function_call = any(isinstance(part.get("functionCall"), dict) for part in parts)
-    return gemini_frame_has_content(frame) and (has_visible_text or has_function_call)
+    has_function_or_media = any(
+        isinstance(part.get("functionCall"), dict)
+        or bool(part.get("inlineData"))
+        or bool(part.get("fileData"))
+        for part in parts
+    )
+    return gemini_frame_has_content(frame) and (has_visible_text or has_function_or_media)
 
 
 async def _tee_codex_response_source(raw_source, client: str, model: str):
@@ -12383,6 +12715,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     provider_name, target_model, _upstream_url, headers,
                     upstream_payload, _probe_resp.status_code, _err_text_short,
                 )
+                _log_upstream_http_error_forensics(
+                    _probe_resp.status_code, provider_name, target_model,
+                    active_conn, _active_conn_index, _err_text_short,
+                )
                 obs.log_request(
                     provider=provider_name, model=target_model,
                     status=_probe_resp.status_code, ttft=0,
@@ -12930,6 +13266,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     except Exception:
                         err_text = f"upstream_{resp.status_code}"
                     stats["error"] = err_text
+                    _log_upstream_http_error_forensics(
+                        resp.status_code, provider_name, target_model,
+                        active_conn, _active_conn_index, err_text,
+                    )
                     bench_leaf(config, provider_name, target_model, resp.status_code, err_text, stats.get("out", 0))
                     # TERMINAL RELAY WALL (2026-09-24): upstream_safety_blocked /
                     # data_inspection_failed on 400/403 are hard provider walls,
@@ -14312,16 +14652,19 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             return StreamingResponse(_ka_body, media_type="text/event-stream")
         if convert_gemini_egress:
             def _next_gemini_combo_retry_state():
-                _next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
+                _next_idx = (_retry_state["idx"] + 1) if (_retry_state and "idx" in _retry_state) else 1
                 if not active_chain or (_next_idx >= len(active_chain) and not _has_untried_sibling_conns()):
                     return None
-                return {
+                _nxt = {
                     "chain": active_chain,
                     "idx": _next_idx,
                     "cache_bp": _cache_breakpoints,
                     "original_model": original_model,
                     "deadline": _chain_deadline,
                 }
+                if isinstance(_retry_state, dict) and isinstance(_retry_state.get("clean_body"), dict):
+                    _nxt["clean_body"] = _retry_state["clean_body"]
+                return _nxt
 
             def _raise_gemini_combo_fallback(status_code: int, err_text: str, emit=None) -> None:
                 """Advance the combo chain, unless bytes already reached the client.
@@ -14388,6 +14731,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 # the drain loop below.
                 _thought_buf: list = []
                 _thought_buf_bytes = 0
+                _buffered_thought_chars = 0
+                _delivered_body_or_tool = False
+                _deferred_scaffolding_frames: list = []
+                _deferred_empty_finish_frames: list = []
+                _precommit_vis_buf: list = []
+                _precommit_vis_text_acc = ""
                 # FREEZE FIX: this generator was already correct (the flag below
                 # is set immediately before the client-facing yield). Unified
                 # onto the shared guard so all four stream paths report refusals
@@ -14505,6 +14854,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         except Exception:
                             err_text = str(raw_err)
                         stats["error"] = err_text[:500]
+                        _log_upstream_http_error_forensics(
+                            resp.status_code, provider_name, target_model,
+                            active_conn, _active_conn_index, err_text[:500],
+                        )
                         bench_leaf(config, provider_name, target_model, resp.status_code, err_text[:500], stats.get("out", 0))
                         # NEVER-STOP FIX (2026-09-04): call unconditionally — the
                         # helper advances to the next entry when one exists and
@@ -14578,8 +14931,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                         if provider_name == "codex" and _codex_event_carries_output(dj):
                                             if stats["ttft"] == 0.0:
                                                 stats["ttft"] = time.time() - start_time
-                                        if isinstance(dj, dict) and dj.get("type") in ("response.failed", "error"):
-                                            _rf_sc, _rf_msg = _explicit_sse_failure_event(dj)
+                                        _expl_fail = _explicit_sse_failure_event(dj)
+                                        if _expl_fail is not None:
+                                            _rf_sc, _rf_msg = _expl_fail
+                                            _log_upstream_http_error_forensics(
+                                                _rf_sc, provider_name, target_model,
+                                                active_conn, _active_conn_index, _rf_msg,
+                                            )
                                             if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
                                                 _codex_overload_attempt += 1
                                                 _codex_retry_overload = True
@@ -14846,103 +15204,68 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     if g is not None:
                                         from app.compat.adapters.gemini import (
                                             sse_data as _g_sse_data,
+                                            SSE_DONE as _G_SSE_DONE_INL,
+                                            terminal_error_frame as _g_term_inl,
                                             gemini_frame_has_content as _gemini_frame_has_content,
                                             gemini_frame_is_thought_only as _gemini_frame_is_thought_only,
+                                            gemini_frame_has_body_or_tool_content as _gemini_frame_has_body_or_tool_content,
                                             BSL_NO_OUTPUT_NOTICE as _BSL_NO_OUTPUT_NOTICE_CONST,
                                         )
-                                        # BUG L (2026-08-04) - THE `after 0B` FREEZE.
-                                        # Evidence: "[STREAM-GUARD] refused 1
-                                        # post-emission fallback(s) after 0B
-                                        # [stream_stall]" - the gate reported
-                                        # post-emission while counting ZERO bytes.
-                                        #
-                                        # Cause: openai_chunk_to_gemini returns
-                                        # non-None for frames with NO renderable
-                                        # content - a usage-only chunk yields
-                                        # parts=[{"text": ""}] (gemini.py:577-583),
-                                        # as does a finish with no parts (:652-654).
-                                        # This site called mark_emitted() with no
-                                        # argument, so byte_count stayed 0 while
-                                        # emitted flipped True. From then on
-                                        # may_fallback() refused EVERY fallback, so
-                                        # a later stall with Out:0 could not fail
-                                        # over and the IDE waited on a stream that
-                                        # never produced output.
-                                        #
-                                        # The gate's real question is "has the
-                                        # client rendered something that a second
-                                        # provider would corrupt?" - empty parts
-                                        # and usage metadata answer NO. So mark
-                                        # emission only for RENDERABLE content, and
-                                        # pass the frame so byte_count stays
-                                        # consistent with `emitted`.
-                                        #
-                                        # BUG N (2026-08-13) - THE GPT-5.6-SOL 502.
-                                        # Evidence: "[502] stream:true GPT-5.6-SOL
-                                        # > qwencoder/gpt-5.6-sol | 78816ms (TTFT
-                                        # 47368) | In: 0 | Out: 0 | ERROR:
-                                        # midstream_transport: peer closed
-                                        # connection ... incomplete chunked read".
-                                        #
-                                        # The stream produced ONLY reasoning
-                                        # (`thought:true`) frames - which the IDE
-                                        # renders in the reasoning pane, not the
-                                        # transcript body - and then the leaf died
-                                        # mid-transport. The BUG L gate counts a
-                                        # thought frame as content (correct: it is
-                                        # renderable somewhere), so emission was
-                                        # marked, fallback was refused, and the
-                                        # user got a dead stream while healthy
-                                        # chain entries went untried.
-                                        #
-                                        # Fix: PRE-RENDER BUFFER. While the stream
-                                        # has yielded only thought-only frames (and
-                                        # scaffolding), hold them here instead of
-                                        # yielding, and keep `emitted` False so a
-                                        # transport death / stall can still fail
-                                        # over: the client has seen nothing into the
-                                        # transcript body, so splicing a fresh
-                                        # stream is invisible. The FIRST visible
-                                        # text / tool frame commits the transcript:
-                                        # flush the held thoughts, then mark
-                                        # emission - from that instant fallback is
-                                        # forbidden, exactly as before.
-                                        #
-                                        # Failure path: if the leaf dies pre-commit,
-                                        # the buffered thoughts are simply dropped
-                                        # with the generator; the combo chain
-                                        # advances and the retry re-issues them.
-                                        # Holding forever is impossible: the buffer
-                                        # is bounded (cap) and only live while the
-                                        # request is in flight.
                                         _frame = g if "response" in g else {"response": g}
                                         _payload = _g_sse_data(_frame)
-                                        # BUG N (2026-08-13): a frame is BODY
-                                        # content only if it is renderable AND not
-                                        # a pure thought frame (thoughts render in
-                                        # the reasoning pane, not the transcript
-                                        # body). gemini_frame_has_content returns
-                                        # True for non-empty thought text too, so
-                                        # the thought-only check must subtract.
-                                        _is_body_content = (
-                                            _gemini_frame_has_content(_frame)
-                                            and not _gemini_frame_is_thought_only(_frame)
+                                        _inner_resp = _frame.get("response", _frame) if isinstance(_frame, dict) else {}
+                                        _cands_list = (_inner_resp.get("candidates") or []) if isinstance(_inner_resp, dict) else []
+                                        _parts_all = [
+                                            _p
+                                            for _c in _cands_list
+                                            if isinstance(_c, dict)
+                                            for _p in ((_c.get("content") or {}).get("parts") or [])
+                                            if isinstance(_p, dict)
+                                        ]
+                                        _thought_chars_in_frame = sum(
+                                            len(_p.get("text") or "")
+                                            for _p in _parts_all
+                                            if _p.get("thought") is True and isinstance(_p.get("text"), str)
                                         )
+                                        if _thought_chars_in_frame > 0:
+                                            _buffered_thought_chars += _thought_chars_in_frame
+                                        _frame_finish_reason = next(
+                                            (_c.get("finishReason") for _c in _cands_list if isinstance(_c, dict) and _c.get("finishReason")),
+                                            None,
+                                        )
+                                        _is_thought_only = _gemini_frame_is_thought_only(_frame)
+                                        _is_body_content = _gemini_frame_has_body_or_tool_content(_frame)
+                                        _has_tool_or_media = any(
+                                            bool(_p.get("functionCall") or _p.get("inlineData") or _p.get("fileData"))
+                                            for _p in _parts_all
+                                        )
+                                        _frame_vis_text = "".join(
+                                            _p.get("text")
+                                            for _p in _parts_all
+                                            if _p.get("thought") is not True
+                                            and isinstance(_p.get("text"), str)
+                                            and _p.get("text") != _BSL_NO_OUTPUT_NOTICE_CONST
+                                        )
+
+                                        # Gap R-2: pre-commit upstream content_filter finish advances combo chain.
+                                        if not emitted_model_data and state.get("sawContentFilter"):
+                                            bench_leaf(config, provider_name, target_model, 502, "upstream_refusal_or_content_filter", 0)
+                                            _raise_gemini_combo_fallback(502, "upstream_refusal_or_content_filter", _emit)
+                                            stats["status"] = 502
+                                            stats["error"] = "upstream_refusal_or_content_filter"
+                                            yield _g_sse_data(_g_term_inl(502, "upstream_refusal_or_content_filter", target_model))
+                                            yield _G_SSE_DONE_INL
+                                            return
+
                                         if not emitted_model_data and not _is_body_content:
-                                            if _gemini_frame_is_thought_only(_frame):
-                                                # Pre-content reasoning: hold, do not
-                                                # commit. Bound retained bytes so a
-                                                # runaway thought stream cannot grow
-                                                # memory without limit.
+                                            if _is_thought_only:
                                                 if _thought_buf_bytes + len(_payload) <= GEMINI_THOUGHT_BUFFER_CAP_BYTES:
                                                     _thought_buf.append(_payload)
                                                     _thought_buf_bytes += len(_payload)
                                                     continue
-                                                # Cap exceeded: a reasoning pane this
-                                                # large is no longer safe to replay
-                                                # silently after a failover. Commit
-                                                # now - flush held thoughts, mark
-                                                # emission, continue unbuffered.
+                                                # Cap exceeded: flush held thoughts and commit reasoning pane,
+                                                # while keeping _delivered_body_or_tool=False so RC-1 still
+                                                # protects end-of-stream against empty body/tool turns.
                                                 for _held in _thought_buf:
                                                     yield _held
                                                 _thought_buf.clear()
@@ -14950,50 +15273,80 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                 _emit.mark_emitted(_payload)
                                                 yield _payload
                                                 continue
-                                            # Usage-only / finish-only / empty frame
-                                            # pre-commit: invisible scaffolding. Pass
-                                            # through WITHOUT committing so a later
-                                            # transport death can still fail over.
+                                            # RC-1 Out-of-order finish fix: NEVER yield finishReason or empty-text
+                                            # frames ahead of _thought_buf / _precommit_vis_buf!
+                                            _has_empty_text_part = any(
+                                                isinstance(_p.get("text"), str) and _p.get("text") == ""
+                                                for _p in _parts_all
+                                            )
+                                            if _thought_buf or _precommit_vis_buf or _frame_finish_reason or _has_empty_text_part:
+                                                _deferred_empty_finish_frames.append(_payload)
+                                                continue
+                                            _deferred_scaffolding_frames.append(_payload)
+                                            continue
+
+                                        if emitted_model_data and not _is_body_content:
+                                            if _is_thought_only:
+                                                yield _payload
+                                                continue
+                                            if not _delivered_body_or_tool:
+                                                # Thought buffer cap exceeded earlier without any body/tool content yet:
+                                                # hold empty finish frames so language_server never sees thought-only + {"text": ""}.
+                                                _deferred_empty_finish_frames.append(_payload)
+                                                continue
                                             yield _payload
                                             continue
+
+                                        # _is_body_content is True here.
+                                        if not emitted_model_data:
+                                            if not _has_tool_or_media:
+                                                _precommit_vis_text_acc += _frame_vis_text
+                                                if _PURE_PROSE_REFUSAL_START_RE.search(_precommit_vis_text_acc):
+                                                    bench_leaf(config, provider_name, target_model, 502, "upstream_refusal_or_content_filter", 0)
+                                                    _raise_gemini_combo_fallback(502, "upstream_refusal_or_content_filter", _emit)
+                                                    stats["status"] = 502
+                                                    stats["error"] = "upstream_refusal_or_content_filter"
+                                                    yield _g_sse_data(_g_term_inl(502, "upstream_refusal_or_content_filter", target_model))
+                                                    yield _G_SSE_DONE_INL
+                                                    return
+                                                if len(_precommit_vis_text_acc) < GEMINI_PRECOMMIT_REFUSAL_CHAR_WINDOW:
+                                                    _precommit_vis_buf.append(_payload)
+                                                    continue
+                                            # Commit transcript in exact chronological order:
+                                            # 1) buffered thoughts, 2) pre-body scaffolding, 3) pre-commit visible text, 4) current frame.
+                                            if _thought_buf:
+                                                for _held in _thought_buf:
+                                                    yield _held
+                                                _thought_buf.clear()
+                                            if _deferred_scaffolding_frames:
+                                                for _scaf in _deferred_scaffolding_frames:
+                                                    yield _scaf
+                                                _deferred_scaffolding_frames.clear()
+                                            if _precommit_vis_buf:
+                                                for _vis_held in _precommit_vis_buf:
+                                                    emitted_model_data = True
+                                                    _emit.mark_emitted(_vis_held)
+                                                    yield _vis_held
+                                                _precommit_vis_buf.clear()
+                                            if _gemini_frame_commits_transcript(_frame, _BSL_NO_OUTPUT_NOTICE_CONST) or _is_body_content:
+                                                emitted_model_data = True
+                                                _emit.mark_emitted(_payload)
+                                            _delivered_body_or_tool = True
+                                            yield _payload
+                                            continue
+
+                                        # Already committed (e.g. after >=160 chars or thought buffer cap):
                                         if _thought_buf:
-                                            # First body content: flush held reasoning
-                                            # in order, then commit on this frame.
                                             for _held in _thought_buf:
                                                 yield _held
                                             _thought_buf.clear()
-                                        # ── ZERO-RENDERABLE-OUTPUT WHITELIST
-                                        # (2026-08-24, "no renderable output" bug) ──
-                                        # An Antigravity-IDE stream may finish 200
-                                        # with only reasoning frames + a §8.8 notice
-                                        # and NOTHING the transcript can render
-                                        # (observed: agentrouter-o/gpt-5.6-sol at
-                                        # effort:max, 57-87s, in=0 out=0). The
-                                        # emission gate used to mark emission on ANY
-                                        # non-empty text, including a whitespace-only
-                                        # body delta — which vetoed fallback on
-                                        # exactly the zero-output finishes that must
-                                        # fail over (stream_guard.py BUG L/N class).
-                                        # The transcript is only committed by text
-                                        # with non-whitespace characters (the §8.8
-                                        # notice is router-generated and excluded by
-                                        # gemini_frame_has_content already).
-                                        _frame_text_parts = [
-                                            p.get("text")
-                                            for cand_ in (_frame.get("response", _frame).get("candidates") or [])
-                                            for p in ((cand_.get("content") or {}).get("parts") or [])
-                                            if isinstance(p, dict) and isinstance(p.get("text"), str)
-                                        ]
-                                        _has_visible_text = any(
-                                            (t != _BSL_NO_OUTPUT_NOTICE_CONST) and (t or "").strip()
-                                            for t in _frame_text_parts
-                                        )
-                                        if _gemini_frame_commits_transcript(
-                                            _frame, _BSL_NO_OUTPUT_NOTICE_CONST
-                                        ):
+                                        if _gemini_frame_commits_transcript(_frame, _BSL_NO_OUTPUT_NOTICE_CONST) or _is_body_content:
                                             emitted_model_data = True
                                             _emit.mark_emitted(_payload)
+                                        _delivered_body_or_tool = True
                                         yield _payload
+                            except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded):
+                                raise
                             except Exception as _render_err:
                                 print(f"[CodexDrain] render exception swallowed: {type(_render_err).__name__}: {_render_err}", flush=True)
                     finally:
@@ -15097,35 +15450,6 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         provider_name=provider_name, target_model=target_model,
                         delivered_chars=getattr(_detector, "tool_call_chars", 0),
                     )
-                    # Zero-token 200: stream COMPLETED with status 200 but produced
-                    # zero output tokens — dead leaf. Advance combo if possible.
-                    if stats.get("status") == 200 and stats.get("out", 0) == 0 and not emitted_model_data:
-                        # BENCH THE LEAF (2026-08-24): a zero-renderable-output finish
-                        # is a dead leaf (agentrouter-o/gpt-5.6-sol burned 57-87s per
-                        # request producing nothing). Record the outcome so
-                        # error_prevention's dead-leaf cooldown benches it and the
-                        # combo's next request starts further down the chain.
-                        try:
-                            bench_leaf(config, provider_name, target_model, 504, "zero_renderable_output", 0)
-                            print(
-                                f"[ZeroOutput] benched {provider_name}/{target_model} "
-                                f"(200 finish, zero renderable output)",
-                                flush=True,
-                            )
-                        except Exception as _bench_err:
-                            print(f"[ZeroOutput] bench failed (non-blocking): {_bench_err}", flush=True)
-                        _raise_gemini_combo_fallback(504, "zero_output_tokens", _emit)
-                        # FREEZE FIX (2026-08-07): if we reach here, no eligible
-                        # leaf/budget remained and _raise_gemini_combo_fallback
-                        # returned WITHOUT raising. Emit the SOLE terminal contract
-                        # and return — never fall through to a bare [DONE], which
-                        # the Gemini parser cannot end on (no finishReason).
-                        stats["status"] = 504
-                        stats["error"] = "zero_output_tokens"
-                        from app.compat.adapters.gemini import sse_data as _g_sse_data, SSE_DONE as _G_SSE_DONE, terminal_error_frame as _g_term
-                        yield _g_sse_data(_g_term(504, "zero_output_tokens", target_model))
-                        yield _G_SSE_DONE
-                        return
                     if _drain_err is not None:
                         if isinstance(_drain_err, _ComboFallbackNeeded):
                             # If bytes have reached the client, do NOT raise and
@@ -15165,17 +15489,6 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         except Exception:
                             pass
                         return
-                    # MIDSTREAM-DECLINE FIX (2026-09-13): a post-content
-                    # transport death caught by _transport_guarded can end with
-                    # _midstream_transport_fallback DECLINING to fail over
-                    # (emitted content forbids splicing a second stream into
-                    # the live parser). The failure is recorded in stats but
-                    # never raised, so _drain_err stays None and every guard
-                    # above misses — the pump used to fall through to a bare
-                    # [DONE], which the Gemini parser cannot end on (no
-                    # finishReason) → IDE hangs. Emit the SOLE terminal
-                    # contract instead, exactly like the OpenAI and
-                    # anthropic-to-OpenAI siblings.
                     if (
                         stats.get("error")
                         and isinstance(stats.get("status"), int)
@@ -15186,14 +15499,198 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         yield _g_sse_data(_g_term(stats["status"], str(stats["error"]), target_model))
                         yield _G_SSE_DONE
                         return
-                    # BUG N: normal completion with thoughts still buffered
-                    # (e.g. a thought-only stream whose usage reported tokens).
-                    # Surface the held reasoning before [DONE] - the stream is
-                    # over, so there is no fallback decision left to protect.
+
+                    # Gap R-2: final pre-commit refusal / content_filter check for <160-char buffered output.
+                    if not emitted_model_data and (
+                        state.get("sawContentFilter")
+                        or (_precommit_vis_text_acc and _PURE_PROSE_REFUSAL_START_RE.search(_precommit_vis_text_acc))
+                    ):
+                        bench_leaf(config, provider_name, target_model, 502, "upstream_refusal_or_content_filter", 0)
+                        _raise_gemini_combo_fallback(502, "upstream_refusal_or_content_filter", _emit)
+                        stats["status"] = 502
+                        stats["error"] = "upstream_refusal_or_content_filter"
+                        from app.compat.adapters.gemini import sse_data as _g_sse_data, SSE_DONE as _G_SSE_DONE, terminal_error_frame as _g_term
+                        yield _g_sse_data(_g_term(502, "upstream_refusal_or_content_filter", target_model))
+                        yield _G_SSE_DONE
+                        return
+
+                    # Legitimate short (<160 char) non-refusal visible response held in _precommit_vis_buf.
+                    if not emitted_model_data and _precommit_vis_buf:
+                        _delivered_body_or_tool = True
+
+                    # RC-1: End-of-Stream Thought-Only / Dropped-Tool / Zero-Body Recovery.
+                    # stats["out"] may be > 0 when reasoning_tokens > 0 even though _delivered_body_or_tool is False!
+                    if stats.get("status") == 200 and not _delivered_body_or_tool:
+                        from app.compat.adapters.gemini import (
+                            sse_data as _g_sse_data,
+                            SSE_DONE as _G_SSE_DONE,
+                            BSL_NO_OUTPUT_NOTICE as _BSL_NO_OUTPUT_NOTICE_CONST,
+                        )
+                        if not emitted_model_data:
+                            # Hybrid 1-Shot Same-Model Continuation -> Combo Failover:
+                            # When a leaf produced substantial reasoning (>= 400 chars) without content_filter
+                            # and cut off before emitting its tool call / visible body, try 1 bounded continuation
+                            # on the SAME leaf before benching it or advancing the combo chain.
+                            _already_continued = bool(isinstance(_retry_state, dict) and _retry_state.get("same_leaf_continued"))
+                            if (
+                                _buffered_thought_chars >= 400
+                                and not state.get("sawContentFilter")
+                                and not _already_continued
+                                and isinstance(body, dict)
+                                and _chain_budget_remaining() > 0
+                            ):
+                                _acc_thoughts: list = []
+                                for _raw_tb in _thought_buf:
+                                    try:
+                                        _tb_line = _raw_tb.decode("utf-8", "replace") if isinstance(_raw_tb, (bytes, bytearray)) else str(_raw_tb)
+                                        for _ln in _tb_line.splitlines():
+                                            if _ln.startswith("data: "):
+                                                _tb_obj = json.loads(_ln[6:])
+                                                _tb_resp = _tb_obj.get("response", _tb_obj) if isinstance(_tb_obj, dict) else {}
+                                                for _tc in (_tb_resp.get("candidates") or []):
+                                                    for _tp in (((_tc or {}).get("content") or {}).get("parts") or []):
+                                                        if isinstance(_tp, dict) and _tp.get("thought") is True and isinstance(_tp.get("text"), str):
+                                                            _acc_thoughts.append(_tp["text"])
+                                    except Exception:
+                                        pass
+                                _thought_digest = re.sub(r"\s+", " ", "".join(_acc_thoughts)).strip()[-600:]
+                                if _thought_digest:
+                                    _orig_clean_body = (
+                                        _retry_state.get("clean_body")
+                                        if (isinstance(_retry_state, dict) and isinstance(_retry_state.get("clean_body"), dict))
+                                        else body
+                                    )
+                                    _cont_body = dict(_orig_clean_body)
+                                    _cont_msgs = list(_orig_clean_body.get("messages") or [])
+                                    _cont_msgs.append({
+                                        "role": "user",
+                                        "content": (
+                                            f"[Prior reasoning completed: {_thought_digest} "
+                                            "— proceed directly with the concrete tool call or visible response without repeating prior reasoning.]"
+                                        ),
+                                    })
+                                    _cont_body["messages"] = _cont_msgs
+                                    if active_chain:
+                                        _same_leaf_state = {
+                                            "chain": active_chain,
+                                            "idx": _retry_state["idx"] if (isinstance(_retry_state, dict) and "idx" in _retry_state) else 0,
+                                            "cache_bp": _cache_breakpoints,
+                                            "original_model": original_model,
+                                            "deadline": _chain_deadline,
+                                            "same_leaf_continued": True,
+                                            "clean_body": _orig_clean_body,
+                                        }
+                                    else:
+                                        _same_leaf_state = {
+                                            "original_model": original_model,
+                                            "deadline": _chain_deadline,
+                                            "same_leaf_continued": True,
+                                            "clean_body": _orig_clean_body,
+                                        }
+                                    print(
+                                        f"[SameLeafContinuation] '{model}' {provider_name}/{target_model} "
+                                        f"emitted {_buffered_thought_chars} thought chars with zero body/tool — running 1-shot continuation",
+                                        flush=True,
+                                    )
+                                    raise _ComboFallbackNeeded(
+                                        200,
+                                        "same_leaf_thought_continuation",
+                                        _same_leaf_state,
+                                        continuation_body=_cont_body,
+                                        skip_mark_failed=True,
+                                        prefixed_frames=list(_thought_buf),
+                                        expected_leaf_model=str(target_model or ""),
+                                    )
+                            try:
+                                bench_leaf(
+                                    config, provider_name, target_model, 504,
+                                    "thought_only_or_zero_body_output", 0,
+                                )
+                                print(
+                                    f"[ZeroBodyOutput] benched {provider_name}/{target_model} "
+                                    f"(200 finish, thought_chars={_buffered_thought_chars}, zero body/tool output)",
+                                    flush=True,
+                                )
+                            except Exception as _bench_err:
+                                print(f"[ZeroBodyOutput] bench failed (non-blocking): {_bench_err}", flush=True)
+                            _raise_gemini_combo_fallback(504, "thought_only_or_zero_body_output", _emit)
+                            # Last leaf in chain (fallback returned without raising):
+                            # Flush _thought_buf FIRST, discard _deferred_empty_finish_frames (NEVER emit {"text": ""}),
+                            # and emit a valid non-empty visible notice frame + [DONE].
+                            if _thought_buf:
+                                for _held in _thought_buf:
+                                    yield _held
+                                _thought_buf.clear()
+                            _deferred_empty_finish_frames.clear()
+                            _deferred_scaffolding_frames.clear()
+                            _notice_frame = {
+                                "response": {
+                                    "candidates": [
+                                        {
+                                            "content": {
+                                                "role": "model",
+                                                "parts": [{"text": _BSL_NO_OUTPUT_NOTICE_CONST}],
+                                            },
+                                            "finishReason": "STOP",
+                                        }
+                                    ],
+                                    "modelVersion": state.get("modelVersion") or target_model or "bsl-routed",
+                                    "responseId": state.get("responseId") or f"bslnotice_{int(time.time() * 1000)}",
+                                }
+                            }
+                            yield _g_sse_data(_notice_frame)
+                            stats["stream_completed"] = True
+                            yield _G_SSE_DONE
+                            return
+                        else:
+                            # emitted_model_data was forced True earlier (e.g. GEMINI_THOUGHT_BUFFER_CAP_BYTES exceeded)
+                            # while _delivered_body_or_tool is STILL False: emit visible notice frame so language_server
+                            # NEVER receives a turn with only thought:True parts and empty text!
+                            if _thought_buf:
+                                for _held in _thought_buf:
+                                    yield _held
+                                _thought_buf.clear()
+                            _deferred_empty_finish_frames.clear()
+                            _deferred_scaffolding_frames.clear()
+                            _notice_frame = {
+                                "response": {
+                                    "candidates": [
+                                        {
+                                            "content": {
+                                                "role": "model",
+                                                "parts": [{"text": _BSL_NO_OUTPUT_NOTICE_CONST}],
+                                            },
+                                            "finishReason": "STOP",
+                                        }
+                                    ],
+                                    "modelVersion": state.get("modelVersion") or target_model or "bsl-routed",
+                                    "responseId": state.get("responseId") or f"bslnotice_{int(time.time() * 1000)}",
+                                }
+                            }
+                            yield _g_sse_data(_notice_frame)
+                            stats["stream_completed"] = True
+                            yield _G_SSE_DONE
+                            return
+
+                    # Healthy stream (_delivered_body_or_tool is True): flush held frames in exact chronological order.
                     if _thought_buf:
                         for _held in _thought_buf:
                             yield _held
                         _thought_buf.clear()
+                    if _deferred_scaffolding_frames:
+                        for _scaf in _deferred_scaffolding_frames:
+                            yield _scaf
+                        _deferred_scaffolding_frames.clear()
+                    if _precommit_vis_buf:
+                        for _vis_held in _precommit_vis_buf:
+                            emitted_model_data = True
+                            _emit.mark_emitted(_vis_held)
+                            yield _vis_held
+                        _precommit_vis_buf.clear()
+                    if _deferred_empty_finish_frames:
+                        for _fin_held in _deferred_empty_finish_frames:
+                            yield _fin_held
+                        _deferred_empty_finish_frames.clear()
                     from app.compat.adapters.gemini import SSE_DONE as _G_SSE_DONE
                     stats["stream_completed"] = True
                     yield _G_SSE_DONE
@@ -15203,7 +15700,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         stats["error"] = stats["error"] or "client_disconnected"
                         stats["status"] = 499
                     raise
-                except _ComboFallbackNeeded:
+                except (_ComboFallbackNeeded, _ComboWrapRestart):
                     raise
                 except _DeadlineRetryNeeded:
                     raise
@@ -15302,7 +15799,19 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 except _ComboFallbackNeeded as _cf:
                     _ns_backoff = float(getattr(_cf, "backoff", 0) or 0)
                     _ns_state = _cf.retry_state
-                    if not _ns_backoff:
+                    _skip_mark = bool(getattr(_cf, "skip_mark_failed", False))
+                    _prefixed = list(getattr(_cf, "prefixed_frames", None) or [])
+                    _expected_leaf_m = str(getattr(_cf, "expected_leaf_model", "") or "")
+                    _dispatch_body = (
+                        getattr(_cf, "continuation_body", None)
+                        or (
+                            _ns_state.get("clean_body")
+                            if (isinstance(_ns_state, dict) and isinstance(_ns_state.get("clean_body"), dict))
+                            else None
+                        )
+                        or body
+                    )
+                    if not _ns_backoff and not _skip_mark:
                         _mark_conn_failed_for_retry(_ns_state, getattr(_cf, "status_code", 502), getattr(_cf, "err_text", ""))
                     while True:
                         if _ns_backoff:
@@ -15311,7 +15820,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             await asyncio.sleep(_ns_backoff)
                         try:
                             _fallback = await _process_chat_completion(
-                                body, client_wants_anthropic, client_wants_gemini,
+                                _dispatch_body, client_wants_anthropic, client_wants_gemini,
                                 _retry_state=_ns_state,
                                 request=request,
                                 _stream_guard=False,
@@ -15338,13 +15847,36 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     yield _g_sse_fb2(_g_term_fb2(502, "fallback_failed", target_model))
                                     yield _G_SSE_FB2
                                 return
+                            _checked_prefix = not bool(_prefixed)
                             async for _fc in _ns_iter:
+                                if not _checked_prefix:
+                                    _fc_txt = _fc.decode("utf-8", "replace") if isinstance(_fc, (bytes, bytearray)) else str(_fc)
+                                    if "data: " in _fc_txt and "data: [DONE]" not in _fc_txt:
+                                        _checked_prefix = True
+                                        try:
+                                            for _fln in _fc_txt.splitlines():
+                                                if _fln.startswith("data: "):
+                                                    _fobj = json.loads(_fln[6:])
+                                                    _fresp = _fobj.get("response", _fobj) if isinstance(_fobj, dict) else {}
+                                                    _fmv = str(_fresp.get("modelVersion") or "")
+                                                    if not _expected_leaf_m or _fmv == _expected_leaf_m:
+                                                        for _pf in _prefixed:
+                                                            yield _pf
+                                                    break
+                                        except Exception:
+                                            pass
                                 yield _fc
                             return
                         except _ComboWrapRestart as _ns_wrap:
                             if _retry_state is None:
                                 _ns_backoff = float(getattr(_ns_wrap, "backoff", 0) or 0)
                                 _ns_state = _ns_wrap.retry_state
+                                _prefixed = []
+                                _dispatch_body = (
+                                    _ns_state.get("clean_body")
+                                    if (isinstance(_ns_state, dict) and isinstance(_ns_state.get("clean_body"), dict))
+                                    else body
+                                )
                                 continue
                             raise
                 except (GeneratorExit, asyncio.CancelledError):
@@ -15468,6 +16000,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         except Exception:
                             err_text = str(raw_err)
                         stats["error"] = err_text[:500]
+                        _log_upstream_http_error_forensics(
+                            resp.status_code, provider_name, target_model,
+                            active_conn, _active_conn_index, err_text[:500],
+                        )
                         bench_leaf(config, provider_name, target_model, resp.status_code, err_text[:500], stats.get("out", 0))
                         # TERMINAL RELAY WALL (2026-09-24): a hard provider wall never
                         # advances the combo chain and never wraps — fall through to
@@ -17042,6 +17578,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # fault reverts to the legacy recoverable behavior below.
             _is_zombie = bool(error_msg and str(error_msg).startswith("zombie_empty_response"))
             _ns_err_text = error_msg if isinstance(error_msg, str) else ""
+            if resp.status_code != 200:
+                _log_upstream_http_error_forensics(
+                    resp.status_code, provider_name, target_model,
+                    active_conn, _active_conn_index, _ns_err_text,
+                )
             if _is_terminal_relay_wall(resp.status_code, _ns_err_text):
                 # ── FEL Tier-2 FAILURE-AWARE ESCALATION (2026-09-24) ──
                 # A data_inspection_failed wall (GLM/zhipu input inspection)
@@ -17832,6 +18373,9 @@ async def _poll_veo_lro(
 # Code cannot parse. These helpers convert that crash into a clean JSON 400.
 
 
+from starlette.requests import ClientDisconnect as _StarletteClientDisconnect
+
+
 class _BSLInvalidRequestBody(Exception):
     """Raised when a request body is not valid JSON; carries a client-facing message."""
 
@@ -17840,16 +18384,32 @@ class _BSLInvalidRequestBody(Exception):
         self.detail = detail
 
 
-async def _safe_request_json(request: Request) -> Any:
-    """Await request.json(), mapping malformed bodies to _BSLInvalidRequestBody.
+class _BSLClientDisconnected(Exception):
+    """Raised when the downstream HTTP client disconnects while sending the request body."""
 
-    Covers both JSON that fails to decode (including the empty-body case) and
-    payloads that are not valid UTF-8. Valid bodies pass through unchanged.
+
+async def _safe_request_json(request: Request) -> Any:
+    """Await request.json(), mapping malformed bodies to _BSLInvalidRequestBody
+    and mid-flight client disconnects to _BSLClientDisconnected (499, no 500 traceback).
     """
     try:
         return await request.json()
+    except _StarletteClientDisconnect as exc:
+        raise _BSLClientDisconnected() from exc
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise _BSLInvalidRequestBody(f"Request body is not valid JSON: {exc}") from exc
+
+
+@app.exception_handler(_BSLClientDisconnected)
+async def _bsl_client_disconnected_handler(request: Request, exc: _BSLClientDisconnected):
+    """Return HTTP 499 cleanly when a client cancels a request mid-body."""
+    return Response(status_code=499)
+
+
+@app.exception_handler(_StarletteClientDisconnect)
+async def _bsl_raw_client_disconnect_handler(request: Request, exc: _StarletteClientDisconnect):
+    """Suppress unhandled 500 tracebacks on raw Starlette ClientDisconnect."""
+    return Response(status_code=499)
 
 
 @app.exception_handler(_BSLInvalidRequestBody)
@@ -18502,7 +19062,10 @@ def _should_probe_stream_status(is_stream: bool, active_chain: list, client_want
 @app.post("/v1alpha/models/{model}:streamGenerateContent")
 async def antigravity_generate(request: Request, model: str = None):
     config = cs_get_config()
-    raw_body = await request.body()
+    try:
+        raw_body = await request.body()
+    except _StarletteClientDisconnect:
+        return Response(status_code=499)
     path = request.url.path
     is_stream = path.endswith(":streamGenerateContent")
     # MITM sets this header before forwarding an explicitly mapped model. Once present,
@@ -18763,11 +19326,17 @@ def _build_antigravity_ccpa_url(
     request: Request,
     operation: str,
     approved_base_url: Optional[str] = None,
+    delimiter: Optional[str] = None,
 ) -> str:
-    """Construct the pinned CCPA RPC URL while preserving its query string."""
+    """Construct the pinned CCPA RPC/REST URL while preserving '/' vs ':' and query string."""
     base = approved_base_url or _validated_antigravity_ccpa_base_url()
     query = str(request.url.query)
-    return f"{base}/v1internal:{operation}{'?' + query if query else ''}"
+    if delimiter in ("/", ":"):
+        sep = delimiter
+    else:
+        req_path = str(getattr(request.url, "path", "") or "")
+        sep = "/" if (req_path.startswith("/v1internal/") and operation != "fetchAvailableModels") else ":"
+    return f"{base}/v1internal{sep}{operation}{'?' + query if query else ''}"
 
 
 def _antigravity_ccpa_error(status_code: int, status: str, message: str) -> JSONResponse:
@@ -18987,6 +19556,77 @@ def _maybe_auto_register(provider_name: str, target_model: str, resp) -> None:
         pass
 
 
+def _native_ide_credential_id(request: Request) -> str:
+    """Correlate native traffic without retaining incoming credentials."""
+    raw_cred = request.headers.get("authorization") or request.headers.get("x-goog-api-key") or ""
+    return hashlib.sha256(raw_cred.encode("utf-8")).hexdigest()[:12] if raw_cred else ""
+
+
+def _record_native_ide_inference(request: Request, model: str) -> None:
+    cred_id = _native_ide_credential_id(request)
+    if not cred_id or not request.url.path.endswith((":streamGenerateContent", ":generateContent")):
+        return
+    previous = _NATIVE_IDE_INFERENCE_STATS.pop(cred_id, {})
+    _NATIVE_IDE_INFERENCE_STATS[cred_id] = {
+        "requests_seen": previous.get("requests_seen", 0) + 1,
+        "last_request_at": time.time(),
+        "last_model": re.sub(r"[^a-zA-Z0-9_. /-]", "_", str(model))[:120],
+    }
+    while len(_NATIVE_IDE_INFERENCE_STATS) > 16:
+        _NATIVE_IDE_INFERENCE_STATS.pop(next(iter(_NATIVE_IDE_INFERENCE_STATS)))
+
+
+async def _observe_native_ide_quota(chunks, cred_id: str, http_status: int):
+    """Yield wire bytes verbatim; retain only bounded, whitelisted JSON metadata."""
+    body = bytearray()
+    overflow = False
+    async for chunk in chunks:
+        if not overflow:
+            if len(body) + len(chunk) <= 65536:
+                body.extend(chunk)
+            else:
+                body.clear()
+                overflow = True
+        yield chunk
+    if overflow or not cred_id:
+        return
+    try:
+        value = json.loads(body)
+    except (ValueError, UnicodeError):
+        return
+    buckets = []
+    def collect(node):
+        if isinstance(node, list):
+            for item in node:
+                collect(item)
+        elif isinstance(node, dict):
+            row = {}
+            for key in ("bucketId", "id", "modelId", "bucket", "model", "quotaId", "window", "displayName", "resetTime"):
+                item = node.get(key)
+                if isinstance(item, str) and re.fullmatch(r"[a-zA-Z0-9_.:/ +\-]{1,160}", item):
+                    row[key] = item
+            for key, ceiling in (("remainingFraction", 1), ("remaining_pct", 100)):
+                item = node.get(key)
+                if type(item) in (int, float) and math.isfinite(item) and 0 <= item <= ceiling:
+                    row[key] = item
+            if "remainingFraction" in row or "remaining_pct" in row or any(k in row for k in ("bucketId", "modelId", "bucket", "model", "quotaId")):
+                buckets.append(row)
+            for item in node.values():
+                if isinstance(item, (dict, list)):
+                    collect(item)
+    try:
+        collect(value)
+    except RecursionError:
+        return
+    _NATIVE_IDE_QUOTA_OBSERVATIONS.pop(cred_id, None)
+    _NATIVE_IDE_QUOTA_OBSERVATIONS[cred_id] = {
+        "cred_id": cred_id, "buckets": buckets[:128],
+        "http_status": http_status, "observed_at": time.time(),
+    }
+    while len(_NATIVE_IDE_QUOTA_OBSERVATIONS) > 16:
+        _NATIVE_IDE_QUOTA_OBSERVATIONS.pop(next(iter(_NATIVE_IDE_QUOTA_OBSERVATIONS)))
+
+
 async def _forward_antigravity_ccpa_control(request: Request, operation: str):
     """Stream a non-inference Cloud Code RPC to the pinned Google CCPA origin."""
     global _ANTIGRAVITY_EGRESS_CLIENT
@@ -19021,7 +19661,10 @@ async def _forward_antigravity_ccpa_control(request: Request, operation: str):
         # Use egress client so BSL Router connects to Google directly (via 8.8.8.8)
         # bypassing the local MITM hosts file which would cause an infinite loop.
         stage = "request-body"
-        raw_body = await request.body()
+        try:
+            raw_body = await request.body()
+        except _StarletteClientDisconnect:
+            return Response(status_code=499)
         for attempt in range(3):
             client = _get_antigravity_egress_client()
             stage = "request-build"
@@ -19054,7 +19697,8 @@ async def _forward_antigravity_ccpa_control(request: Request, operation: str):
             # would corrupt the forwarded JSON body. Registry-only preserves
             # force-stop visibility without touching the bytes.
             _afz_sid, _afz_body = _afz_passthrough_guard(
-                upstream_response.aiter_raw(),
+                _observe_native_ide_quota(upstream_response.aiter_raw(), _native_ide_credential_id(request), upstream_response.status_code)
+                if operation == "retrieveUserQuotaSummary" else upstream_response.aiter_raw(),
                 upstream_response.headers.get("content-type", ""),
                 allow_deadline_frames=False,
             )
@@ -19087,14 +19731,123 @@ async def _forward_antigravity_ccpa_control(request: Request, operation: str):
         )
 
 
+_ANTIGRAVITY_GEMINI_4_CARBON_CATALOG = (
+    (
+        "gemini-4-carbon-medium",
+        {
+            "displayName": "Gemini 4 Carbon (Medium)",
+            "supportsImages": True,
+            "supportsThinking": True,
+            "supportsVideo": True,
+            "thinkingBudget": -1,
+            "minThinkingBudget": 2048,
+            "recommended": True,
+            "maxTokens": 1048576,
+            "maxOutputTokens": 262144,
+            "tokenizerType": "LLAMA_WITH_SPECIAL",
+            "model": "MODEL_PLACEHOLDER_M437",
+            "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+            "modelProvider": "MODEL_PROVIDER_GOOGLE",
+            "tagTitle": "New",
+            "supportedMimeTypes": {
+                "image/png": True,
+                "image/jpeg": True,
+                "image/webp": True,
+                "application/pdf": True,
+                "video/mp4": True,
+            },
+            "thinkingLevel": 2,
+            "supportsModelInfoOverride": False,
+        },
+    ),
+    (
+        "gemini-4-carbon-high",
+        {
+            "displayName": "Gemini 4 Carbon (High)",
+            "supportsImages": True,
+            "supportsThinking": True,
+            "supportsVideo": True,
+            "thinkingBudget": -1,
+            "minThinkingBudget": 2048,
+            "recommended": True,
+            "maxTokens": 1048576,
+            "maxOutputTokens": 262144,
+            "tokenizerType": "LLAMA_WITH_SPECIAL",
+            "model": "MODEL_PLACEHOLDER_M427",
+            "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+            "modelProvider": "MODEL_PROVIDER_GOOGLE",
+            "tagTitle": "New",
+            "supportedMimeTypes": {
+                "image/png": True,
+                "image/jpeg": True,
+                "image/webp": True,
+                "application/pdf": True,
+                "video/mp4": True,
+            },
+            "thinkingLevel": 3,
+            "supportsModelInfoOverride": False,
+        },
+    ),
+    (
+        "gemini-4-carbon-low",
+        {
+            "displayName": "Gemini 4 Carbon (Low)",
+            "supportsImages": True,
+            "supportsThinking": True,
+            "supportsVideo": True,
+            "thinkingBudget": -1,
+            "minThinkingBudget": 2048,
+            "recommended": True,
+            "maxTokens": 1048576,
+            "maxOutputTokens": 262144,
+            "tokenizerType": "LLAMA_WITH_SPECIAL",
+            "model": "MODEL_PLACEHOLDER_M438",
+            "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+            "modelProvider": "MODEL_PROVIDER_GOOGLE",
+            "tagTitle": "New",
+            "supportedMimeTypes": {
+                "image/png": True,
+                "image/jpeg": True,
+                "image/webp": True,
+                "application/pdf": True,
+                "video/mp4": True,
+            },
+            "thinkingLevel": 1,
+            "supportsModelInfoOverride": False,
+        },
+    ),
+)
+
+
 def _merge_antigravity_custom_models_catalog(upstream_json, custom_models):
     import copy
     try:
         catalog = copy.deepcopy(upstream_json) if isinstance(upstream_json, dict) else {}
         enabled = [m for m in (custom_models or []) if isinstance(m, dict) and m.get("enabled", True)]
-        if not enabled:
-            return catalog
         map_entries, list_entries = {}, []
+        has_native_catalog = bool(
+            isinstance(catalog.get("models"), dict)
+            and any(k in catalog["models"] for k in ("gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-low", "claude-opus-4-6-thinking"))
+        )
+        if has_native_catalog:
+            models_dict = catalog.get("models") if isinstance(catalog.get("models"), dict) else {}
+            argon_quota = None
+            for _ak in ("gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-low"):
+                if isinstance(models_dict.get(_ak), dict) and isinstance(models_dict[_ak].get("quotaInfo"), dict):
+                    argon_quota = copy.deepcopy(models_dict[_ak]["quotaInfo"])
+                    break
+            for c_slug, c_template in _ANTIGRAVITY_GEMINI_4_CARBON_CATALOG:
+                existing = models_dict.get(c_slug) if isinstance(models_dict.get(c_slug), dict) else {}
+                c_entry = {**copy.deepcopy(c_template), **copy.deepcopy(existing)}
+                c_entry["displayName"] = c_template["displayName"]
+                c_entry["recommended"] = True
+                c_entry["supportsModelInfoOverride"] = False
+                if "quotaInfo" not in c_entry and argon_quota:
+                    c_entry["quotaInfo"] = copy.deepcopy(argon_quota)
+                map_entries[c_slug] = c_entry
+                list_entries.append({"name": f"models/{c_slug}", "version": "1.0", **c_entry})
+        if not enabled and not map_entries:
+            return catalog
         for model in enabled:
             try:
                 slug, index, target = model["slug"], model["placeholder_index"], model["target"]
@@ -19126,14 +19879,20 @@ def _merge_antigravity_custom_models_catalog(upstream_json, custom_models):
                 catalog[key].update(map_entries)
         sorts = catalog.setdefault("agentModelSorts", [])
         added = False
+        carbon_slugs = [c[0] for c in _ANTIGRAVITY_GEMINI_4_CARBON_CATALOG if c[0] in map_entries]
+        custom_slugs = [slug for slug in map_entries if slug not in carbon_slugs]
         if isinstance(sorts, list):
             for sort in sorts:
                 for group in sort.get("groups", []) if isinstance(sort, dict) else []:
                     if isinstance(group, dict) and isinstance(group.get("modelIds"), list):
-                        group["modelIds"].extend(slug for slug in map_entries if slug not in group["modelIds"])
+                        if carbon_slugs:
+                            missing_carbon = [s for s in carbon_slugs if s not in group["modelIds"]]
+                            if missing_carbon:
+                                group["modelIds"][:0] = missing_carbon
+                        group["modelIds"].extend(slug for slug in custom_slugs if slug not in group["modelIds"])
                         added = True
-            if not added:
-                sorts.append({"displayName": "Custom models", "groups": [{"modelIds": list(map_entries)}]})
+            if not added and custom_slugs:
+                sorts.append({"displayName": "Custom models", "groups": [{"modelIds": list(custom_slugs)}]})
         return catalog
 
     except Exception:
@@ -19256,8 +20015,39 @@ async def app_integration_status():
     from app.antigravity_patcher import integration_status
     cfg = cs_get_config()
     status = await asyncio.to_thread(integration_status)
-    status["enabled"] = cfg.get("antigravity_integration", {}).get("enabled", False)
+    ag_cfg = cfg.get("antigravity_integration", {}) if isinstance(cfg, dict) else {}
+    status["enabled"] = ag_cfg.get("enabled", False)
+    status["quota_saver"] = _validate_antigravity_quota_saver_config(cfg, ag_cfg.get("quota_saver"))
+    bsl_targets = {}
+    for _lbl, _env_name in (
+        ("blacksand_studio", "BSL_BLACKSAND_STUDIO_ASAR"),
+        ("blacksand_code", "BSL_BLACKSAND_CODE_ASAR"),
+    ):
+        _ap = os.environ.get(_env_name, "").strip()
+        if _ap and os.path.exists(_ap):
+            try:
+                bsl_targets[_lbl] = (await asyncio.to_thread(integration_status, asar_path=_ap)).get("desktop_status", "missing")
+            except Exception:
+                bsl_targets[_lbl] = "unknown"
+    status["blacksand_desktop_targets"] = bsl_targets
     return JSONResponse({"antigravity": status, "claude_code": {"enabled": cfg.get("claude_code_integration", {}).get("enabled", True), "models": len(_claude_code_models(cfg))}})
+
+
+@app.post("/api/app-integration/antigravity/quota-saver")
+async def app_integration_antigravity_quota_saver(request: Request):
+    try:
+        body = await request.json()
+        cfg = cs_get_config()
+        ag = cfg.setdefault("antigravity_integration", {})
+        cur_qs = ag.get("quota_saver") if isinstance(ag.get("quota_saver"), dict) else dict(_DEFAULT_ANTIGRAVITY_QUOTA_SAVER)
+        merged = {**cur_qs, **(body if isinstance(body, dict) else {})}
+        validated_qs = _validate_antigravity_quota_saver_config(cfg, merged)
+        ag["quota_saver"] = validated_qs
+        synced = await asyncio.to_thread(_sync_persistent_quota_saver_state, validated_qs)
+        await asyncio.to_thread(_replace_runtime_config, cfg)
+        return JSONResponse({"ok": True, "quota_saver": synced})
+    except (OSError, ValueError, KeyError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
 @app.post("/api/app-integration/antigravity/patch")
@@ -19709,8 +20499,41 @@ async def _probe_oneapi_billing(base: str, key: str) -> Optional[dict]:
 
 
 _OAUTH_QUOTA: dict = {}
+_OAUTH_PASSIVE_BY_ACCOUNT: dict[tuple[str, str], dict] = {}
+_NATIVE_IDE_QUOTA_OBSERVATIONS: dict[str, dict] = {}
+_NATIVE_IDE_INFERENCE_STATS: dict[str, dict] = {}
 _OAUTH_PROBE_CACHE: dict = {}
-_OAUTH_PROBE_TTL_S = 120.0
+_OAUTH_LAST_GOOD: dict = {}
+_OAUTH_PROBE_TTL_S = 15.0
+
+
+def _quota_window_is_valid(window: Any) -> bool:
+    """Accept only finite upstream quota percentages in the authoritative path."""
+    if not isinstance(window, dict):
+        return False
+    if isinstance(window.get("remaining_pct"), bool):
+        return False
+    try:
+        value = float(window.get("remaining_pct"))
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(value) and 0.0 <= value <= 100.0
+
+
+def _quota_has_authoritative_window(value: Any) -> bool:
+    return isinstance(value, dict) and any(
+        _quota_window_is_valid(value.get(key)) for key in ("five_hour", "weekly")
+    )
+
+
+def _quota_estimate(provider_id: str, conn_index: int) -> dict:
+    """Return local request accounting separately from provider quota."""
+    local = _compute_local_oauth_windows(provider_id, conn_index)
+    return {
+        "source": "local_request_estimate",
+        "five_hour": local["five_hour"],
+        "weekly": local["weekly"],
+    }
 
 
 def _parse_reset_ts(val, now_ts=None) -> tuple[Optional[str], Optional[int]]:
@@ -19745,7 +20568,12 @@ def _parse_reset_ts(val, now_ts=None) -> tuple[Optional[str], Optional[int]]:
 
 
 def _make_window_obj(label: str, remaining_pct: float, reset_val=None, reset_after_s=None, used=None, total=None) -> dict:
-    rem = round(max(0.0, min(100.0, float(remaining_pct))), 1)
+    if isinstance(remaining_pct, bool):
+        raise ValueError("invalid_quota_percentage")
+    rem = float(remaining_pct)
+    if not math.isfinite(rem) or not 0.0 <= rem <= 100.0:
+        raise ValueError("invalid_quota_percentage")
+    rem = round(rem, 1)
     reset_at, reset_in = _parse_reset_ts(reset_val)
     if reset_at is None and reset_after_s is not None:
         reset_at, reset_in = _parse_reset_ts(f"{max(0.0, float(reset_after_s))}s")
@@ -19756,24 +20584,24 @@ def _make_window_obj(label: str, remaining_pct: float, reset_val=None, reset_aft
 def _compute_local_oauth_windows(provider_id: str, conn_index: int) -> dict:
     from app import oauth_antiban
 
-    now = time.time()
-    now_m = time.monotonic(); usage = list(oauth_antiban._CONNECTION_USAGE.get((str(provider_id), int(conn_index))) or [])
+    now_m = time.monotonic()
+    with oauth_antiban._CONNECTION_USAGE_LOCK:
+        usage = list(oauth_antiban._CONNECTION_USAGE.get((str(provider_id), int(conn_index))) or [])
     result = {}
-    for key, label, seconds, max_reqs, max_toks in (
-        ("five_hour", "5h", 18000, 300, 2_000_000),
-        ("weekly", "7d", 604800, 2500, 15_000_000),
-    ):
+    for key, label, seconds in (("five_hour", "5h", 18000), ("weekly", "7d", 604800)):
         entries = [(ts, tokens) for ts, tokens in usage if ts >= now_m - seconds]
-        reqs = len(entries)
-        ratio = max(reqs / max_reqs, sum(tokens for _, tokens in entries) / max_toks)
-        reset = max(0, int(min(ts for ts, _ in entries) + seconds - now_m)) if entries else 0
-        result[key] = _make_window_obj(label, 100.0 * (1.0 - min(1.0, ratio)), reset_after_s=reset, used=reqs, total=max_reqs)
+        result[key] = {"label": label, "observed_requests": len(entries),
+                       "observed_tokens": sum(tokens for _, tokens in entries)}
     return result
 
 
 def _merge_oauth_windows(provider_id, conn_index, active=None):
-    result = dict(active or {})
+    result = copy.deepcopy(active or {})
     live = _OAUTH_QUOTA.get(str(provider_id), {}).get(int(conn_index), {})
+    if isinstance(active, dict) and active.get("account_key"):
+        live = _OAUTH_PASSIVE_BY_ACCOUNT.get((str(provider_id), active["account_key"]), live)
+        if live.get("account_key") != active["account_key"]:
+            live = {}
     if live and live.get("updated_at", 0) >= result.get("updated_at", 0):
         result.update(live)
         result["source"] = "oauth_live"
@@ -19781,44 +20609,42 @@ def _merge_oauth_windows(provider_id, conn_index, active=None):
             result["five_hour"] = _make_window_obj(
                 "5h", float(live["remaining_pct"]), reset_val=live.get("window_reset")
             )
-    local = _compute_local_oauth_windows(provider_id, conn_index)
     for key in ("five_hour", "weekly"):
-        if not result.get(key):
-            result[key] = local[key]
-        else:
-            window = dict(result[key])
-            if window.get("reset_at"):
-                window["reset_at"], window["reset_in_seconds"] = _parse_reset_ts(window["reset_at"])
-            result[key] = window
+        window = result.get(key)
+        if not isinstance(window, dict):
+            result.pop(key, None)
+            continue
+        if window.get("reset_at"):
+            window["reset_at"], window["reset_in_seconds"] = _parse_reset_ts(window["reset_at"])
+        if not _quota_window_is_valid(window):
+            result.pop(key, None)
     if isinstance(result.get("groups"), dict):
         merged_groups = {}
-        for g_key, g_label in (("google", "Google"), ("claude", "Claude")):
-            g_raw = dict((result["groups"].get(g_key)) or {})
-            g_out = {"label": g_raw.get("label") or g_label}
+        for g_key, g_raw_value in result["groups"].items():
+            if not isinstance(g_raw_value, dict):
+                continue
+            g_out = {"label": g_raw_value.get("label") or g_key.title()}
             for w_key in ("five_hour", "weekly"):
-                w_raw = g_raw.get(w_key)
-                if not isinstance(w_raw, dict):
-                    g_out[w_key] = dict(local[w_key])
-                else:
+                w_raw = g_raw_value.get(w_key)
+                if isinstance(w_raw, dict) and _quota_window_is_valid(w_raw):
                     w_copy = dict(w_raw)
                     if w_copy.get("reset_at"):
                         w_copy["reset_at"], w_copy["reset_in_seconds"] = _parse_reset_ts(w_copy["reset_at"])
                     g_out[w_key] = w_copy
-            merged_groups[g_key] = g_out
+            if len(g_out) > 1:
+                merged_groups[g_key] = g_out
         result["groups"] = merged_groups
-    elif str(provider_id).lower() in ("antigravity", "gemini-cli"):
-        result["groups"] = {
-            "google": {"label": "Google", "five_hour": dict(result["five_hour"]), "weekly": dict(result["weekly"])},
-            "claude": {"label": "Claude", "five_hour": dict(result["five_hour"]), "weekly": dict(result["weekly"])},
-        }
-    metric = (
-        live.get("metric")
-        if result.get("source") == "oauth_live" and live.get("metric")
-        else "5h/7d"
-    )
-    result.update(remaining_pct=round(min(result["five_hour"]["remaining_pct"], result["weekly"]["remaining_pct"]), 1),
-                  metric=metric, source=result.get("source", "oauth_window"),
-                  updated_at=result.get("updated_at", time.time()))
+    if _quota_has_authoritative_window(result):
+        windows = [result[key]["remaining_pct"] for key in ("five_hour", "weekly") if _quota_window_is_valid(result.get(key))]
+        result["remaining_pct"] = round(min(windows), 1)
+        result["metric"] = result.get("metric") or "5h/7d"
+        result["source"] = result.get("source") or "oauth_upstream"
+    else:
+        result["remaining_pct"] = None
+        result["source"] = result.get("source") or "unavailable"
+        result["estimate"] = _quota_estimate(provider_id, conn_index)
+    if result.get("updated_at"):
+        result.setdefault("observed_at", result["updated_at"])
     return result
 
 _OAUTH_RL_HEADERS = [
@@ -19857,7 +20683,7 @@ def _capture_rate_limit_headers(provider: str, conn_index, headers) -> None:
                 rem, lim = float(h.get(rem_k, "nan")), float(h.get(lim_k, "nan"))
             except (TypeError, ValueError):
                 continue
-            if rem == rem and lim == lim and lim > 0:
+            if math.isfinite(rem) and math.isfinite(lim) and lim > 0 and 0 <= rem <= lim:
                 entry.update(remaining_pct=round(100 * max(0, rem) / lim, 1), metric=metric,
                              window_reset=h.get(rem_k.replace("remaining", "reset")))
                 entry.setdefault("five_hour", _make_window_obj("5h", 100 * max(0, rem) / lim,
@@ -19865,19 +20691,20 @@ def _capture_rate_limit_headers(provider: str, conn_index, headers) -> None:
                 break
         if entry:
             entry["updated_at"] = time.time()
+            connections = ((cs_get_config().get("providers") or {}).get(str(provider)) or {}).get("connections") or []
+            if int(conn_index) < len(connections):
+                from app.utils.quota_live import account_key
+                entry["account_key"] = account_key(connections[int(conn_index)], int(conn_index))
             _OAUTH_QUOTA.setdefault(str(provider), {})[int(conn_index)] = entry
+            if entry.get("account_key"):
+                _OAUTH_PASSIVE_BY_ACCOUNT[(str(provider), entry["account_key"])] = entry
     except Exception:
         pass
 
 
 def _oauth_conn_cache_key(conn: dict, conn_index: int) -> str:
-    """Stable cache key for a connection's quota probe across Move Up/Down swaps."""
-    if isinstance(conn, dict):
-        for k in ("id", "email", "access_token", "api_key", "refresh_token", "name"):
-            v = str(conn.get(k) or "").strip()
-            if v:
-                return f"{k}:{v[:64]}"
-    return f"idx:{int(conn_index)}"
+    """Share the account identity contract across active and passive caches."""
+    return _quota_account_key(conn, conn_index)
 
 
 _ANTIGRAVITY_SUB_CACHE: dict[str, tuple[float, dict]] = {}
@@ -20141,15 +20968,23 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
     key = (str(provider_id), _oauth_conn_cache_key(conn, conn_index))
     now = time.time()
     cached = _OAUTH_PROBE_CACHE.get(key)
+    last_good = _OAUTH_LAST_GOOD.get(key)
     if cached and not force and now - cached[0] < _OAUTH_PROBE_TTL_S:
         # Re-merge local/live window updates with the cached active API window
         return _merge_oauth_windows(provider_id, conn_index, cached[1])
-    active = {}
+    active = {"account_key": _quota_account_key(conn, conn_index)}
+    response = None
+    probe_error = None
     pd = (conn.get("provider_data") if isinstance(conn, dict) else None) or {}
     if not isinstance(pd, dict):
         pd = {}
     # Prefer api_key first since _update_connection_token always writes refreshed tokens to api_key
     token = str(conn.get("api_key") or conn.get("access_token") or "").strip()
+    if token.startswith("enc:"):
+        return _quota_failure(last_good or {}, "credential_unavailable", conn=conn)
+    blocked = _quota_blocked(provider_id, conn_index, conn, {})
+    if blocked:
+        return _quota_failure(last_good or {}, blocked, conn=conn)
     detected_plan = _normalize_oauth_tier(provider_id, None, conn)
     try:
         import httpx
@@ -20167,6 +21002,7 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                 timeout=4.5,
             )
             data = response.json() if response.status_code == 200 else {}
+
             if isinstance(data, dict):
                 for source, target, label in (("five_hour", "five_hour", "5h"), ("seven_day", "weekly", "7d")):
                     item = data.get(source) or {}
@@ -20248,7 +21084,7 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
             from app.utils.google_cloudcode_egress import google_cloudcode_sync_post
             ag_ua = getattr(_ag_upstream_contract, "ANTIGRAVITY_UPSTREAM_UA", "antigravity/ide/2.1.1 windows/amd64")
             _probe_proxy = _effective_egress_proxy(conn, provider_id)
-            sub_cache_key = token[:32]
+            sub_cache_key = _oauth_conn_cache_key(conn, conn_index)
             sub_cached = _ANTIGRAVITY_SUB_CACHE.get(sub_cache_key)
             sub_data = sub_cached[1] if (sub_cached and not force and now - sub_cached[0] < 300.0) else None
             if sub_data is None:
@@ -20341,7 +21177,9 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                     grp_key = "claude" if any(x in item_hint for x in ("claude", "gpt", "3p", "anthropic", "openai", "third")) else "google"
                     win_hint = f"{item.get('window', '')} {item.get('bucketId', '')} {item.get('displayName', '')} {item}".lower()
                     target = "weekly" if any(x in win_hint for x in ("week", "7d")) else ("five_hour" if any(x in win_hint for x in ("five", "5h")) else ("five_hour" if pos == 0 else "weekly"))
-                    rem_frac = 0.0 if item.get("disabled") is True else float(item["remainingFraction"])
+                    rem_frac = float(item["remainingFraction"])
+                    if isinstance(item["remainingFraction"], bool) or not math.isfinite(rem_frac) or not 0 <= rem_frac <= 1:
+                        continue
                     # Unused 5h/weekly summary buckets omit 'description' and report a rolling horizon
                     reset_val = None if (rem_frac >= 1.0 and not item.get("description") and item.get("bucketId")) else item.get("resetTime")
                     win_obj = _make_window_obj("7d" if target == "weekly" else "5h", rem_frac * 100.0, reset_val=reset_val)
@@ -20350,10 +21188,10 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                         active[target] = dict(win_obj)
                     parsed_any = True
             if parsed_any:
-                for g_key in ("google", "claude"):
-                    groups_out[g_key].setdefault("five_hour", dict(active.get("five_hour") or _make_window_obj("5h", 100.0)))
-                    groups_out[g_key].setdefault("weekly", dict(active.get("weekly") or _make_window_obj("7d", 100.0)))
-                active["groups"] = groups_out
+                active["groups"] = {
+                    key: value for key, value in groups_out.items()
+                    if len(value) > 1
+                }
         elif token and provider in ("kiro", "kiro-import"):
             auth_method = str(pd.get("authMethod") or pd.get("auth_method") or "").strip().lower()
             profile_arn = str(pd.get("profileArn") or pd.get("profile_arn") or "").strip()
@@ -20618,14 +21456,22 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                             active[target] = _make_window_obj("7d" if target == "weekly" else "5h", float(remaining), reset_val=item.get("reset_at") or item.get("resetAt") or item.get("nextResetTime"), used=used, total=total)
         if active.get("five_hour") or active.get("weekly"):
             active["source"] = "oauth_api"
-            active["updated_at"] = now
-    except Exception:
-        pass
+            active["updated_at"] = time.time()
+    except Exception as exc:
+        probe_error = "invalid_schema" if isinstance(exc, (ValueError, TypeError, KeyError)) else "transport_error"
     if detected_plan:
         active["plan"] = detected_plan
         if isinstance(conn, dict):
             conn.setdefault("provider_data", {})["plan_type"] = detected_plan
     result = _merge_oauth_windows(provider_id, conn_index, active)
+    status = getattr(response, "status_code", None)
+    if _quota_has_authoritative_window(result) and not probe_error and status in (None, 200):
+        result.update(observed_at=result.get("updated_at", now), last_attempt_at=now, stale=False)
+        _OAUTH_LAST_GOOD[key] = copy.deepcopy(result)
+    else:
+        category = probe_error or ("reauth_required" if status == 401 else f"http_{status}" if status and status != 200 else "empty_or_unsupported_schema")
+        result = _quota_failure(last_good or {}, category, status, conn)
+        result["estimate"] = _quota_estimate(provider_id, conn_index)
     if detected_plan:
         result["plan"] = detected_plan
     _OAUTH_PROBE_CACHE[key] = (now, result)
@@ -20667,132 +21513,99 @@ async def force_refresh_oauth_provider(provider_id: str):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
-_QUOTA_REFRESH_LOCK: Optional[asyncio.Lock] = None
-_QUOTA_REFRESH_FAIL_TS: dict[tuple[str, str], float] = {}
+from app.utils.quota_live import QuotaCache, account_key as _quota_account_key
+_QUOTA_LIVE_CACHE = QuotaCache()
+
+
+def _quota_failure(previous: dict, category: str, status=None, conn=None) -> dict:
+    result = copy.deepcopy(previous or {})
+    result.update(error=category, status=status, stale=bool(result.get("observed_at")),
+                  last_attempt_at=time.time())
+    result.setdefault("remaining_pct", None)
+    result.setdefault("source", "unavailable")
+    result.setdefault("observed_at", None)
+    if conn is not None:
+        from app.oauth import _is_token_expired
+        result.update(credential_present=bool(conn.get("api_key") or conn.get("access_token")),
+                      token_expired=_is_token_expired(conn.get("expires_at")))
+    return result
+
+
+def _quota_blocked(provider_id, conn_index, conn, prov_cfg):
+    if prov_cfg.get("enabled") is False or conn.get("enabled") is False:
+        return "disabled"
+    breaker = get_breaker()
+    if (conn.get("provider_data") or {}).get("tos_banned") is True or (
+        breaker is not None and f"{provider_id}/{conn_index}" in getattr(breaker, "banned_connections", {})
+    ):
+        return "banned"
+    return None
 
 
 async def _ensure_and_probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, prov_cfg: dict, force: bool = False) -> dict:
-    """Refresh expired OAuth tokens before probing upstream quota so status stays synced."""
-    global _QUOTA_REFRESH_LOCK
-    _is_disabled_or_banned = bool(
-        isinstance(conn, dict)
-        and (
-            conn.get("enabled") is False
-            or ((conn.get("provider_data") or {}).get("tos_banned") is True)
-        )
-    )
-    try:
-        from app import oauth as _oauth_mod
-        has_token = bool(str(conn.get("access_token") or conn.get("api_key") or "").strip())
-        if not _is_disabled_or_banned and conn.get("refresh_token") and (not has_token or _oauth_mod._is_token_expired(conn.get("expires_at"))):
-            fail_key = (str(provider_id), str(conn.get("id") or conn_index))
-            now_ts = time.time()
-            last_fail = _QUOTA_REFRESH_FAIL_TS.get(fail_key, 0.0)
-            cooldown = 15.0 if force else 300.0
-            if (now_ts - last_fail) >= cooldown:
-                if _QUOTA_REFRESH_LOCK is None:
-                    _QUOTA_REFRESH_LOCK = asyncio.Lock()
-                async with _QUOTA_REFRESH_LOCK:
-                    _oauth_mod._last_refresh_at.pop(provider_id, None)
-                    await asyncio.wait_for(ensure_fresh_token(provider_id, conn, prov_cfg, force=False), timeout=4.5)
-                if _oauth_mod._is_token_expired(conn.get("expires_at")):
-                    _QUOTA_REFRESH_FAIL_TS[fail_key] = time.time()
-                else:
-                    _QUOTA_REFRESH_FAIL_TS.pop(fail_key, None)
-    except Exception:
-        pass
-    res = await asyncio.to_thread(_probe_oauth_quota, provider_id, conn_index, conn, force)
-    if isinstance(res, dict) and conn.get("expires_at"):
-        res["expires_at"] = conn.get("expires_at")
-    return res
+    """Refresh using decrypted config credentials; never probe disabled accounts."""
+    from app import oauth as oauth_mod
+    blocked = _quota_blocked(provider_id, conn_index, conn, prov_cfg)
+    if blocked:
+        return _quota_failure({}, blocked, conn=conn)
+    if oauth_mod._is_token_expired(conn.get("expires_at")) or not (conn.get("api_key") or conn.get("access_token")):
+        try:
+            token = await asyncio.wait_for(ensure_fresh_token(provider_id, conn, prov_cfg), 12)
+        except Exception:
+            return _quota_failure({}, "refresh_failed", conn=conn)
+        if not token or oauth_mod._is_token_expired(conn.get("expires_at")):
+            return _quota_failure({}, "reauth_required", conn=conn)
+        conn["api_key"] = token
+    result = await asyncio.to_thread(_probe_oauth_quota, provider_id, conn_index, conn, True)
+    if conn.get("expires_at"):
+        result["expires_at"] = conn["expires_at"]
+    return result
 
 
 @app.get("/api/quota/status")
 async def get_quota_status_endpoint(provider: Optional[str] = None, force: bool = False):
-    import time as _time
-    try:
-        now = _time.time()
-        cfg = cs_get_config()
-        all_providers = cfg.get("providers") or {}
-        if provider is not None:
-            # Fast single-provider path for Admin UI detail view & '↻ Quotas' button
-            prov_map = _QUOTA_CACHE.setdefault("providers", {})
-            p = all_providers.get(provider)
-            if isinstance(p, dict):
-                conns = p.get("connections") or []
-                base = str((p.get("base_url") or "")).rstrip("/")
-                conn_tasks = []
-                for idx, c in enumerate(conns):
-                    key = str(c.get("api_key") or "").strip()
-                    cbase = str(c.get("base_url") or "").rstrip("/") or base
-                    is_oauth = (
-                        c.get("refresh_token")
-                        or c.get("access_token")
-                        or c.get("token_type") == "oauth"
-                        or p.get("auth_type") == "oauth"
-                        or p.get("type") == "oauth"
-                        or provider in _oauth_antiban.OAUTH_AFFINITY_PROVIDERS
-                    )
-                    if is_oauth:
-                        conn_tasks.append(_ensure_and_probe_oauth_quota(provider, idx, c, p, force))
-                    elif key and cbase:
-                        conn_tasks.append(_probe_oneapi_billing(cbase, key))
-                    else:
-                        conn_tasks.append(asyncio.sleep(0, result=None))
-                if conns:
-                    try:
-                        res = list(await asyncio.gather(*conn_tasks))
-                    except Exception:
-                        res = []
-                    prov_map[provider] = [r if isinstance(r, dict) else None for r in res]
-                else:
-                    prov_map[provider] = []
-            return JSONResponse({"cached": False, "providers": {provider: prov_map.get(provider)}})
-
-        fresh = (now - _QUOTA_CACHE["ts"]) < _QUOTA_CACHE_TTL_S and not force
-        if not fresh:
-            tasks, oauth = {}, {}
-            for pid, p in all_providers.items():
-                conns = p.get("connections") or []
-                base = str((p.get("base_url") or "")).rstrip("/")
-                conn_tasks = []
-                for idx, c in enumerate(conns):
-                    key = str(c.get("api_key") or "").strip()
-                    cbase = str(c.get("base_url") or "").rstrip("/") or base
-                    is_oauth = (
-                        c.get("refresh_token")
-                        or c.get("access_token")
-                        or c.get("token_type") == "oauth"
-                        or p.get("auth_type") == "oauth"
-                        or p.get("type") == "oauth"
-                        or pid in _oauth_antiban.OAUTH_AFFINITY_PROVIDERS
-                    )
-                    if is_oauth:
-                        conn_tasks.append(_ensure_and_probe_oauth_quota(pid, idx, c, p, force))
-                        oauth.setdefault(pid, set()).add(idx)
-                    elif key and cbase:
-                        conn_tasks.append(_probe_oneapi_billing(cbase, key))
-                    else:
-                        conn_tasks.append(asyncio.sleep(0, result=None))
-                if conns:
-                    tasks[pid] = asyncio.ensure_future(asyncio.gather(*conn_tasks))
-            results = {}
-            for pid, gather in tasks.items():
-                try: results[pid] = list(await gather)
-                except Exception: results[pid] = None
-            _QUOTA_CACHE.update(ts=now, providers={pid: [r if isinstance(r, dict) else None for r in (res or [])] for pid, res in results.items()})
-        else:
-            for pid, rows in (_QUOTA_CACHE.get("providers") or {}).items():
-                for idx, row in enumerate(rows):
-                    live = _OAUTH_QUOTA.get(pid, {}).get(idx)
-                    if live and isinstance(row, dict):
-                        row.update(live)
-                        merged = _merge_oauth_windows(pid, idx, row)
-                        rows[idx] = merged
-        out = _QUOTA_CACHE["providers"]
-        return JSONResponse({"cached": fresh, "providers": out})
-    except Exception as exc:
-        return JSONResponse({"cached": True, "providers": _QUOTA_CACHE.get("providers", {}), "error": str(exc)})
+    """Cache-first: force requests refresh but respects singleflight and backoff."""
+    providers = (cs_get_config().get("providers") or {})
+    output = {}
+    for pid, p in providers.items():
+        if provider is not None and pid != provider:
+            continue
+        rows = []
+        for idx, conn in enumerate(p.get("connections") or []):
+            is_oauth = (conn.get("refresh_token") or conn.get("access_token") or conn.get("token_type") == "oauth"
+                        or p.get("auth_type") == "oauth" or p.get("type") == "oauth"
+                        or pid in _oauth_antiban.OAUTH_AFFINITY_PROVIDERS)
+            async def probe(pid=pid, idx=idx, conn=conn, p=p, is_oauth=is_oauth):
+                if is_oauth:
+                    return await _ensure_and_probe_oauth_quota(pid, idx, conn, p, force)
+                base = str(conn.get("base_url") or p.get("base_url") or "").rstrip("/")
+                value = await _probe_oneapi_billing(base, conn.get("api_key", "")) if base and conn.get("api_key") else None
+                if value is None:
+                    return _quota_failure({}, "unsupported_or_unavailable")
+                value.update(source="billing_api", observed_at=time.time(), stale=False)
+                return value
+            cache_key = (pid, _quota_account_key(conn, idx))
+            passive = _OAUTH_PASSIVE_BY_ACCOUNT.get((str(pid), cache_key[1])) or _OAUTH_QUOTA.get(pid, {}).get(idx, {})
+            if passive.get("account_key") == cache_key[1] and passive.get("updated_at", 0) > (_QUOTA_LIVE_CACHE.rows.get(cache_key, {}).get("observed_at") or 0):
+                prior = copy.deepcopy(_QUOTA_LIVE_CACHE.rows.get(cache_key) or {})
+                for _k in ("error", "status", "last_good_source", "throttled", "next_refresh_in_s"):
+                    prior.pop(_k, None)
+                prior["account_key"] = cache_key[1]
+                snapshot = _merge_oauth_windows(pid, idx, prior)
+                snapshot.update(observed_at=passive["updated_at"], stale=False)
+                _QUOTA_LIVE_CACHE.rows[cache_key] = snapshot
+            rows.append(_QUOTA_LIVE_CACHE.read(pid, conn, idx, probe,
+                        _quota_blocked(pid, idx, conn, p), force))
+        output[pid] = rows
+    if provider is not None:
+        output.setdefault(provider, [])
+    payload = {"cached": True, "refreshing": any(r.get("refreshing") for rows in output.values() for r in rows), "providers": output}
+    if provider in (None, "antigravity"):
+        payload["native_ide_passthrough"] = [
+            dict(entry, **_NATIVE_IDE_INFERENCE_STATS.get(cred_id, {}))
+            for cred_id, entry in _NATIVE_IDE_QUOTA_OBSERVATIONS.items()
+        ]
+    return JSONResponse(payload)
 
 
 def _compare_versions(v1: str, v2: str) -> int:

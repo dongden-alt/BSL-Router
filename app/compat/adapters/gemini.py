@@ -28,7 +28,9 @@ from typing import Any, Dict, Optional
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Cap on generationConfig.maxOutputTokens for inbound antigravity requests (§8.4).
-_MAX_OUTPUT_TOKENS_CAP = 16384
+# Raised from 16384 -> 32768 (LOCK-C96E13836A Wave 0.1) so shared-budget reasoning
+# + large edit_file/write_file tool-call JSON payloads never truncate mid-object.
+_MAX_OUTPUT_TOKENS_CAP = 32768
 
 # thinkingConfig.thinkingBudget → reasoning_effort thresholds (§3, module 58028 `Vp`).
 def _budget_to_effort(budget: Any) -> str:
@@ -1358,6 +1360,7 @@ def _new_state() -> Dict[str, Any]:
         "responseId": None,
         "modelVersion": None,
         "usage": None,
+        "sawContentFilter": False,
     }
 
 
@@ -1383,6 +1386,7 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
         state.setdefault("responseId", None)
         state.setdefault("modelVersion", None)
         state.setdefault("usage", None)
+    state.setdefault("sawContentFilter", False)
 
     # Track stable ids for the whole response.
     if not state.get("responseId"):
@@ -1411,6 +1415,8 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
     choice = choices[0] if isinstance(choices[0], dict) else {}
     delta = choice.get("delta") or {}
     finish = choice.get("finish_reason")
+    if isinstance(finish, str) and finish.lower() == "content_filter":
+        state["sawContentFilter"] = True
 
     parts: list = []
 
@@ -1780,6 +1786,43 @@ def gemini_frame_is_thought_only(frame: Dict[str, Any]) -> bool:
             if part.get("functionCall") or part.get("inlineData") or part.get("fileData"):
                 return False
     return found
+
+
+def gemini_frame_has_body_or_tool_content(frame: Dict[str, Any]) -> bool:
+    """True ONLY when a Gemini candidate part carries visible body or tool content.
+
+    Specifically returns True when at least one part has:
+      * non-whitespace, non-thought `text` (excluding `BSL_NO_OUTPUT_NOTICE`), OR
+      * `functionCall`, `inlineData`, or `fileData`.
+
+    Returns False for `thought: True` reasoning parts, `{"text": ""}`,
+    whitespace-only text deltas, `BSL_NO_OUTPUT_NOTICE`, usage-only frames,
+    and malformed payloads. Used by `gemini_egress_stream` (RC-1) so a stream
+    that emitted only `thought: True` parts or dropped malformed tool calls is
+    never misclassified as having delivered transcript body/tool output.
+    """
+    if not isinstance(frame, dict):
+        return False
+    inner = frame.get("response") if "response" in frame else frame
+    if not isinstance(inner, dict):
+        return False
+    for cand in inner.get("candidates") or []:
+        if not isinstance(cand, dict):
+            continue
+        content = cand.get("content")
+        if not isinstance(content, dict):
+            continue
+        for part in content.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            if part.get("functionCall") or part.get("inlineData") or part.get("fileData"):
+                return True
+            if part.get("thought") is True:
+                continue
+            txt = part.get("text")
+            if isinstance(txt, str) and txt != BSL_NO_OUTPUT_NOTICE and txt.strip():
+                return True
+    return False
 
 
 def _base_gemini_response(state: Dict[str, Any], parts: list, finish_reason: Optional[str]) -> Dict[str, Any]:

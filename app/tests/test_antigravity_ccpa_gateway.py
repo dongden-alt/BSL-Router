@@ -568,3 +568,79 @@ def test_native_stream_leak_closes_upstream_on_header_error(monkeypatch):
     assert response.status_code == 200
     assert b"UNAVAILABLE" in response.body or b"error" in response.body
     assert resp.aclose_count == 1, "upstream stream must be closed exactly once on header error"
+
+
+def test_ccpa_slash_resource_cascade_nuxes_preserves_slash_and_get_method():
+    stream = _BytesStream([b'{"nuxes":[]}'])
+    upstream = httpx.Response(
+        200,
+        headers={"content-type": "application/json"},
+        stream=stream,
+    )
+    client = _NativeClient(upstream)
+    async def empty_receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    req = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/v1internal/cascadeNuxes",
+            "query_string": b"page_size=1000",
+            "headers": [(b"authorization", b"Bearer google-secret")],
+            "scheme": "http",
+            "server": ("127.0.0.1", 6969),
+            "client": ("127.0.0.1", 50000),
+        },
+        empty_receive,
+    )
+    previous_egress = main.google_egress_client
+    main.google_egress_client = client
+    try:
+        response = asyncio.run(_call_control("cascadeNuxes", req))
+        chunks = asyncio.run(_consume_stream(response))
+    finally:
+        main.google_egress_client = previous_egress
+
+    assert response.status_code == 200
+    assert b"".join(chunks) == b'{"nuxes":[]}'
+    assert client.request.method == "GET"
+    assert client.request.url.host == "cloudcode-pa.googleapis.com"
+    assert client.request.url.path == "/v1internal/cascadeNuxes"
+    assert client.request.url.query == b"page_size=1000"
+    assert main._is_public_path("/v1internal/cascadeNuxes") is True
+    assert main._build_antigravity_ccpa_url(
+        _request("/v1internal/fetchAvailableModels"),
+        "fetchAvailableModels",
+        "https://cloudcode-pa.googleapis.com",
+    ).startswith("https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels")
+
+
+def test_safe_request_json_client_disconnect_returns_499_without_500():
+    async def disconnected_receive():
+        return {"type": "http.disconnect"}
+
+    req = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "query_string": b"",
+            "headers": [(b"content-type", b"application/json")],
+            "scheme": "http",
+            "server": ("127.0.0.1", 6969),
+            "client": ("127.0.0.1", 50000),
+        },
+        disconnected_receive,
+    )
+    with pytest.raises(main._BSLClientDisconnected):
+        asyncio.run(main._safe_request_json(req))
+    resp = asyncio.run(main._bsl_client_disconnected_handler(req, main._BSLClientDisconnected()))
+    assert resp.status_code == 499
+
+
+def test_validate_antigravity_integration_config_quota_saver_has_sys_bound():
+    cfg = _integration_config()
+    cfg["antigravity_integration"]["quota_saver"] = {"enabled": True}
+    validated = main._validate_antigravity_integration_config(cfg)
+    assert validated["antigravity_integration"]["quota_saver"]["enabled"] is True

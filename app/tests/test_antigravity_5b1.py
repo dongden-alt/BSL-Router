@@ -77,7 +77,7 @@ def test_t1_unwrap_and_convert_basic_request():
     assert openai_body["messages"][1]["content"] == "hello world"
 
     # Scalars: clamp + carry-through.
-    assert openai_body["max_tokens"] == 16384
+    assert openai_body["max_tokens"] == 32768
     assert openai_body["temperature"] == 1
     assert openai_body["top_p"] == 0.95
 
