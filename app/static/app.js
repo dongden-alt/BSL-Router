@@ -110,6 +110,21 @@ const OAUTH_PROVIDER_MODELS = {
         // 2026-10-22 full rebuild from 9Router's latest model catalog — MIRROR
         // of app/oauth.py (edit oauth.py first). loadCodeAssist UA reverted to
         // google-api-nodejs-client/9.15.1 (hub/2.24.0 returned wrong tier).
+        // Gemini 4 Carbon / Neon / Hydrogen
+        { id: 'gemini-4-carbon-high' },
+        { id: 'gemini-4-carbon-medium' },
+        { id: 'gemini-4-carbon-low' },
+        { id: 'gemini-4-carbon' },
+        { id: 'gemini-4-neon-xhigh' },
+        { id: 'gemini-4-neon-high' },
+        { id: 'gemini-4-neon-medium' },
+        { id: 'gemini-4-neon-low' },
+        { id: 'gemini-4-neon' },
+        { id: 'gemini-4-hydrogen-xhigh' },
+        { id: 'gemini-4-hydrogen-high' },
+        { id: 'gemini-4-hydrogen-medium' },
+        { id: 'gemini-4-hydrogen-low' },
+        { id: 'gemini-4-hydrogen' },
         // Gemini 4 Argon
         { id: 'gemini-4-argon-high' },
         { id: 'gemini-4-argon-medium' },
@@ -1825,6 +1840,7 @@ function getThinkingSpec(modelId) {
     // (families/gemini.py _VALID_LEVELS; xhigh coerces to max server-side).
     // gemini-pro-agent is Gemini 3.1 Pro under an alias with no digit in the
     // id — matched explicitly; gemini-4-argon rides the same enum contract.
+    if (/gemini-4-(?:neon|hydrogen)/.test(id)) return { effort: ['off','low','medium','high','xhigh'] };
     if (/gemini.*[34]|gemini-4-argon|gemini-pro-agent/.test(id)) return { effort: ['off','low','medium','high','max'] };
     if (/gemini/.test(id)) return { effort: ['off','16k','32k'] };
     // GPT-5.4 / 5.5
@@ -2103,7 +2119,7 @@ window.saveManualModel = () => {
     renderActiveTab();
 };
 
-window.deleteAllModels = () => {
+window.deleteAllModels = async () => {
     const q = (document.getElementById('model-filter-input')?.value || '').toLowerCase().trim();
     const models = globalConfig.providers[activeProviderId]?.models || [];
     if (models.length === 0) return;
@@ -2117,9 +2133,14 @@ window.deleteAllModels = () => {
         msg = `Delete all ${models.length} models from this provider?`;
     }
     if (!confirm(msg)) return;
-    const idsToDelete = new Set(toDelete.map(m => m.id));
-    globalConfig.providers[activeProviderId].models = models.filter(m => !idsToDelete.has(m.id));
-    saveConfig();
+    const idsToDelete = Array.from(new Set(toDelete.map(m => m.id).filter(Boolean)));
+    globalConfig._deleted_models = {
+        provider: activeProviderId,
+        models: idsToDelete,
+    };
+    const idSet = new Set(idsToDelete);
+    globalConfig.providers[activeProviderId].models = models.filter(m => !idSet.has(m.id));
+    await saveConfig();
     renderActiveTab();
     if (q) {
         setTimeout(() => {
@@ -2252,9 +2273,11 @@ function isCustomTextFormat(format) {
 }
 
 function customTextAppendedPath(format) {
-    return String(format || '').toLowerCase() === 'anthropic'
-        ? '/v1/messages'
-        : '/v1/chat/completions';
+    const fmt = String(format || '').toLowerCase();
+    if (fmt === 'anthropic') return '/v1/messages';
+    if (fmt === 'openai-responses') return '/v1/responses';
+    if (fmt === 'gemini') return '/v1beta/models/...:generateContent';
+    return '/v1/chat/completions';
 }
 
 function normalizeCustomTextBaseUrl(value) {
@@ -2516,9 +2539,17 @@ window.verifyProviderKey = async (btn) => {
     }
 };
 
-window.removeModel = (idx) => {
-    globalConfig.providers[activeProviderId].models.splice(idx, 1);
-    saveConfig();
+window.removeModel = async (idx) => {
+    const prov = globalConfig.providers[activeProviderId];
+    const removed = prov?.models?.[idx];
+    if (removed) {
+        globalConfig._deleted_model = {
+            provider: activeProviderId,
+            model: removed.id || removed.name || '',
+        };
+    }
+    prov?.models?.splice(idx, 1);
+    await saveConfig();
     renderActiveTab();
 };
 
@@ -4223,6 +4254,10 @@ function renderQuotaSaverSubmodule() {
     const isExternalFirst = qs.mode === 'external_first';
     const isNativeOnly = qs.mode === 'native_only';
     const fastOpts = [
+        ['gemini-4-neon-low', 'Gemini 4 Neon (Low)'],
+        ['gemini-4-neon-medium', 'Gemini 4 Neon (Medium)'],
+        ['gemini-4-neon-high', 'Gemini 4 Neon (High)'],
+        ['gemini-4-neon-xhigh', 'Gemini 4 Neon (XHigh)'],
         ['gemini-4-hydrogen-low', 'Gemini 4 Hydrogen (Low — Fast & Compaction)'],
         ['gemini-4-hydrogen-medium', 'Gemini 4 Hydrogen (Medium)'],
         ['gemini-4-hydrogen-high', 'Gemini 4 Hydrogen (High)'],
@@ -4230,6 +4265,10 @@ function renderQuotaSaverSubmodule() {
         ['gemini-2.5-flash', 'Gemini 2.5 Flash (Independent Quota Bucket)']
     ].map(([k, lbl]) => `<option value="${k}" ${(qs.fast_native_model || 'gemini-4-hydrogen-low') === k ? 'selected' : ''}>${lbl}</option>`).join('');
     const routineOpts = [
+        ['gemini-4-neon-low', 'Gemini 4 Neon (Low)'],
+        ['gemini-4-neon-medium', 'Gemini 4 Neon (Medium)'],
+        ['gemini-4-neon-high', 'Gemini 4 Neon (High)'],
+        ['gemini-4-neon-xhigh', 'Gemini 4 Neon (XHigh)'],
         ['gemini-4-hydrogen-medium', 'Gemini 4 Hydrogen (Medium — Routine Simple Tasks)'],
         ['gemini-4-hydrogen-high', 'Gemini 4 Hydrogen (High)'],
         ['gemini-4-hydrogen-low', 'Gemini 4 Hydrogen (Low)'],
@@ -4364,6 +4403,10 @@ const AG_SLOTS=[
     {key:'gemini-4-carbon-low',label:'Gemini 4 Carbon (Low)'},
     {key:'gemini-4-carbon-medium',label:'Gemini 4 Carbon (Medium)'},
     {key:'gemini-4-carbon-high',label:'Gemini 4 Carbon (High)'},
+    {key:'gemini-4-neon-low',label:'Gemini 4 Neon (Low)'},
+    {key:'gemini-4-neon-medium',label:'Gemini 4 Neon (Medium)'},
+    {key:'gemini-4-neon-high',label:'Gemini 4 Neon (High)'},
+    {key:'gemini-4-neon-xhigh',label:'Gemini 4 Neon (XHigh)'},
     {key:'gemini-2.5-pro',label:'Gemini 2.5 Pro'}
 ];
 function agConfig(){if(!globalConfig.antigravity_integration||typeof globalConfig.antigravity_integration!=='object')globalConfig.antigravity_integration={};let c=globalConfig.antigravity_integration;if(!c.mappings||typeof c.mappings!=='object')c.mappings={};if(typeof c.enabled!=='boolean')c.enabled=false;return c;}

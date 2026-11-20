@@ -42,7 +42,11 @@ def _resolve_effort(upstream_payload: dict) -> str:
     provider-format transform (see the kiro transform point in main.py).
     We inspect the conventional keys in order and normalize to the Codex
     vocabulary: minimal→low, max→xhigh, default medium.
+    For GPT-Sol models (gpt-5.6-sol, gpt-6.1-sol), max remains max.
     """
+    model_name = str(upstream_payload.get("model") or "").strip().lower()
+    is_sol = "sol" in model_name
+
     for key in _EFFORT_KEYS:
         val = upstream_payload.get(key)
         if val is None:
@@ -60,11 +64,15 @@ def _resolve_effort(upstream_payload: dict) -> str:
         # Budget-style values (e.g. "32k") are not effort words — skip.
         if re.fullmatch(r"\d+\s*k?", s):
             continue
+        if is_sol and s == "max":
+            return "max"
         mapped = _EFFORT_MAP.get(s)
         if mapped:
+            if is_sol and mapped == "xhigh" and s == "max":
+                return "max"
             return mapped
         # Unknown word: pass through if it's already a valid Codex level.
-        if s in _EFFORT_MAP.values():
+        if s in _EFFORT_MAP.values() or (is_sol and s == "max"):
             return s
     return "medium"
 
@@ -100,7 +108,25 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
         role = msg.get("role", "")
         content = msg.get("content", "")
         if isinstance(content, list):
-            content = _flatten_content(content)
+            # Responses accepts images in user messages, while tool outputs keep
+            # their existing string conversion and function_call_output pairing.
+            if role == "user" and any(
+                isinstance(p, dict) and p.get("type") == "image_url" for p in content
+            ):
+                converted = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        image = part.get("image_url")
+                        if isinstance(image, dict) and isinstance(image.get("url"), str) and image["url"]:
+                            block = {"type": "input_image", "image_url": image["url"]}
+                            if image.get("detail") in ("auto", "low", "high"):
+                                block["detail"] = image["detail"]
+                            converted.append(block)
+                    else:
+                        converted.append({"type": "input_text", "text": _flatten_content([part])})
+                content = converted
+            else:
+                content = _flatten_content(content)
 
         if role == "system":
             # Codex uses top-level `instructions` for the system prompt.
