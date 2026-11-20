@@ -10397,9 +10397,25 @@ def _degenerate_effort_telemetry(d: dict) -> str:
     )
 
 
-def _anthropic_egress_openai_source(provider_name: str, raw_source):
-    """Return OpenAI SSE for the Anthropic normalizer, converting Codex only."""
+def _is_responses_provider(provider_name: str, provider_config: dict | None = None) -> bool:
     if provider_name == "codex":
+        return True
+    if provider_config is None:
+        try:
+            cfg = cs_get_config()
+            provider_config = (cfg.get("providers") or {}).get(provider_name) or {}
+        except Exception:
+            provider_config = {}
+    if isinstance(provider_config, dict):
+        fmt = str(provider_config.get("format") or "").strip().lower()
+        if fmt == "openai-responses":
+            return True
+    return False
+
+
+def _anthropic_egress_openai_source(provider_name: str, raw_source, provider_config: dict | None = None):
+    """Return OpenAI SSE for the Anthropic normalizer, converting Responses-wire providers."""
+    if _is_responses_provider(provider_name, provider_config):
         return codex_adapter.responses_sse_to_openai_sse(raw_source)
     return raw_source
 
@@ -11612,7 +11628,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         headers["x-amz-target"] = "CodeWhisperer.GenerateAssistantResponse"
         headers["Content-Type"] = "application/x-amz-json-1.0"
 
-    if provider_name == 'codex':
+    if _is_responses_provider(provider_name, provider_config):
         # Codex Responses-API protocol: transform OpenAI payload → Responses body.
         # Codex upstream MUST always receive stream:true + store:false; the
         # egress layer below buffers SSE for non-stream clients.
@@ -11745,7 +11761,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # top-level `system` key and then folds it into a CREATED `messages` list —
     # Codex rejects `messages` with 400 "Unsupported parameter: messages"
     # (evidence: News-LLM > codex/gpt-5.6-terra 400 at 412ms, 2026-08-25).
-    if t_cfg.get("output_intent_driven", False) and not client_wants_gemini and provider_name != 'codex':
+    if t_cfg.get("output_intent_driven", False) and not client_wants_gemini and not _is_responses_provider(provider_name, provider_config):
         try:
             intent = _detect_output_intent(internal_request.messages)
             if intent:
@@ -11797,7 +11813,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # Kiro excluded: /generateAssistantResponse ALWAYS returns binary AWS
     # event-stream frames (both stream and non-stream requests) — the text-SSE
     # accumulator reads zero content from them (zombie_empty_response).
-    _apply_stream_buffer = (not is_stream and _buffer_enabled and not _has_n_gt_1 and provider_name not in ('codex', 'kiro'))
+    _apply_stream_buffer = (not is_stream and _buffer_enabled and not _has_n_gt_1 and not _is_responses_provider(provider_name, provider_config) and provider_name != 'kiro')
 
     # ── Response Format Resilience ──────────────────────────────
     # Many "deep market" reverse-proxy sellers silently strip response_format
@@ -13413,13 +13429,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             data_json = json.loads(data_str)
                                             if _anth_lifecycle is not None and isinstance(data_json, dict):
                                                 _anth_lifecycle.observe_event(data_json)
-                                            if provider_name == "codex" and _codex_event_carries_output(data_json):
+                                            if _is_responses_provider(provider_name, provider_config) and _codex_event_carries_output(data_json):
                                                 _codex_chunk_has_output = True
                                                 if stats["ttft"] == 0.0:
                                                     stats["ttft"] = time.time() - start_time
                                             if isinstance(data_json, dict) and data_json.get("type") in ("response.failed", "error"):
                                                 _rf_sc, _rf_msg = _explicit_sse_failure_event(data_json)
-                                                if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
+                                                if not _emit.emitted and _is_responses_provider(provider_name, provider_config) and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
                                                     _codex_overload_attempt += 1
                                                     _codex_retry_overload = True
                                                     print(
@@ -13479,7 +13495,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             if _codex_retry_overload:
                                 break
 
-                            if provider_name == "codex":
+                            if _is_responses_provider(provider_name, provider_config):
                                 if _codex_chunk_has_output:
                                     _emit.mark_emitted(chunk)
                                 if _emit.emitted or stats.get("stream_completed") or stats.get("error"):
@@ -13809,6 +13825,22 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     _r = _emit.refusal_log(model=target_model, provider=provider_name)
                     if _r:
                         print(_r, flush=True)
+                except Exception:
+                    pass
+                # CLIENT DISCONNECT / GENERATOR-EXIT USAGE BACKFILL (2026-11-20):
+                # When a client disconnects immediately upon receiving `[DONE]`
+                # or stream-end, Python raises `GeneratorExit` at the active `yield`
+                # statement. GeneratorExit skips the post-loop code (including
+                # the in-stream _backfill_missing_usage) and unwinds straight to
+                # `finally:`. Running backfill here ensures truthful token accounting
+                # is never lost on client teardown. Idempotent: returns immediately if
+                # usage already populated.
+                try:
+                    _backfill_missing_usage(
+                        stats, internal_request.messages, _detector.partial_text,
+                        provider_name=provider_name, target_model=target_model,
+                        delivered_chars=getattr(_detector, "tool_call_chars", 0),
+                    )
                 except Exception:
                     pass
                 try:
@@ -14171,13 +14203,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             elif line.startswith("data:"):
                                                 try:
                                                     dj = json.loads(line[5:].lstrip())
-                                                    if provider_name == "codex" and _codex_event_carries_output(dj):
+                                                    if _is_responses_provider(provider_name, provider_config) and _codex_event_carries_output(dj):
                                                         _codex_chunk_has_output = True
                                                         if stats["ttft"] == 0.0:
                                                             stats["ttft"] = time.time() - start_time
                                                     if isinstance(dj, dict) and dj.get("type") in ("response.failed", "error"):
                                                         _rf_sc, _rf_msg = _explicit_sse_failure_event(dj)
-                                                        if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
+                                                        if not _emit.emitted and _is_responses_provider(provider_name, provider_config) and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
                                                             _codex_overload_attempt += 1
                                                             _codex_retry_overload = True
                                                             print(
@@ -14225,7 +14257,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                         pass
                                     if _codex_retry_overload:
                                         break
-                                    if provider_name == "codex":
+                                    if _is_responses_provider(provider_name, provider_config):
                                         if _codex_chunk_has_output:
                                             _emit.mark_emitted(chunk)
                                         if _emit.emitted or stats.get("stream_completed") or stats.get("error"):
@@ -14429,7 +14461,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     # request declared tools. Fail-open: any doubt -> False.
                     _req_has_tools = isinstance(upstream_payload, dict) and bool(upstream_payload.get("tools"))
                     normalizer = StreamNormalizer("openai_sse", "anthropic_sse", tools_in_request=_req_has_tools)
-                    _openai_source = _anthropic_egress_openai_source(provider_name, _raw_ok_chain())
+                    _openai_source = _anthropic_egress_openai_source(provider_name, _raw_ok_chain(), provider_config)
                     async for out in normalizer.convert_openai_to_anthropic(_openai_source):
                         yield out
                     if stats.get("error") is None and (stats.get("out", 0) > 0 or bool(_detector.partial_text) or getattr(_detector, "tool_call_chars", 0) > 0):
@@ -14501,6 +14533,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         _refusal = _emit.refusal_log(model=target_model, provider=provider_name)
                         if _refusal:
                             print(_refusal, flush=True)
+                    except Exception:
+                        pass
+                    # CLIENT DISCONNECT / GENERATOR-EXIT USAGE BACKFILL (2026-11-20):
+                    try:
+                        _backfill_missing_usage(
+                            stats, internal_request.messages, _detector.partial_text,
+                            provider_name=provider_name, target_model=target_model,
+                            delivered_chars=getattr(_detector, "tool_call_chars", 0),
+                        )
                     except Exception:
                         pass
                     try:
@@ -14928,7 +14969,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             dj = json.loads(stripped[5:].lstrip())
                                         except json.JSONDecodeError:
                                             continue
-                                        if provider_name == "codex" and _codex_event_carries_output(dj):
+                                        if _is_responses_provider(provider_name, provider_config) and _codex_event_carries_output(dj):
                                             if stats["ttft"] == 0.0:
                                                 stats["ttft"] = time.time() - start_time
                                         _expl_fail = _explicit_sse_failure_event(dj)
@@ -14938,7 +14979,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                 _rf_sc, provider_name, target_model,
                                                 active_conn, _active_conn_index, _rf_msg,
                                             )
-                                            if not _emit.emitted and provider_name == "codex" and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
+                                            if not _emit.emitted and _is_responses_provider(provider_name, provider_config) and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
                                                 _codex_overload_attempt += 1
                                                 _codex_retry_overload = True
                                                 print(
@@ -14985,7 +15026,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     and not _emit.emitted
                                 ):
                                     break
-                                if provider_name == "codex":
+                                if _is_responses_provider(provider_name, provider_config):
                                     if stats["ttft"] > 0.0 or stats.get("stream_completed") or stats.get("error"):
                                         for _pb in _codex_pre_buf:
                                             yield _pb
@@ -15009,7 +15050,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             _codex_pre_buf.clear()
                             break
 
-                    if provider_name == 'codex':
+                    if _is_responses_provider(provider_name, provider_config):
                         # Codex upstream speaks Responses SSE (event:/data: pairs, no [DONE]).
                         # Convert to OpenAI chat.completion.chunk SSE before the drain loop's
                         # openai_chunk_to_gemini parse, mirroring the OpenAI egress lane (~L13201).
@@ -15059,7 +15100,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     _cont_bytes = 0
                                     try:
                                         _cont_raw = _transport_guarded(_pump(_cont_resp.aiter_raw(), _emit, 0, "gemini-cont"), stats, _emit)
-                                        if provider_name == 'codex':
+                                        if _is_responses_provider(provider_name, provider_config):
                                             _cont_src = codex_adapter.responses_sse_to_openai_sse(_cont_raw)
                                         elif _is_anthropic_fmt:
                                             _cont_src = _normalizer.convert_anthropic_to_openai(_cont_raw)
@@ -15748,6 +15789,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         _r = _emit.refusal_log(model=target_model, provider=provider_name)
                         if _r:
                             print(_r, flush=True)
+                    except Exception:
+                        pass
+                    # CLIENT DISCONNECT / GENERATOR-EXIT USAGE BACKFILL (2026-11-20):
+                    try:
+                        _backfill_missing_usage(
+                            stats, internal_request.messages, _detector.partial_text,
+                            provider_name=provider_name, target_model=target_model,
+                            delivered_chars=getattr(_detector, "tool_call_chars", 0),
+                        )
                     except Exception:
                         pass
                     try:
@@ -16444,6 +16494,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             print(_r, flush=True)
                     except Exception:
                         pass
+                    # CLIENT DISCONNECT / GENERATOR-EXIT USAGE BACKFILL (2026-11-20):
+                    try:
+                        _backfill_missing_usage(
+                            stats, internal_request.messages, _detector.partial_text,
+                            provider_name=provider_name, target_model=target_model,
+                            delivered_chars=getattr(_detector, "tool_call_chars", 0),
+                        )
+                    except Exception:
+                        pass
                     try:
                         obs.log_request(
                             provider=provider_name, model=target_model, status=stats["status"],
@@ -16631,8 +16690,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 model=target_model, provider=provider_name, request_id=request_id
             )
             return StreamingResponse(_ka_body, media_type="text/event-stream")
-        # Codex streaming egress: wrap raw upstream bytes through Responses SSE→OpenAI SSE converter
-        if provider_name == 'codex':
+        # Codex / openai-responses streaming egress: wrap raw upstream bytes through Responses SSE→OpenAI SSE converter
+        if _is_responses_provider(provider_name, provider_config):
             _afz_sid = next_stream_id()
             _ka_body = _wrap_client_stream(codex_adapter.responses_sse_to_openai_sse(raw_upstream_guarded()), _afz_sid, deadline_s=0)
             if _sse_ka_on:
@@ -17147,7 +17206,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # whole chain "failed". Assemble FIRST, then let the standard guards
             # inspect real OpenAI JSON.
             _codex_converted = False
-            if provider_name == 'codex' and resp.status_code == 200:
+            if _is_responses_provider(provider_name, provider_config) and resp.status_code == 200:
                 try:
                     for _cx_try in range(5):
                         async def _codex_sse_pre_aiter():
@@ -17932,7 +17991,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # Normally this already happened in the pre-conversion block above
             # (needed so the zombie guard sees real content); this stays as the
             # fallback path for when that conversion failed.
-            if provider_name == 'codex' and resp.status_code == 200 and not _codex_converted:
+            if _is_responses_provider(provider_name, provider_config) and resp.status_code == 200 and not _codex_converted:
                 try:
                     # Read raw SSE bytes from the (streaming) upstream response
                     # and assemble the response.completed object.
@@ -21011,15 +21070,37 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                         if 0 < used_pct <= 1.0 and "." in str(item.get("utilization")):
                             used_pct *= 100.0
                         active[target] = _make_window_obj(label, 100.0 - used_pct, reset_val=item.get("resets_at") or item.get("reset_at"))
-                if not active.get("five_hour") and isinstance(data.get("limits"), dict):
-                    lims = data["limits"]
-                    for sources, target, label in ((("five_hour", "primary"), "five_hour", "5h"), (("seven_day", "secondary"), "weekly", "7d")):
-                        for sk in sources:
-                            w = lims.get(sk)
-                            if isinstance(w, dict) and (w.get("remaining_percentage") is not None or w.get("utilization") is not None):
-                                rem = float(w["remaining_percentage"]) if w.get("remaining_percentage") is not None else (100.0 - float(w.get("utilization") or 0))
-                                active[target] = _make_window_obj(label, rem, reset_val=w.get("resets_at") or w.get("reset_at"))
-                                break
+                if not active.get("five_hour") and data.get("limits"):
+                    raw_lims = data["limits"]
+                    if isinstance(raw_lims, dict):
+                        for sources, target, label in ((("five_hour", "primary"), "five_hour", "5h"), (("seven_day", "secondary"), "weekly", "7d")):
+                            for sk in sources:
+                                w = raw_lims.get(sk)
+                                if isinstance(w, dict) and (w.get("remaining_percentage") is not None or w.get("utilization") is not None):
+                                    rem = float(w["remaining_percentage"]) if w.get("remaining_percentage") is not None else (100.0 - float(w.get("utilization") or 0))
+                                    active[target] = _make_window_obj(label, rem, reset_val=w.get("resets_at") or w.get("reset_at"))
+                                    break
+                    elif isinstance(raw_lims, list):
+                        for item in raw_lims:
+                            if not isinstance(item, dict):
+                                continue
+                            kind = str(item.get("kind") or item.get("type") or "").strip().lower()
+                            target = "weekly" if any(x in kind for x in ("week", "7d", "fable")) else "five_hour"
+                            rem = None
+                            if item.get("remaining_percentage") is not None:
+                                rem = float(item["remaining_percentage"])
+                            elif item.get("utilization") is not None:
+                                u_val = float(item["utilization"] or 0)
+                                if 0 < u_val <= 1.0 and "." in str(item["utilization"]):
+                                    u_val *= 100.0
+                                rem = 100.0 - u_val
+                            elif item.get("percent") is not None:
+                                p_val = float(item["percent"] or 0)
+                                if 0 < p_val <= 1.0 and "." in str(item["percent"]):
+                                    p_val *= 100.0
+                                rem = 100.0 - p_val
+                            if rem is not None and (target not in active or rem < active[target]["remaining_pct"]):
+                                active[target] = _make_window_obj("7d" if target == "weekly" else "5h", rem, reset_val=item.get("resets_at") or item.get("reset_at"))
                 detected_plan = _normalize_oauth_tier(provider, None, conn, data) or detected_plan
         elif token and provider == "codex":
             headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
@@ -21183,8 +21264,21 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                     # Unused 5h/weekly summary buckets omit 'description' and report a rolling horizon
                     reset_val = None if (rem_frac >= 1.0 and not item.get("description") and item.get("bucketId")) else item.get("resetTime")
                     win_obj = _make_window_obj("7d" if target == "weekly" else "5h", rem_frac * 100.0, reset_val=reset_val)
-                    groups_out[grp_key][target] = win_obj
-                    if target not in active or win_obj["remaining_pct"] < active[target]["remaining_pct"]:
+
+                    is_disabled = bool(item.get("disabled"))
+                    is_aux = any(x in item_hint for x in ("autocomplete", "completion", "grounding", "search", "indexer", "corpus", "tool"))
+                    is_chat = any(x in item_hint for x in ("gemini", "pro", "flash", "chat", "claude", "gpt", "carbon", "argon", "neon", "hydrogen", "ultra", "models/")) or not is_aux
+
+                    # Disabled or non-chat auxiliary buckets must not overwrite or collapse chat quota down to 0%
+                    if not is_disabled or target not in groups_out[grp_key]:
+                        if is_chat or target not in groups_out[grp_key]:
+                            groups_out[grp_key][target] = win_obj
+
+                    # Only active chat models (or the only available bucket) contribute to top-level active quota
+                    if not is_disabled and is_chat:
+                        if target not in active or win_obj["remaining_pct"] < active[target]["remaining_pct"]:
+                            active[target] = dict(win_obj)
+                    elif target not in active:
                         active[target] = dict(win_obj)
                     parsed_any = True
             if parsed_any:

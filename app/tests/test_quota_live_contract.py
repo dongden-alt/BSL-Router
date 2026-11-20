@@ -432,3 +432,79 @@ async def test_parallel_reads_share_account_refresh():
     assert second["refreshing"] is True
     assert calls["n"] == 1
     await cache.close()
+
+
+def test_google_auxiliary_and_disabled_buckets_do_not_collapse_chat_quota(monkeypatch):
+    """Auxiliary tools (grounding, autocomplete) and disabled buckets must not poison Gemini quota."""
+    from app.main import _probe_oauth_quota
+
+    class FakeGoogleResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "groups": [
+                    {
+                        "displayName": "Google",
+                        "buckets": [
+                            {
+                                "displayName": "Gemini 2.5 Pro",
+                                "modelId": "gemini-2.5-pro",
+                                "window": "5h",
+                                "remainingFraction": 0.95,
+                                "resetTime": "2026-11-20T22:00:00Z",
+                            },
+                            {
+                                "displayName": "Search Grounding",
+                                "bucketId": "grounding_search",
+                                "window": "5h",
+                                "remainingFraction": 0.0,
+                                "disabled": True,
+                            },
+                            {
+                                "displayName": "Tab Autocomplete",
+                                "bucketId": "tab_completion",
+                                "window": "5h",
+                                "remainingFraction": 0.05,
+                            },
+                        ],
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("app.utils.google_cloudcode_egress.google_cloudcode_sync_post", lambda *a, **kw: FakeGoogleResponse())
+    conn = {"api_key": "ya29.test_token", "provider_data": {"project_id": "test-proj"}}
+    res = _probe_oauth_quota("antigravity", 0, conn, force=True)
+
+    # 5h quota must reflect the chat model (95%), NOT the 0% grounding or 5% autocomplete!
+    assert res["five_hour"]["remaining_pct"] == 95.0
+    assert res["five_hour"]["label"] == "5h"
+    assert res["groups"]["google"]["five_hour"]["remaining_pct"] == 95.0
+
+
+def test_claude_cedar_ember_array_limits_fallback(monkeypatch):
+    """Claude cedar_ember=1 array limits must be parsed into active windows."""
+    from app.main import _probe_oauth_quota
+    import httpx
+
+    class FakeClaudeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "limits": [
+                    {"kind": "session", "utilization": 0.15, "resets_at": "2026-11-20T23:00:00Z"},
+                    {"kind": "weekly_all", "remaining_percentage": 88.0, "resets_at": "2026-11-27T00:00:00Z"},
+                    {"kind": "fable", "remaining_percentage": 90.0, "resets_at": "2026-11-27T00:00:00Z"},
+                ]
+            }
+
+    monkeypatch.setattr("app.main._OAUTH_QUOTA", {})
+    monkeypatch.setattr("app.main._OAUTH_PASSIVE_BY_ACCOUNT", {})
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeClaudeResponse())
+    conn = {"api_key": "sk-ant-test"}
+    res = _probe_oauth_quota("claude", 0, conn, force=True)
+
+    assert res["five_hour"]["remaining_pct"] == 85.0
+    assert res["weekly"]["remaining_pct"] == 88.0
