@@ -21067,9 +21067,9 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                     item = data.get(source) or {}
                     if isinstance(item, dict) and item.get("utilization") is not None:
                         used_pct = float(item.get("utilization") or 0)
-                        if 0 < used_pct <= 1.0 and "." in str(item.get("utilization")):
+                        if 0 < used_pct <= 1.0:
                             used_pct *= 100.0
-                        active[target] = _make_window_obj(label, 100.0 - used_pct, reset_val=item.get("resets_at") or item.get("reset_at"))
+                        active[target] = _make_window_obj(label, max(0.0, min(100.0, 100.0 - used_pct)), reset_val=item.get("resets_at") or item.get("reset_at"))
                 if not active.get("five_hour") and data.get("limits"):
                     raw_lims = data["limits"]
                     if isinstance(raw_lims, dict):
@@ -21091,14 +21091,14 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                                 rem = float(item["remaining_percentage"])
                             elif item.get("utilization") is not None:
                                 u_val = float(item["utilization"] or 0)
-                                if 0 < u_val <= 1.0 and "." in str(item["utilization"]):
+                                if 0 < u_val <= 1.0:
                                     u_val *= 100.0
-                                rem = 100.0 - u_val
+                                rem = max(0.0, min(100.0, 100.0 - u_val))
                             elif item.get("percent") is not None:
                                 p_val = float(item["percent"] or 0)
-                                if 0 < p_val <= 1.0 and "." in str(item["percent"]):
+                                if 0 < p_val <= 1.0:
                                     p_val *= 100.0
-                                rem = 100.0 - p_val
+                                rem = max(0.0, min(100.0, 100.0 - p_val))
                             if rem is not None and (target not in active or rem < active[target]["remaining_pct"]):
                                 active[target] = _make_window_obj("7d" if target == "weekly" else "5h", rem, reset_val=item.get("resets_at") or item.get("reset_at"))
                 detected_plan = _normalize_oauth_tier(provider, None, conn, data) or detected_plan
@@ -21247,6 +21247,17 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                         raw_groups.append({"displayName": "Google", "buckets": list(g_resp.json().get("buckets") or [])})
                 except Exception:
                     pass
+            group_candidates = {
+                ("google", "five_hour"): {"chat": [], "fallback": [], "disabled": []},
+                ("google", "weekly"): {"chat": [], "fallback": [], "disabled": []},
+                ("claude", "five_hour"): {"chat": [], "fallback": [], "disabled": []},
+                ("claude", "weekly"): {"chat": [], "fallback": [], "disabled": []},
+            }
+            top_candidates = {
+                "five_hour": {"chat": [], "fallback": [], "disabled": []},
+                "weekly": {"chat": [], "fallback": [], "disabled": []},
+            }
+
             for grp in raw_groups:
                 if not isinstance(grp, dict):
                     continue
@@ -21266,21 +21277,49 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                     win_obj = _make_window_obj("7d" if target == "weekly" else "5h", rem_frac * 100.0, reset_val=reset_val)
 
                     is_disabled = bool(item.get("disabled"))
-                    is_aux = any(x in item_hint for x in ("autocomplete", "completion", "grounding", "search", "indexer", "corpus", "tool"))
-                    is_chat = any(x in item_hint for x in ("gemini", "pro", "flash", "chat", "claude", "gpt", "carbon", "argon", "neon", "hydrogen", "ultra", "models/")) or not is_aux
+                    aux_markers = (
+                        "autocomplete", "tab_completion", "tab-completion",
+                        "code_completion", "code-completion", "grounding",
+                        "search_grounding", "web_search", "indexer", "corpus",
+                        "embedding", "embed", "tool",
+                    )
+                    is_aux = any(m in item_hint for m in aux_markers) or (
+                        "completion" in item_hint and "chat_completion" not in item_hint and "chat completion" not in item_hint
+                    )
 
-                    # Disabled or non-chat auxiliary buckets must not overwrite or collapse chat quota down to 0%
-                    if not is_disabled or target not in groups_out[grp_key]:
-                        if is_chat or target not in groups_out[grp_key]:
-                            groups_out[grp_key][target] = win_obj
+                    tokens = set(re.findall(r"[a-z0-9]+", item_hint))
+                    has_chat_token = bool(
+                        tokens & {
+                            "gemini", "claude", "gpt", "sonnet", "opus", "haiku",
+                            "flash", "pro", "chat", "carbon", "argon", "neon",
+                            "hydrogen", "ultra", "o1", "o3", "o4",
+                        } or any(t.startswith("gemini") for t in tokens)
+                    )
+                    has_model_id = bool(item.get("modelId") or item.get("id"))
+                    is_chat = (not is_aux) and (has_chat_token or not has_model_id)
 
-                    # Only active chat models (or the only available bucket) contribute to top-level active quota
-                    if not is_disabled and is_chat:
-                        if target not in active or win_obj["remaining_pct"] < active[target]["remaining_pct"]:
-                            active[target] = dict(win_obj)
-                    elif target not in active:
-                        active[target] = dict(win_obj)
-                    parsed_any = True
+                    if not is_aux:
+                        cand_tier = "disabled" if is_disabled else ("chat" if is_chat else "fallback")
+                        group_candidates[(grp_key, target)][cand_tier].append(win_obj)
+                        if grp_key == "google" or is_chat:
+                            top_candidates[target][cand_tier].append(win_obj)
+                        parsed_any = True
+
+            for (gk, tgt), tiers in group_candidates.items():
+                if tiers["chat"]:
+                    groups_out[gk][tgt] = dict(min(tiers["chat"], key=lambda x: x["remaining_pct"]))
+                elif tiers["fallback"]:
+                    groups_out[gk][tgt] = dict(min(tiers["fallback"], key=lambda x: x["remaining_pct"]))
+                elif tiers["disabled"]:
+                    groups_out[gk][tgt] = dict(min(tiers["disabled"], key=lambda x: x["remaining_pct"]))
+
+            for tgt, tiers in top_candidates.items():
+                if tiers["chat"]:
+                    active[tgt] = dict(min(tiers["chat"], key=lambda x: x["remaining_pct"]))
+                elif tiers["fallback"]:
+                    active[tgt] = dict(min(tiers["fallback"], key=lambda x: x["remaining_pct"]))
+                elif tiers["disabled"]:
+                    active[tgt] = dict(min(tiers["disabled"], key=lambda x: x["remaining_pct"]))
             if parsed_any:
                 active["groups"] = {
                     key: value for key, value in groups_out.items()

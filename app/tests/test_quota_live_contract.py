@@ -508,3 +508,144 @@ def test_claude_cedar_ember_array_limits_fallback(monkeypatch):
 
     assert res["five_hour"]["remaining_pct"] == 85.0
     assert res["weekly"]["remaining_pct"] == 88.0
+
+
+def test_google_auxiliary_buckets_at_index_zero_and_genuine_zero_exhaustion(monkeypatch):
+    """Adversarial quota test: auxiliary buckets at index 0 and genuine 0% chat model exhaustion."""
+    from app.main import _probe_oauth_quota
+
+    # Case 1: Auxiliary / disabled buckets at index 0, 1 with "gemini" and "models/" in names
+    class FakeAuxFirstResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "groups": [
+                    {
+                        "displayName": "Google",
+                        "buckets": [
+                            {
+                                "displayName": "Gemini Search Grounding",
+                                "bucketId": "grounding_search",
+                                "modelId": "models/gemini-grounding",
+                                "window": "5h",
+                                "remainingFraction": 0.0,
+                                "disabled": True,
+                            },
+                            {
+                                "displayName": "Gemini Tab Autocomplete",
+                                "bucketId": "tab_completion",
+                                "modelId": "models/gemini-2.5-flash-tab-completion",
+                                "window": "5h",
+                                "remainingFraction": 0.05,
+                            },
+                            {
+                                "displayName": "Gemini 2.5 Pro",
+                                "modelId": "models/gemini-2.5-pro",
+                                "window": "5h",
+                                "remainingFraction": 0.95,
+                                "resetTime": "2026-11-20T22:00:00Z",
+                            },
+                        ],
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("app.utils.google_cloudcode_egress.google_cloudcode_sync_post", lambda *a, **kw: FakeAuxFirstResponse())
+    conn = {"api_key": "ya29.test_token", "provider_data": {"project_id": "test-proj"}}
+    res = _probe_oauth_quota("antigravity", 0, conn, force=True)
+    assert res["five_hour"]["remaining_pct"] == 95.0
+    assert res["groups"]["google"]["five_hour"]["remaining_pct"] == 95.0
+
+    # Case 2: Genuine 0.0% primary chat model exhaustion followed by 100% secondary model
+    class FakeGenuineZeroResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "groups": [
+                    {
+                        "displayName": "Google",
+                        "buckets": [
+                            {
+                                "displayName": "Gemini 2.5 Pro",
+                                "modelId": "gemini-2.5-pro",
+                                "window": "5h",
+                                "remainingFraction": 0.0,
+                                "resetTime": "2026-11-20T22:00:00Z",
+                            },
+                            {
+                                "displayName": "Gemini 2.5 Flash",
+                                "modelId": "gemini-2.5-flash",
+                                "window": "5h",
+                                "remainingFraction": 1.0,
+                            },
+                        ],
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("app.utils.google_cloudcode_egress.google_cloudcode_sync_post", lambda *a, **kw: FakeGenuineZeroResponse())
+    res_zero = _probe_oauth_quota("antigravity", 0, conn, force=True)
+    assert res_zero["five_hour"]["remaining_pct"] == 0.0
+    assert res_zero["groups"]["google"]["five_hour"]["remaining_pct"] == 0.0
+
+    # Case 3: Token boundary - "cloud-project-metadata" does not match "pro" as chat model
+    class FakeProjectTokenResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "groups": [
+                    {
+                        "displayName": "Google",
+                        "buckets": [
+                            {
+                                "displayName": "Project Metadata",
+                                "modelId": "cloud-project-metadata",
+                                "window": "5h",
+                                "remainingFraction": 0.10,
+                            },
+                            {
+                                "displayName": "Gemini 2.5 Flash",
+                                "modelId": "gemini-2.5-flash",
+                                "window": "5h",
+                                "remainingFraction": 0.85,
+                            },
+                        ],
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("app.utils.google_cloudcode_egress.google_cloudcode_sync_post", lambda *a, **kw: FakeProjectTokenResponse())
+    res_proj = _probe_oauth_quota("antigravity", 0, conn, force=True)
+    assert res_proj["five_hour"]["remaining_pct"] == 85.0
+
+
+def test_claude_cedar_ember_exhausted_zero_and_integer_utilization(monkeypatch):
+    """Claude cedar_ember limits with 100% utilization (integer 1 or float 1.0) must report 0.0% remaining."""
+    from app.main import _probe_oauth_quota
+    import httpx
+
+    class FakeClaudeExhaustedResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "limits": [
+                    {"kind": "session", "utilization": 1, "resets_at": "2026-11-20T23:00:00Z"},
+                    {"kind": "weekly_all", "remaining_percentage": 0.0, "resets_at": "2026-11-27T00:00:00Z"},
+                ]
+            }
+
+    monkeypatch.setattr("app.main._OAUTH_QUOTA", {})
+    monkeypatch.setattr("app.main._OAUTH_PASSIVE_BY_ACCOUNT", {})
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeClaudeExhaustedResponse())
+    conn = {"api_key": "sk-ant-test"}
+    res = _probe_oauth_quota("claude", 0, conn, force=True)
+
+    assert res["five_hour"]["remaining_pct"] == 0.0
+    assert res["weekly"]["remaining_pct"] == 0.0
