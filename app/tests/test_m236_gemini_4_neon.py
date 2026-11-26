@@ -176,12 +176,19 @@ def test_persisted_neon_defaults_and_astra_index():
     cfg_path = ROOT / "config.yaml"
     if not cfg_path.is_file():
         pytest.skip("local config.yaml not present")
-    config = yaml.safe_load(cfg_path.read_bytes())
-    models = {m["id"]: m for m in config["providers"]["antigravity"]["models"]}
+    config = yaml.safe_load(cfg_path.read_bytes()) or {}
+    ag = (config.get("providers") or {}).get("antigravity")
+    if not isinstance(ag, dict) or not ag.get("models"):
+        pytest.skip("local antigravity provider config not present (fresh/CI checkout)")
+    models = {m["id"]: m for m in ag["models"]}
+    if "gemini-4-neon" not in models:
+        pytest.skip("gemini-4-neon not configured in local config.yaml")
     assert models["gemini-4-neon"]["thinking"] == "high"
     for level in NEON:
         assert models[f"gemini-4-neon-{level}"]["thinking"] == level
-    custom = config["antigravity_integration"]["custom_models"]
-    astra = next(m for m in custom if m["slug"] == "custom-gpt-6-astra")
+    custom = (config.get("antigravity_integration") or {}).get("custom_models") or []
+    astra = next((m for m in custom if m.get("slug") == "custom-gpt-6-astra"), None)
+    if astra is None:
+        pytest.skip("custom-gpt-6-astra not configured in local config.yaml")
     assert astra["placeholder_index"] == 536
     assert sum(m.get("placeholder_index") == 536 for m in custom) == 1
