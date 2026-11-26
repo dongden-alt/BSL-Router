@@ -1,4 +1,4 @@
-"""
+r"""
 Phase 1 ACL smoke test — verifies tool preservation through the
 Anthropic → OpenAI → Anthropic round-trip.
 

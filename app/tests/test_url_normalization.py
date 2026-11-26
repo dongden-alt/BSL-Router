@@ -52,7 +52,7 @@ def test_canonicalize_rejects_malformed_or_unsafe_urls(raw):
     [
         ("openai", "/v1/chat/completions"),
         ("gemini", "/v1beta/models/gemini-pro:generateContent"),
-        ("openai-responses", "/v1/chat/completions"),
+        ("openai-responses", "/v1/responses"),
         ("anthropic", "/v1/messages"),
     ],
 )

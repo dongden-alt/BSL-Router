@@ -183,7 +183,7 @@ def test_transport_timeout_advances_combo_and_preserves_attribution(monkeypatch)
     real_process = main._process_chat_completion
     retry_states = []
 
-    async def recording_process(body, client_wants_anthropic=False, client_wants_gemini=False, _retry_state=None, request=None):
+    async def recording_process(body, client_wants_anthropic=False, client_wants_gemini=False, _retry_state=None, request=None, **kwargs):
         if _retry_state is not None:
             retry_states.append(_retry_state.copy())
         return await real_process(
@@ -192,6 +192,7 @@ def test_transport_timeout_advances_combo_and_preserves_attribution(monkeypatch)
             client_wants_gemini,
             _retry_state=_retry_state,
             request=request,
+            **kwargs,
         )
 
     monkeypatch.setattr(main, "_process_chat_completion", recording_process)
@@ -620,7 +621,7 @@ def test_builtin_timeout_error_pre_content_triggers_combo_fallback(monkeypatch):
     process_call_count = [0]
     real_process = main._process_chat_completion
 
-    async def recording_process(body, client_wants_anthropic=False, client_wants_gemini=False, _retry_state=None, request=None):
+    async def recording_process(body, client_wants_anthropic=False, client_wants_gemini=False, _retry_state=None, request=None, **kwargs):
         process_call_count[0] += 1
         return await real_process(
             body,
@@ -628,6 +629,7 @@ def test_builtin_timeout_error_pre_content_triggers_combo_fallback(monkeypatch):
             client_wants_gemini,
             _retry_state=_retry_state,
             request=request,
+            **kwargs,
         )
 
     monkeypatch.setattr(main, "_process_chat_completion", recording_process)
@@ -695,9 +697,9 @@ def test_builtin_timeout_error_post_content_emits_terminal_error_frame(monkeypat
     }
 
     class _PostContentTimeoutStream(httpx.AsyncByteStream):
-        """Yields partial SSE content, then raises builtins.TimeoutError."""
+        """Yields committed SSE content (>420-char FEL v7 pre-commit window), then raises builtins.TimeoutError."""
         def __init__(self):
-            self.chunks = [_openai_chunk("m_partial", "partial-during-timeout")]
+            self.chunks = [_openai_chunk("m_partial", "partial-during-timeout " + ("x" * 440))]
             self.sent = False
 
         async def __aiter__(self):
@@ -823,7 +825,7 @@ def test_midstream_peer_close_pre_content_advances_combo(monkeypatch):
 
 def test_midstream_peer_close_post_content_emits_terminal_not_combo(monkeypatch):
     client = _ScriptedClient({
-        "dead-model": _DyingStream(_openai_chunk("dead-model", "partial-during-close")),
+        "dead-model": _DyingStream(_openai_chunk("dead-model", "partial-during-close " + ("x" * 440))),
         "healthy-model": _success_stream("healthy-model"),
     })
     _install(monkeypatch, client)
@@ -868,7 +870,7 @@ def test_gemini_builtin_timeout_triggers_fallback(monkeypatch):
     real_process = main._process_chat_completion
     retry_states = []
 
-    async def recording_process(body, client_wants_anthropic=False, client_wants_gemini=False, _retry_state=None, request=None):
+    async def recording_process(body, client_wants_anthropic=False, client_wants_gemini=False, _retry_state=None, request=None, **kwargs):
         if _retry_state is not None:
             retry_states.append(_retry_state.copy())
         return await real_process(
@@ -877,6 +879,7 @@ def test_gemini_builtin_timeout_triggers_fallback(monkeypatch):
             client_wants_gemini,
             _retry_state=_retry_state,
             request=request,
+            **kwargs,
         )
 
     monkeypatch.setattr(main, "_process_chat_completion", recording_process)
@@ -906,7 +909,7 @@ def test_gemini_transport_502_triggers_fallback(monkeypatch):
     real_process = main._process_chat_completion
     retry_states = []
 
-    async def recording_process(body, client_wants_anthropic=False, client_wants_gemini=False, _retry_state=None, request=None):
+    async def recording_process(body, client_wants_anthropic=False, client_wants_gemini=False, _retry_state=None, request=None, **kwargs):
         if _retry_state is not None:
             retry_states.append(_retry_state.copy())
         return await real_process(
@@ -915,6 +918,7 @@ def test_gemini_transport_502_triggers_fallback(monkeypatch):
             client_wants_gemini,
             _retry_state=_retry_state,
             request=request,
+            **kwargs,
         )
 
     monkeypatch.setattr(main, "_process_chat_completion", recording_process)

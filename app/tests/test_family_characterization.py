@@ -243,6 +243,13 @@ def test_registry_matches_legacy_for_all_config_models(effort):
         if re.search(r"step-?5", f_val):
             continue
 
+        # Nemotron, Kimi K2-Horizon, and Particle are DELIBERATE divergences
+        # added with dedicated family contracts (legacy cascade had no matching
+        # branch or treated K2-Horizon under legacy Kimi K2 boolean rules).
+        # Full lock: test_nemotron_k2_horizon_thinking.py + test_particle_thinking.py.
+        if re.search(r"nemotron|k2(?:\.\d+)?-horizon|particle", f_val, re.IGNORECASE):
+            continue
+
         legacy_payload = legacy_apply_thinking(_base_payload(), f_val, effort)
         new_payload, _prov = resolve_thinking(_base_payload(), f_val, effort)
 

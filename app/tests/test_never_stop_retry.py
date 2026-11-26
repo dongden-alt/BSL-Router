@@ -152,4 +152,106 @@ def test_exhaustion_sites_gated_by_knob():
 def test_module_exports():
     main = _reload_main()
     assert callable(main._combo_infinite_retry_enabled)
+    assert callable(main._combo_max_retry_passes)
     assert callable(main._combo_restart_or_give_up)
+    assert callable(main._should_allow_pass_wrap)
+
+
+# ── 6. Auto-cancellation & multi-key single-leaf guards ────────────────────
+
+
+def test_direct_single_leaf_handles_multi_key_expanded_chain():
+    main = _reload_main()
+    # Multi-key expansion turns 1 direct provider/model leaf into 4 identical tuples
+    expanded = [
+        ("deepseek-v4.1-flash:free", "tokenharbor", None),
+        ("deepseek-v4.1-flash:free", "tokenharbor", None),
+        ("deepseek-v4.1-flash:free", "tokenharbor", None),
+        ("deepseek-v4.1-flash:free", "tokenharbor", None),
+    ]
+    cfg = {"combos": [{"alias": "Deepseek-V4.1-Flash", "models": []}]}
+    assert main._is_direct_single_leaf_non_combo(
+        "tokenharbor/deepseek-v4.1-flash:free", expanded, cfg
+    ) is True
+    # Multi-leaf combo must remain False
+    multi_leaf = [
+        ("deepseek-v4.1-flash:free", "tokenharbor", None),
+        ("deepseek/deepseek-v4.1-flash-free", "orcarouter", None),
+    ]
+    assert main._is_direct_single_leaf_non_combo(
+        "tokenharbor/deepseek-v4.1-flash:free", multi_leaf, cfg
+    ) is False
+
+
+def test_auto_cancel_after_max_retry_passes():
+    main = _reload_main()
+    cfg = {"settings": {"combo_infinite_retry": True, "combo_max_retry_passes": 5}, "combos": [{"alias": "Deepseek-V4.1-Flash"}]}
+    chain = [
+        ("deepseek-v4.1-flash:free", "tokenharbor", None),
+        ("deepseek/deepseek-v4.1-flash-free", "orcarouter", None),
+    ]
+    assert main._should_allow_pass_wrap(
+        "Deepseek-V4.1-Flash", cfg, {"pass_no": 4}, chain, 502, "upstream timeout", "nonstream_transport_exhausted"
+    ) is True
+    # Pass 5 hits the configured max_passes=5 ceiling and auto-cancels
+    assert main._should_allow_pass_wrap(
+        "Deepseek-V4.1-Flash", cfg, {"pass_no": 5}, chain, 502, "upstream timeout", "nonstream_transport_exhausted"
+    ) is False
+    # Explicit 0 disables the cap
+    cfg_unbounded = {"settings": {"combo_infinite_retry": True, "combo_max_retry_passes": 0}, "combos": [{"alias": "Deepseek-V4.1-Flash"}]}
+    assert main._should_allow_pass_wrap(
+        "Deepseek-V4.1-Flash", cfg_unbounded, {"pass_no": 10}, chain, 502, "upstream timeout", "nonstream_transport_exhausted"
+    ) is True
+
+
+def test_terminal_quota_policy_wall_and_probe_guard():
+    main = _reload_main()
+    cfg = {"settings": {"combo_infinite_retry": True}, "combos": [{"alias": "Deepseek-V4.1-Flash"}]}
+    chain = [
+        ("deepseek-v4.1-flash:free", "tokenharbor", None),
+        ("deepseek/deepseek-v4.1-flash-free", "orcarouter", None),
+    ]
+    # 403 free_models_disabled must never wrap
+    assert main._should_allow_pass_wrap(
+        "Deepseek-V4.1-Flash", cfg, {"pass_no": 1}, chain, 403,
+        '{"error":{"code":"free_models_disabled","message":"Please confirm free-model data sharing"}}',
+        "nonstream_http_exhausted",
+    ) is False
+    # 429 rolling 7-day free allowance exhaustion must never wrap
+    assert main._should_allow_pass_wrap(
+        "Deepseek-V4.1-Flash", cfg, {"pass_no": 1}, chain, 429,
+        '{"error":{"message":"You\'ve used this period\'s free allowance. Your next rolling 7-day window resets on 26 Nov"}}',
+        "nonstream_http_exhausted",
+    ) is False
+    # Probe requests (X-BSL-Caller: coo-3tank-probe / X-BSL-Authenticity-Probe: 1) must fail fast without wrapping
+    probe_req = types.SimpleNamespace(headers={"x-bsl-caller": "coo-3tank-probe", "x-bsl-authenticity-probe": "1"})
+    assert main._should_allow_pass_wrap(
+        "Deepseek-V4.1-Flash", cfg, {"pass_no": 1}, chain, 502, "upstream timeout",
+        "nonstream_transport_exhausted", request=probe_req,
+    ) is False
+    # All-banned chain (entry_override_exhausted) auto-cancels at pass 2
+    assert main._should_allow_pass_wrap(
+        "Deepseek-V4.1-Flash", cfg, {"pass_no": 2}, chain, 503,
+        "entry_override_exhausted", "entry_override_exhausted",
+    ) is False
+
+
+def test_circuit_breaker_extended_cooldown_for_quota_and_policy_walls():
+    from app.circuit_breaker import CircuitBreaker
+
+    cb = CircuitBreaker({"circuit_breaker": {"enabled": True, "recovery_timeout": 30}})
+    cb.record_outcome(
+        "tokenharbor", "deepseek-v4.1-flash:free", 0, 429,
+        error_msg='{"error":{"message":"You\'ve used this period\'s free allowance. Your next rolling 7-day window resets on 26 Nov"}}',
+    )
+    is_open_429, rem_429 = cb.is_open("tokenharbor", "deepseek-v4.1-flash:free", 0)
+    assert is_open_429 is True
+    assert rem_429 is not None and rem_429 >= 1790.0
+
+    cb.record_outcome(
+        "tokenharbor", "deepseek-v4.1-flash:free", 3, 403,
+        error_msg='{"error":{"code":"free_models_disabled","message":"Please confirm free-model data sharing"}}',
+    )
+    is_open_403, rem_403 = cb.is_open("tokenharbor", "deepseek-v4.1-flash:free", 3)
+    assert is_open_403 is True
+    assert rem_403 is not None and rem_403 >= 1790.0

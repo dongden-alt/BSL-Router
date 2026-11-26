@@ -147,7 +147,10 @@ def test_antigravity_stream_returns_headers_and_heartbeat_before_upstream_comple
         assert await anext(iterator) == b": heartbeat\n\n"
         assert client.sent is False
 
-        content = await anext(iterator)
+        # Pre-commit refusal buffer holds short (<420 char) output briefly up to
+        # GEMINI_PRECOMMIT_HOLD_TIMEOUT_S before releasing it, so comment keepalives
+        # may precede the first flushed data frame.
+        content = await _next_data_frame(iterator)
         assert complete.is_set() is False
         assert content.startswith(b"data: ")
         payload = json.loads(content[6:])
@@ -158,11 +161,13 @@ def test_antigravity_stream_returns_headers_and_heartbeat_before_upstream_comple
         assert "responseId" in payload["response"]
 
         complete.set()
-        finish = await anext(iterator)
+        # The upstream finish frame may be preceded by keepalive comments, so skip
+        # comment frames rather than assuming the very next chunk is data.
+        finish = await _next_data_frame(iterator)
         finish_payload = json.loads(finish[6:])
         assert "response" in finish_payload
         assert finish_payload["response"]["candidates"][0]["finishReason"] == "STOP"
-        assert await anext(iterator) == b": [DONE]\n\n"
+        assert await _next_data_frame(iterator) == b": [DONE]\n\n"
 
     asyncio.run(scenario())
 
@@ -271,5 +276,73 @@ def test_antigravity_stream_cancellation_closes_upstream_response(monkeypatch):
         assert (await _next_data_frame(iterator)).startswith(b"data: ")
         await iterator.aclose()
         assert client.response.stream.closed is True
+
+    asyncio.run(scenario())
+
+
+class _ThoughtThenHeldShortBodyStream(httpx.AsyncByteStream):
+    def __init__(self, complete):
+        self.complete = complete
+
+    async def __aiter__(self):
+        yield (
+            b'data: {"id":"chunk-t","model":"fake-model","choices":['
+            b'{"index":0,"delta":{"reasoning_content":"Thinking first..."},"finish_reason":null}]}\n\n'
+        )
+        yield (
+            b'data: {"id":"chunk-b","model":"fake-model","choices":['
+            b'{"index":0,"delta":{"content":"Hi!"},"finish_reason":null}]}\n\n'
+        )
+        await self.complete.wait()
+        yield (
+            b'data: {"id":"chunk-f","model":"fake-model","choices":['
+            b'{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+        )
+
+    async def aclose(self):
+        pass
+
+
+def test_f9_precommit_hold_timeout_flushes_short_body_and_preserves_thought_order(monkeypatch):
+    """Carbon C1/F9 regression:
+    When upstream emits buffered thought + short (<420 char) visible body `"Hi!"` and then
+    pauses without closing the stream, `_f9_take_held_if_expired()` must flush BOTH the
+    buffered thought frame AND `"Hi!"` in exact chronological order within
+    `GEMINI_PRECOMMIT_HOLD_TIMEOUT_S`, before `complete.set()`!
+    """
+    complete = asyncio.Event()
+
+    class _Client:
+        def build_request(self, method, url, **kwargs):
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, request, stream=False):
+            return httpx.Response(200, request=request, stream=_ThoughtThenHeldShortBodyStream(complete))
+
+    _block_forensics(monkeypatch)
+    cs.replace_config(_config())
+    monkeypatch.setattr(main, "_get_client_for_proxy", lambda _proxy: _Client())
+    monkeypatch.setattr(main, "GEMINI_EGRESS_KEEPALIVE_INTERVAL", 0.03)
+    monkeypatch.setattr(main, "GEMINI_PRECOMMIT_HOLD_TIMEOUT_S", 0.08)
+
+    async def scenario():
+        response = await main.antigravity_generate(_request(_antigravity_body()))
+        iterator = response.body_iterator
+        assert await anext(iterator) == b": heartbeat\n\n"
+
+        # Both held frames MUST flush before `complete` is set, in order: [thought, visible body].
+        first_data = await asyncio.wait_for(_next_data_frame(iterator), timeout=0.6)
+        second_data = await asyncio.wait_for(_next_data_frame(iterator), timeout=0.6)
+        assert complete.is_set() is False
+
+        first_parts = json.loads(first_data[6:])["response"]["candidates"][0]["content"]["parts"]
+        second_parts = json.loads(second_data[6:])["response"]["candidates"][0]["content"]["parts"]
+        assert first_parts == [{"thought": True, "text": "Thinking first..."}]
+        assert second_parts == [{"text": "Hi!"}]
+
+        complete.set()
+        finish = await asyncio.wait_for(_next_data_frame(iterator), timeout=0.6)
+        assert json.loads(finish[6:])["response"]["candidates"][0]["finishReason"] == "STOP"
+        assert await _next_data_frame(iterator) == b": [DONE]\n\n"
 
     asyncio.run(scenario())

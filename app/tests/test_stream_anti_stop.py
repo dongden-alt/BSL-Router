@@ -103,3 +103,25 @@ def test_garbage_chunks_fail_open():
     det.feed(b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"length"}]}\n\n')
     assert det.truncated
     assert det.partial_text == "ok"
+
+
+def test_deepseek_v4_length_truncation_detected():
+    det = StreamTruncationDetector("bslforge/opencode-free/deepseek-v4.1-flash-free", enabled=True)
+    _feed_lines(det, [
+        'data: {"choices":[{"delta":{"content":"step 1"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":" step 2"}}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n',
+        'data: [DONE]\n\n',
+    ])
+    assert det.truncated
+    assert det.partial_text == "step 1 step 2"
+
+
+def test_main_stream_anti_stop_covers_deepseek():
+    main_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"
+    )
+    src = open(main_path, encoding="utf-8").read()
+    assert 'is_deepseek = matches_contract(f_val, "deepseek-v4")' in src
+    assert "and (is_qwen or is_deepseek)" in src
+    assert "[bsl-deepseek-complete]" in src

@@ -325,15 +325,19 @@ def test_benign_weapons_mention_never_blocked():
 def test_long_refusal_shaped_wall_mention_semantics():
     # Documented trade-off of the 2026-09-07 gate-order hoist: a LONG text
     # that is refusal-shaped (>=2 distinct markers) AND cites a block-listed
-    # subject now classifies "blocked" (was "unknown"). Both classes sit
-    # outside main.py's recovery gate — no behavioral delta (no re-dispatch,
-    # verbatim body either way); only the telemetry label changes.
+    # CBRN/WMD subject classifies "blocked" (whereas benign conventional
+    # "weapons" export-control policy text is NOT hard-walled in FEL v7.0).
     text = (
         "As the policy review concludes: this document is harmful to "
-        "publish unedited. The weapons annex must be redacted per section "
+        "publish unedited. The chemical weapon annex must be redacted per section "
         "4.2 before release to the consortium. " + LONG_TECHNICAL
     )
     assert felw.classify_refusal(text, False) == "blocked"
+    export_ctrl = (
+        "I cannot verify that policy schedule without the treaty annex, as "
+        "conventional weapons export control lists vary by jurisdiction."
+    )
+    assert felw.classify_refusal(export_ctrl, False) == "refusal"
 
 
 def test_classify_tos_lecture_vs_refusal():
@@ -620,12 +624,12 @@ def test_recovery_still_refused_no_third_call(monkeypatch):
 
 
 def test_recovery_blocked_hard_wall_no_redispatch(monkeypatch):
-    """FEL-5 hard wall: first response citing a block marker (weapons) is
+    """FEL-5 hard wall: first response citing a CBRN/WMD block marker (chemical weapon) is
     terminal — no re-dispatch, verbatim body, x-bsl-refusal stamped,
     refusal_class="blocked" noted for analytics."""
     blocked_refusal = (
         "I can't help with that. This request asks for instructions on "
-        "weapons, which I won't provide. This is against policy."
+        "chemical weapons, which I won't provide. This is against policy."
     )
     upstream = _RecordingUpstream([
         {"id": "c1", "choices": [{"message": {"role": "assistant", "content": blocked_refusal}}], "usage": {}},

@@ -205,7 +205,7 @@ def test_ccpa_control_operations_forward_google_headers_query_status_and_body():
         assert stream.closed is True
         assert client.stream is True
         assert client.request.method == "POST"
-        assert client.request.url.host == "cloudcode-pa.googleapis.com"
+        assert client.request.url.host == "daily-cloudcode-pa.googleapis.com"
         assert client.request.url.path == f"/v1internal:{operation}"
         assert client.request.url.query == b"alt=sse&client=antigravity"
         assert client.request.content == b'{"project":"test-project"}'
@@ -470,7 +470,7 @@ def test_ccpa_control_uses_dedicated_egress_client_not_proxy(monkeypatch):
     assert response.status_code == 207
     assert b"".join(chunks) == b'{"ok":true}'
     assert egress_client.request is not None
-    assert egress_client.request.url.host == "cloudcode-pa.googleapis.com"
+    assert egress_client.request.url.host == "daily-cloudcode-pa.googleapis.com"
     assert egress_client.stream is True
     # The general proxy client must NOT be consulted when the egress client exists.
     assert proxy_client.request is None
@@ -605,7 +605,7 @@ def test_ccpa_slash_resource_cascade_nuxes_preserves_slash_and_get_method():
     assert response.status_code == 200
     assert b"".join(chunks) == b'{"nuxes":[]}'
     assert client.request.method == "GET"
-    assert client.request.url.host == "cloudcode-pa.googleapis.com"
+    assert client.request.url.host == "daily-cloudcode-pa.googleapis.com"
     assert client.request.url.path == "/v1internal/cascadeNuxes"
     assert client.request.url.query == b"page_size=1000"
     assert main._is_public_path("/v1internal/cascadeNuxes") is True
@@ -644,3 +644,18 @@ def test_validate_antigravity_integration_config_quota_saver_has_sys_bound():
     cfg["antigravity_integration"]["quota_saver"] = {"enabled": True}
     validated = main._validate_antigravity_integration_config(cfg)
     assert validated["antigravity_integration"]["quota_saver"]["enabled"] is True
+
+
+def test_google_oauth_and_sync_egress_never_crash_on_proxyhub_auto_scheme():
+    """Regression: raw 'proxyhub://auto' must be resolved or fall back cleanly, never raising httpx ValueError."""
+    from app import oauth as oauth_mod
+    from app.utils import google_cloudcode_egress as gce
+
+    async_client = oauth_mod._build_google_oauth_account_client(proxy_url="proxyhub://auto")
+    assert isinstance(async_client, httpx.AsyncClient)
+    asyncio.run(async_client.aclose())
+
+    sync_client = gce._get_google_egress_sync_client(account_key="test-proxyhub-auto", proxy_url="proxyhub://auto")
+    assert isinstance(sync_client, httpx.Client)
+    assert oauth_mod._resolve_oauth_proxy_url("unknownscheme://bad") is None
+    assert oauth_mod._resolve_oauth_proxy_url("http://127.0.0.1:8080") == "http://127.0.0.1:8080"

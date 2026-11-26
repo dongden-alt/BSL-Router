@@ -136,6 +136,30 @@ CONFORMANCE = [
     ("iamhc/step-5-preview", "high", {"reasoning_effort": "high"}),
     ("iamhc/step-5-preview", "max", {"reasoning_effort": "high"}),
     ("hcnsec/step-5-preview", "enable", {"reasoning_effort": "high"}),
+
+    # ── Particle-1 family (crowllm/particle-1-uncensored:free, particle-1:free,
+    # kilocode-free/particle-ai/particle-1:free, freepi-free/particle).
+    # Live-verified 2026-11-25: none/low/medium/high/xhigh/max; explicit UI
+    # 'off' maps to reasoning_effort='none'. Lock: test_particle_thinking.py. ──
+    ("crowllm/particle-1-uncensored:free", "off", {"reasoning_effort": "none"}),
+    ("crowllm/particle-1-uncensored:free", "low", {"reasoning_effort": "low"}),
+    ("crowllm/particle-1-uncensored:free", "high", {"reasoning_effort": "high"}),
+    ("crowllm/particle-1-uncensored:free", "xhigh", {"reasoning_effort": "xhigh"}),
+    ("crowllm/particle-1-uncensored:free", "max", {"reasoning_effort": "max"}),
+
+    # ── NVIDIA Nemotron 3 / 3.5 reasoning family & K2-Horizon (2026-11-26) ──
+    # Live-verified vs crowllm:
+    # - Nemotron: none/low/medium/high/xhigh; 'max' clamps to 'high' (vLLM max fallback fix).
+    # - K2-Horizon: none/low/high; auto/medium/xhigh/max clamp to 'high' (<ifm|think> leak fix).
+    # Lock: test_nemotron_k2_horizon_thinking.py.
+    ("crowllm/nemotron-3-ultra-550b-a55b-uncensored:free", "off", {"reasoning_effort": "none"}),
+    ("crowllm/nemotron-3-ultra-550b-a55b-uncensored:free", "high", {"reasoning_effort": "high"}),
+    ("crowllm/nemotron-3-ultra-550b-a55b-uncensored:free", "xhigh", {"reasoning_effort": "xhigh"}),
+    ("crowllm/nemotron-3-ultra-550b-a55b-uncensored:free", "max", {"reasoning_effort": "high"}),
+    ("crowllm/k2-horizon-375b-a23b-uncensored:free", "off", {"reasoning_effort": "none"}),
+    ("crowllm/k2-horizon-375b-a23b-uncensored:free", "low", {"reasoning_effort": "low"}),
+    ("crowllm/k2-horizon-375b-a23b-uncensored:free", "high", {"reasoning_effort": "high"}),
+    ("crowllm/k2-horizon-375b-a23b-uncensored:free", "max", {"reasoning_effort": "high"}),
 ]
 
 

@@ -102,8 +102,12 @@ def test_response_has_model_output_reasoning_only_zero_tokens_stays_zombie():
 
 def test_response_has_model_output_reasoning_key_variant():
     # Some gateways emit "reasoning" instead of "reasoning_content".
+    # M256: reasoning-only is only valid output on budget starvation (finish_reason="length").
     data = {
-        "choices": [{"message": {"role": "assistant", "content": " ", "reasoning": "deep thought"}}],
+        "choices": [{
+            "message": {"role": "assistant", "content": " ", "reasoning": "deep thought"},
+            "finish_reason": "length",
+        }],
     }
     assert _response_has_model_output(data, out_tokens=7) is True
 
@@ -121,9 +125,12 @@ def test_response_has_model_output_billed_but_empty_is_zombie():
 
 
 def test_response_has_model_output_anthropic_thinking_block():
-    # Anthropic wire: reasoning-only thinking block. With tokens spent it is
-    # live output; with zero tokens it stays a zombie.
-    data = {"content": [{"type": "thinking", "thinking": "reasoning here"}]}
+    # Anthropic wire: reasoning-only thinking block. With tokens spent on max_tokens
+    # starvation it is live output; with zero tokens (or stop without text) it stays a zombie.
+    data = {
+        "content": [{"type": "thinking", "thinking": "reasoning here"}],
+        "stop_reason": "max_tokens",
+    }
     assert _response_has_model_output(data, out_tokens=25) is True
     assert _response_has_model_output(data, out_tokens=0) is False
 

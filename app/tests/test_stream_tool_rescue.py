@@ -233,3 +233,184 @@ def test_plain_text_with_angles_not_buffered():
     assert text == "The value is < 5 and > 3. Clear?"
     assert len(blocks) == 0
     assert stop == "end_turn"
+
+
+# ── 8. K2-Horizon IFM full + stripped-opener parallel rescue ─────────────────
+
+_K2_STRIPPED_PAYLOAD = (
+    "\nread_file\nPath</ifm|arg_key>\n"
+    "D:\\Projects\\.bsl-headcheck\\packages\\search-register\\platforms\\gmail\\orchestrator.py</ifm|arg_value>\n"
+    "</ifm|tool_call>\n"
+    "search_mcp\narguments</ifm|arg_key>\n"
+    "{\"query\": \"proxy hub lanes URNetwork lanes bootstrap_15_lanes\", \"searchMode\": \"t3-base\"}</ifm|arg_value>\n"
+    "ServerName</ifm|arg_key>\nbsl-search-mcp</ifm|arg_value>\n"
+    "ToolName</ifm|arg_key>\nsearch_t3</ifm|arg_value>\n"
+    "</ifm|tool_call>\n</ifm|tool_calls>"
+)
+
+
+def test_k2_horizon_ifm_full_and_stripped_stream_rescue():
+    """Both full <ifm|tool_calls> and stripped-opener K2-Horizon batches rescue across arbitrary splits."""
+    full_payload = (
+        "Checking now.\n<ifm|tool_calls><ifm|tool_call>read_file"
+        "<ifm|arg_key>Path</ifm|arg_key><ifm|arg_value>lib.rs</ifm|arg_value>"
+        "</ifm|tool_call></ifm|tool_calls>"
+    )
+    chunks = [_openai_sse_chunk(content=full_payload[i:i + 5]) for i in range(0, len(full_payload), 5)]
+    chunks.append(_openai_sse_chunk(finish="stop"))
+    chunks.append(b"data: [DONE]\n\n")
+    text, blocks, stop, saw_stop = _extract(_parse_anthropic_events(_run(chunks)))
+    assert saw_stop
+    assert "ifm|" not in text and "read_file" not in text
+    assert "Checking now." in text
+    assert len(blocks) == 1
+    b0 = list(blocks.values())[0]
+    assert b0["name"] == "read_file"
+    assert json.loads(b0["input_json"]) == {"Path": "lib.rs"}
+    assert stop == "tool_use"
+
+    for step in (1, 3, 4):
+        s_chunks = [
+            _openai_sse_chunk(content=_K2_STRIPPED_PAYLOAD[i:i + step])
+            for i in range(0, len(_K2_STRIPPED_PAYLOAD), step)
+        ]
+        s_chunks.append(_openai_sse_chunk(finish="stop"))
+        s_chunks.append(b"data: [DONE]\n\n")
+        stext, sblocks, sstop, ssaw = _extract(_parse_anthropic_events(_run(s_chunks)))
+        assert ssaw
+        assert stext.strip() == "", f"step={step} leaked visible text: {stext!r}"
+        assert len(sblocks) == 2, f"step={step} expected 2 tool blocks, got {sblocks}"
+        vals = list(sblocks.values())
+        assert vals[0]["name"] == "read_file"
+        assert json.loads(vals[0]["input_json"])["Path"].endswith("orchestrator.py")
+        assert vals[1]["name"] == "search_mcp"
+        args1 = json.loads(vals[1]["input_json"])
+        assert args1["ServerName"] == "bsl-search-mcp"
+        assert args1["ToolName"] == "search_t3"
+        assert args1["arguments"]["searchMode"] == "t3-base"
+        assert sstop == "tool_use"
+
+
+def test_k2_horizon_ifm_buffered_normalize_glm_tool_calls():
+    """Buffered normalize_glm_tool_calls also rescues K2-Horizon stripped-opener IFM calls."""
+    from app.middleware.glm_tools import normalize_glm_tool_calls
+
+    payload = {
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": _K2_STRIPPED_PAYLOAD},
+                "finish_reason": "stop",
+            }
+        ]
+    }
+    out, changed = normalize_glm_tool_calls(payload, "crowllm/k2-horizon-375b-a23b-uncensored:free")
+    assert changed is True
+    choice = out["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["content"] is None
+    tcs = choice["message"]["tool_calls"]
+    assert len(tcs) == 2
+    assert tcs[0]["function"]["name"] == "read_file"
+    assert tcs[1]["function"]["name"] == "search_mcp"
+
+
+def test_adversarial_crucible_fenced_code_blocks_prose_stopwords_and_gemini_lane():
+    """Adversarial Crucible regressions:
+    1. Markdown fenced code blocks (` ```xml ... <ifm|tool_call>... ``` `) MUST survive verbatim
+       in both streaming and buffered lanes without triggering fake tool calls, while real
+       IFM calls immediately after the closing fence ARE rescued.
+    2. Prose stopwords before orphan `</ifm|tool_call>` (e.g. `example </ifm|tool_call>`)
+       MUST NOT trigger bogus zero-arg tool calls, and the orphan close tag is stripped.
+    3. `write_file` IFM calls whose `<ifm|arg_value>` contains markdown code fences (` ```py ... ``` `)
+       unmask cleanly with zero `BSLFENCE` placeholder corruption.
+    4. `/v1internal:streamGenerateContent` (`gemini.py::openai_chunk_to_gemini` + `flush_openai_to_gemini_eof`)
+       rescues K2-Horizon stripped-opener IFM calls into native Gemini `functionCall` parts
+       with zero visible markup leak!
+    """
+    from app.compat.adapters.gemini import flush_openai_to_gemini_eof, openai_chunk_to_gemini
+    from app.middleware.glm_tools import normalize_glm_tool_calls
+
+    mixed_fenced = (
+        "Here is the leaked syntax:\n"
+        "```xml\n"
+        "<ifm|tool_calls><ifm|tool_call>read_file<ifm|arg_key>Path</ifm|arg_key>"
+        "<ifm|arg_value>fake.py</ifm|arg_value></ifm|tool_call></ifm|tool_calls>\n"
+        "```\n"
+        "Now reading the real file:\n"
+        "<ifm|tool_calls><ifm|tool_call>read_file<ifm|arg_key>Path</ifm|arg_key>"
+        "<ifm|arg_value>real.py</ifm|arg_value></ifm|tool_call></ifm|tool_calls>"
+    )
+    for step in (1, 4, len(mixed_fenced)):
+        m_chunks = [_openai_sse_chunk(content=mixed_fenced[i : i + step]) for i in range(0, len(mixed_fenced), step)]
+        m_chunks.append(_openai_sse_chunk(finish="stop"))
+        m_chunks.append(b"data: [DONE]\n\n")
+        mtext, mblocks, mstop, msaw = _extract(_parse_anthropic_events(_run(m_chunks)))
+        assert msaw
+        assert "fake.py" in mtext and "<ifm|tool_call>" in mtext, f"step={step} destroyed fenced example: {mtext!r}"
+        assert "real.py" not in mtext, f"step={step} leaked real call: {mtext!r}"
+        assert len(mblocks) == 1, f"step={step} blocks={mblocks}"
+        assert json.loads(list(mblocks.values())[0]["input_json"]) == {"Path": "real.py"}
+        assert mstop == "tool_use"
+
+    # Prose stopword before orphan `</ifm|tool_call>`
+    p_chunks = [
+        _openai_sse_chunk(content="The model ended with\nexample </ifm|tool_call> in text."),
+        _openai_sse_chunk(finish="stop"),
+        b"data: [DONE]\n\n",
+    ]
+    ptext, pblocks, pstop, _ = _extract(_parse_anthropic_events(_run(p_chunks)))
+    assert len(pblocks) == 0, f"bogus stopword call: {pblocks}"
+    assert "example" in ptext and "</ifm|tool_call>" not in ptext
+    assert pstop == "end_turn"
+
+    # Buffered `write_file` with markdown code fences inside `<ifm|arg_value>`
+    wf_payload = {
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": (
+                    "<ifm|tool_call>write_file<ifm|arg_key>Path</ifm|arg_key><ifm|arg_value>README.md</ifm|arg_value>"
+                    "<ifm|arg_key>Content</ifm|arg_key><ifm|arg_value># Doc\n```py\nprint(42)\n```\n</ifm|arg_value></ifm|tool_call>"
+                ),
+            },
+            "finish_reason": "stop",
+        }]
+    }
+    wf_out, wf_changed = normalize_glm_tool_calls(wf_payload, "k2-horizon")
+    assert wf_changed is True
+    wf_args = json.loads(wf_out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert "```py\nprint(42)\n```" in wf_args["Content"]
+    assert "BSLFENCE" not in wf_args["Content"]
+
+    # Gemini `/v1internal:streamGenerateContent` lane (`openai_chunk_to_gemini`) across 3-char splits!
+    state = {"is_antigravity": True, "tools_in_request": True}
+    vis_parts: list[str] = []
+    fn_calls: list[dict] = []
+    for i in range(0, len(_K2_STRIPPED_PAYLOAD), 3):
+        g = openai_chunk_to_gemini(
+            {"choices": [{"index": 0, "delta": {"content": _K2_STRIPPED_PAYLOAD[i : i + 3]}, "finish_reason": None}]},
+            state,
+        )
+        if g:
+            for pt in g["response"]["candidates"][0]["content"]["parts"]:
+                if "text" in pt:
+                    vis_parts.append(pt["text"])
+                if "functionCall" in pt:
+                    fn_calls.append(pt["functionCall"])
+    # Test finish-less relay EOF flush (`flush_openai_to_gemini_eof`) as well!
+    g_eof = flush_openai_to_gemini_eof(state)
+    assert g_eof is not None
+    for pt in g_eof["response"]["candidates"][0]["content"]["parts"]:
+        if "text" in pt:
+            vis_parts.append(pt["text"])
+        if "functionCall" in pt:
+            fn_calls.append(pt["functionCall"])
+    assert "".join(vis_parts).strip() == "", f"Gemini lane leaked IFM markup: {vis_parts!r}"
+    assert len(fn_calls) == 2, f"Gemini lane rescued calls={fn_calls}"
+    assert fn_calls[0]["name"] == "read_file"
+    assert fn_calls[0]["args"]["Path"].endswith("orchestrator.py")
+    assert fn_calls[1]["name"] == "search_mcp"
+    assert fn_calls[1]["args"]["ToolName"] == "search_t3"
+

@@ -226,7 +226,8 @@ def _isolate_router_side_effects(monkeypatch):
     _brk = _brk_fn() if callable(_brk_fn) else None
     if _brk is not None:
         monkeypatch.setattr(_brk, "record_outcome", lambda *a, **kw: None)
-        monkeypatch.setattr(_brk, "is_tripped", lambda *a, **kw: False)
+        if hasattr(_brk, "is_open"):
+            monkeypatch.setattr(_brk, "is_open", lambda *a, **kw: (False, None))
 
 
 async def _collect_ag_stream(req):

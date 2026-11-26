@@ -1,4 +1,4 @@
-﻿"""Regression tests for Gemini tool-name validation."""
+"""Regression tests for Gemini tool-name validation."""
 from app.compat.adapters.gemini import gemini_request_to_openai
 
 

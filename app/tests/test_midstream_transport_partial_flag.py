@@ -210,15 +210,17 @@ def test_helper_single_definition_and_call_sites():
     src = _main_source()
     # ONE shared helper, no copy-paste variants at the splice sites...
     assert src.count("def _continuation_status_guard") == 1
-    # ...and exactly three call sites (1 def line + 3 calls = 4 occurrences)
-    assert src.count("_continuation_status_guard(_emit)") == 4
+    # ...and exactly four call sites (1 def line + 4 calls = 5 occurrences:
+    # OpenAI egress, Anthropic egress, Gemini egress, Anthropic->OpenAI egress)
+    assert src.count("_continuation_status_guard(_emit)") == 5
 
 
 def test_commit_called_at_all_three_splice_sites():
     src = _main_source()
     # OpenAI egress, Anthropic egress (_raw_ok_chain), Gemini egress
-    # (_openai_source_chain) all commit through the same helper + counters.
-    assert src.count("_cont_commit(_cont_chunks, _cont_bytes)") == 3
+    # (_openai_source_chain), and Anthropic->OpenAI (_a2o_openai_chain) all
+    # commit through the same helper + counters.
+    assert src.count("_cont_commit(_cont_chunks, _cont_bytes)") == 4
 
 
 def test_openai_splice_feeds_detector():

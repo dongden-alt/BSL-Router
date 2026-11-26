@@ -183,7 +183,7 @@ def test_status_extras_shape():
     b.record_outcome(P, M, 0, 429, "rate limited")
     b.record_selection(P, M, 0)
     extras = b.status_extras()
-    assert set(extras.keys()) == {"dimmed", "last_used"}
+    assert set(extras.keys()) == {"dimmed", "last_used", "banned_connections"}
     d = extras["dimmed"][0]
     assert set(d.keys()) == {"provider", "conn_index", "since", "age_seconds"}
     u = extras["last_used"][0]

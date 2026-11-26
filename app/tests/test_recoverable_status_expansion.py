@@ -50,12 +50,19 @@ def test_get_artifacts_defensive_getattr():
 
 
 def test_antigravity_slots_are_live_models():
-    """2026-10-21 prune: slots must all be live upstream ids; dead ids purged."""
+    """Slots must all be live upstream ids (including M236 Neon + Carbon); dead ids purged."""
     expected = (
         "gemini-3.8-flash-tiered",
         "gemini-4-argon-low",
         "gemini-4-argon-medium",
         "gemini-4-argon-high",
+        "gemini-4-carbon-low",
+        "gemini-4-carbon-medium",
+        "gemini-4-carbon-high",
+        "gemini-4-neon-low",
+        "gemini-4-neon-medium",
+        "gemini-4-neon-high",
+        "gemini-4-neon-xhigh",
         "gemini-2.5-pro",
     )
     assert main.ANTIGRAVITY_INTEGRATION_SLOTS == expected

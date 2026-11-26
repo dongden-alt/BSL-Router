@@ -35,9 +35,13 @@ def test_intent_block_gate_excludes_codex() -> None:
             gate_line = stripped
             break
     assert gate_line is not None, "output_intent_driven gate not found"
-    assert "provider_name != 'codex'" in gate_line, (
-        f"codex exclusion missing from gate: {gate_line}"
+    assert (
+        "provider_name != 'codex'" in gate_line
+        or "not _is_responses_provider(provider_name, provider_config)" in gate_line
+    ), (
+        f"codex/responses exclusion missing from gate: {gate_line}"
     )
+    assert _main._is_responses_provider("codex", {}) is True
 
 
 def test_inject_intent_block_would_corrupt_codex_payload() -> None:

@@ -299,3 +299,55 @@ def test_deepseek_v41_and_gemini_4_argon_wildcards_match_across_relays():
         assert obs.console_logs[-1]["cache_hint"] == "static-first-sorted"
 
 
+def test_gpt56_and_gpt61_prompt_cache_key_never_exceeds_64_chars():
+    """Regression: OpenAI/AgentRouter rejects prompt_cache_key > 64 chars with HTTP 400."""
+    from app.middleware.caching import bound_prompt_cache_key, propagate_prompt_cache_key
+
+    for provider in ("agentrouter", "openai"):
+        for model in (
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-6.1-sol",
+            "gpt-6.1-terra",
+            "gpt-6.1-luna",
+        ):
+            req = ChatCompletionRequest(
+                model=model,
+                messages=[Message(role="system", content="s" * 1200)],
+            )
+            PromptCachingAdapter.apply_static_first_sort(req, {})
+            assert isinstance(req.prompt_cache_key, str)
+            assert req.prompt_cache_key.startswith(f"bsl-cache-{model}-")
+            assert len(req.prompt_cache_key) <= 64
+
+            obs = _Observability()
+            dumped = req.model_dump(exclude_none=True)
+            res = PromptCachingAdapter.apply_provider_caching(
+                dumped, provider, model, tools_config={"caching_tracker_enabled": True}, obs=obs
+            )
+            assert res["prompt_cache_key"] == req.prompt_cache_key
+            assert len(res["prompt_cache_key"]) <= 64
+            assert obs.console_logs[-1]["cache_hint"] == "bsl-generated"
+
+    # Oversized caller key (e.g. 86-char key) is deterministically bounded to <= 64 without collisions
+    long_a = "bsl-cache-gpt-5.6-sol-" + ("a" * 64)
+    long_b = "bsl-cache-gpt-5.6-sol-" + ("b" * 64)
+    assert len(long_a) == 86
+    comp_a = bound_prompt_cache_key(long_a)
+    comp_b = bound_prompt_cache_key(long_b)
+    assert len(comp_a) <= 64 and len(comp_b) <= 64
+    assert comp_a != comp_b
+    assert comp_a == bound_prompt_cache_key(long_a)
+
+    # Oversized key passed via payload or propagate_prompt_cache_key is clamped
+    payload_long = _payload()
+    payload_long["prompt_cache_key"] = long_a
+    clamped = PromptCachingAdapter.apply_provider_caching(payload_long, "agentrouter", "gpt-5.6-sol", tools_config={})
+    assert len(clamped["prompt_cache_key"]) <= 64
+
+    prop = propagate_prompt_cache_key({"model": "gpt-5.6-sol"}, {"prompt_cache_key": long_b})
+    assert len(prop["prompt_cache_key"]) <= 64
+
+
+

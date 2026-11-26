@@ -94,10 +94,13 @@ def test_messages_anthropic_shape():
 
 def test_scope_only_listed_providers():
     p_kiro = {"messages": [{"role": "user", "content": "In " + tag() + " plan"}]}
+    p_pix4k = {"messages": [{"role": "user", "content": "In " + tag() + " plan"}]}
     p_other = {"messages": [{"role": "user", "content": "In " + tag() + " plan"}]}
     kg.apply_kiro_egress_guards(p_kiro, "nguyenha", "claude-opus-5-5", CFG)
-    kg.apply_kiro_egress_guards(p_other, "pix4k", "claude-opus-5.5", CFG)
+    kg.apply_kiro_egress_guards(p_pix4k, "pix4k", "claude-opus-5.5", CFG)
+    kg.apply_kiro_egress_guards(p_other, "openai", "gpt-4o", CFG)
     assert not BAD.search(p_kiro["messages"][0]["content"])
+    assert not BAD.search(p_pix4k["messages"][0]["content"])
     assert BAD.search(p_other["messages"][0]["content"])
 
 

@@ -806,10 +806,13 @@ async def test_non_oauth_combo_rotates_all_tokens_per_leaf_before_advancing_mode
                 client_wants_gemini=False,
             )
             assert resp.status_code == 200
+            # Combo fallback contract (2026-11-25, see test_combo_fallback_order.py):
+            # Pass 1 advances across models (alpha ck-1 -> beta ck-1) before Pass 2
+            # rotates sibling keys (alpha ck-2 -> beta ck-2).
             assert attempts == [
                 ("model-alpha", "Bearer ck-1"),
-                ("model-alpha", "Bearer ck-2"),
                 ("model-beta", "Bearer ck-1"),
+                ("model-alpha", "Bearer ck-2"),
                 ("model-beta", "Bearer ck-2"),
             ]
     finally:
