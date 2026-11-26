@@ -446,9 +446,9 @@ def append_usage_event(entry: dict) -> None:
     """
     if not isinstance(entry, dict) or _is_non_usage_provider(entry.get("provider")):
         return
-    if _is_pytest_default_path(_get_usage_db_path(), _DEFAULT_USAGE_DB_PATH):
-        return
     try:
+        if _is_pytest_default_path(_get_usage_db_path(), _DEFAULT_USAGE_DB_PATH):
+            return
         rid = str(entry.get("request_id") or "").strip()
         with _usage_conn() as conn:
             cur = conn.execute(

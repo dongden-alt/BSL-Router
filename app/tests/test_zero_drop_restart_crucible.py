@@ -233,26 +233,35 @@ def test_vector2_single_flight_handover_lock_coalesces_concurrent_restarts(monke
     fake_main_file = fake_root / "app" / "main.py"
     fake_main_file.write_text("# fake", encoding="utf-8")
 
-    wmi_calls = []
+    spawn_calls = []
 
     def _fake_run(cmd, **kwargs):
-        wmi_calls.append(cmd)
+        spawn_calls.append(cmd)
 
         class _Res:
             returncode = 0
 
         return _Res()
 
+    def _fake_popen(cmd, **kwargs):
+        spawn_calls.append(cmd)
+
+        class _Proc:
+            pid = 99999
+
+        return _Proc()
+
     monkeypatch.setattr(main_mod, "__file__", str(fake_main_file))
     monkeypatch.delenv("BSL_TEST_ISOLATION", raising=False)
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     import subprocess as sp_mod
     monkeypatch.setattr(sp_mod, "run", _fake_run)
+    monkeypatch.setattr(sp_mod, "Popen", _fake_popen)
 
     try:
         for _ in range(5):
             main_mod._spawn_prewarm_handover_restart(6969)
-        assert len(wmi_calls) == 1, f"Expected single-flight lock to coalesce 5 calls into 1 spawn, got {len(wmi_calls)}"
+        assert len(spawn_calls) == 1, f"Expected single-flight lock to coalesce 5 calls into 1 spawn, got {len(spawn_calls)}"
     finally:
         os.environ["BSL_TEST_ISOLATION"] = "1"
 
