@@ -7,7 +7,51 @@ Mọi thay đổi đáng chú ý của BSL Router được ghi lại trong file 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-**🌐 [English](#113---2026-11-10)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt)**
+**🌐 [English](#114---2026-11-26)** · **🇻🇳 [Tiếng Việt](#-tiếng-việt--đã-sửa--bổ-sung-trong-v114)**
+
+---
+
+## [1.1.4] - 2026-11-26
+
+> **Release `v1.1.4`:** FEL v7.0–v7.1 Same-Model Refusal Acceptance & Bounded Pre-Commit Stream Guard (10-Constellation Re-Projection, Hard-Harm Narrowing, Zero Substitute-Model Downgrade, Pre-Commit Hold-Timeout Wakeups & Duplicate-Refusal Flush Fix), M229 Google Pro/Ultra OAuth Anti-Ban & Quarantine Hardening (`antigravity/hub/2.26.0`, Per-Account Refresh Pacing, `VALIDATION_REQUIRED` Quarantine, & Dual-Tier Quota Aggregation), M236 Gemini 4 Neon (`xhigh`) & 12-Slot Antigravity Catalog, M246 Zero-Loss `16384` Outage Fallback & Kiro Ping/Silent-TCP Breakers, M256 Universal Empty-Candidate EOF Guard & `hidden: true` Provider Exclusion, New Model Family Contracts (`Nemotron`, `Kimi K2-Horizon`, `Particle`, Custom `openai-responses`, & `prompt_tool_bridge`), Unified 4-Plane LS Components Switchboard UI, Multi-Key Combo Fallback Ordering Overhaul, Hardened `ssl_verify: false` Transport Propagation, and Native Tool Image Delivery & Bounded Metadata Trace.
+
+### 🇬🇧 English — Fixed & Added
+
+- **FEL v7.0–v7.1 Same-Model Refusal Acceptance & Bounded Pre-Commit Stream Guard (`app/middleware/refusal_guard.py`, `app/middleware/fel_wiring.py`, `app/error_prevention.py`, `app/antifreeze.py`, `app/compat/adapters/gemini.py`, `app/main.py`, `app/tests/test_fel_v7_same_model_acceptance.py`, `app/tests/test_f6_constellation_spec_loading.py`, `tests/test_m257_hard_refusal_forensic_regressions.py`):**
+  - **Zero Substitute-Model Downgrade on Classifier Refusals:** Decoupled pre-commit refusal inspection (`StreamRefusalPreCommitBuffer`) from legacy `tools.fel.enabled`, unified `CLASSIFIER_REFUSAL_MARKERS` in `refusal_guard.py` so `ErrorPreventionManager.record_error` never softbans healthy frontier leaves on classifier/cyber-safeguard refusals, and added 1-shot same-model re-projection across 10 domain constellations (`constellations.json` + portable fallback) with Pass-2 `<corpus_artifact mode="read_only_analysis">` wrapping and lane-scoped `prompt_cache_key` isolation.
+  - **Pre-Commit Hold-Timeout Wakeups & Duplicate-Refusal Flush Fix (`app/middleware/refusal_guard.py`, `app/main.py`):** Added `StreamRefusalPreCommitBuffer.next_hold_timeout_s()` and wired bounded wakeups into `raw_upstream`, `_raw_ok` (Anthropic egress), and `_raw_anthropic_ok` (Anthropic→OpenAI) so short clean replies flush at `1.5s` without waiting on keepalive intervals, while Line-1 `→ ...` status banners and refusal prefixes hold up to `6.0s`. Fixed double-yield terminal refusal duplication at EOF across all three lanes.
+  - **Trailing Policy-Boundary Stripping & Legacy Peek Thinking Guard:** Added `strip_trailing_refusal_disclaimer` for substantive technical answers with appended disclaimers and restored `_peek_obs._had_thinking` passthrough in legacy FEL stream peeking.
+
+- **M229 Google Pro/Ultra OAuth Anti-Ban, Account Quarantine & Precision Quota Aggregation (`app/oauth.py`, `app/oauth_antiban.py`, `app/circuit_breaker.py`, `app/compat/adapters/antigravity_upstream.py`, `app/utils/quota_live.py`, `app/main.py`, `app/tests/test_m229_google_oauth_antiban.py`):**
+  - Updated `ANTIGRAVITY_UPSTREAM_UA` to `antigravity/hub/2.26.0 windows/amd64`, added cross-account Google OAuth refresh pacing (`>= 5.0s`), preserved sticky Google session pins on multi-turn `429` / `403`, and ensured `:retrieveUserQuota` fallback carries the matching `User-Agent` and `proxy_url`.
+  - Added explicit `quarantined` status handling (`VALIDATION_REQUIRED` / `PERMISSION_DENIED`) in `_probe_oauth_quota`, `_quota_blocked`, and `CircuitBreaker.filter_healthy_connections` (never re-admitting `tos_banned` or `quarantined` accounts) alongside `banned_connections` in `status_extras()`.
+  - Fixed deterministic two-tier quota bucket aggregation (preventing auxiliary/disabled buckets from collapsing Google chat quota) and added Claude array-limit & integer utilization precision (`208b213`, `ee177f0`, `42fec33`).
+
+- **M236 Gemini 4 Neon (`xhigh`) & 12-Slot Antigravity Catalog (`app/compat/families/gemini.py`, `app/main.py`, `app/static/app.js`, `app/tests/test_m236_gemini_4_neon.py`):**
+  - Expanded `ANTIGRAVITY_INTEGRATION_SLOTS` to 12 live slots including `gemini-4-carbon-{low,medium,high}` and `gemini-4-neon-{low,medium,high,xhigh}` with `xhigh` thinking effort support, unsigned history tool-call folding without synthetic model prose (`6a0a600`), and stale model deletion flag fixes (`208b213`).
+
+- **M246 Zero-Loss `16384` Outage Fallback, Kiro Ping/Silent-TCP Breakers & Single-Flight Serialization (`app/main.py`, `app/compat/stream_normalizer.py`, `app/middleware/kiro_filter_guard.py`, `scripts/sync_kiro_filter_guard.py`, `app/tests/test_kiro_zero_loss_fallback.py`):**
+  - Added pre-emission `16384` `max_tokens` outage recovery for Cloudflare/upstream timeouts and buffered empty-answer outages, pre-content and post-`content_block_stop` ping-only/silent-TCP idle breakers for Kiro streams, and synchronized Kiro filter guard tooling.
+
+- **M256 Universal Empty-Candidate EOF Guard & `hidden: true` Provider Exclusion (`app/main.py`, `app/security/key_scanner.py`, `tests/test_m256_empty_output_and_hidden_providers.py`):**
+  - Hardened `_response_has_model_output` so reasoning-only turns without visible text or tool calls only count as output on `finish_reason == "length"` / `stop_reason in ("max_tokens", "length")`, triggering combo fallback on empty/aborted turns; excluded `hidden: true` providers from `/api/quota/status` and public listings.
+
+- **New Model Family Contracts, Bridges & Combo Fallback Ordering (`app/compat/families/nemotron.py`, `app/compat/families/particle.py`, `app/compat/families/kimi.py`, `app/compat/prompt_tool_bridge.py`, `app/middleware/glm_tools.py`, `app/middleware/caching.py`, `app/utils/url_normalization.py`, `app/main.py`):**
+  - Added dedicated thinking contracts for **Nemotron**, **Kimi K2-Horizon** (with IFM tool dialect in `glm_tools.py`), and **Particle**, plus `openai-responses` custom provider normalization (`_is_responses_provider`), `prompt_tool_bridge` for Chat-Completions-only tool accounts, and `max` effort preservation for `sol` models.
+  - Updated multi-key combo fallback ordering (`app/tests/test_combo_fallback_order.py`) so Pass 1 advances across fallback models before Pass 2 rotates sibling API keys, and fixed `_build_hardened_client(verify=False)` to propagate `verify` directly onto `httpx.AsyncHTTPTransport`.
+  - Expanded `_is_unrecoverable_payload_400` terminal markers (`requires responses for tool calls`, `RQ_VND_UNPRICED`, `RQ_VND_INSUFFICIENT`, `session_unavailable`) to stop infinite never-stop wrap loops on deterministic errors, and added `_build_next_retry_state` lineage preservation.
+
+- **Unified 4-Plane LS Components Switchboard, Native Tool Image Delivery Trace & Cleanup (`app/ls_components.py`, `app/middleware/image_delivery_trace.py`, `app/static/{index.html,app.js,style.css}`, `app/tests/test_ls_components_board.py`, `tests/test_image_delivery_trace.py`, `tests/test_native_tool_image_delivery.py`):**
+  - Added the 4-plane LS Components Switchboard API & WebUI panel, opt-in bounded metadata-only image delivery tracing (`image_delivery_trace.py`) with native tool image delivery checks, and removed 5 obsolete dead modules (`app/agent/__init__.py`, `app/compat/reasoning_sidecar.py`, `app/compat/schema_dialects.py`, `app/scouts/canvas.py`, `app/static/provider-share-mockup.html`).
+
+### 🇻🇳 Tiếng Việt — Đã Sửa & Bổ Sung Trong `v1.1.4`
+
+- **FEL v7.0–v7.1 Phục Hồi Từ Chối Cùng Model & Bộ Đệm Pre-Commit Có Giới Hạn (`app/middleware/refusal_guard.py`, `app/main.py`):**
+  - Không hạ cấp sang model dự phòng yếu hơn khi gặp bộ lọc an toàn (classifier refusal), tự động tái chiếu cùng model (tối đa 1 lần) theo 10 chòm ngữ cảnh (`constellations.json`), bổ sung đánh thức timeout pre-commit `1.5s` (`next_hold_timeout_s()`) cho các câu trả lời ngắn và sửa lỗi nhân đôi đoạn từ chối ở cuối stream trên cả 3 luồng OpenAI / Anthropic / A2O.
+- **Gia Cố Chống Khóa OAuth Google Pro/Ultra (`M229`), Cách Ly `quarantined` & Chuẩn Hóa Hạn Mức:**
+  - Cập nhật `User-Agent` lên `antigravity/hub/2.26.0`, thêm nhịp giãn cách làm mới token giữa các tài khoản Google (`>= 5.0s`), truyền đúng `User-Agent` + `proxy_url` và gắn cờ `quarantined` cho lỗi `403 VALIDATION_REQUIRED`, đồng thời tổng hợp hạn mức Google/Claude theo 2 tầng xác định để tránh sập hạn mức chat do bucket phụ.
+- **Hỗ Trợ `Gemini 4 Neon (xhigh)` (`M236`), Bộ Ngắt Treo Kiro (`M246`), Chặn Phản Hồi Rỗng (`M256`) & Họ Model Mới:**
+  - Mở rộng danh mục Antigravity lên 12 slot (bao gồm `gemini-4-carbon-*` và `gemini-4-neon-xhigh`), bổ sung fallback `16384` khi gặp outage và bộ ngắt treo ping/TCP cho Kiro, chặn phản hồi rỗng không có văn bản/tool-call, hỗ trợ họ model mới (`Nemotron`, `Kimi K2-Horizon`, `Particle`, `openai-responses`, `prompt_tool_bridge`), bảng điều khiển **LS Components Switchboard 4 mặt phẳng**, cập nhật thứ tự fallback đa khóa theo lượt Pass 1/Pass 2, và sửa lỗi truyền `verify=False` vào `httpx.AsyncHTTPTransport`.
 
 ---
 
