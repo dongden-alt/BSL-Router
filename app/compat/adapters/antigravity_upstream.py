@@ -47,7 +47,7 @@ from typing import Any, Dict, List, Optional
 
 # ── Verified upstream contract constants ────────────────────────────────────
 
-ANTIGRAVITY_UPSTREAM_UA = "antigravity/hub/2.26.0 windows/amd64"
+ANTIGRAVITY_UPSTREAM_UA = "antigravity/hub/2.33.0 windows/amd64"
 ANTIGRAVITY_DEFAULT_PROJECT = "ungoogly-rite-fd7ql"
 ANTIGRAVITY_STREAM_URL_PATH = "/v1internal:streamGenerateContent?alt=sse"
 
@@ -1147,8 +1147,25 @@ class AntigravityUpstreamClient:
         else:  # pragma: no cover — httpx missing, tests only
             rpc = str(url)
 
-        _strip_hdrs = {"user-agent", "x-goog-api-client", "client-metadata", "x-request-source"}
-        hdrs = {k: v for k, v in (headers or {}).items() if k.lower() not in _strip_hdrs}
+        _strip_hdrs = {
+            "user-agent",
+            "x-goog-api-client",
+            "client-metadata",
+            "x-request-source",
+            "x-forwarded-for",
+            "x-real-ip",
+            "via",
+            "forwarded",
+            "anthropic-beta",
+            "anthropic-version",
+            "x-claude-code-session-id",
+            "x-app",
+        }
+        hdrs = {
+            k: v
+            for k, v in (headers or {}).items()
+            if k.lower() not in _strip_hdrs and not k.lower().startswith("x-stainless-")
+        }
         hdrs["User-Agent"] = ANTIGRAVITY_UPSTREAM_UA
         hdrs.setdefault("Content-Type", "application/json")
 

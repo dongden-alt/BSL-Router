@@ -108,6 +108,36 @@ def _get_google_egress_client(
     return _google_egress_client
 
 
+def _build_claude_oauth_account_client(
+    proxy_url: str | None = None,
+    verify: bool = True,
+) -> httpx.AsyncClient:
+    """Build an isolated Claude OAuth AsyncClient per (account, proxy) pair."""
+    norm_proxy = _resolve_oauth_proxy_url(proxy_url)
+    return httpx.AsyncClient(
+        proxy=norm_proxy,
+        verify=verify,
+        timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+        trust_env=False,
+    )
+
+
+def _get_claude_egress_client(
+    account_id: str | None = None,
+    proxy_url: str | None = None,
+) -> httpx.AsyncClient:
+    """Return an isolated per-account AsyncClient for Claude OAuth token requests."""
+    if account_id is not None or proxy_url:
+        from app import oauth_antiban
+
+        return oauth_antiban.get_client_for_account(
+            f"claude-oauth:{account_id or 'default'}",
+            proxy_url,
+            build_client=_build_claude_oauth_account_client,
+        )
+    return _oauth_client
+
+
 def _get_oauth_client_for_url(url: str) -> httpx.AsyncClient:
     """Return egress client for allowlisted Google hosts; plain client otherwise."""
     try:
@@ -124,7 +154,9 @@ _KIRO_AUTH_BASE = "https://prod.us-east-1.auth.desktop.kiro.dev"
 _KIRO_REDIRECT_URI = "kiro://kiro.kiroAgent/authenticate-success"
 _GOOGLE_CODE_ASSIST_URL = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 _GOOGLE_ONBOARD_USER_URL = "https://cloudcode-pa.googleapis.com/v1internal:onboardUser"
-ANTIGRAVITY_UPSTREAM_UA = "antigravity/hub/2.26.0 windows/amd64"
+ANTIGRAVITY_UPSTREAM_UA = "antigravity/hub/2.33.0 windows/amd64"
+CLAUDE_INFERENCE_UA = "claude-cli/2.0.1 (external, cli)"
+CLAUDE_USAGE_UA = "claude-code/2.1.216"
 
 _GROK_CLI_VERSION = os.environ.get("BSL_GROK_CLI_VERSION", "1.0.70").strip() or "1.0.70"
 _GROK_CLI_CLIENT_IDENTIFIER = "grok-shell"
@@ -510,7 +542,7 @@ async def _exchange_claude(config: dict[str, Any], code: str, redirect_uri: str,
         "client_id": config["clientId"],
         "redirect_uri": redirect_uri,
         "code_verifier": code_verifier or "",
-    }, "Claude token exchange")
+    }, "Claude token exchange", {"User-Agent": CLAUDE_INFERENCE_UA})
 
 
 async def _exchange_standard_pkce(config: dict[str, Any], code: str, redirect_uri: str, code_verifier: str | None, _: str | None = None) -> dict[str, Any]:
@@ -2550,20 +2582,79 @@ async def _legacy_google_refresh_token_unused(
     }
 
 
+class _ClaudeRefreshTerminalBanError(HTTPException):
+    """Raised when Claude token refresh returns a terminal revocation/suspension marker."""
+
+
+_CLAUDE_REFRESH_TERMINAL_MARKERS = (
+    "invalid_grant",
+    "account_suspended",
+    "account_disabled",
+    "account_deactivated",
+    "organization_disabled",
+    "token_revoked",
+    "oauth_token_revoked",
+    "user_banned",
+    "account disabled",
+    "account has been disabled",
+    "account suspended",
+    "terms of service",
+)
+
+
 async def _claude_refresh_token(
-    refresh_token: str, config: dict[str, Any] | None = None
+    refresh_token: str,
+    config: dict[str, Any] | None = None,
+    *,
+    account_id: str | None = None,
+    proxy_url: str | None = None,
 ) -> dict[str, Any]:
-    """Refresh a Claude (Anthropic) OAuth2 access token."""
-    config = config or OAUTH_PROVIDERS["claude"]["config"]
-    raw = await _post_json(
-        config["tokenUrl"],
-        {
-            "grant_type": "refresh_token",
-            "client_id": config["clientId"],
-            "refresh_token": refresh_token,
-        },
-        "Claude token refresh",
-    )
+    """Refresh a Claude (Anthropic) OAuth2 access token with clean CLI UA and account isolation."""
+    cfg = config or OAUTH_PROVIDERS["claude"]["config"]
+    url = cfg["tokenUrl"]
+    body = {
+        "grant_type": "refresh_token",
+        "client_id": cfg["clientId"],
+        "refresh_token": refresh_token,
+    }
+    req_headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": CLAUDE_INFERENCE_UA,
+    }
+    if account_id is not None or proxy_url:
+        try:
+            client = _get_claude_egress_client(account_id, proxy_url)
+        except TypeError:
+            client = _get_claude_egress_client()
+        try:
+            response = await client.post(url, json=body, headers=req_headers)
+        except httpx.HTTPError as exc:
+            print(f"[OAuth] Claude token refresh request failed: {exc}", flush=True)
+            raise HTTPException(status_code=502, detail="Claude token refresh request failed") from exc
+        raw_text = response.text or ""
+        try:
+            raw = response.json()
+        except ValueError:
+            raw = {}
+        if not response.is_success:
+            detail = _error_message(raw, f"Claude token refresh failed with HTTP {response.status_code}")
+            print(f"[OAuth] Claude token refresh: {detail}", flush=True)
+            lower_body = f"{raw_text} {detail}".lower()
+            if response.status_code in (400, 401, 403) and any(
+                m in lower_body for m in _CLAUDE_REFRESH_TERMINAL_MARKERS
+            ):
+                raise _ClaudeRefreshTerminalBanError(status_code=502, detail=detail)
+            raise HTTPException(status_code=502, detail=detail)
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=502, detail="Claude token refresh returned an invalid JSON response")
+    else:
+        raw = await _post_json(
+            url,
+            body,
+            "Claude token refresh",
+            {"User-Agent": CLAUDE_INFERENCE_UA},
+        )
     access_token = _token_value(raw, "access_token", "accessToken")
     if not isinstance(access_token, str) or not access_token:
         raise HTTPException(
@@ -2823,6 +2914,33 @@ _google_provider_refresh_locks: dict[str, asyncio.Lock] = {}
 _google_provider_refresh_locks_guard = asyncio.Lock()
 _last_google_provider_refresh_at: dict[str, float] = {}
 _GOOGLE_PROVIDER_REFRESH_MIN_GAP_S = 5.0
+_claude_provider_refresh_locks: dict[str, asyncio.Lock] = {}
+_claude_provider_refresh_locks_guard = asyncio.Lock()
+_last_claude_provider_refresh_at: dict[str, float] = {}
+_CLAUDE_PROVIDER_REFRESH_MIN_GAP_S = 5.0
+
+
+async def _claude_provider_refresh_lock(provider_name: str) -> asyncio.Lock:
+    async with _claude_provider_refresh_locks_guard:
+        lock = _claude_provider_refresh_locks.get(provider_name)
+        if lock is None:
+            lock = asyncio.Lock()
+            _claude_provider_refresh_locks[provider_name] = lock
+        return lock
+
+
+async def _pace_claude_provider_refresh(provider_name: str) -> None:
+    import random
+    import time as _time_mod
+
+    now = _time_mod.monotonic()
+    last = _last_claude_provider_refresh_at.get(provider_name, 0.0)
+    if last > 0.0:
+        gap = _CLAUDE_PROVIDER_REFRESH_MIN_GAP_S + random.uniform(0.0, 1.5)
+        remaining = gap - (now - last)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+    _last_claude_provider_refresh_at[provider_name] = _time_mod.monotonic()
 
 
 async def _google_provider_refresh_lock(provider_name: str) -> asyncio.Lock:
@@ -2892,7 +3010,8 @@ async def ensure_fresh_token(
     will handle genuine failures.
     """
     stored_token = connection.get("api_key", "") or connection.get("access_token", "")
-    if isinstance(connection.get("provider_data"), dict) and connection["provider_data"].get("tos_banned") is True:
+    _pd_check = connection.get("provider_data")
+    if isinstance(_pd_check, dict) and (_pd_check.get("tos_banned") is True or _pd_check.get("quarantined") is True):
         return stored_token
     expires_at = connection.get("expires_at")
 
@@ -2974,15 +3093,48 @@ async def ensure_fresh_token(
                             )
                         except TypeError:
                             raw = await refresh_fn(refresh_token, refresh_config)
+                elif provider_name in ("claude", "claude_code", "claude-code", "claudecode"):
+                    _acct_id = account_key(connection)
+                    _raw_conn_proxy = (
+                        None
+                        if connection.get("proxy_bypass") is True
+                        else (
+                            connection.get("proxy_url")
+                            or connection.get("egress_proxy")
+                            or (provider_config or {}).get("proxy_url")
+                        )
+                    )
+                    _conn_proxy = _resolve_oauth_proxy_url(
+                        _raw_conn_proxy,
+                        connection=connection,
+                        provider_name=provider_name,
+                    )
+                    async with await _claude_provider_refresh_lock("claude"):
+                        await _pace_claude_provider_refresh("claude")
+                        try:
+                            raw = await refresh_fn(
+                                refresh_token,
+                                refresh_config,
+                                account_id=_acct_id,
+                                proxy_url=_conn_proxy,
+                            )
+                        except TypeError:
+                            raw = await refresh_fn(refresh_token, refresh_config)
                 else:
                     raw = await refresh_fn(refresh_token, refresh_config)
             except Exception as exc:
-                if isinstance(exc, _GoogleRefreshTerminalBanError) or (
+                if isinstance(exc, (_GoogleRefreshTerminalBanError, _ClaudeRefreshTerminalBanError)) or (
                     provider_name in ("antigravity", "gemini-cli")
                     and isinstance(exc, HTTPException)
                     and any(m in str(getattr(exc, "detail", "")).lower() for m in _GOOGLE_REFRESH_SUSPENSION_MARKERS)
+                ) or (
+                    provider_name in ("claude", "claude_code", "claude-code", "claudecode")
+                    and isinstance(exc, HTTPException)
+                    and any(m in str(getattr(exc, "detail", "")).lower() for m in _CLAUDE_REFRESH_TERMINAL_MARKERS)
                 ):
-                    connection.setdefault("provider_data", {})["tos_banned"] = True
+                    _pd = connection.setdefault("provider_data", {})
+                    _pd["tos_banned"] = True
+                    _pd["quarantined"] = True
                 print(f"[OAuth] {provider_name} token refresh failed: {type(exc).__name__}", flush=True)
                 return stored_token
 

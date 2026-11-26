@@ -245,8 +245,8 @@ async def test_oauth_multi_account_immediate_failover_end_to_end():
                 "round_robin": False,
                 "upstream_stream_buffer": False,
                 "connections": [
-                    {"name": "claude-acct-0", "access_token": "tok-dead-0", "refresh_token": "ref-0", "token_type": "oauth", "enabled": True},
-                    {"name": "claude-acct-1", "access_token": "tok-good-1", "refresh_token": "ref-1", "token_type": "oauth", "enabled": True},
+                    {"name": "claude-acct-0", "access_token": "tok-dead-0", "refresh_token": "ref-0", "token_type": "oauth", "proxy_url": "http://127.0.0.1:10001", "enabled": True},
+                    {"name": "claude-acct-1", "access_token": "tok-good-1", "refresh_token": "ref-1", "token_type": "oauth", "proxy_url": "http://127.0.0.1:10002", "enabled": True},
                 ],
                 "models": [
                     {"id": "claude-sonnet-5-5", "enabled": True, "connection_indexes": [0, 1]},

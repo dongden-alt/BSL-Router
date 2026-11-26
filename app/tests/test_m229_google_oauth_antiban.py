@@ -22,7 +22,7 @@ from app.utils.quota_live import QuotaCache
 def test_unified_zero_chimera_ua_and_uuidv4_session_id():
     import app.main as main_mod
 
-    expected_ua = "antigravity/hub/2.26.0 windows/amd64"
+    expected_ua = "antigravity/hub/2.33.0 windows/amd64"
     assert oauth_mod.ANTIGRAVITY_UPSTREAM_UA == expected_ua
     assert antigravity_upstream.ANTIGRAVITY_UPSTREAM_UA == expected_ua
     assert main_mod._ag_upstream_contract.ANTIGRAVITY_UPSTREAM_UA == expected_ua
@@ -241,7 +241,7 @@ def test_google_refresh_sends_clean_ua_paces_cross_account_and_marks_tos_ban(mon
     expected_key_a = account_key(conn_a)
     tok_a = asyncio.run(oauth_mod.ensure_fresh_token("antigravity", conn_a, {}))
     assert tok_a == f"fresh-{expected_key_a}"
-    assert seen_headers[0]["user-agent"] == "antigravity/hub/2.26.0 windows/amd64"
+    assert seen_headers[0]["user-agent"] == "antigravity/hub/2.33.0 windows/amd64"
     assert seen_accounts[0] == (expected_key_a, "http://127.0.0.1:10001")
     # First refresh has 0s cross-account wait
     assert sleep_calls == []
@@ -260,8 +260,10 @@ def test_quota_cache_and_probe_intervals_and_fallback_quarantine(monkeypatch):
     assert cache.probe_interval_s("antigravity", force=False) == 180.0
     assert cache.probe_interval_s("antigravity", force=True) == 30.0
     assert cache.probe_interval_s("gemini-cli", force=False) == 180.0
-    assert cache.probe_interval_s("claude", force=False) == 15.0
-    assert cache.probe_interval_s("claude", force=True) == 10.0
+    assert cache.probe_interval_s("claude", force=False) == 180.0
+    assert cache.probe_interval_s("claude", force=True) == 30.0
+    assert cache.probe_interval_s("openai", force=False) == 15.0
+    assert cache.probe_interval_s("openai", force=True) == 10.0
 
     # Verify _probe_oauth_quota passes UA + proxy_url to retrieveUserQuota fallback and quarantines 403
     recorded_calls = []
@@ -291,7 +293,7 @@ def test_quota_cache_and_probe_intervals_and_fallback_quarantine(monkeypatch):
     }
     main_mod._probe_oauth_quota("gemini-cli", 0, conn, force=True)
     fb_call = [c for c in recorded_calls if c["url"].endswith(":retrieveUserQuota")][0]
-    assert fb_call["headers"]["User-Agent"] == "antigravity/hub/2.26.0 windows/amd64"
+    assert fb_call["headers"]["User-Agent"] == "antigravity/hub/2.33.0 windows/amd64"
     assert fb_call["proxy_url"] == "http://127.0.0.1:10005"
     assert conn["provider_data"]["quarantined"] is True
     assert main_mod._quota_blocked("gemini-cli", 0, conn, {"enabled": True}) == "quarantined"

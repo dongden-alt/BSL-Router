@@ -65,7 +65,7 @@ from app.oauth import (
 from app.utils.google_cloudcode_egress import build_google_egress_client, rotate_google_ip_cache
 from app.compat.adapters import antigravity_upstream as _ag_upstream_contract
 # The unified App Integration targets the current Desktop Cloud Code identity.
-_ag_upstream_contract.ANTIGRAVITY_UPSTREAM_UA = "antigravity/hub/2.26.0 windows/amd64"
+_ag_upstream_contract.ANTIGRAVITY_UPSTREAM_UA = "antigravity/hub/2.33.0 windows/amd64"
 from app.normalizer import UniversalNormalizer
 from app.middleware.caching import PromptCachingAdapter, pick_warmest_connection, propagate_prompt_cache_key, record_cache_warmth
 from app.scouts.vision import polyfill_vision, VisionPolyfillFailed
@@ -324,6 +324,41 @@ def _opencode_identity_headers(headers: dict, active_conn: dict) -> None:
     headers.setdefault("User-Agent", "opencode/1.0.0")
 
 
+def _request_has_prior_assistant_turns(body: Any) -> bool:
+    """Return True when the incoming request contains prior assistant/model turns (mid-session)."""
+    if not isinstance(body, dict):
+        return False
+    msgs = body.get("messages")
+    if isinstance(msgs, list):
+        for m in msgs:
+            if isinstance(m, dict) and str(m.get("role") or "").strip().lower() in ("assistant", "model"):
+                return True
+    contents = body.get("contents")
+    if isinstance(contents, list):
+        for c in contents:
+            if isinstance(c, dict) and str(c.get("role") or "").strip().lower() in ("model", "assistant"):
+                return True
+    inp = body.get("input")
+    if isinstance(inp, list):
+        for item in inp:
+            if isinstance(item, dict) and str(item.get("role") or "").strip().lower() in ("assistant", "model"):
+                return True
+    return False
+
+
+def _parse_retry_after_header(headers: Any) -> Optional[float]:
+    """Parse numeric Retry-After seconds from response headers, or None."""
+    if not headers:
+        return None
+    try:
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+        if raw is None:
+            return None
+        val = float(str(raw).strip())
+        return val if math.isfinite(val) and val >= 0 else None
+    except Exception:
+        return None
+
 def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dict, provider_config: dict | None = None) -> None:
     """Inject provider-specific headers for upstream requests.
 
@@ -449,6 +484,11 @@ def _inject_provider_headers(headers: dict, provider_name: str, active_conn: dic
         # requests 401 even with a valid key. oauth-2025-04-20 enables OAuth
         # token acceptance; interleaved-thinking-2025-05-14 is the standard
         # thinking beta the CLI sends.
+        for _leak_k in [
+            k for k in list(headers.keys())
+            if k.lower() in ("x-goog-api-client", "client-metadata", "x-forwarded-for", "x-real-ip", "via", "forwarded")
+        ]:
+            headers.pop(_leak_k, None)
         headers["User-Agent"] = "claude-cli/2.0.1 (external, cli)"
         headers["anthropic-version"] = "2023-06-01"
         headers["anthropic-beta"] = "oauth-2025-04-20,interleaved-thinking-2025-05-14"
@@ -13292,8 +13332,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # ── OAuth anti-ban G1/G3/G4/G5: composed pre-send gate ────────────────
     # Inserted at the chokepoint where provider_name, active_conn,
     # _active_conn_index, headers, and config are ALL in scope — after client
-    # selection, before _build_req. Fail-open: any internal error proceeds with
-    # zero added latency. Gated on `enabled` AND an OAuth credential marker.
+    # selection, before _build_req. Fail-open on internal errors, EXCEPT
+    # EgressSwitchCooldownError which fails closed to protect Google & Claude accounts.
+    _oab_has_prior_turns = _request_has_prior_assistant_turns(body)
     try:
         _oab_cfg3 = _oauth_antiban.resolve_antiban_config(config)
         if _oab_cfg3.get("enabled") and _oauth_antiban.is_oauth_connection(active_conn):
@@ -13320,6 +13361,18 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                               f"score={_oab_decision.get('score',0):.2f})"},
                     status_code=503,
                 )
+    except _oauth_antiban.EgressSwitchCooldownError as _egress_err:
+        _ra_sec = max(1, int(math.ceil(getattr(_egress_err, "remaining_seconds", 1.0))))
+        print(f"[oauth_antiban] FAIL-CLOSED same-egress cooldown: {_egress_err}", flush=True)
+        return JSONResponse(
+            {
+                "error": str(_egress_err),
+                "code": "egress_switch_cooldown",
+                "retry_after_seconds": round(getattr(_egress_err, "remaining_seconds", 0.0), 1),
+            },
+            status_code=429,
+            headers={"Retry-After": str(_ra_sec)},
+        )
     except Exception as _oab_pre_e:
         print(f"[oauth_antiban] pre-send gate fail-open: {_oab_pre_e}", flush=True)
 
@@ -13565,38 +13618,32 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             _active_payload = _reframed_payload
                 except Exception as _fel_st_err:
                     print(f"[FEL] stream context-escalation failed (fail-open): {_fel_st_err}", flush=True)
-            # OAuth anti-ban G2/G6: feed the final status code to the backoff +
-            # usage governors. Fail-open: any error returns a no-op decision and
-            # never touches the live response. Cheap no-op for non-OAuth lanes.
-            try:
-                _oauth_antiban.govern_post_send(
-                    provider_name=provider_name,
-                    conn=active_conn if isinstance(active_conn, dict) else {},
-                    conn_index=_active_conn_index,
-                    status_code=getattr(_resp, "status_code", 0) or 0,
-                    retry_after=None,
-                    tokens_used=0.0,
-                    config=config,
-                )
-            except Exception:
-                pass
             try:
                 _capture_rate_limit_headers(provider_name, _active_conn_index, _resp.headers)
             except Exception:
                 pass
-            # OAuth anti-ban G2/G6: feed the final status code + real token usage to
-            # the backoff + usage governors. Fail-open; cheap no-op for non-OAuth lanes.
+            # OAuth anti-ban G2/G6: single post-send gate with real status, Retry-After,
+            # error body (when already buffered), token usage, and mid-session turn state.
             try:
+                _resp_sc = getattr(_resp, "status_code", 0) or 0
                 _usage_dict = _extract_usage(_resp) if hasattr(_resp, 'usage') else {}
                 _tokens = float((_usage_dict or {}).get("completion_tokens", 0) or 0)
+                _oab_err_body = ""
+                if _resp_sc >= 400:
+                    try:
+                        _oab_err_body = str(getattr(_resp, "text", "") or "")[:1000]
+                    except Exception:
+                        _oab_err_body = ""
                 _oauth_antiban.govern_post_send(
                     provider_name=provider_name,
                     conn=active_conn if isinstance(active_conn, dict) else {},
                     conn_index=_active_conn_index,
-                    status_code=getattr(_resp, "status_code", 0) or 0,
-                    retry_after=None,
+                    status_code=_resp_sc,
+                    retry_after=_parse_retry_after_header(getattr(_resp, "headers", None)),
                     tokens_used=_tokens,
                     config=config,
+                    body_text=_oab_err_body,
+                    has_prior_assistant_turns=_oab_has_prior_turns,
                 )
             except Exception:
                 pass
@@ -14009,13 +14056,32 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     timeout=max(1.0, min(HEADER_WAIT_TIMEOUT, _chain_budget_remaining())),
                 )
             _capture_rate_limit_headers(provider_name, _active_conn_index, _probe_resp.headers)
-            _oauth_antiban.govern_post_send(
-                provider_name=provider_name, conn=active_conn if isinstance(active_conn, dict) else {},
-                conn_index=_active_conn_index, status_code=_probe_resp.status_code, config=config,
-            )
+            if _probe_resp.status_code == 200:
+                _oauth_antiban.govern_post_send(
+                    provider_name=provider_name, conn=active_conn if isinstance(active_conn, dict) else {},
+                    conn_index=_active_conn_index, status_code=200, config=config,
+                    has_prior_assistant_turns=_oab_has_prior_turns,
+                )
             if _probe_resp.status_code != 200:
                 _err_body = await _probe_resp.aread()
                 _err_text = _err_body.decode("utf-8", errors="replace")
+                _oauth_antiban.govern_post_send(
+                    provider_name=provider_name, conn=active_conn if isinstance(active_conn, dict) else {},
+                    conn_index=_active_conn_index, status_code=_probe_resp.status_code,
+                    retry_after=_parse_retry_after_header(_probe_resp.headers),
+                    config=config, body_text=_err_text[:1000],
+                    has_prior_assistant_turns=_oab_has_prior_turns,
+                )
+                if _active_conn_index is not None and (
+                    _oauth_antiban.is_google_terminal_ban_or_403(provider_name, _probe_resp.status_code, _err_text)
+                    or _oauth_antiban.is_claude_terminal_ban(provider_name, _probe_resp.status_code, _err_text)
+                ):
+                    try:
+                        _tb = get_breaker()
+                        if _tb is not None:
+                            _tb.record_outcome(provider_name, target_model, _active_conn_index, _probe_resp.status_code, error_msg=_err_text[:500])
+                    except Exception:
+                        pass
                 
                 # Check for thinking param rejection in the pre-header probe
                 if _thinking_retry_armed and _probe_resp.status_code == 400 and is_thinking_param_rejection(_probe_resp.status_code, _err_text):
@@ -24174,13 +24240,23 @@ def _capture_rate_limit_headers(provider: str, conn_index, headers) -> None:
         for suffix, label, used_key, reset_keys in (
             ("5h", "5h", "anthropic-ratelimit-unified-5h-utilization", ("anthropic-ratelimit-unified-5h-reset",)),
             ("7d", "7d", "anthropic-ratelimit-unified-7d-utilization", ("anthropic-ratelimit-unified-7d-reset",)),
+            ("7d_sonnet", "7d_sonnet", "anthropic-ratelimit-unified-7d_sonnet-utilization", ("anthropic-ratelimit-unified-7d_sonnet-reset",)),
         ):
             raw = str(h.get(used_key, ""))
             if raw:
                 used = float(raw)
                 if 0 < used <= 1.0 and "." in raw:
                     used *= 100
-                entry["five_hour" if suffix == "5h" else "weekly"] = _make_window_obj(label, 100 - used, reset_val=h.get(reset_keys[0]))
+                _win_key = "five_hour" if suffix == "5h" else ("weekly" if suffix == "7d" else "weekly_sonnet")
+                entry[_win_key] = _make_window_obj(label, 100 - used, reset_val=h.get(reset_keys[0]))
+        for _hdr_k, _dst_k in (
+            ("anthropic-ratelimit-unified-overage-status", "overage_status"),
+            ("anthropic-ratelimit-unified-overage-disabled-reason", "overage_disabled_reason"),
+            ("anthropic-ratelimit-unified-representative-claim", "representative_claim"),
+            ("anthropic-ratelimit-unified-status", "unified_status"),
+        ):
+            if h.get(_hdr_k):
+                entry[_dst_k] = str(h[_hdr_k]).strip()
         for window, label, used_key, reset_at, reset_after in (
             ("five_hour", "5h", "x-codex-primary-used-percent", "x-codex-primary-reset-at", "x-codex-primary-reset-after-seconds"),
             ("weekly", "7d", "x-codex-secondary-used-percent", "x-codex-secondary-reset-at", "x-codex-secondary-reset-after-seconds"),
@@ -24498,19 +24574,39 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
     try:
         import httpx
         provider = str(provider_id).lower()
-        if token and provider == "claude":
-            response = httpx.get(
-                "https://api.anthropic.com/api/oauth/usage?cedar_ember=1",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/json",
-                    "anthropic-beta": "oauth-2025-04-20",
-                    "anthropic-version": "2023-06-01",
-                    "User-Agent": "claude-code/2.1.63",
-                },
-                timeout=4.5,
-            )
+        if token and provider in ("claude", "claude-code", "claude_code", "claudecode"):
+            _claude_probe_hdrs = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "anthropic-beta": "oauth-2025-04-20",
+                "anthropic-version": "2023-06-01",
+                "User-Agent": "claude-code/2.1.216",
+            }
+            _claude_probe_proxy = _effective_egress_proxy(conn, provider_id)
+            _claude_usage_url = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1"
+            _httpx_get_patched = hasattr(httpx.get, "_mock_name") or getattr(httpx.get, "__module__", "") != "httpx._api"
+            if _claude_probe_proxy and not _httpx_get_patched:
+                with httpx.Client(proxy=_claude_probe_proxy, timeout=4.5, trust_env=False) as _cl_pclient:
+                    response = _cl_pclient.get(_claude_usage_url, headers=_claude_probe_hdrs)
+            else:
+                response = httpx.get(_claude_usage_url, headers=_claude_probe_hdrs, timeout=4.5)
+            if response.status_code in (400, 401, 403) and _oauth_antiban.is_claude_terminal_ban("claude", response.status_code, getattr(response, "text", "")):
+                if isinstance(conn, dict):
+                    _cpd = conn.setdefault("provider_data", {})
+                    _cpd["quarantined"] = True
+                    _cpd["tos_banned"] = True
+                _cb_cl = get_breaker()
+                if _cb_cl is not None:
+                    _cb_cl.record_outcome(provider_id, "_quota", conn_index, response.status_code, error_msg=getattr(response, "text", ""))
             data = response.json() if response.status_code == 200 else {}
+            if isinstance(data, dict) and isinstance(data.get("extra_usage"), dict):
+                _eu = data["extra_usage"]
+                active["extra_usage"] = {
+                    "is_enabled": bool(_eu.get("is_enabled")),
+                    "used_credits": _eu.get("used_credits"),
+                    "monthly_limit": _eu.get("monthly_limit"),
+                    "utilization": _eu.get("utilization"),
+                }
 
             if isinstance(data, dict):
                 for source, target, label in (("five_hour", "five_hour", "5h"), ("seven_day", "weekly", "7d")):
@@ -24613,7 +24709,7 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
                 return result
             project_id = str(pd.get("project_id") or pd.get("projectId") or conn.get("project_id") or conn.get("projectId") or "").strip()
             from app.utils.google_cloudcode_egress import google_cloudcode_sync_post
-            ag_ua = getattr(_ag_upstream_contract, "ANTIGRAVITY_UPSTREAM_UA", "antigravity/ide/2.1.1 windows/amd64")
+            ag_ua = getattr(_ag_upstream_contract, "ANTIGRAVITY_UPSTREAM_UA", "antigravity/hub/2.33.0 windows/amd64")
             _probe_proxy = _effective_egress_proxy(conn, provider_id)
             sub_cache_key = _oauth_conn_cache_key(conn, conn_index)
             sub_cached = _ANTIGRAVITY_SUB_CACHE.get(sub_cache_key)

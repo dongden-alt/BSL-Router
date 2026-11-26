@@ -398,6 +398,8 @@ _GOOGLE_TOS_MARKERS = (
     "account_suspended",
     "account_deactivated",
     "organization_disabled",
+    "account has been disabled",
+    "access_suspended",
 )
 _GOOGLE_VALIDATION_MARKERS = (
     "validation_required",
@@ -406,12 +408,49 @@ _GOOGLE_VALIDATION_MARKERS = (
     "verify your account",
     "verify it's you",
     "challenge_required",
+    "appeal_url",
+)
+_GOOGLE_REFRESH_SUSPENSION_MARKERS = (
+    "disabled",
+    "suspended",
+    "deactivated",
+    "violation",
+    "terms of service",
+)
+_HARD_QUOTA_429_MARKERS = (
+    "quota_exhausted",
+    "model_quota_exhausted",
+    "quotaresetdelay",
+    "quotaresettimestamp",
+    "individual quota reached",
+    "quota exhausted",
+    "daily limit exceeded",
+)
+_CLAUDE_TERMINAL_BAN_MARKERS = (
+    "account_deactivated",
+    "account_suspended",
+    "organization_disabled",
+    "token_revoked",
+    "oauth_token_revoked",
+    "invalid_grant",
+    "user_banned",
+    "account_disabled",
+    "account disabled",
+    "account has been disabled",
+    "account suspended",
+    "violation of terms of service",
+    "terms of service",
 )
 
 
 def classify_google_http_error(status_code: int, body_text: str = "") -> str:
     """Classify Google Cloud Code / OAuth HTTP errors for 2026 ban-wave protection."""
     lower = str(body_text or "").lower()
+    if status_code == 400 and (
+        ("invalid_grant" in lower and any(m in lower for m in _GOOGLE_REFRESH_SUSPENSION_MARKERS))
+        or any(m in lower for m in _GOOGLE_TOS_MARKERS)
+    ):
+        return "tos_ban"
     if status_code in (400, 401, 403):
         if any(m in lower for m in _GOOGLE_TOS_MARKERS):
             return "tos_ban"
@@ -428,6 +467,12 @@ def classify_google_http_error(status_code: int, body_text: str = "") -> str:
     return "other"
 
 
+def is_hard_quota_exhausted_429(body_text: str = "") -> bool:
+    """Return True when a 429 body indicates hard quota exhaustion (futile to retry-storm)."""
+    lower = str(body_text or "").lower()
+    return any(m in lower for m in _HARD_QUOTA_429_MARKERS)
+
+
 def is_google_terminal_ban_or_403(provider_id: str, status_code: int, body_text: str = "") -> bool:
     """Return True when a Google OAuth lane hits ToS ban, validation challenge, or 403."""
     if str(provider_id or "").strip().lower() not in ("antigravity", "gemini-cli"):
@@ -437,6 +482,70 @@ def is_google_terminal_ban_or_403(provider_id: str, status_code: int, body_text:
         "validation_required",
         "permission_denied_403",
     )
+
+
+def classify_claude_http_error(status_code: int, body_text: str = "") -> str:
+    """Classify Claude Code (Anthropic OAuth) HTTP errors for anti-ban quarantine."""
+    lower = str(body_text or "").lower()
+    if status_code in (400, 401, 403) and any(m in lower for m in _CLAUDE_TERMINAL_BAN_MARKERS):
+        return "terminal_ban"
+    if status_code == 401:
+        return "auth"
+    if status_code == 403:
+        return "forbidden"
+    if status_code == 429:
+        return "rate_limit"
+    if status_code in (500, 502, 503, 504, 529):
+        return "transient"
+    return "other"
+
+
+def is_claude_terminal_ban(provider_id: str, status_code: int, body_text: str = "") -> bool:
+    """Return True when a Claude Code OAuth lane hits explicit account/org/token revocation."""
+    if not is_claude_provider(provider_id):
+        return False
+    return classify_claude_http_error(status_code, body_text) == "terminal_ban"
+
+
+def is_claude_overage_shield_blocked(
+    conn: Optional[Dict[str, Any]],
+    quota_snapshot: Optional[Dict[str, Any]],
+    provider_config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Protect Claude Code accounts from silently burning paid Extra Usage overage.
+
+    Returns True when included 5h or 7d quota is exhausted (<= 0%) or upstream
+    headers report active/rejected overage, unless `allow_extra_usage_overage`
+    is explicitly enabled on the connection or provider config.
+    """
+    if isinstance(conn, dict) and conn.get("allow_extra_usage_overage") is True:
+        return False
+    if isinstance(provider_config, dict) and provider_config.get("allow_extra_usage_overage") is True:
+        return False
+    if not isinstance(quota_snapshot, dict):
+        return False
+    overage_status = str(quota_snapshot.get("overage_status") or "").strip().lower()
+    if overage_status in ("using_overage", "rejected", "overage"):
+        return True
+    for win_key in ("five_hour", "weekly"):
+        win = quota_snapshot.get(win_key)
+        if isinstance(win, dict) and win.get("remaining_pct") is not None:
+            try:
+                if float(win["remaining_pct"]) <= 0.0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+    return False
+
+
+def _canonical_egress_guard_family(provider_name: str) -> Optional[str]:
+    """Return canonical egress-guard family for Google & Claude Code OAuth lanes."""
+    low = str(provider_name or "").strip().lower()
+    if low in ("antigravity", "gemini-cli"):
+        return low
+    if low in _CLAUDE_FAMILY:
+        return "claude"
+    return None
 
 
 def normalize_egress_slot(proxy_url: Optional[str]) -> str:
@@ -461,20 +570,20 @@ def normalize_egress_slot(proxy_url: Optional[str]) -> str:
 
 
 class EgressSwitchCooldownError(RuntimeError):
-    """Raised when switching Google accounts on the same egress slot violates dwell cooldown."""
+    """Raised when switching OAuth accounts on the same egress slot violates dwell cooldown."""
 
     def __init__(self, provider_id: str, egress_slot: str, remaining_seconds: float):
         self.provider_id = provider_id
         self.egress_slot = egress_slot
         self.remaining_seconds = float(max(0.0, remaining_seconds))
         super().__init__(
-            f"Google anti-ban same-egress switch cooldown active on {egress_slot} "
+            f"OAuth anti-ban same-egress switch cooldown active on {egress_slot} "
             f"for {provider_id} ({self.remaining_seconds:.1f}s remaining)"
         )
 
 
 class EgressSwitchGuard:
-    """Enforces a minimum dwell cooldown before switching Google accounts on the same egress IP."""
+    """Enforces a minimum dwell cooldown before switching OAuth accounts on the same egress IP."""
 
     def __init__(self) -> None:
         self._last_by_slot: Dict[Tuple[str, str], Tuple[str, float]] = {}
@@ -623,9 +732,13 @@ def apply_affinity(
         if not eligible:
             return eligible
 
-        prov_lower = str(provider_name or "").strip().lower()
-        if prov_lower in ("antigravity", "gemini-cli"):
-            if isinstance(provider_config, dict) and provider_config.get("block_shared_ip_auto_switch") is True:
+        egress_family = _canonical_egress_guard_family(provider_name)
+        if egress_family is not None:
+            _block_shared = bool(
+                (isinstance(provider_config, dict) and provider_config.get("block_shared_ip_auto_switch") is True)
+                or cfg.get("block_shared_ip_auto_switch") is True
+            )
+            if _block_shared:
                 seen_slots = set()
                 deduped = []
                 for e in eligible:
@@ -648,7 +761,7 @@ def apply_affinity(
                     c_dict = e.get("conn") if isinstance(e.get("conn"), dict) else {}
                     slot = _conn_egress_slot(c_dict, provider_config)
                     locked_acct = _EGRESS_SWITCH_GUARD.locked_account_for_slot(
-                        prov_lower, slot, cooldown_s
+                        egress_family, slot, cooldown_s
                     )
                     cand_acct = account_identity(c_dict, e.get("index"))
                     if locked_acct is None or locked_acct == cand_acct:
@@ -1431,13 +1544,13 @@ async def govern_pre_send(
         acct = account_identity(conn, conn_index)
         session_key = session_key or current_request_session_key()
 
-        prov_lower = str(provider_name or "").strip().lower()
-        if prov_lower in ("antigravity", "gemini-cli"):
+        egress_family = _canonical_egress_guard_family(provider_name)
+        if egress_family is not None:
             prov_cfg = ((config or {}).get("providers") or {}).get(provider_name) if isinstance(config, dict) else None
             cooldown_s = _resolve_google_switch_cooldown_s(prov_cfg, config, cfg)
             egress_slot = _conn_egress_slot(conn, prov_cfg)
-            _EGRESS_SWITCH_GUARD.check_switch_allowed(prov_lower, egress_slot, acct, cooldown_s)
-            _EGRESS_SWITCH_GUARD.record_send(prov_lower, egress_slot, acct)
+            _EGRESS_SWITCH_GUARD.check_switch_allowed(egress_family, egress_slot, acct, cooldown_s)
+            _EGRESS_SWITCH_GUARD.record_send(egress_family, egress_slot, acct)
 
         # G1 -- cadence governor (per-provider jittered min-interval)
         min_iv, jitter = provider_cadence_params(provider_name, cfg)
@@ -1543,13 +1656,29 @@ def govern_post_send(
         pass
     prov_lower = str(provider_name or "").strip().lower()
     _google_terminal = is_google_terminal_ban_or_403(prov_lower, status_code, body_text)
+    _claude_terminal = is_claude_terminal_ban(prov_lower, status_code, body_text)
+    _is_terminal = _google_terminal or _claude_terminal
+    _is_strict_session_locked = _canonical_egress_guard_family(prov_lower) is not None
     if status_code in (401, 402, 403, 429) or (isinstance(status_code, int) and status_code >= 500):
-        if not (prov_lower in ("antigravity", "gemini-cli") and (_google_terminal or has_prior_assistant_turns)):
+        if not (_is_strict_session_locked and (_is_terminal or has_prior_assistant_turns)):
             try:
                 _STORE.release(current_request_session_key(), provider_name)
             except Exception:
                 pass
-    if _google_terminal:
+    if _is_terminal:
+        try:
+            if isinstance(conn, dict):
+                pd = conn.get("provider_data")
+                if not isinstance(pd, dict):
+                    pd = {}
+                    conn["provider_data"] = pd
+                pd["quarantined"] = True
+                if _google_terminal and classify_google_http_error(status_code, body_text) == "tos_ban":
+                    pd["tos_banned"] = True
+                elif _claude_terminal:
+                    pd["tos_banned"] = True
+        except Exception:
+            pass
         return out
     try:
         cfg = resolve_antiban_config(config)
@@ -1563,8 +1692,15 @@ def govern_post_send(
         if tokens_used > 0:
             _USAGE.record(acct, tokens_used)
 
-        # G2 -- adaptive 429 backoff, no retry-storm
+        # G2 -- adaptive 429 backoff, no retry-storm (skip futile retries on hard quota exhaustion)
         if status_code == 429:
+            if is_hard_quota_exhausted_429(body_text):
+                print(
+                    "[antiban] 429 hard quota exhaustion — skipping same-account retry provider=%s acct=%s"
+                    % (provider_name, acct),
+                    flush=True,
+                )
+                return out
             if not _BACKOFF.should_retry(acct, cfg["backoff_max_retries"]):
                 print(
                     "[antiban] 429 retry-storm guard tripped provider=%s acct=%s"

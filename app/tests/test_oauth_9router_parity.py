@@ -80,7 +80,7 @@ def test_antigravity_post_exchange_uses_exact_9router_user_agent(oauth_module):
         result = asyncio.run(oauth_module._post_exchange_antigravity({"access_token": "access-token"}))
 
     assert result["projectId"] == "project-1"
-    assert mock_egress.post.await_args_list[0].kwargs["headers"]["User-Agent"] == "antigravity/hub/2.26.0 windows/amd64"
+    assert mock_egress.post.await_args_list[0].kwargs["headers"]["User-Agent"] == "antigravity/hub/2.33.0 windows/amd64"
     assert "X-Goog-Api-Client" not in mock_egress.post.await_args_list[0].kwargs["headers"]
     assert "Client-Metadata" not in mock_egress.post.await_args_list[0].kwargs["headers"]
     assert mock_egress.post.await_args_list[0].kwargs["json"] == {"metadata": {"ideType": "ANTIGRAVITY"}, "mode": 1}

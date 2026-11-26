@@ -21,6 +21,16 @@ def account_key(conn: dict, index: int = 0) -> str:
     return hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode()).hexdigest()
 
 
+_THROTTLED_QUOTA_PROVIDERS = frozenset({
+    "antigravity",
+    "gemini-cli",
+    "claude",
+    "claude-code",
+    "claude_code",
+    "claudecode",
+})
+
+
 class QuotaCache:
     def __init__(self):
         self.rows: dict[tuple[str, str], dict] = {}
@@ -31,7 +41,7 @@ class QuotaCache:
     def probe_interval_s(self, provider: str, *, force: bool = False, failures: int = 0) -> float:
         if failures:
             return float(min(300, 30 * 2 ** min(failures - 1, 4)))
-        if str(provider or "").lower() in ("antigravity", "gemini-cli"):
+        if str(provider or "").lower() in _THROTTLED_QUOTA_PROVIDERS:
             return 30.0 if force else 180.0
         return 10.0 if force else 15.0
 
@@ -56,7 +66,7 @@ class QuotaCache:
             "last_attempt_at": None, "stale": False,
         })
         observed = row.get("observed_at")
-        stale_ttl = 180 if str(provider or "").lower() in ("antigravity", "gemini-cli") else 15
+        stale_ttl = 180 if str(provider or "").lower() in _THROTTLED_QUOTA_PROVIDERS else 15
         row["stale"] = bool(observed and (row.get("error") or now - observed >= stale_ttl))
         if blocked:
             row.update(error=blocked, refreshing=False, stale=bool(observed))

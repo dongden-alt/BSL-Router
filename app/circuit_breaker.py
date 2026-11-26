@@ -192,11 +192,19 @@ TERMINAL_ACCOUNT_BAN_MARKERS = (
     "disabled in this account",
     "this service has been disabled",
     "account_disabled",
+    "account disabled",
+    "account has been disabled",
     "account_suspended",
+    "account suspended",
     "account_deactivated",
+    "access_suspended",
     "organization_disabled",
     "validation_required",
     "verify your account",
+    "appeal_url",
+    "token_revoked",
+    "oauth_token_revoked",
+    "user_banned",
 )
 
 
