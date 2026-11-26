@@ -119,6 +119,199 @@ _ATTR_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 6th tool-call dialect: MBZUAI/LLM360 IFM markup emitted by K2-Horizon
+# (crowllm/k2-horizon-375b-a23b-uncensored:free). Upstream providers also
+# frequently strip the opening <ifm|tool_calls>, <ifm|tool_call>, <ifm|arg_key>,
+# and <ifm|arg_value> tokens, leaving bare `fn\nk</ifm|arg_key>\nv</ifm|arg_value>\n</ifm|tool_call>`.
+_IFM_TOOL_CALLS_RE = re.compile(
+    r"<ifm\|tool_calls\s*>(.*?)</ifm\|tool_calls\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_IFM_TOOL_CALL_RE = re.compile(
+    r"<ifm\|tool_call\s*>\s*([a-z_][a-z0-9_.:-]*)\s*(.*?)</ifm\|tool_call\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_IFM_ARG_KV_RE = re.compile(
+    r"(?:<ifm\|arg_key\s*>)?\s*([a-z_][a-z0-9_.:-]*)\s*</ifm\|arg_key\s*>\s*(?:<ifm\|arg_value\s*>)?(.*?)</ifm\|arg_value\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_IFM_STRIPPED_TOOL_CALL_RE = re.compile(
+    r"(^|[\r\n>])[ \t]*([a-z_][a-z0-9_.:-]*)[ \t]*(?:[\r\n]+[ \t]*|[ \t]+)"
+    r"((?:[a-z_][a-z0-9_.:-]*[ \t]*</ifm\|arg_key\s*>.*?</ifm\|arg_value\s*>\s*)+)"
+    r"</ifm\|tool_call\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_IFM_STRIPPED_ZERO_ARG_RE = re.compile(
+    r"(^|[\r\n>])[ \t]*([a-z_][a-z0-9_.:-]*)\s*</ifm\|tool_call\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_IFM_ORPHAN_TAG_RE = re.compile(
+    r"</?ifm\|(?:tool_calls?|arg_key|arg_value)\s*>",
+    re.IGNORECASE,
+)
+_IFM_PROSE_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with",
+    "from", "by", "is", "are", "was", "were", "be", "this", "that", "it",
+    "as", "at", "if", "then", "else", "note", "example", "output", "result",
+    "true", "false", "null", "none", "yes", "no", "ok", "here", "now",
+})
+_FENCED_CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```")
+_FENCE_LINE_OPEN_RE = re.compile(r"(?m)^[ \t]*```[^\n]*\n")
+_FENCE_LINE_CLOSE_NL_RE = re.compile(r"(?m)^[ \t]*```[ \t]*\r?\n")
+_FENCE_LINE_CLOSE_EOF_RE = re.compile(r"(?m)^[ \t]*```[ \t]*\r?(?:\n|$)")
+
+
+def _is_ifm_prose_stopword(name: str) -> bool:
+    return (name or "").strip().lower() in _IFM_PROSE_STOPWORDS
+
+
+def _mask_fenced_code_blocks(text: str) -> Tuple[str, List[Tuple[str, str]]]:
+    if not text or "```" not in text:
+        return text, []
+    tokens: List[Tuple[str, str]] = []
+
+    def _sub(m: re.Match) -> str:
+        tok = f"\x00BSLFENCE_{len(tokens)}\x00"
+        tokens.append((tok, m.group(0)))
+        return tok
+
+    return _FENCED_CODE_BLOCK_RE.sub(_sub, text), tokens
+
+
+def _unmask_fenced_code_blocks(text: str, tokens: List[Tuple[str, str]]) -> str:
+    if not text or not tokens or "\x00BSLFENCE_" not in text:
+        return text
+    out = text
+    for tok, orig in tokens:
+        if tok in out:
+            out = out.replace(tok, orig)
+    return out
+
+
+def _unmask_fences_in_value(val: Any, tokens: List[Tuple[str, str]]) -> Any:
+    if not tokens:
+        return val
+    if isinstance(val, str):
+        return _unmask_fenced_code_blocks(val, tokens)
+    if isinstance(val, list):
+        return [_unmask_fences_in_value(v, tokens) for v in val]
+    if isinstance(val, dict):
+        return {k: _unmask_fences_in_value(v, tokens) for k, v in val.items()}
+    return val
+
+
+def _unmask_fences_in_calls(calls: List[Dict[str, Any]], tokens: List[Tuple[str, str]]) -> List[Dict[str, Any]]:
+    if not calls or not tokens:
+        return calls
+    out: List[Dict[str, Any]] = []
+    for c in calls:
+        c2 = _unmask_fences_in_value(c, tokens)
+        fn = c2.get("function") if isinstance(c2, dict) else None
+        if isinstance(fn, dict) and isinstance(fn.get("arguments"), str) and "\x00BSLFENCE_" in fn["arguments"]:
+            fn["arguments"] = _unmask_fenced_code_blocks(fn["arguments"], tokens)
+        out.append(c2)
+    return out
+
+
+def _parse_ifm_args(body: str, fence_tokens: Optional[List[Tuple[str, str]]] = None) -> Dict[str, Any]:
+    params: Dict[str, Any] = {}
+    for km in _IFM_ARG_KV_RE.finditer(body or ""):
+        k = (km.group(1) or "").strip()
+        if k:
+            raw_v = (km.group(2) or "").strip()
+            if fence_tokens:
+                raw_v = _unmask_fenced_code_blocks(raw_v, fence_tokens)
+            params[k] = _coerce_param_value(raw_v)
+    if not params:
+        trimmed = (body or "").strip()
+        if fence_tokens:
+            trimmed = _unmask_fenced_code_blocks(trimmed, fence_tokens)
+        if trimmed.startswith("{"):
+            try:
+                parsed = json.loads(trimmed)
+                if isinstance(parsed, dict):
+                    return parsed
+            except (json.JSONDecodeError, ValueError):
+                pass
+    return params
+
+
+def _extract_ifm_tool_calls(
+    text: str,
+    base_index: int = 0,
+    *,
+    mask_fences: bool = True,
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """Extract K2-Horizon IFM tool calls (both full and stripped-opener forms)."""
+    if not text or "ifm|" not in text.lower():
+        return text, []
+    calls: List[Dict[str, Any]] = []
+    working, fence_tokens = _mask_fenced_code_blocks(text) if mask_fences else (text, [])
+    if "ifm|" not in working.lower():
+        return text, []
+
+    def _add_call(name: str, args: Dict[str, Any]) -> None:
+        call = _tool_call_dict(name.strip(), args, base_index + len(calls))
+        if call:
+            calls.append(call)
+
+    def _replace_wrapper(m: re.Match) -> str:
+        inner = _unmask_fenced_code_blocks(m.group(1) or "", fence_tokens)
+        _, inner_calls = _extract_ifm_tool_calls(inner, base_index + len(calls), mask_fences=False)
+        calls.extend(inner_calls)
+        return ""
+
+    working = _IFM_TOOL_CALLS_RE.sub(_replace_wrapper, working)
+
+    def _replace_full(m: re.Match) -> str:
+        _add_call(m.group(1) or "", _parse_ifm_args(m.group(2) or "", fence_tokens))
+        return ""
+
+    working = _IFM_TOOL_CALL_RE.sub(_replace_full, working)
+
+    while _IFM_STRIPPED_TOOL_CALL_RE.search(working):
+        matched_any = False
+
+        def _replace_stripped(m: re.Match) -> str:
+            nonlocal matched_any
+            lead = m.group(1) or ""
+            name = (m.group(2) or "").strip()
+            if _is_ifm_prose_stopword(name):
+                return m.group(0)
+            matched_any = True
+            _add_call(name, _parse_ifm_args(m.group(3) or "", fence_tokens))
+            return ">\n" if lead == ">" else "\n"
+
+        next_working = _IFM_STRIPPED_TOOL_CALL_RE.sub(_replace_stripped, working)
+        if not matched_any or next_working == working:
+            break
+        working = next_working
+
+    while _IFM_STRIPPED_ZERO_ARG_RE.search(working):
+        matched_any_z = False
+
+        def _replace_zero(m: re.Match) -> str:
+            nonlocal matched_any_z
+            lead = m.group(1) or ""
+            name = (m.group(2) or "").strip()
+            if _is_ifm_prose_stopword(name):
+                return m.group(0)
+            matched_any_z = True
+            _add_call(name, {})
+            return ">\n" if lead == ">" else "\n"
+
+        next_working = _IFM_STRIPPED_ZERO_ARG_RE.sub(_replace_zero, working)
+        if not matched_any_z or next_working == working:
+            break
+        working = next_working
+
+    working = _IFM_ORPHAN_TAG_RE.sub("", working)
+    if calls:
+        working = re.sub(r"\n{3,}", "\n\n", working).strip()
+    working = _unmask_fenced_code_blocks(working, fence_tokens)
+    calls = _unmask_fences_in_calls(calls, fence_tokens)
+    return working, calls
+
 
 def _attr_name(attrs: str) -> str:
     """Pull the ``name=`` attribute value from an element's attrs blob.
@@ -537,6 +730,15 @@ _GLM_UNICODE_TC_OPEN_RE = re.compile(
 # _TOOL_USE_INVOKE_RE; the streaming path had no opener for it, so a
 # GLM-5.3 <tool_use><invoke> block streamed as text leaked as prose.
 _TOOL_USE_OPEN_RE = re.compile(r"<tool_use(?:\s+[^>]*)?>", re.IGNORECASE)
+# 6th dialect: K2-Horizon IFM (<ifm|tool_calls>, <ifm|tool_call>, and upstream-
+# stripped-opener `fn\nk</ifm|arg_key>...</ifm|tool_call>`).
+_IFM_CALLS_OPEN_RE = re.compile(r"<ifm\|tool_calls\s*>", re.IGNORECASE)
+_IFM_CALL_OPEN_RE = re.compile(r"<ifm\|tool_call\s*>", re.IGNORECASE)
+_IFM_STRIPPED_OPEN_RE = re.compile(
+    r"(?m)(?:^|(?<=[\r\n>]))[ \t]*[a-z_][a-z0-9_.:-]*[ \t]*"
+    r"(?:(?:[\r\n]+[ \t]*|[ \t]+)[a-z_][a-z0-9_.:-]*[ \t]*</ifm\|arg_key\s*>|\s*(?=</ifm\|tool_call\s*>))",
+    re.IGNORECASE,
+)
 
 # Closer-only variants.
 _TOOL_CALL_CLOSE_RE = re.compile(r"</tool_call\s*>", re.IGNORECASE)
@@ -545,31 +747,70 @@ _GLM_UNICODE_TC_CLOSE_RE = re.compile(
     re.IGNORECASE,
 )
 _TOOL_USE_CLOSE_RE = re.compile(r"</tool_use\s*>", re.IGNORECASE)
+_IFM_CALLS_CLOSE_RE = re.compile(r"</ifm\|tool_calls\s*>", re.IGNORECASE)
+_IFM_CALL_CLOSE_RE = re.compile(r"</ifm\|tool_call\s*>", re.IGNORECASE)
 
 # A trailing segment that could still grow into an opener: a '<' followed only
-# by delimiter-ish characters. Held back from emission until the next delta
-# proves it is (or is not) a delimiter. Bounded by the caller so ordinary text
-# containing '<' is delayed by at most a handful of characters.
-_PARTIAL_OPEN_TAIL_RE = re.compile(r"<[\s|｜_▁A-Za-z]*$")
+# by delimiter-ish characters, or a partial `</ifm|...` close tag. Held back
+# from emission until the next delta proves it is (or is not) a delimiter.
+_PARTIAL_OPEN_TAIL_RE = re.compile(
+    r"(?:<[\s|｜_▁A-Za-z]*|</(?:i(?:f(?:m(?:\|[a-z_]*)?)?)?)?)$",
+    re.IGNORECASE,
+)
+# Trailing bare 1-or-2-line identifier prefix (e.g. `read_file\nPath</if`) that
+# may precede a stripped-opener IFM `</ifm|arg_key>` or `</ifm|tool_call>` tag
+# on the next SSE delta.
+_IFM_STRIPPED_HOLD_TAIL_RE = re.compile(
+    r"(?i)(^|\n)[ \t]*(?:[a-z_][a-z0-9_.:-]{0,48}[ \t]*"
+    r"(?:\r?\n[ \t]*(?:[a-z_][a-z0-9_.:-]{0,48}[ \t]*)?)?|"
+    r"[a-z_][a-z0-9_.-]*_[a-z0-9_.:-]*[ \t]+(?:[a-z_][a-z0-9_.:-]{0,48}[ \t]*)?)"
+    r"(?:</?(?:i(?:f(?:m(?:\|[a-z_]*)?)?)?)?)?$"
+)
+
+
+def strip_orphan_ifm_close(text: str) -> str:
+    """Strip standalone `</ifm|tool_calls>` or `</ifm|tool_call>` orphan close
+    tags outside code fences after a rescued stripped-opener K2-Horizon IFM batch."""
+    if not text or "ifm|" not in text.lower():
+        return text
+    masked, fence_tokens = _mask_fenced_code_blocks(text)
+    cleaned = _IFM_CALLS_CLOSE_RE.sub("", masked)
+    cleaned = _IFM_CALL_CLOSE_RE.sub("", cleaned)
+    return _unmask_fenced_code_blocks(cleaned, fence_tokens)
+
+
+def _extract_leading_identifier(segment: str) -> str:
+    s = (segment or "").lstrip(" \t\r\n>")
+    m = re.match(r"([a-z_][a-z0-9_.:-]*)", s, re.IGNORECASE)
+    return m.group(1) if m else ""
 
 
 def find_earliest_opener(text: str) -> Optional[Tuple[int, int, str]]:
     """Locate the earliest tool-call opener in ``text``.
 
     Returns ``(start, end, mode)`` where ``end`` is the index just past
-    the opener and ``mode`` is one of ``"tool_call"``, ``"unicode"``, or
-    ``"tool_use"``, or ``None`` when no opener is present.
+    the opener and ``mode`` is one of ``"tool_call"``, ``"unicode"``,
+    ``"tool_use"``, ``"ifm_calls"``, ``"ifm_call"``, or ``"ifm_stripped"``,
+    or ``None`` when no opener is present.
     """
     best: Optional[Tuple[int, int, str]] = None
-    m = _TOOL_CALL_OPEN_RE.search(text)
-    if m:
-        best = (m.start(), m.end(), "tool_call")
-    m = _GLM_UNICODE_TC_OPEN_RE.search(text)
-    if m and (best is None or m.start() < best[0]):
-        best = (m.start(), m.end(), "unicode")
-    m = _TOOL_USE_OPEN_RE.search(text)
-    if m and (best is None or m.start() < best[0]):
-        best = (m.start(), m.end(), "tool_use")
+    for rx, mode, include_opener in (
+        (_TOOL_CALL_OPEN_RE, "tool_call", False),
+        (_GLM_UNICODE_TC_OPEN_RE, "unicode", False),
+        (_TOOL_USE_OPEN_RE, "tool_use", False),
+        (_IFM_CALLS_OPEN_RE, "ifm_calls", False),
+        (_IFM_CALL_OPEN_RE, "ifm_call", False),
+        (_IFM_STRIPPED_OPEN_RE, "ifm_stripped", True),
+    ):
+        for m in rx.finditer(text):
+            if mode == "ifm_stripped":
+                cand_name = _extract_leading_identifier(m.group(0))
+                if _is_ifm_prose_stopword(cand_name):
+                    continue
+            if best is None or m.start() < best[0]:
+                end = m.start() if include_opener else m.end()
+                best = (m.start(), end, mode)
+            break
     return best
 
 
@@ -579,33 +820,81 @@ def find_block_closer(text: str, mode: str, pos: int = 0) -> Optional[Tuple[int,
     Returns ``(start, end)`` of the closer, or ``None`` if not yet present.
     ``mode`` is the opener mode returned by :func:`find_earliest_opener`.
     """
-    rx = (
-        _GLM_UNICODE_TC_CLOSE_RE if mode == "unicode"
-        else _TOOL_USE_CLOSE_RE if mode == "tool_use"
-        else _TOOL_CALL_CLOSE_RE
-    )
+    if mode == "unicode":
+        rx = _GLM_UNICODE_TC_CLOSE_RE
+    elif mode == "tool_use":
+        rx = _TOOL_USE_CLOSE_RE
+    elif mode == "ifm_calls":
+        rx = _IFM_CALLS_CLOSE_RE
+    elif mode in ("ifm_call", "ifm_stripped"):
+        rx = _IFM_CALL_CLOSE_RE
+    else:
+        rx = _TOOL_CALL_CLOSE_RE
     m = rx.search(text, pos)
     return (m.start(), m.end()) if m else None
 
 
-def parse_streamed_tool_block(inner_text: str, mode: str) -> List[Dict[str, Any]]:
+def parse_streamed_tool_block(inner_text: str, mode: str, base_index: int = 0) -> List[Dict[str, Any]]:
     """Parse a rescued block body into OpenAI tool_call dicts (possibly empty).
 
     Mirrors the dispatch in :func:`normalize_glm_tool_calls`: unicode blocks may
     contain multiple DeepSeek inner calls; tool_call ASCII blocks hold a JSON
-    or pseudo-XML payload; tool_use blocks hold ChatML <invoke>/<parameter>.
+    or pseudo-XML payload; tool_use blocks hold ChatML <invoke>/<parameter>;
+    ifm_* blocks hold K2-Horizon IFM calls.
     Fail-open: any exception yields an empty list so the caller can emit the
     raw text instead.
     """
     try:
         if mode == "unicode":
-            return _parse_unicode_tool_call_block(inner_text)
-        # tool_call and tool_use both land in the batch-aware multi parser;
-        # tool_use blocks are handled by the invoke scanner inside it.
-        return _parse_tool_call_block_multi(inner_text)
+            calls = _parse_unicode_tool_call_block(inner_text)
+        elif mode == "ifm_calls":
+            _, calls = _extract_ifm_tool_calls(inner_text, base_index=base_index, mask_fences=False)
+            return calls
+        elif mode == "ifm_call":
+            _, calls = _extract_ifm_tool_calls(
+                f"<ifm|tool_call>{inner_text}</ifm|tool_call>",
+                base_index=base_index,
+                mask_fences=False,
+            )
+            return calls
+        elif mode == "ifm_stripped":
+            _, calls = _extract_ifm_tool_calls(
+                f"{inner_text}</ifm|tool_call>",
+                base_index=base_index,
+                mask_fences=False,
+            )
+            return calls
+        else:
+            # tool_call and tool_use both land in the batch-aware multi parser;
+            # tool_use blocks are handled by the invoke scanner inside it.
+            calls = _parse_tool_call_block_multi(inner_text)
+        if base_index > 0 and calls:
+            for offset, c in enumerate(calls):
+                fn = c.get("function") if isinstance(c, dict) else None
+                if isinstance(fn, dict):
+                    c["id"] = _make_tool_call_id(
+                        base_index + offset,
+                        str(fn.get("name") or ""),
+                        str(fn.get("arguments") or "{}"),
+                    )
+        return calls
     except Exception as e:  # Fail-open, same contract as normalize_glm_tool_calls.
         print(f"[StreamToolRescue] parse failed (fail-open): {e}", flush=True)
         return []
+
+
+def _find_partial_fence_tail(text: str) -> int:
+    if not text:
+        return 0
+    nl = text.rfind("\n")
+    line_start = (nl + 1) if nl >= 0 else 0
+    tail = text[line_start:]
+    if not tail:
+        return len(text)
+    stripped = tail.lstrip(" \t\r")
+    if stripped.startswith("`") or (line_start > 0 and stripped == ""):
+        return line_start
+    return len(text)
 
 
 def find_hold_tail(text: str) -> int:
@@ -615,8 +904,138 @@ def find_hold_tail(text: str) -> int:
     Everything from the index onward could still grow into a tool-call opener
     on the next delta. Returns ``len(text)`` when nothing needs holding.
     """
+    hold = len(text)
+    m_ifm = _IFM_STRIPPED_HOLD_TAIL_RE.search(text)
+    if m_ifm:
+        span = text[m_ifm.start():]
+        if len(span) <= 96 and span.strip():
+            start = m_ifm.start() + 1 if span.startswith("\n") else m_ifm.start()
+            if start < hold:
+                hold = start
     m = _PARTIAL_OPEN_TAIL_RE.search(text)
-    return m.start() if m else len(text)
+    if m and m.start() < hold:
+        hold = m.start()
+    return hold
+
+
+class StreamTextToolRescue:
+    """Delimiter-driven streaming text-form tool-call rescue with markdown code-fence protection.
+
+    Used by BOTH:
+      - `StreamNormalizer.convert_openai_to_anthropic` (`/v1/messages` Claude Code lane)
+      - `gemini.py::openai_chunk_to_gemini` (`/v1internal:streamGenerateContent` Antigravity / Blacksand Code lane)
+    """
+
+    def __init__(self, max_hold: int = 96, max_block: int = 131072) -> None:
+        self.max_hold = max_hold
+        self.max_block = max_block
+        self.hold = ""
+        self.in_block = False
+        self.mode = ""
+        self.body_start = 0
+        self.in_code_fence = False
+        self.call_seq = 0
+
+    def push(self, delta_text: str) -> Tuple[str, List[Dict[str, Any]]]:
+        if not delta_text and not self.hold:
+            return "", []
+        self.hold += delta_text or ""
+        out_text: List[str] = []
+        out_calls: List[Dict[str, Any]] = []
+
+        while self.hold:
+            if self.in_code_fence:
+                m_close = _FENCE_LINE_CLOSE_NL_RE.search(self.hold)
+                if m_close is not None:
+                    ce = m_close.end()
+                    out_text.append(self.hold[:ce])
+                    self.hold = self.hold[ce:]
+                    self.in_code_fence = False
+                    continue
+                keep_fence = _find_partial_fence_tail(self.hold)
+                if keep_fence > 0:
+                    out_text.append(self.hold[:keep_fence])
+                    self.hold = self.hold[keep_fence:]
+                break
+
+            if not self.in_block:
+                m_fence = _FENCE_LINE_OPEN_RE.search(self.hold)
+                found = find_earliest_opener(self.hold)
+                if m_fence is not None and (found is None or m_fence.start() < found[0]):
+                    prefix = strip_orphan_ifm_close(self.hold[: m_fence.start()])
+                    if prefix:
+                        out_text.append(prefix)
+                    out_text.append(self.hold[m_fence.start() : m_fence.end()])
+                    self.hold = self.hold[m_fence.end() :]
+                    self.in_code_fence = True
+                    continue
+                if found is None:
+                    keep_from = min(find_hold_tail(self.hold), _find_partial_fence_tail(self.hold))
+                    if len(self.hold) - keep_from > self.max_hold:
+                        keep_from = len(self.hold) - self.max_hold
+                    if keep_from > 0:
+                        safe = strip_orphan_ifm_close(self.hold[:keep_from])
+                        if safe:
+                            out_text.append(safe)
+                        self.hold = self.hold[keep_from:]
+                    break
+                start, end, mode = found
+                if start > 0:
+                    safe_pre = strip_orphan_ifm_close(self.hold[:start])
+                    if safe_pre:
+                        out_text.append(safe_pre)
+                self.in_block = True
+                self.mode = mode
+                self.body_start = end - start
+                self.hold = self.hold[start:]
+                continue
+
+            closer = find_block_closer(self.hold, self.mode, pos=self.body_start)
+            if closer is None:
+                if len(self.hold) > self.max_block:
+                    out_text.append(self.hold)
+                    self.hold = ""
+                    self.in_block = False
+                break
+            cs, ce = closer
+            body = self.hold[self.body_start : cs]
+            calls = parse_streamed_tool_block(body, self.mode, base_index=self.call_seq)
+            if calls:
+                self.call_seq += len(calls)
+                out_calls.extend(calls)
+                print(
+                    f"[StreamToolRescue] extracted {len(calls)} tool_call(s) from streaming text",
+                    flush=True,
+                )
+            else:
+                out_text.append(self.hold[:ce])
+            self.hold = self.hold[ce:]
+            self.in_block = False
+            continue
+
+        return "".join(out_text), out_calls
+
+    def flush_eof(self) -> Tuple[str, List[Dict[str, Any]]]:
+        if not self.hold:
+            self.in_block = False
+            self.in_code_fence = False
+            return "", []
+        pending = self.hold
+        self.hold = ""
+        if self.in_code_fence:
+            m_close = _FENCE_LINE_CLOSE_EOF_RE.search(pending)
+            self.in_code_fence = False
+            if m_close is not None:
+                fenced = pending[: m_close.end()]
+                rest = pending[m_close.end() :]
+                if rest:
+                    t1, c1 = self.push(rest)
+                    t2, c2 = self.flush_eof()
+                    return fenced + t1 + t2, c1 + c2
+                return fenced, []
+            return pending, []
+        self.in_block = False
+        return strip_orphan_ifm_close(pending), []
 
 
 def normalize_glm_tool_calls(openai_json: Dict[str, Any], model: str = "") -> Tuple[Dict[str, Any], bool]:
@@ -653,49 +1072,62 @@ def normalize_glm_tool_calls(openai_json: Dict[str, Any], model: str = "") -> Tu
             if isinstance(existing_tc, list) and existing_tc:
                 continue
 
+            # Mask closed markdown code fences so tutorial `<tool_call>` / `<ifm|tool_call>`
+            # examples inside ```...``` blocks are never executed as real tool calls, while
+            # unmasking inside parsed tool blocks so DeepSeek inner ```json``` fences and
+            # `write_file` markdown content survive byte-for-byte.
+            masked_content, fence_tokens = _mask_fenced_code_blocks(content)
+
             # Find all <tool_call> blocks (try standard then unicode-delimiter)
-            blocks = _TOOL_CALL_RE.findall(content)
+            blocks = _TOOL_CALL_RE.findall(masked_content)
             unicode_path = False
             if not blocks:
-                blocks = _GLM_UNICODE_TC_RE.findall(content)
+                blocks = _GLM_UNICODE_TC_RE.findall(masked_content)
                 unicode_path = True
 
             # 5th dialect: ChatML <tool_use><invoke ...>...</invoke></tool_use>.
-            # GLM-5.3-flash-max (chat2api guest lane) emits tool calls in this
-            # shape; the <tool_use> wrapper is not matched by the two finders
-            # above, so without this path the whole batch was dropped. (When
-            # GLM wraps the invoke body in the standard tool_call block,
-            # _TOOL_CALL_RE above already captures it; this branch catches the
-            # bare <tool_use> wrapper that the earlier finders miss.)
             if not blocks:
-                blocks = _TOOL_USE_INVOKE_RE.findall(content)
+                blocks = _TOOL_USE_INVOKE_RE.findall(masked_content)
 
             if not blocks:
+                # 6th dialect: K2-Horizon IFM (<ifm|tool_calls> / stripped-opener)
+                cleaned_ifm, ifm_calls = _extract_ifm_tool_calls(content)
+                if ifm_calls:
+                    message["tool_calls"] = ifm_calls
+                    message["content"] = cleaned_ifm if cleaned_ifm else None
+                    modified = True
+                    print(
+                        f"[GLM-Normalize] Extracted {len(ifm_calls)} IFM tool_call(s) from "
+                        f"content for {model}",
+                        flush=True,
+                    )
                 continue
 
             parsed_calls: List[Dict[str, Any]] = []
             for block in blocks:
+                unmasked_block = _unmask_fenced_code_blocks(block, fence_tokens)
                 if unicode_path:
-                    # The unicode block may itself contain multiple DeepSeek
-                    # inner tool-call markers (parallel tool calls).
-                    parsed_calls.extend(_parse_unicode_tool_call_block(block))
+                    parsed_calls.extend(_parse_unicode_tool_call_block(unmasked_block))
                 else:
-                    # BATCH-AWARE: one ASCII block can carry the WHOLE parallel
-                    # batch (JSON array, concatenated objects, or repeated
-                    # pseudo-XML pairs). The old single-call contract reduced
-                    # such a block to 0 or 1 and -- because a JSON array failed
-                    # the isinstance(dict) check and then found no <name> --
-                    # returned None, so changed stayed False and the entire
-                    # batch vanished with no log line whatsoever.
-                    parsed_calls.extend(_parse_tool_call_block_multi(block))
+                    parsed_calls.extend(_parse_tool_call_block_multi(unmasked_block))
+            if len(parsed_calls) >= 2:
+                for idx_c, tc_item in enumerate(parsed_calls):
+                    fn_obj = tc_item.get("function") if isinstance(tc_item, dict) else None
+                    if isinstance(fn_obj, dict):
+                        tc_item["id"] = _make_tool_call_id(
+                            idx_c,
+                            str(fn_obj.get("name") or ""),
+                            str(fn_obj.get("arguments") or "{}"),
+                        )
 
             if not parsed_calls:
                 continue
 
-            # Strip the tool_call blocks from content
-            cleaned_content = _TOOL_CALL_RE.sub("", content)
+            # Strip the tool_call blocks from content (preserving fenced examples)
+            cleaned_content = _TOOL_CALL_RE.sub("", masked_content)
             cleaned_content = _GLM_UNICODE_TC_RE.sub("", cleaned_content)
             cleaned_content = _TOOL_USE_INVOKE_RE.sub("", cleaned_content)
+            cleaned_content = _unmask_fenced_code_blocks(cleaned_content, fence_tokens)
             cleaned_content = re.sub(r"\n{3,}", "\n\n", cleaned_content).strip()
 
             message["tool_calls"] = parsed_calls

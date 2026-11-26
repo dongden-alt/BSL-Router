@@ -8,7 +8,6 @@ frozen standard and returns the closest. Fail-open: any error -> no override.
 """
 import json
 import logging
-import time
 
 import httpx
 

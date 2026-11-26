@@ -15,7 +15,6 @@ class UniversalNormalizer:
         # This prevents crashes on unknown/extra fields sent by various clients
         # (e.g. OpenWebUI adds 'user', Cursor adds 'metadata', etc.)
         if isinstance(request_body, dict) and isinstance(request_body.get("tools"), list):
-            from app.compat.adapters.gemini import coerce_json_schema_numerics, bound_tool_call_id
             _clean_tools = []
             for _t in request_body["tools"]:
                 if isinstance(_t, dict) and isinstance(_t.get("function"), dict) and isinstance(_t["function"].get("parameters"), dict):
@@ -23,7 +22,6 @@ class UniversalNormalizer:
                 _clean_tools.append(_t)
             request_body = {**request_body, "tools": _clean_tools}
         if isinstance(request_body, dict) and isinstance(request_body.get("messages"), list):
-            from app.compat.adapters.gemini import bound_tool_call_id
             _clean_msgs = []
             for _m in request_body["messages"]:
                 if isinstance(_m, dict):
@@ -589,7 +587,9 @@ class UniversalNormalizer:
             "length": "max_tokens",
             "tool_calls": "tool_use",
             "function_call": "tool_use",
-            "content_filter": "end_turn",
+            "content_filter": "refusal",
+            "refusal": "refusal",
+            "safety": "refusal",
         }.get(finish, "end_turn")
 
         usage = openai_resp.get("usage", {}) or {}
@@ -665,6 +665,8 @@ class UniversalNormalizer:
             "max_tokens": "length",
             "tool_use": "tool_calls",
             "stop_sequence": "stop",
+            "refusal": "content_filter",
+            "content_filter": "content_filter",
         }.get(stop_reason, "stop")
 
         message: Dict[str, Any] = {

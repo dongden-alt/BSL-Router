@@ -39,11 +39,71 @@ _oauth_client = httpx.AsyncClient(
 _google_egress_client: httpx.AsyncClient | None = None
 
 
-def _get_google_egress_client() -> httpx.AsyncClient:
+_HTTPX_PROXY_SCHEMES = ("http://", "https://", "socks5://", "socks5h://", "socks4://", "socks4a://")
+
+
+def _resolve_oauth_proxy_url(
+    raw_proxy: str | None,
+    connection: dict[str, Any] | None = None,
+    provider_name: str = "",
+) -> str | None:
+    """Resolve unified `proxyhub://...` links and reject non-httpx proxy schemes."""
+    norm = str(raw_proxy or "").strip()
+    if not norm or norm.lower() == "direct":
+        return None
+    if norm.lower().startswith("proxyhub://"):
+        try:
+            from app.proxy_hub_bridge import resolve_unified_proxy_url
+            import app.config_state as cs
+
+            resolved = resolve_unified_proxy_url(
+                norm,
+                connection if isinstance(connection, dict) else {},
+                provider_name=provider_name,
+                config=cs.get_config() if hasattr(cs, "get_config") else None,
+            )
+            norm = str(resolved or "").strip()
+        except Exception:
+            return None
+    if not norm or norm.lower() == "direct":
+        return None
+    if not norm.lower().startswith(_HTTPX_PROXY_SCHEMES):
+        return None
+    return norm
+
+
+def _build_google_oauth_account_client(
+    proxy_url: str | None = None,
+    verify: bool = True,
+) -> httpx.AsyncClient:
+    """Build an isolated Google OAuth AsyncClient per (account, proxy) pair."""
+    norm_proxy = _resolve_oauth_proxy_url(proxy_url)
+    if norm_proxy:
+        return httpx.AsyncClient(
+            proxy=norm_proxy,
+            verify=verify,
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+            trust_env=False,
+        )
+    return build_google_egress_client()
+
+
+def _get_google_egress_client(
+    account_id: str | None = None,
+    proxy_url: str | None = None,
+) -> httpx.AsyncClient:
     """Return (and cache) the hosts-bypassing egress client for Google Cloud Code."""
     global _google_egress_client
     if _google_egress_client is not None:
         return _google_egress_client
+    if account_id is not None or proxy_url:
+        from app import oauth_antiban
+
+        return oauth_antiban.get_client_for_account(
+            str(account_id or "default"),
+            proxy_url,
+            build_client=_build_google_oauth_account_client,
+        )
     _google_egress_client = build_google_egress_client()
     return _google_egress_client
 
@@ -64,8 +124,8 @@ _KIRO_AUTH_BASE = "https://prod.us-east-1.auth.desktop.kiro.dev"
 _KIRO_REDIRECT_URI = "kiro://kiro.kiroAgent/authenticate-success"
 _GOOGLE_CODE_ASSIST_URL = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 _GOOGLE_ONBOARD_USER_URL = "https://cloudcode-pa.googleapis.com/v1internal:onboardUser"
-_ANTIGRAVITY_LOAD_CODE_ASSIST_USER_AGENT = "google-api-nodejs-client/9.15.1"
-_ANTIGRAVITY_LOAD_CODE_ASSIST_API_CLIENT = "google-cloud-sdk vscode_cloudshelleditor/0.1"
+ANTIGRAVITY_UPSTREAM_UA = "antigravity/hub/2.26.0 windows/amd64"
+
 _GROK_CLI_VERSION = os.environ.get("BSL_GROK_CLI_VERSION", "1.0.70").strip() or "1.0.70"
 _GROK_CLI_CLIENT_IDENTIFIER = "grok-shell"
 _GROK_CLI_USER_AGENT = f"grok-pager/{_GROK_CLI_VERSION} grok-shell/{_GROK_CLI_VERSION} (linux; x86_64)"
@@ -470,12 +530,12 @@ async def _exchange_google(config: dict[str, Any], code: str, redirect_uri: str,
         "client_secret": config["clientSecret"],
         "code": code,
         "redirect_uri": redirect_uri,
-    }, "Google token exchange")
+    }, "Google token exchange", {"User-Agent": ANTIGRAVITY_UPSTREAM_UA})
 
 
 def _google_metadata() -> dict[str, int]:
     # 9router maps Windows to platform code 5.
-    return {"ideType": 9, "platform": 5, "pluginType": 2}
+    return {"ideType": "ANTIGRAVITY"}
 
 
 async def _get_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
@@ -505,7 +565,7 @@ async def _onboard_antigravity(access_token: str, headers: dict[str, str], tier_
             response = await client.post(
                 _GOOGLE_ONBOARD_USER_URL,
                 headers=headers,
-                json={"tierId": tier_id, "metadata": _google_metadata()},
+                json={"tierId": tier_id, "metadata": {"ideType": "ANTIGRAVITY"}},
             )
             if response.is_success and isinstance(response.json(), dict):
                 body = response.json()
@@ -524,9 +584,9 @@ async def _post_exchange_antigravity(tokens: dict[str, Any], config: dict[str, A
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
-        "User-Agent": config["loadCodeAssistUserAgent"],
-        "X-Goog-Api-Client": config["loadCodeAssistApiClient"],
-        "Client-Metadata": config["loadCodeAssistClientMetadata"],
+        "User-Agent": str(config.get("loadCodeAssistUserAgent") or ANTIGRAVITY_UPSTREAM_UA),
+
+
     }
     user_info = await _get_json(
         f"{config['userInfoUrl']}?alt=json",
@@ -537,7 +597,7 @@ async def _post_exchange_antigravity(tokens: dict[str, Any], config: dict[str, A
     try:
         client = _get_oauth_client_for_url(config["loadCodeAssistEndpoint"])
         response = await client.post(
-            config["loadCodeAssistEndpoint"], headers=headers, json={"metadata": _google_metadata()},
+            config["loadCodeAssistEndpoint"], headers=headers, json={"metadata": {"ideType": "ANTIGRAVITY"}, "mode": 1},
         )
         if response.is_success and isinstance(response.json(), dict):
             payload = response.json()
@@ -850,8 +910,8 @@ OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
             "authorizeUrl": "https://accounts.google.com/o/oauth2/v2/auth", "tokenUrl": "https://oauth2.googleapis.com/token", "userInfoUrl": "https://www.googleapis.com/oauth2/v1/userinfo",
             "scopes": ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile", "https://www.googleapis.com/auth/cclog", "https://www.googleapis.com/auth/experimentsandconfigs"],
             "loadCodeAssistEndpoint": _GOOGLE_CODE_ASSIST_URL, "onboardUserEndpoint": _GOOGLE_ONBOARD_USER_URL,
-            "loadCodeAssistUserAgent": _ANTIGRAVITY_LOAD_CODE_ASSIST_USER_AGENT, "loadCodeAssistApiClient": _ANTIGRAVITY_LOAD_CODE_ASSIST_API_CLIENT,
-            "loadCodeAssistClientMetadata": json.dumps(_google_metadata(), separators=(",", ":")),
+            "loadCodeAssistUserAgent": ANTIGRAVITY_UPSTREAM_UA,
+
         }), "flowType": "authorization_code", "buildAuthUrl": _build_google_auth_url, "exchangeToken": _exchange_google, "postExchange": _post_exchange_antigravity, "mapTokens": _map_google,
     },
     "github": {
@@ -913,6 +973,17 @@ OAUTH_PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
         {"id": "gemini-4-carbon-medium"},
         {"id": "gemini-4-carbon-low"},
         {"id": "gemini-4-carbon"},
+        # --- Gemini 4 Neon / Hydrogen ---
+        {"id": "gemini-4-neon-xhigh"},
+        {"id": "gemini-4-neon-high"},
+        {"id": "gemini-4-neon-medium"},
+        {"id": "gemini-4-neon-low"},
+        {"id": "gemini-4-neon"},
+        {"id": "gemini-4-hydrogen-xhigh"},
+        {"id": "gemini-4-hydrogen-high"},
+        {"id": "gemini-4-hydrogen-medium"},
+        {"id": "gemini-4-hydrogen-low"},
+        {"id": "gemini-4-hydrogen"},
         # --- Gemini 4 Argon ---
         {"id": "gemini-4-argon-high"},
         {"id": "gemini-4-argon-medium"},
@@ -2367,7 +2438,91 @@ async def kiro_cliproxy_import(request: Request):
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+class _GoogleRefreshTerminalBanError(HTTPException):
+    """Raised when Google token refresh returns a terminal suspension/ToS marker."""
+
+
+_GOOGLE_REFRESH_SUSPENSION_MARKERS = (
+    "disabled",
+    "suspended",
+    "violation",
+    "terms of service",
+    "account_deactivated",
+)
+
+
+async def _google_refresh_token_account_isolated(
+    refresh_token: str,
+    config: dict[str, Any] | None = None,
+    *,
+    account_id: str | None = None,
+    proxy_url: str | None = None,
+) -> dict[str, Any]:
+    cfg = config or OAUTH_PROVIDERS["antigravity"]["config"]
+    url = cfg["tokenUrl"]
+    form_data = {
+        "grant_type": "refresh_token",
+        "client_id": cfg["clientId"],
+        "client_secret": cfg["clientSecret"],
+        "refresh_token": refresh_token,
+    }
+    req_headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "User-Agent": ANTIGRAVITY_UPSTREAM_UA,
+    }
+    if account_id is not None or proxy_url:
+        try:
+            client = _get_google_egress_client(account_id, proxy_url)
+        except TypeError:
+            client = _get_google_egress_client()
+    else:
+        client = _get_oauth_client_for_url(url)
+    try:
+        response = await client.post(url, data=form_data, headers=req_headers)
+    except httpx.HTTPError as exc:
+        print(f"[OAuth] Google token refresh request failed: {exc}", flush=True)
+        raise HTTPException(status_code=502, detail="Google token refresh request failed") from exc
+    raw_text = response.text or ""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if not response.is_success:
+        detail = _error_message(payload, f"Google token refresh failed with HTTP {response.status_code}")
+        print(f"[OAuth] Google token refresh: {detail}", flush=True)
+        lower_body = f"{raw_text} {detail}".lower()
+        if response.status_code in (400, 401, 403) and any(
+            m in lower_body for m in _GOOGLE_REFRESH_SUSPENSION_MARKERS
+        ):
+            raise _GoogleRefreshTerminalBanError(status_code=502, detail=detail)
+        raise HTTPException(status_code=502, detail=detail)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Google token refresh returned an invalid JSON response")
+    access_token = _token_value(payload, "access_token", "accessToken")
+    if not isinstance(access_token, str) or not access_token:
+        raise HTTPException(status_code=502, detail="Google token refresh returned no access token")
+    return {
+        "access_token": access_token,
+        "refresh_token": _token_value(payload, "refresh_token", "refreshToken") or refresh_token,
+        "expires_in": _token_value(payload, "expires_in", "expiresIn") or 3600,
+    }
+
+
 async def _google_refresh_token(
+    refresh_token: str,
+    config: dict[str, Any] | None = None,
+    *,
+    account_id: str | None = None,
+    proxy_url: str | None = None,
+) -> dict[str, Any]:
+    """Refresh a Google (Antigravity / Gemini CLI) OAuth2 access token."""
+    return await _google_refresh_token_account_isolated(
+        refresh_token, config, account_id=account_id, proxy_url=proxy_url
+    )
+
+
+async def _legacy_google_refresh_token_unused(
     refresh_token: str, config: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Refresh a Google (Antigravity) OAuth2 access token."""
@@ -2563,6 +2718,7 @@ async def _cursor_refresh_token(
 # Dispatch table: provider name -> refresh coroutine
 _REFRESH_DISPATCH: dict[str, Any] = {
     "antigravity": _google_refresh_token,
+    "gemini-cli": _google_refresh_token,
     "claude": _claude_refresh_token,
     "codex": _codex_refresh_token,
     "cursor": _cursor_refresh_token,
@@ -2663,6 +2819,33 @@ _refresh_locks: dict[str, asyncio.Lock] = {}
 _refresh_locks_guard = asyncio.Lock()
 _last_refresh_at: dict[str, float] = {}
 _REFRESH_MIN_INTERVAL_SECONDS = 30.0
+_google_provider_refresh_locks: dict[str, asyncio.Lock] = {}
+_google_provider_refresh_locks_guard = asyncio.Lock()
+_last_google_provider_refresh_at: dict[str, float] = {}
+_GOOGLE_PROVIDER_REFRESH_MIN_GAP_S = 5.0
+
+
+async def _google_provider_refresh_lock(provider_name: str) -> asyncio.Lock:
+    async with _google_provider_refresh_locks_guard:
+        lock = _google_provider_refresh_locks.get(provider_name)
+        if lock is None:
+            lock = asyncio.Lock()
+            _google_provider_refresh_locks[provider_name] = lock
+        return lock
+
+
+async def _pace_google_provider_refresh(provider_name: str) -> None:
+    import random
+    import time as _time_mod
+
+    now = _time_mod.monotonic()
+    last = _last_google_provider_refresh_at.get(provider_name, 0.0)
+    if last > 0.0:
+        gap = _GOOGLE_PROVIDER_REFRESH_MIN_GAP_S + random.uniform(0.0, 1.5)
+        remaining = gap - (now - last)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+    _last_google_provider_refresh_at[provider_name] = _time_mod.monotonic()
 
 
 async def _provider_refresh_lock(provider_name: str) -> asyncio.Lock:
@@ -2709,6 +2892,8 @@ async def ensure_fresh_token(
     will handle genuine failures.
     """
     stored_token = connection.get("api_key", "") or connection.get("access_token", "")
+    if isinstance(connection.get("provider_data"), dict) and connection["provider_data"].get("tos_banned") is True:
+        return stored_token
     expires_at = connection.get("expires_at")
 
     if not force and not _is_token_expired(expires_at):
@@ -2762,8 +2947,42 @@ async def ensure_fresh_token(
             oauth_entry = OAUTH_PROVIDERS.get(provider_name, {})
             refresh_config = oauth_entry.get("config", provider_config)
             try:
-                raw = await refresh_fn(refresh_token, refresh_config)
+                if provider_name in ("antigravity", "gemini-cli"):
+                    _acct_id = account_key(connection)
+                    _raw_conn_proxy = (
+                        None
+                        if connection.get("proxy_bypass") is True
+                        else (
+                            connection.get("proxy_url")
+                            or connection.get("egress_proxy")
+                            or (provider_config or {}).get("proxy_url")
+                        )
+                    )
+                    _conn_proxy = _resolve_oauth_proxy_url(
+                        _raw_conn_proxy,
+                        connection=connection,
+                        provider_name=provider_name,
+                    )
+                    async with await _google_provider_refresh_lock(provider_name):
+                        await _pace_google_provider_refresh(provider_name)
+                        try:
+                            raw = await refresh_fn(
+                                refresh_token,
+                                refresh_config,
+                                account_id=_acct_id,
+                                proxy_url=_conn_proxy,
+                            )
+                        except TypeError:
+                            raw = await refresh_fn(refresh_token, refresh_config)
+                else:
+                    raw = await refresh_fn(refresh_token, refresh_config)
             except Exception as exc:
+                if isinstance(exc, _GoogleRefreshTerminalBanError) or (
+                    provider_name in ("antigravity", "gemini-cli")
+                    and isinstance(exc, HTTPException)
+                    and any(m in str(getattr(exc, "detail", "")).lower() for m in _GOOGLE_REFRESH_SUSPENSION_MARKERS)
+                ):
+                    connection.setdefault("provider_data", {})["tos_banned"] = True
                 print(f"[OAuth] {provider_name} token refresh failed: {type(exc).__name__}", flush=True)
                 return stored_token
 

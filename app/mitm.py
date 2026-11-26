@@ -816,10 +816,8 @@ class BSLRouterMitm:
         HTTP/2 frontend routes to the right backend.
         """
         try:
-            server = tls_start.conn
-            addr = getattr(server, "address", None) or getattr(getattr(tls_start.context, "server", None), "address", None)
-
             # Real Google IP — restore client SNI so Google routes correctly.
+            server = tls_start.conn
             client = tls_start.context.client
             client_sni = getattr(client, "sni", None)
             if client_sni and (server.sni is None or _is_ip(str(server.sni))):

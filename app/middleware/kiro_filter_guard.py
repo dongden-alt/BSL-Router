@@ -32,7 +32,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-DEFAULT_FILTER_PROVIDERS: Tuple[str, ...] = ("nguyenha", "kiro")
+DEFAULT_FILTER_PROVIDERS: Tuple[str, ...] = ("nguyenha", "kiro", "pix4k")
 # Live NIAH probes (2026-11-02) against nguyenha/claude-opus-5-5 verified a true 1M context window
 # (502,437 tokens in 28.4s TTFT on Pass 1; 900,207 tokens in 55s on Pass 2 after Cloudflare 100s timeout).
 # Default safety budget is set to 550,000 input tokens so single-pass TTFT stays ~30s under Cloudflare's 100s cap.
@@ -40,9 +40,10 @@ DEFAULT_KIRO_MAX_INPUT_TOKENS = 550000
 DEFAULT_MAX_INPUT_TOKENS_BY_PROVIDER: Dict[str, int] = {
     "nguyenha": DEFAULT_KIRO_MAX_INPUT_TOKENS,
     "kiro": DEFAULT_KIRO_MAX_INPUT_TOKENS,
+    "pix4k": 160000,
 }
 BUDGET_MARKER = "[BSL CONTEXT BUDGET GUARD]"
-_KIRO_HOST_MARKERS = ("kiro.dev", "codewhisperer.", "q.us-east-1.amazonaws.com")
+_KIRO_HOST_MARKERS = ("kiro.", "kiro.dev", "pix4k", "codewhisperer.", "q.us-east-1.amazonaws.com")
 _LEARNED_KIRO_TARGETS: Set[Tuple[str, str]] = set()
 
 # Built from escapes so this file never contains a literal trigger tag.

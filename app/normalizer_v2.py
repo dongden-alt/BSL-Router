@@ -687,7 +687,6 @@ def _egress_responses(canonical: CanonicalRequest, ctx: Optional[Dict[str, Any]]
             if ptype == "tool_use":
                 raw = part.get("raw_arguments")
                 args_str = raw if raw is not None else json.dumps(part.get("arguments") or {})
-                from app.compat.adapters.gemini import bound_tool_call_id
                 input_items.append({"type": "function_call", "call_id": bound_tool_call_id(part.get("id")),
                                     "name": part.get("name"), "arguments": args_str})
             elif ptype == "tool_result":

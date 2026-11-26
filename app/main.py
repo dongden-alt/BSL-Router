@@ -65,7 +65,7 @@ from app.oauth import (
 from app.utils.google_cloudcode_egress import build_google_egress_client, rotate_google_ip_cache
 from app.compat.adapters import antigravity_upstream as _ag_upstream_contract
 # The unified App Integration targets the current Desktop Cloud Code identity.
-_ag_upstream_contract.ANTIGRAVITY_UPSTREAM_UA = "antigravity/hub/2.24.0 windows/amd64"
+_ag_upstream_contract.ANTIGRAVITY_UPSTREAM_UA = "antigravity/hub/2.26.0 windows/amd64"
 from app.normalizer import UniversalNormalizer
 from app.middleware.caching import PromptCachingAdapter, pick_warmest_connection, propagate_prompt_cache_key, record_cache_warmth
 from app.scouts.vision import polyfill_vision, VisionPolyfillFailed
@@ -163,6 +163,23 @@ from app.middleware.fel_wiring import (  # local alias — visible-text extracto
     response_visible_text as fel_response_visible_text,
 )
 from app.middleware.fel_wiring import fel_stream_final  # stream final-assembly log
+from app.middleware.refusal_guard import (
+    PRECOMMIT_POST_BANNER_MIN_CLEAN_CHARS,
+    PRECOMMIT_REFUSAL_CHAR_WINDOW,
+    StreamRefusalPreCommitBuffer,
+    apply_pass2_prompt_cache_isolation,
+    body_has_hard_harm,
+    detect_refusal_in_response_json,
+    detect_upstream_refusal,
+    extract_post_banner_body,
+    is_hard_harm_refusal,
+    is_http_or_sse_classifier_refusal,
+    is_precommit_hold_expired,
+    is_recoverable_cyber_policy_error,
+    messages_have_recent_refusal,
+    reproject_exchange_for_same_model_acceptance,
+    should_hold_precommit_body,
+)
 from app.middleware.response_guard import (  # provider-injection guard (default OFF — tools.response_guard)
     resolve_guard,
     classify_injection,
@@ -519,6 +536,18 @@ GEMINI_EGRESS_KEEPALIVE_INTERVAL = 2.0
 # the existing terminal / zero-token / combo-fallback handling runs and the
 # response closes cleanly. Tests monkeypatch it down to avoid long sleeps.
 GEMINI_EGRESS_MAX_IDLE = 300.0
+# F9 (2026-11-21): upper bound on how long the Gemini egress pre-commit refusal
+# buffer may WITHHOLD already-parsed body content while it stays below its
+# 420-char window. Without this, a legitimate SHORT answer ("Hello") is held for
+# the entire upstream reasoning gap until EOF, so the IDE sees heartbeat and
+# keepalive comments and then an empty pane -- observed live as the early-turn
+# freeze. The hold is a refusal-detection optimisation, not a contract, so it may
+# never outlive a normal client think-time. On expiry the held frames are
+# released verbatim in their original order (see the drain loop), so no content
+# no content is lost and no reordering occurs. 1.5s sits well above any observed
+# inter-token gap inside a refusal opening phrase (<0.4s) while releasing short
+# answers ("Hello", "Yes") on the very first keepalive tick instead of freezing 8s.
+GEMINI_PRECOMMIT_HOLD_TIMEOUT_S = 1.5
 # BUG N (2026-08-13): max bytes of pre-content reasoning held by the Gemini
 # egress pre-render buffer. Past this cap the buffer flushes and commits the
 # stream (a reasoning pane that large is no longer safe to replay silently
@@ -899,6 +928,12 @@ def _wrap_egress_stream(
     return _guard_observe_stream(s, model=model, provider=provider)
 
 
+def _is_empty_output_exempt(model_name: Any) -> bool:
+    """Tab-completion models legitimately return empty deltas when no inline completion applies."""
+    m = str(model_name or "").strip().lower()
+    return m.startswith(("tab_", "tab-"))
+
+
 _RECOVERABLE = {400, 401, 403, 404, 405, 408, 409, 413, 422, 429, 500, 502, 503, 504, 524, 525, 526}  # HTTP status codes that trigger combo/chain advance
 
 # TERMINAL RELAY WALLS (2026-09-24): `upstream_safety_blocked`
@@ -1018,7 +1053,7 @@ def _is_terminal_relay_wall(status_code, err_text) -> bool:
     try:
         if not err_text:
             return False
-        if _is_recoverable_content_filter_400(status_code, err_text):
+        if _is_recoverable_content_filter_400(status_code, err_text) or is_recoverable_cyber_policy_error(status_code, err_text):
             return False
         _low = err_text.lower() if isinstance(err_text, str) else str(err_text).lower()
         if not _low:
@@ -1038,23 +1073,34 @@ def _is_terminal_relay_wall(status_code, err_text) -> bool:
 
 
 def _is_unrecoverable_payload_400(status_code, err_text) -> bool:
-    """True when a 400 error body indicates a deterministic request-payload or
-    schema validation defect (`string_above_max_length`, `invalid schema for function`,
-    `invalid_function_parameters`, `context_length_exceeded`) so never-stop pass-2+
-    wrapping does not resend the identical rejected payload forever."""
+    """True when an upstream error body indicates a deterministic request-payload,
+    schema, billing, or signed-out session defect so never-stop pass-2+ wrapping
+    does not resend the identical rejected payload forever."""
     try:
-        if status_code != 400 or not err_text:
+        if not err_text:
             return False
-        if _is_recoverable_content_filter_400(status_code, err_text):
-            return False
+        _sc = int(status_code or 0)
         _low = err_text.lower() if isinstance(err_text, str) else str(err_text).lower()
-        return any(m in _low for m in (
-            "string_above_max_length",
-            "invalid schema for function",
-            "invalid_function_parameters",
-            "context_length_exceeded",
-            "maximum context length",
-        ))
+        if _sc == 400:
+            if _is_recoverable_content_filter_400(status_code, err_text):
+                return False
+            if any(m in _low for m in (
+                "string_above_max_length",
+                "invalid schema for function",
+                "invalid_function_parameters",
+                "context_length_exceeded",
+                "maximum context length",
+                "requires responses for tool calls",
+            )):
+                return True
+        if _sc in (402, 403) and any(m in _low for m in (
+            "rq_vnd_unpriced",
+            "rq_vnd_insufficient",
+        )):
+            return True
+        if _sc == 502 and "session_unavailable" in _low:
+            return True
+        return False
     except Exception:
         return False
 
@@ -1139,14 +1185,17 @@ def _response_has_model_output(data: dict, out_tokens: int = 0) -> bool:
                 return True
             if message.get("tool_calls") or message.get("function_call"):
                 return True
+            if message.get("refusal") or str(choice.get("finish_reason") or "").lower() in ("refusal", "content_filter"):
+                return True
             # Reasoning-first starvation: budget consumed by thinking tokens
             # before any visible content (finish_reason="length"). Tokens were
             # spent, so this is live model output — NOT a zombie. Gated on
-            # out_tokens > 0: a reasoning field with zero usage is indistinguishable
-            # from a dead upstream and still falls through to zombie fallback.
+            # out_tokens > 0 and finish_reason == "length": a stop/aborted turn
+            # with reasoning only and empty content/tool_calls must fall back.
             _reasoning = message.get("reasoning_content") or message.get("reasoning")
             if (
                 out_tokens > 0
+                and str(choice.get("finish_reason") or "").strip().lower() == "length"
                 and isinstance(_reasoning, str)
                 and _reasoning.strip()
             ):
@@ -1154,9 +1203,14 @@ def _response_has_model_output(data: dict, out_tokens: int = 0) -> bool:
         # Choices existed but all content fields were empty — zombie response
         return False
     # Anthropic format: content[].text at top level (not inside choices)
+    if str(data.get("stop_reason") or "").lower() == "refusal":
+        return True
+    if isinstance(data.get("stop_details"), dict) and str(data["stop_details"].get("type") or "").lower() == "refusal":
+        return True
     anthropic_content = data.get("content")
     has_anthropic_content = anthropic_content is not None
     if isinstance(anthropic_content, list) and anthropic_content:
+        _anth_stop = str(data.get("stop_reason") or "").strip().lower()
         for block in anthropic_content:
             if isinstance(block, dict):
                 if block.get("type") == "text" and (block.get("text") or "").strip():
@@ -1166,6 +1220,7 @@ def _response_has_model_output(data: dict, out_tokens: int = 0) -> bool:
                 if (
                     block.get("type") == "thinking"
                     and out_tokens > 0
+                    and _anth_stop in ("max_tokens", "length")
                     and (block.get("thinking") or "").strip()
                 ):
                     return True
@@ -1726,6 +1781,10 @@ ANTIGRAVITY_INTEGRATION_SLOTS = (
     "gemini-4-carbon-low",
     "gemini-4-carbon-medium",
     "gemini-4-carbon-high",
+    "gemini-4-neon-low",
+    "gemini-4-neon-medium",
+    "gemini-4-neon-high",
+    "gemini-4-neon-xhigh",
     "gemini-2.5-pro",
 )
 _ANTIGRAVITY_INTEGRATION_SLOT_SET = frozenset(ANTIGRAVITY_INTEGRATION_SLOTS)
@@ -2011,7 +2070,24 @@ def _validate_antigravity_integration_config(config_data: dict) -> dict:
         config_data["antigravity_integration"]["quota_saver"] = qs_validated
         if "pytest" not in _sys.modules:
             _sync_persistent_quota_saver_state(qs_validated)
+    if "ls_components" in integration:
+        config_data["antigravity_integration"]["ls_components"] = _validate_ls_components_config(integration["ls_components"])
     return config_data
+
+
+from app.ls_components import (
+    DEFAULT_ANTIGRAVITY_LS_COMPONENTS as _DEFAULT_ANTIGRAVITY_LS_COMPONENTS,
+    apply_ls_components_to_anthropic_body as _apply_ls_components_to_anthropic_body,
+    apply_ls_components_to_gemini_inner as _apply_ls_components_to_gemini_inner,
+    apply_ls_components_to_raw_v1internal as _apply_ls_components_to_raw_v1internal,
+    detect_ls_components_environment as _detect_ls_components_environment,
+    filter_list_experiments_bytes as _filter_list_experiments_bytes,
+    get_ls_components_from_config as _get_ls_components_from_config,
+    requires_experiment_filtering as _requires_experiment_filtering,
+    sync_antigravity_hooks_file as _sync_antigravity_hooks_file,
+    sync_claude_code_hooks_file as _sync_claude_code_hooks_file,
+    validate_ls_components_config as _validate_ls_components_config,
+)
 
 
 from pathlib import Path as _QSPath
@@ -2045,11 +2121,17 @@ def _validate_antigravity_quota_saver_config(config_data: dict, raw_qs) -> dict:
     mode = str(raw_qs.get("mode", "native_first") or "native_first").strip().lower()
     if mode not in ("native_first", "external_first", "native_only"):
         mode = "native_first"
+    _neon_qs_models = (
+        "gemini-4-neon-low",
+        "gemini-4-neon-medium",
+        "gemini-4-neon-high",
+        "gemini-4-neon-xhigh",
+    )
     fast_native_model = str(raw_qs.get("fast_native_model", "gemini-4-hydrogen-low") or "gemini-4-hydrogen-low").strip()
-    if fast_native_model not in ("gemini-4-hydrogen-low", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-high", "gemini-3-flash", "gemini-2.5-flash"):
+    if fast_native_model not in (*_neon_qs_models, "gemini-4-hydrogen-low", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-high", "gemini-4-hydrogen-xhigh", "gemini-3-flash", "gemini-2.5-flash"):
         fast_native_model = "gemini-4-hydrogen-low"
     routine_native_model = str(raw_qs.get("routine_native_model", "gemini-4-hydrogen-medium") or "gemini-4-hydrogen-medium").strip()
-    if routine_native_model not in ("gemini-4-hydrogen-medium", "gemini-4-hydrogen-high", "gemini-4-hydrogen-low", "gemini-4-hydrogen-xhigh", "gemini-3-flash", "gemini-2.5-flash"):
+    if routine_native_model not in (*_neon_qs_models, "gemini-4-hydrogen-medium", "gemini-4-hydrogen-high", "gemini-4-hydrogen-low", "gemini-4-hydrogen-xhigh", "gemini-3-flash", "gemini-2.5-flash"):
         routine_native_model = "gemini-4-hydrogen-medium"
     offload_subagents = bool(raw_qs.get("offload_subagents", True))
     offload_tool_followups = bool(raw_qs.get("offload_tool_followups", False))
@@ -2129,7 +2211,7 @@ def _sync_persistent_quota_saver_state(qs_cfg: dict) -> dict:
 
 
 _CLAUDE_SETTINGS_PATH = None
-_AG_RESERVED_INDICES = {16,18,19,20,21,26,28,35,36,37,50,71,72,73,84,187,198,318,319,320,322,417,418,419,427,437,438,525,526,527,528}
+_AG_RESERVED_INDICES = {16,18,19,20,21,26,28,35,36,37,50,71,72,73,84,187,198,318,319,320,322,417,418,419,427,437,438,525,526,527,528,531,532,533,534,535}
 
 
 def _validate_app_custom_models(config_data, entries, claude=False):
@@ -2823,6 +2905,7 @@ async def _forward_antigravity_native(request: Request, is_stream: bool, raw_bod
     except (ValueError, TypeError, AttributeError):
         _native_model = ""
     _record_native_ide_inference(request, _native_model)
+    raw_body = _apply_ls_components_to_raw_v1internal(raw_body, _get_ls_components_from_config(cs_get_config()))
     raw_body, _ag_fel_model, _ag_fel_on = _apply_fel_to_antigravity_native_body(request, raw_body)
     # ERE-R5 (2026-10-30): the native passthrough MUST also guard the trailing
     # role.  Without this, every conversation whose last content is a model turn
@@ -3055,6 +3138,8 @@ def _resolve_namespaced_model(model: str):
     # Pass 2: explicit-namespace prefix (not for implicit provider-key
     # namespaces, to avoid misrouting bare slashed ids to same-named providers).
     for prov_id, prov_data in config.get("providers", {}).items():
+        if prov_data.get("hidden"):
+            continue
         ns, explicit = _provider_namespace_info(prov_id)
         if explicit and model.startswith(f"{ns}/"):
             return prov_id, model[len(ns) + 1:]
@@ -3168,12 +3253,12 @@ def _build_hardened_client(proxy_url: Optional[str] = None, verify: bool = True)
         limits=limits,
         proxy=proxy_url,
         socket_options=_tcp_keepalive_options(),
+        verify=verify,
     )
     return httpx.AsyncClient(
         timeout=_UPSTREAM_TIMEOUT,
         transport=transport,
         event_hooks={"response": [_conn_trace_hook]},
-        verify=verify,
     )
 
 
@@ -7129,7 +7214,14 @@ async def _test_antigravity_model(provider: str, model: str):
             "temperature": 0,
             "stream": False,
         }
-        resp = await _process_chat_completion(probe_body)
+        try:
+            resp = await asyncio.wait_for(_process_chat_completion(probe_body), timeout=45.0)
+        except asyncio.TimeoutError:
+            _t1 = time.time()
+            detail = "Probe timed out after 45s"
+            obs.log_request(provider, model, 504, _t1 - _t0, 0, 0, 0, config,
+                            error_msg=detail, request_id=_req_id)
+            return JSONResponse({"ok": False, "status": 504, "error": detail}, status_code=504)
         status = getattr(resp, "status_code", 200)
         _t1 = time.time()
 
@@ -9055,6 +9147,19 @@ def _usage_from_sse_data(data_json) -> Optional[dict]:
     """
     if not isinstance(data_json, dict):
         return None
+    if data_json.get("type") == "message_start":
+        _ms_msg = data_json.get("message")
+        _ms_u = _ms_msg.get("usage") if isinstance(_ms_msg, dict) else None
+        if isinstance(_ms_u, dict):
+            # Anthropic/Kiro `message_start` carries a placeholder `output_tokens: 1`
+            # before any model token is generated. Strip placeholder output_tokens
+            # here so stats["out"] stays 0 and stats["stream_completed"] stays False
+            # until real output or message_delta arrives (preserving 499 disconnect
+            # attribution, pre-content transport failover, and _backfill_missing_usage).
+            _clean_ms_u = dict(_ms_u)
+            _clean_ms_u.pop("output_tokens", None)
+            _clean_ms_u.pop("completion_tokens", None)
+            return _clean_ms_u
     for _container in (data_json, data_json.get("message"), data_json.get("response")):
         if isinstance(_container, dict):
             _u = _container.get("usage") or _container.get("usageMetadata")
@@ -9264,6 +9369,10 @@ async def _accumulate_sse_stream(
     _request=None,
     _label: str = "buf",
     _thinking_info=None,
+    _pre_content_idle_s: float = 0.0,
+    _post_block_ping_idle_s: float = 0.0,
+    _tools_in_request: bool = False,
+    _tool_choice_required: bool = False,
 ):
     """Shared SSE accumulator (module-level so integration tests bind to the REAL
     production parser — eliminating mirror drift). Drains an SSE stream to [DONE],
@@ -9286,25 +9395,55 @@ async def _accumulate_sse_stream(
     try:
         _aiter = _sse_resp.aiter_bytes().__aiter__()
         _a_start = time.time()
+        _a_mono_start = time.monotonic()
         _a_seen_real_data = False
-        # 9ROUTER PARITY (2026-08-04): the TTFT ceiling and stall timer that used
-        # to live here are DELETED, matching `_stall_watchdog`.
-        #
-        # THIS WAS A LANDMINE. The old code read its budgets from
-        # STREAM_TTFT_TIMEOUT_DEFAULT / STREAM_STALL_TIMEOUT_DEFAULT. Once those
-        # became 0.0, `elapsed >= _ttft_ceiling` was true on the FIRST iteration,
-        # so every single request would have failed instantly with a bogus
-        # "TTFT timeout (0.0s)". Setting a constant to 0 is not the same as
-        # removing the logic that consumes it — the consumer must go too.
-        #
-        # A silent upstream is now simply awaited, exactly as 9router does.
-        # Genuine failures still raise (RemoteProtocolError, ReadError, reset)
-        # and are handled by the existing except blocks below.
+        _a_blk_types: dict[int, str] = {}
+        _a_deliverable_closed_at: float | None = None
+        _a_saw_tool_use = False
+
+        def _eff_acc_post_idle() -> float:
+            if _post_block_ping_idle_s <= 0.0:
+                return 0.0
+            if _tool_choice_required and not _a_saw_tool_use:
+                return 0.0
+            if _tools_in_request and not _a_saw_tool_use:
+                return max(_post_block_ping_idle_s, 60.0)
+            if _a_saw_tool_use:
+                return max(_post_block_ping_idle_s, 30.0)
+            return _post_block_ping_idle_s
+
         _sse_byte_buf = b""
         _sse_eof = False
         while not _sse_eof:
+            _eff_post_s = _eff_acc_post_idle() if _a_deliverable_closed_at is not None else 0.0
+            _read_to_s = 0.0
+            if _eff_post_s > 0.0 and _a_deliverable_closed_at is not None:
+                _read_to_s = max(0.05, _eff_post_s - (time.monotonic() - _a_deliverable_closed_at))
+            elif _pre_content_idle_s > 0.0 and not _a_seen_real_data:
+                _read_to_s = max(0.05, _pre_content_idle_s - (time.monotonic() - _a_mono_start))
             try:
-                _raw = await _aiter.__anext__()
+                if _read_to_s > 0.0:
+                    _nxt_t = asyncio.ensure_future(_aiter.__anext__())
+                    _dn, _ = await asyncio.wait({_nxt_t}, timeout=_read_to_s)
+                    if not _dn:
+                        _nxt_t.cancel()
+                        try:
+                            await _nxt_t
+                        except BaseException:
+                            pass
+                        if _eff_post_s > 0.0 and _a_deliverable_closed_at is not None:
+                            print(
+                                f"[StreamBuffer:{_label}] {_target_model}: post-block tail exceeded "
+                                f"{_eff_post_s:.0f}s — finalizing cleanly",
+                                flush=True,
+                            )
+                            _a_fr = _a_fr or ("tool_calls" if _a_saw_tool_use else "stop")
+                            break
+                        _a_err = f"pre_content_idle_timeout ({_pre_content_idle_s:.0f}s)"
+                        break
+                    _raw = _nxt_t.result()
+                else:
+                    _raw = await _aiter.__anext__()
                 _sse_byte_buf += _raw
                 if b"\n" not in _sse_byte_buf:
                     continue
@@ -9415,8 +9554,13 @@ async def _accumulate_sse_stream(
                                 _li = max(_a_tc.keys())
                                 _a_tc[_li]["function"]["arguments"] += _pj
                         if _et == "content_block_start":
+                            _a_deliverable_closed_at = None
                             _blk = _as_obj(_ev.get("content_block"))
+                            _bidx = _ev.get("index")
+                            if isinstance(_bidx, int):
+                                _a_blk_types[_bidx] = str(_blk.get("type") or "")
                             if _blk.get("type") == "tool_use":
+                                _a_saw_tool_use = True
                                 _a_tc[len(_a_tc)] = {
                                     "id": _blk.get("id", "") or "",
                                     "type": "function",
@@ -9425,7 +9569,38 @@ async def _accumulate_sse_stream(
                                         "arguments": "",
                                     },
                                 }
+                        elif _et == "content_block_stop":
+                            _sidx = _ev.get("index")
+                            _stp = _a_blk_types.get(_sidx, "") if isinstance(_sidx, int) else ""
+                            if _stp in ("text", "tool_use"):
+                                _a_deliverable_closed_at = time.monotonic()
+                        elif _et in ("content_block_delta",):
+                            _a_deliverable_closed_at = None
+                        elif _et == "ping":
+                            _eff_p = _eff_acc_post_idle()
+                            if (
+                                _eff_p > 0.0
+                                and _a_deliverable_closed_at is not None
+                                and (time.monotonic() - _a_deliverable_closed_at) >= _eff_p
+                            ):
+                                _a_fr = _a_fr or ("tool_calls" if _a_saw_tool_use else "stop")
+                                _sse_eof = True
+                                break
+                            if (
+                                _pre_content_idle_s > 0.0
+                                and not _a_seen_real_data
+                                and (time.monotonic() - _a_mono_start) >= _pre_content_idle_s
+                            ):
+                                _a_err = f"pre_content_idle_timeout ({_pre_content_idle_s:.0f}s)"
+                                _sse_eof = True
+                                break
+                        elif _et in ("error", "response.failed"):
+                            _err_o = _as_obj(_ev.get("error"))
+                            _a_err = str(_err_o.get("message") or _ev.get("message") or "upstream_sse_error")
+                            _sse_eof = True
+                            break
                         elif _et == "message_delta":
+                            _a_deliverable_closed_at = None
                             _do = _as_obj(_ev.get("delta"))
                             if _do.get("stop_reason"):
                                 _srm = {
@@ -9447,7 +9622,12 @@ async def _accumulate_sse_stream(
                             _mid = _msg_meta.get("id")
                             if isinstance(_mid, str) and _mid.strip():
                                 _a_rid = _mid.strip()
-                            _uu = _as_obj(_msg_meta.get("usage"))
+                            _uu_raw = _as_obj(_msg_meta.get("usage"))
+                            _uu = {
+                                _uk: _uv
+                                for _uk, _uv in _uu_raw.items()
+                                if _uk not in ("output_tokens", "completion_tokens")
+                            } if _uu_raw else {}
                             if _uu:
                                 _merge_usage_into_stats(_a_stats, _uu)
                                 _a_in = _a_stats["in"]
@@ -9647,6 +9827,9 @@ class _ComboFallbackNeeded(Exception):
         super().__init__(err_text)
 
 
+DEFAULT_COMBO_MAX_RETRY_PASSES = 5
+
+
 def _combo_infinite_retry_enabled(config: dict) -> bool:
     """settings.combo_infinite_retry — default True (2026-08-24 directive: never force stop)."""
     try:
@@ -9656,8 +9839,633 @@ def _combo_infinite_retry_enabled(config: dict) -> bool:
         return True
 
 
+def _combo_max_retry_passes(config: dict) -> int:
+    """settings.combo_max_retry_passes — bounded auto-cancellation ceiling on consecutive failed passes.
+
+    Defaults to ``DEFAULT_COMBO_MAX_RETRY_PASSES`` (5). Setting ``0`` or negative explicitly
+    disables the cap (unbounded passes).
+    """
+    try:
+        raw = (config.get("settings") or {}).get("combo_max_retry_passes", DEFAULT_COMBO_MAX_RETRY_PASSES)
+        if raw is None:
+            return DEFAULT_COMBO_MAX_RETRY_PASSES
+        return int(raw)
+    except Exception:
+        return DEFAULT_COMBO_MAX_RETRY_PASSES
+
+
+OUTAGE_FALLBACK_MAX_TOKENS = 16384
+KIRO_POST_BLOCK_PING_IDLE_S = 15.0
+KIRO_PRE_CONTENT_PING_IDLE_S = 90.0
+KIRO_PRE_CONTENT_PING_IDLE_LARGE_S = 150.0
+KIRO_PRE_CONTENT_LARGE_PROMPT_CHARS = 200_000
+DRAIN_CLEANUP_TIMEOUT_S = 2.0
+_OUTAGE_FALLBACK_EXCLUDED_PROVIDERS = frozenset({
+    "antigravity",
+    "gemini-cli",
+    "codex",
+    "bslforge",
+    "chat2api",
+})
+_KIRO_SINGLE_KEY_LOCKS: dict[str, asyncio.Semaphore] = {}
+
+
+_OUTAGE_STALL_WORD_RE = re.compile(r"\bstall(?:ed|ing|s)?\b", re.IGNORECASE)
+
+
+def _safe_int(val: Any, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        try:
+            return int(float(str(val).strip()))
+        except (TypeError, ValueError):
+            return default
+
+
+def _is_tool_choice_required(tool_choice: Any) -> bool:
+    if isinstance(tool_choice, str):
+        return tool_choice.strip().lower() in ("required", "any")
+    if isinstance(tool_choice, dict):
+        return str(tool_choice.get("type") or "").strip().lower() in ("any", "tool", "function", "required")
+    return False
+
+
+def _propagate_retry_state(prev_state: Any, next_state: Any) -> dict:
+    """Carry pass-level metadata (`pass_no`, `fallback_max_tokens`, `orig_request_id`,
+    `clean_body`) across in-pass chain advances so multi-leaf combos and sibling
+    key failovers never reset `pass_no` back to 1 or lose `fallback_max_tokens`."""
+    if not isinstance(next_state, dict):
+        return next_state
+    if not isinstance(prev_state, dict):
+        return next_state
+    if prev_state.get("pass_no") is not None:
+        next_state.setdefault("pass_no", _safe_int(prev_state.get("pass_no"), 1))
+    if prev_state.get("fallback_max_tokens"):
+        next_state.setdefault("fallback_max_tokens", _safe_int(prev_state.get("fallback_max_tokens"), 0))
+    if prev_state.get("orig_request_id"):
+        next_state.setdefault("orig_request_id", prev_state["orig_request_id"])
+    if isinstance(prev_state.get("clean_body"), dict):
+        next_state.setdefault("clean_body", prev_state["clean_body"])
+    return next_state
+
+
+def _build_next_retry_state(
+    prev_state: Any,
+    chain: Any,
+    idx: int,
+    cache_bp: Any,
+    original_model: Any,
+    deadline: Any,
+) -> dict:
+    """Build the next combo retry_state dict while preserving pass_no and lineage."""
+    return _propagate_retry_state(
+        prev_state,
+        {
+            "chain": chain,
+            "idx": idx,
+            "cache_bp": cache_bp,
+            "original_model": original_model,
+            "deadline": deadline,
+        },
+    )
+
+
+def _is_outage_max_tokens_fallback_trigger(status_code: Any, err_text: Any) -> bool:
+    """Return True only when a pre-emission failure indicates Cloudflare/upstream
+    timeout, overload, or buffered empty-answer outage where a request-scoped
+    16384 max_tokens retry can succeed (never for 4xx auth/quota/schema errors)."""
+    sc = _safe_int(status_code, 0)
+    low = str(err_text or "").lower()
+    if any(
+        bad in low
+        for bad in (
+            "invalid api key",
+            "expired_api_key",
+            "insufficient",
+            "quota_exhausted",
+            "xác thực telegram",
+            "no active merchant",
+            "没有活跃候选",
+            "model_not_found",
+            "does not exist",
+        )
+    ):
+        return False
+    if sc in (504, 520, 521, 522, 523, 524, 525, 526, 529, 530):
+        return True
+    if sc not in (500, 502, 503):
+        return False
+    if _OUTAGE_STALL_WORD_RE.search(low) or any(
+        s in low for s in ("ttft_stall", "stream_stall", "deadline_stall", "zero_output_tokens", "thought_only_or_zero_body_output")
+    ):
+        return True
+    _explicit_markers = (
+        "<!doctype html",
+        "cloudflare",
+        "cf-ray",
+        "error code 502",
+        "error code 503",
+        "error code 504",
+        "error code 52",
+        "returned no answer",
+        "modelstreamerrorexception",
+        "timeout",
+        "timed out",
+        "midstream_transport",
+        "peer closed connection",
+        "incomplete chunked read",
+        "server disconnected",
+        "overloaded",
+    )
+    if any(marker in low for marker in _explicit_markers):
+        return True
+    if sc in (502, 503):
+        stripped = low.strip()
+        if not stripped or stripped in ("upstream_502", "upstream_503") or any(
+            g in stripped for g in ("bad gateway", "service unavailable", "temporarily unavailable", "gateway timeout")
+        ):
+            return True
+    return False
+
+
+def _apply_request_scoped_fallback_max_tokens(
+    upstream_payload: dict,
+    provider_name: Any,
+    retry_state: Any,
+    *,
+    model_max_output_tokens: int = 0,
+    wire_format: str = "",
+) -> Optional[int]:
+    """Apply ephemeral request-scoped `fallback_max_tokens` (e.g. 16384) on a
+    Pass 2+ retry across all 5 active token-limit shapes (`max_tokens`,
+    `max_completion_tokens`, Responses `max_output_tokens`, Gemini
+    `generationConfig.maxOutputTokens`, and Kiro `inferenceConfig.maxTokens`),
+    while preserving `thinking: max` and Anthropic's `max_tokens > budget_tokens`
+    invariant. Never mutates config; next fresh request resets to default."""
+    if not isinstance(upstream_payload, dict) or not isinstance(retry_state, dict):
+        return None
+    fb_mt = _safe_int(retry_state.get("fallback_max_tokens"), 0)
+    if fb_mt <= 0:
+        return None
+    prov_l = str(provider_name or "").strip().lower()
+    if prov_l in _OUTAGE_FALLBACK_EXCLUDED_PROVIDERS:
+        return None
+
+    fmt_l = str(wire_format or "").strip().lower()
+    is_kiro_ic = (
+        isinstance(upstream_payload.get("inferenceConfig"), dict)
+        and "maxTokens" in upstream_payload["inferenceConfig"]
+    )
+    is_gemini_gc = isinstance(upstream_payload.get("generationConfig"), dict) and (
+        "maxOutputTokens" in upstream_payload["generationConfig"] or fmt_l == "gemini"
+    )
+    is_responses = (
+        ("input" in upstream_payload and "messages" not in upstream_payload)
+        or ("max_output_tokens" in upstream_payload and "messages" not in upstream_payload)
+        or fmt_l == "openai-responses"
+    )
+    has_mct = "max_completion_tokens" in upstream_payload and upstream_payload.get("max_completion_tokens") is not None
+    has_mt = "max_tokens" in upstream_payload and upstream_payload.get("max_tokens") is not None
+
+    if is_kiro_ic:
+        cur_mt = _safe_int(upstream_payload["inferenceConfig"].get("maxTokens"), 0)
+        thinking = upstream_payload["inferenceConfig"].get("thinking")
+    elif is_gemini_gc:
+        cur_mt = _safe_int(
+            upstream_payload["generationConfig"].get("maxOutputTokens")
+            or upstream_payload.get("max_tokens"),
+            0,
+        )
+        thinking = upstream_payload.get("thinking")
+    elif is_responses:
+        cur_mt = _safe_int(
+            upstream_payload.get("max_output_tokens")
+            or upstream_payload.get("max_tokens"),
+            65535,
+        )
+        thinking = upstream_payload.get("thinking")
+    elif has_mct and not has_mt:
+        cur_mt = _safe_int(upstream_payload.get("max_completion_tokens"), 0)
+        thinking = upstream_payload.get("thinking")
+    else:
+        cur_mt = max(
+            _safe_int(upstream_payload.get("max_tokens"), 0),
+            _safe_int(upstream_payload.get("max_completion_tokens"), 0) if has_mct else 0,
+        )
+        thinking = upstream_payload.get("thinking")
+
+    if cur_mt <= 0 or cur_mt <= fb_mt:
+        return None
+
+    effective_mt = fb_mt
+    # Anthropic enabled+budget_tokens invariant: max_tokens MUST exceed budget_tokens
+    if isinstance(thinking, dict) and str(thinking.get("type") or "").lower() == "enabled":
+        budget = _safe_int(thinking.get("budget_tokens"), 0)
+        if budget > 0:
+            min_safe = budget + 4096
+            if min_safe > 65535:
+                # Clamp >64K budget (e.g. thinking="64k" -> 65536) so 64K-capped relays don't 400
+                thinking["budget_tokens"] = 65535 - 4096
+                min_safe = 65535
+            if min_safe >= cur_mt:
+                return None
+            effective_mt = max(effective_mt, min_safe)
+
+    if model_max_output_tokens and model_max_output_tokens > 0:
+        effective_mt = min(effective_mt, _safe_int(model_max_output_tokens, effective_mt))
+
+    if effective_mt >= cur_mt:
+        return None
+
+    if is_kiro_ic:
+        upstream_payload["inferenceConfig"]["maxTokens"] = effective_mt
+    elif is_gemini_gc:
+        upstream_payload["generationConfig"]["maxOutputTokens"] = effective_mt
+        upstream_payload.pop("max_tokens", None)
+    elif is_responses:
+        upstream_payload["max_output_tokens"] = effective_mt
+        upstream_payload.pop("max_tokens", None)
+    else:
+        if has_mct:
+            upstream_payload["max_completion_tokens"] = effective_mt
+        if has_mt or not has_mct:
+            upstream_payload["max_tokens"] = effective_mt
+    return effective_mt
+
+
+def _get_kiro_single_key_lock(provider_name: Any, conn_index: Any) -> asyncio.Semaphore:
+    try:
+        loop_id = id(asyncio.get_running_loop())
+    except RuntimeError:
+        loop_id = 0
+    key = f"{loop_id}:{str(provider_name or '').strip().lower()}:{conn_index if conn_index is not None else 0}"
+    sem = _KIRO_SINGLE_KEY_LOCKS.get(key)
+    if sem is None:
+        if len(_KIRO_SINGLE_KEY_LOCKS) > 512:
+            for _k in list(_KIRO_SINGLE_KEY_LOCKS.keys()):
+                _s = _KIRO_SINGLE_KEY_LOCKS.get(_k)
+                if _s is not None and not _s.locked():
+                    _KIRO_SINGLE_KEY_LOCKS.pop(_k, None)
+        sem = asyncio.Semaphore(1)
+        _KIRO_SINGLE_KEY_LOCKS[key] = sem
+    return sem
+
+
+def _should_serialize_kiro_single_key(config: Any, provider_name: Any, target_model: Any) -> bool:
+    """Serialize overlapping streams on 1-key Kiro relays so concurrent IDE tabs
+    cannot collide on the same Kiro slot and trigger upstream 503/midstream drops."""
+    prov_l = str(provider_name or "").strip().lower()
+    if not prov_l or prov_l in _OUTAGE_FALLBACK_EXCLUDED_PROVIDERS:
+        return False
+    try:
+        from app.middleware.kiro_filter_guard import is_kiro_target as _is_kt
+        if not _is_kt(provider_name, target_model, config):
+            return False
+        from app.routing.combo_resolver import count_eligible_keys as _cek
+        return int(_cek(config, provider_name, target_model) or 0) <= 1
+    except Exception:
+        return False
+
+
+def _kiro_ping_idle_seconds(config: Any, provider_name: Any, target_model: Any) -> float:
+    try:
+        from app.middleware.kiro_filter_guard import is_kiro_target as _is_kt
+        if _is_kt(provider_name, target_model, config):
+            return KIRO_POST_BLOCK_PING_IDLE_S
+    except Exception:
+        pass
+    return 0.0
+
+
+def _kiro_pre_content_idle_seconds(
+    config: Any, provider_name: Any, target_model: Any, prompt_chars: int = 0
+) -> float:
+    """Return pre-content ping-only idle cap for Kiro relays (0.0 for non-Kiro).
+
+    Kiro relays can return HTTP 200 + message_start + endless `event: ping`s for
+    300-470s with zero thinking/text deltas before failing with 503 'returned no
+    answer'. Capping pre-content silence at 90s (150s for >=200K-char prompts)
+    frees the slot quickly and triggers the ephemeral Pass-2 16384 OutageFallback
+    without affecting healthy large-context turns or post-content streaming.
+    """
+    try:
+        from app.middleware.kiro_filter_guard import is_kiro_target as _is_kt
+        if _is_kt(provider_name, target_model, config):
+            if int(prompt_chars or 0) >= KIRO_PRE_CONTENT_LARGE_PROMPT_CHARS:
+                return KIRO_PRE_CONTENT_PING_IDLE_LARGE_S
+            return KIRO_PRE_CONTENT_PING_IDLE_S
+    except Exception:
+        pass
+    return 0.0
+
+
+def _estimate_payload_prompt_chars(payload: Any) -> int:
+    if not isinstance(payload, dict):
+        return 0
+
+    def _measure(obj: Any, depth: int = 0) -> int:
+        if depth > 6 or obj is None:
+            return 0
+        if isinstance(obj, str):
+            return len(obj)
+        if isinstance(obj, list):
+            return sum(_measure(x, depth + 1) for x in obj)
+        if isinstance(obj, dict):
+            acc = 0
+            for k, v in obj.items():
+                if k in ("data", "inlineData", "inline_data") and isinstance(v, str) and len(v) > 4096:
+                    continue
+                acc += _measure(v, depth + 1)
+            return acc
+        return 0
+
+    total = 0
+    for top_key in ("system", "messages", "tools", "input", "instructions", "contents", "systemInstruction", "conversationState"):
+        if top_key in payload:
+            total += _measure(payload.get(top_key))
+    return total
+
+
+def _is_direct_single_leaf_outage_retry_eligible(
+    model: Any,
+    active_chain: Any,
+    config: Any,
+    retry_state: Any,
+    status_code: Any,
+    err_text: Any,
+) -> bool:
+    """Allow strictly ONE bounded Pass-2 retry with ephemeral 16384 max_tokens
+    on direct single-leaf `provider/model` calls when Pass 1 hits a Cloudflare /
+    timeout / empty-answer outage. Never loops past pass 2 and never fires on
+    excluded local/OAuth lanes or non-outage 4xx/5xx errors."""
+    if not _is_direct_single_leaf_non_combo(model, active_chain, config):
+        return False
+    pass_no = _safe_int((retry_state or {}).get("pass_no", 1), 1) if isinstance(retry_state, dict) else 1
+    if pass_no >= 2:
+        return False
+    if isinstance(retry_state, dict) and retry_state.get("fallback_max_tokens"):
+        return False
+    if not _is_outage_max_tokens_fallback_trigger(status_code, err_text):
+        return False
+    prov_l = ""
+    # Explicit `provider/model` prefix takes precedence; active_chain tuples are `(target_model, provider_name, thinking)`
+    if isinstance(model, str) and "/" in model:
+        prov_l = model.split("/", 1)[0].strip().lower()
+    if not prov_l and isinstance(active_chain, list) and active_chain:
+        first = active_chain[0]
+        if isinstance(first, dict):
+            prov_l = str(first.get("provider") or "").strip().lower()
+        elif isinstance(first, (tuple, list)) and len(first) >= 2:
+            prov_l = str(first[1] or "").strip().lower()
+    if not prov_l or prov_l in _OUTAGE_FALLBACK_EXCLUDED_PROVIDERS:
+        return False
+    return True
+
+
+def _is_all_single_key_kiro_chain(active_chain: Any, config: Any) -> bool:
+    if not isinstance(active_chain, list) or not active_chain:
+        return False
+    valid = [it for it in active_chain if isinstance(it, (tuple, list)) and len(it) >= 2]
+    if not valid:
+        return False
+    return all(_should_serialize_kiro_single_key(config, it[1], it[0]) for it in valid)
+
+
+def _is_all_bslforge_chain(active_chain: Any) -> bool:
+    if not isinstance(active_chain, list) or not active_chain:
+        return False
+    valid = [it for it in active_chain if isinstance(it, (tuple, list)) and len(it) >= 2]
+    if not valid:
+        return False
+    return all(str(it[1] or "").strip().lower() in ("bslforge", "chat2api") for it in valid)
+
+
+def _is_terminal_bslforge_pool_exhaustion(status_code: Any, err_text: Any) -> bool:
+    """True when BSL Forge explicitly reports empty/dead account pool or signed-out session.
+
+    Wrapping Pass 2..900 every 2s against a 0-account / auth-dead Forge pool only spams
+    logs and starves workers without any possibility of self-recovery inside a single request.
+    """
+    try:
+        sc = int(status_code or 0)
+    except Exception:
+        sc = 0
+    low = str(err_text or "").lower()
+    if not low:
+        return False
+    if sc in (502, 503):
+        if "failover exhausted" in low and ("pool_empty" in low or "auth_chain_failed" in low):
+            return True
+        if "browser session is signed out" in low or "verification challenge is present" in low:
+            return True
+        # Only treat `session_unavailable` as terminal when it indicates a signed-out /
+        # unprovisioned session — NOT transient per-turn DOM/Send-button/CDP contention.
+        if "session_unavailable" in low and not any(
+            transient in low
+            for transient in (
+                "send control is unavailable",
+                "bound managed browser session changed",
+                "cdp probe failure",
+                "dom-capture ended before explicit completion",
+                "zero renderable output",
+                "empty dom response body",
+                "returned no output",
+                "returned thinking only",
+                "exceeded the 8 mib verification buffer",
+                "could not confirm the account",
+                "research confirmation requires operator action",
+                "relay interrupted",
+            )
+        ):
+            return True
+        if "no input element found" in low or "ui-tee:" in low:
+            return True
+        if "no_accounts" in low or "no accounts configured" in low:
+            return True
+    return False
+
+
+def _is_terminal_quota_or_policy_wall(status_code: Any, err_text: Any) -> bool:
+    """True when upstream returns a policy or multi-day free-allowance wall that cannot
+    self-recover within a single request retry loop (e.g. tokenharbor 403 free_models_disabled
+    or 7-day rolling free allowance exhaustion)."""
+    try:
+        sc = int(status_code or 0)
+    except Exception:
+        sc = 0
+    low = str(err_text or "").lower()
+    if not low:
+        return False
+    if sc == 403 and ("free_models_disabled" in low or "confirm free-model data sharing" in low):
+        return True
+    if sc == 429 and "free allowance" in low and any(
+        tok in low for tok in ("rolling", "7-day", "comes back", "period's free allowance", "used up")
+    ):
+        return True
+    return False
+
+
+def _is_probe_request(request: Any) -> bool:
+    """True for health/readiness/authenticity probe requests that must fail fast without pass wrapping."""
+    if request is None:
+        return False
+    try:
+        headers = getattr(request, "headers", None)
+        if headers is None:
+            return False
+        if str(headers.get("x-bsl-authenticity-probe") or "").strip() in ("1", "true", "yes"):
+            return True
+        caller = str(headers.get("x-bsl-caller") or "").strip().lower()
+        if caller and ("probe" in caller or "health" in caller):
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _should_allow_pass_wrap(
+    model: Any,
+    config: Any,
+    retry_state: Any,
+    active_chain: Any,
+    status_code: Any,
+    err_text: Any,
+    reason: str,
+    request: Any = None,
+) -> bool:
+    """Single authoritative gate for Pass 1 -> Pass 2+ wraps across ALL streaming,
+    probe, and non-streaming exhaustion sites."""
+    if _probe_wrap_terminal(status_code, err_text, reason):
+        return False
+    if not _combo_infinite_retry_enabled(config):
+        return False
+    if _is_probe_request(request):
+        print(
+            f"[ProbeGuard] Stopping retry wrap for '{model}' ({reason}) — health/readiness probe request",
+            flush=True,
+        )
+        return False
+    if _is_terminal_quota_or_policy_wall(status_code, err_text):
+        print(
+            f"[QuotaPolicyGuard] Stopping retry wrap for '{model}' ({reason}) — "
+            f"terminal quota/policy wall (status={status_code})",
+            flush=True,
+        )
+        return False
+    if _is_all_bslforge_chain(active_chain) and _is_terminal_bslforge_pool_exhaustion(status_code, err_text):
+        print(
+            f"[ForgePoolGuard] Stopping infinite wrap for '{model}' ({reason}) — "
+            f"terminal Forge pool/session exhaustion (status={status_code})",
+            flush=True,
+        )
+        return False
+    if _is_direct_single_leaf_non_combo(model, active_chain, config):
+        return _is_direct_single_leaf_outage_retry_eligible(
+            model, active_chain, config, retry_state, status_code, err_text
+        )
+    pass_no = _safe_int((retry_state or {}).get("pass_no", 1), 1) if isinstance(retry_state, dict) else 1
+    max_passes = _combo_max_retry_passes(config)
+    if max_passes > 0 and pass_no >= max_passes:
+        print(
+            f"[AutoCancelGuard] Auto-cancelling retry wrap for '{model}' after {pass_no}/{max_passes} "
+            f"failed passes ({reason}, status={status_code})",
+            flush=True,
+        )
+        return False
+    if reason == "entry_override_exhausted" and pass_no >= 2:
+        print(
+            f"[BannedChainGuard] Auto-cancelling retry wrap for '{model}' after pass {pass_no} — "
+            f"all chain leaves remain banned/skipped ({reason})",
+            flush=True,
+        )
+        return False
+    if _is_all_bslforge_chain(active_chain):
+        if pass_no >= 2:
+            print(
+                f"[ForgePoolGuard] Stopping wrap for '{model}' after pass {pass_no} ({reason}) on BSL Forge chain",
+                flush=True,
+            )
+            return False
+    if pass_no >= 2 and _is_all_single_key_kiro_chain(active_chain, config):
+        print(
+            f"[KiroTransportShield] Stopping wrap for '{model}' after pass {pass_no} ({reason}) on 1-key Kiro chain",
+            flush=True,
+        )
+        return False
+    return True
+
+
+def _consume_abandoned_task_exc(t: asyncio.Task) -> None:
+    try:
+        if not t.cancelled():
+            t.exception()
+    except BaseException:
+        pass
+
+
+async def _bounded_drain_cleanup(
+    drain_task: Any,
+    source_obj: Any,
+    resp_obj: Any = None,
+    *,
+    force_close_resp: bool = False,
+    timeout_s: float = DRAIN_CLEANUP_TIMEOUT_S,
+) -> bool:
+    """Cancel a background drain task and close upstream source/response with a
+    strict timeout ceiling so a wedged TLS/httpcore socket (even inside
+    AsyncShieldCancellation) can never block egress `finally:` cleanup or hold
+    `_kiro_slot_lock` for minutes. Returns True if resp_obj close was initiated."""
+    async def _wait_bounded(coro_or_task: Any) -> bool:
+        if coro_or_task is None:
+            return True
+        task = coro_or_task if isinstance(coro_or_task, asyncio.Task) else asyncio.ensure_future(coro_or_task)
+        try:
+            done, pending = await asyncio.wait({task}, timeout=timeout_s)
+            if done:
+                try:
+                    task.result()
+                except BaseException:
+                    pass
+                return True
+            if pending:
+                task.cancel()
+                task.add_done_callback(_consume_abandoned_task_exc)
+                return False
+        except BaseException:
+            pass
+        return True
+
+    resp_closed = False
+    _was_running = drain_task is not None and not drain_task.done()
+    if _was_running:
+        drain_task.cancel()
+    if resp_obj is not None and (force_close_resp or _was_running):
+        try:
+            await _wait_bounded(resp_obj.aclose())
+        except BaseException:
+            pass
+        resp_closed = True
+    drain_finished = True
+    if drain_task is not None:
+        drain_finished = await _wait_bounded(drain_task)
+    # Only call source_obj.aclose() when drain_task is no longer suspended inside
+    # source_obj.__anext__(), avoiding RuntimeError('asynchronous generator is already running').
+    if source_obj is not None and drain_finished:
+        _close_source = getattr(source_obj, "aclose", None)
+        if _close_source is not None:
+            try:
+                await _wait_bounded(_close_source())
+            except BaseException:
+                pass
+    return resp_closed
+
+
 def _combo_restart_or_give_up(model, retry_state, active_chain, original_model,
-                              cache_bp, request, reason):
+                              cache_bp, request, reason,
+                              status_code=None, err_text=None):
     """Build the wrap state for never-stop combo retry (exhaustion is a pass boundary, not a terminal).
 
     Returns (backoff_seconds, retry_state_dict). The caller sleeps `backoff`
@@ -9717,6 +10525,16 @@ def _combo_restart_or_give_up(model, retry_state, active_chain, original_model,
         'deadline': None,
         'pass_no': pass_no + 1,
     }
+    _prev_fb_mt = (retry_state or {}).get("fallback_max_tokens") if isinstance(retry_state, dict) else None
+    if _prev_fb_mt:
+        wrapped["fallback_max_tokens"] = int(_prev_fb_mt)
+    elif _is_outage_max_tokens_fallback_trigger(status_code, err_text):
+        wrapped["fallback_max_tokens"] = OUTAGE_FALLBACK_MAX_TOKENS
+        print(
+            f"[OutageFallback] '{model}' arming request-scoped max_tokens={OUTAGE_FALLBACK_MAX_TOKENS} "
+            f"for pass {pass_no + 1} after status={status_code} ({str(err_text or '')[:80]})",
+            flush=True,
+        )
     return backoff, wrapped
 
 
@@ -9736,14 +10554,15 @@ def _raise_combo_wrap(model, config, request, retry_state, active_chain,
     # A thought_signature payload-defect 400 is likewise terminal (Layer B,
     # 2026-09-26): the echoed functionCall is unsignable, so wrapping just
     # re-sends the same invalid body forever.
-    if _is_terminal_relay_wall(status_code, err_text) or _is_thought_signature_400(status_code, err_text) or _is_unrecoverable_payload_400(status_code, err_text):
-        print(f"[TerminalWall] suppressing never-stop wrap ({reason}) - terminal relay wall", flush=True)
-        return
-    if not _combo_infinite_retry_enabled(config):
+    if not _should_allow_pass_wrap(
+        model, config, retry_state, active_chain, status_code, err_text, reason, request=request
+    ):
         return
     _backoff, _wrap = _combo_restart_or_give_up(
         model, retry_state, active_chain, original_model, cache_bp, request,
         reason=reason,
+        status_code=status_code,
+        err_text=err_text,
     )
     raise _ComboFallbackNeeded(status_code, err_text, _wrap, backoff=_backoff)
 
@@ -9990,6 +10809,311 @@ class _DeadlineRetryNeeded(Exception):
         super().__init__(f"deadline_retry attempt={attempt}: {err}")
 
 
+class _RefusalSameModelRetryNeeded(Exception):
+    """FEL v7.0 pre-commit same-model re-projection signal.
+
+    Raised ONLY before any model content frame reaches the client (`_emit.emitted == False`)
+    on attempt 0 of a retryable classifier/safeguard refusal. The guarded catcher
+    re-dispatches `clean_body` onto the EXACT SAME `(provider_name, target_model)` leaf
+    with `fel_v7_reprojections = 1` (`max_reprojections = 1`), zero leaf benching,
+    and zero substitute-model downgrade.
+    """
+    def __init__(self, clean_body: dict, reason: str, constellation: str = ""):
+        self.clean_body = clean_body
+        self.reason = reason
+        self.constellation = constellation
+        super().__init__(f"fel_v7_same_model_retry({constellation or 'auto'}): {reason}")
+
+
+class _TerminalClassifierRefusalSSE(Exception):
+    """Terminal pre-commit SSE classifier refusal (hard-harm floor, FEL kill-switch off,
+    or Pass-2 `max_reprojections = 1` already spent).
+
+    Must NEVER call `bench_leaf`, NEVER advance to a weaker substitute model via
+    `_ComboFallbackNeeded`, and NEVER enter an infinite `_raise_combo_wrap` loop.
+    Caught at each lane's guarded client boundary to emit a single protocol-valid
+    terminal error frame and close cleanly.
+    """
+    def __init__(self, status_code: int, err_text: str):
+        self.status_code = status_code if isinstance(status_code, int) and status_code >= 400 else 400
+        self.err_text = str(err_text or "content_filter")
+        super().__init__(f"terminal_classifier_refusal({self.status_code}): {self.err_text[:160]}")
+
+
+def _emit_terminal_classifier_refusal_sse(
+    tcr: _TerminalClassifierRefusalSSE,
+    *,
+    client_wants_anthropic: bool,
+    client_wants_gemini: bool,
+    target_model: str,
+) -> list[bytes]:
+    msg_txt = tcr.err_text[:500] or "Output blocked by content filtering policy"
+    if client_wants_gemini:
+        from app.compat.adapters.gemini import sse_data as _g_sd, SSE_DONE as _G_SD, terminal_error_frame as _g_tf
+        return [_g_sd(_g_tf(tcr.status_code, msg_txt, target_model)), _G_SD]
+    if client_wants_anthropic:
+        return list(_anthropic_terminal_error_frames(msg_txt, target_model))
+    err_env = {"error": {"message": msg_txt, "type": "content_filter_error", "code": tcr.status_code}}
+    return [
+        f"data: {json.dumps(err_env)}\n\n".encode("utf-8"),
+        b"data: [DONE]\n\n",
+    ]
+
+
+def _is_fel_v7_same_model_recovery_enabled(config: dict | None, request: Request | None = None) -> bool:
+    """Dedicated FEL v7.0 kill-switch (`settings.fel_v7_same_model_recovery`, default True).
+
+    Decoupled from `tools.fel.enabled` so legacy refusal-appending `_fel_stream_with_recovery`
+    stays dormant (`tools.fel.enabled: false`) while FEL v7.0 pre-commit same-model
+    re-projection operates across all lanes. Yields cleanly to legacy `tools.fel`
+    when `tools.fel.enabled` is explicitly True (unless `fel_v7_same_model_recovery`
+    is explicitly set in `settings`), and respects `X-BSL-FEL: off` and
+    `X-BSL-Authenticity-Probe: 1`.
+    """
+    try:
+        if request is not None:
+            if (request.headers.get("x-bsl-authenticity-probe") or "").strip() == "1":
+                return False
+            if (request.headers.get("x-bsl-fel") or "").strip().lower() == "off":
+                return False
+        cfg = config if isinstance(config, dict) else {}
+        settings = cfg.get("settings") if isinstance(cfg.get("settings"), dict) else {}
+        if "fel_v7_same_model_recovery" in settings:
+            return bool(settings.get("fel_v7_same_model_recovery"))
+        fel_cfg = (cfg.get("tools") or {}).get("fel") if isinstance(cfg.get("tools"), dict) else None
+        if isinstance(fel_cfg, dict):
+            if fel_cfg.get("enabled") is True:
+                return False
+            if fel_cfg == {"enabled": False}:
+                return False
+        return True
+    except Exception:
+        return True
+
+
+def _fel_v7_guard_sse_refusal(
+    label: str,
+    status_code: Any,
+    err_text: Any,
+    *,
+    body: Any,
+    _retry_state: dict | None,
+    config: dict | None,
+    request: Request | None,
+    provider_name: str,
+    target_model: str,
+) -> bool:
+    """F3 (2026-11-21): recover an explicit-SSE classifier refusal on the SAME leaf.
+
+    Every streaming lane used to call `bench_leaf(...)` and then raise
+    `_ComboFallbackNeeded` for ANY explicit upstream failure frame — including
+    `{"type":"error","error":{"code":"content_filter"}}`, which is a
+    prompt-surface classifier refusal, not leaf death. That advanced the combo
+    chain to a weaker substitute model and violated the zero-substitute-downgrade
+    invariant. Reproduced deterministically on the default OpenAI lane:
+    `itspn7/claude-opus-5-5` -> `substitute-prov/cheap-fallback-model`.
+
+    Call this IMMEDIATELY BEFORE `bench_leaf(...)` in a pre-commit
+    (`not _emit.emitted`) explicit-failure branch.
+
+    Returns:
+        False — not a classifier refusal, or the 1-shot same-model budget is
+                already spent. Caller proceeds with its existing
+                `bench_leaf` + fallback behaviour (unchanged).
+        (never returns True; the eligible case raises instead)
+
+    Raises:
+        _RefusalSameModelRetryNeeded — eligible refusal; the lane's own catcher
+        re-dispatches `clean_body` onto the EXACT SAME `(provider, model)` leaf
+        with `fel_v7_reprojections = 1`.
+    """
+    try:
+        sc = int(status_code or 0)
+    except (TypeError, ValueError):
+        return False
+    msg = str(err_text or "")
+    if not msg:
+        return False
+    if not (
+        _is_recoverable_content_filter_400(sc, msg)
+        or is_http_or_sse_classifier_refusal(sc, msg)
+    ):
+        return False
+    _ok, _clean, _const = _try_build_fel_v7_same_model_retry(
+        body, _retry_state, config, request,
+        provider_name=provider_name, target_model=target_model, vis_text=msg,
+    )
+    if not _ok or _clean is None:
+        # Classifier refusal hit the hard-harm floor (`bio`/`csam`/`frontier_llm`),
+        # FEL v7 is explicitly disabled, or Pass-2 `max_reprojections = 1` already ran.
+        # NEVER fall back into `bench_leaf` / `_ComboFallbackNeeded` / `_raise_combo_wrap`!
+        raise _TerminalClassifierRefusalSSE(sc, msg)
+    print(
+        f"[FEL-v7] {label}: classifier refusal {sc} on {provider_name}/{target_model} "
+        f"— same-model re-projection (constellation={_const or 'auto'}), zero substitute",
+        flush=True,
+    )
+    raise _RefusalSameModelRetryNeeded(_clean, f"fel_v7_sse_{label}", _const)
+
+
+def _try_build_fel_v7_same_model_retry(
+    body: Any,
+    _retry_state: dict | None,
+    config: dict | None,
+    request: Request | None,
+    *,
+    provider_name: str = "",
+    target_model: str = "",
+    vis_text: str = "",
+    stop_details: Any = None,
+) -> tuple[bool, dict | None, str]:
+    """Return `(eligible, reprojected_body, constellation)` enforcing `max_reprojections = 1`
+    and the immutable hard-harm floor."""
+    if not isinstance(body, dict):
+        return False, None, ""
+    if not _is_fel_v7_same_model_recovery_enabled(config, request):
+        return False, None, ""
+    reproj_done = int(
+        ((_retry_state or {}).get("fel_v7_reprojections") or 0)
+        or (body.get("_bsl_refusal_reprojection_count") or 0)
+    )
+    if reproj_done >= 1:
+        return False, None, ""
+    if request is not None and getattr(getattr(request, "state", None), "bsl_fel_v7_retried", False):
+        return False, None, ""
+    if is_hard_harm_refusal(vis_text, stop_details=stop_details):
+        return False, None, ""
+    base_body = (
+        _retry_state.get("clean_body")
+        if (isinstance(_retry_state, dict) and isinstance(_retry_state.get("clean_body"), dict))
+        else body
+    )
+    if body_has_hard_harm(base_body):
+        return False, None, ""
+    clean_body = reproject_exchange_for_same_model_acceptance(
+        base_body,
+        provider_name=provider_name,
+        target_model=target_model,
+        increment_reprojection_count=True,
+    )
+    constellation = str(clean_body.get("_bsl_fel_constellation") or "academic_stem_formal")
+    return True, clean_body, constellation
+
+
+def _build_fel_v7_same_model_retry_state(
+    _retry_state: dict | None,
+    *,
+    target_model: str,
+    provider_name: str,
+    combo_thinking_override: Any,
+    cache_bp: Any,
+    original_model: str,
+    chain_deadline: float,
+    clean_body: dict,
+) -> dict:
+    base = dict(_retry_state) if isinstance(_retry_state, dict) else {}
+    base.update({
+        "chain": [(target_model, provider_name, combo_thinking_override)],
+        "idx": 0,
+        "cache_bp": cache_bp,
+        "original_model": original_model,
+        "deadline": chain_deadline,
+        "fel_v7_reprojections": int(base.get("fel_v7_reprojections") or 0) + 1,
+        "clean_body": clean_body,
+    })
+    return base
+
+
+async def _dispatch_fel_v7_same_model_stream(
+    rr: _RefusalSameModelRetryNeeded,
+    *,
+    client_wants_anthropic: bool,
+    client_wants_gemini: bool,
+    retry_state: dict | None,
+    target_model: str,
+    provider_name: str,
+    combo_thinking_override: Any,
+    cache_bp: Any,
+    original_model: str,
+    chain_deadline: float,
+    request: Request | None,
+):
+    if await _is_request_disconnected(request):
+        print(
+            f"[FEL-v7] client disconnected before Pass-2 same-model re-dispatch "
+            f"({provider_name}/{target_model}) — aborting",
+            flush=True,
+        )
+        return
+    if request is not None and getattr(request, "state", None) is not None:
+        request.state.bsl_fel_v7_retried = True
+    same_state = _build_fel_v7_same_model_retry_state(
+        retry_state,
+        target_model=target_model,
+        provider_name=provider_name,
+        combo_thinking_override=combo_thinking_override,
+        cache_bp=cache_bp,
+        original_model=original_model,
+        chain_deadline=chain_deadline,
+        clean_body=rr.clean_body,
+    )
+    print(
+        f"[FEL-v7] Same-model Pass-2 re-projection for {provider_name}/{target_model} "
+        f"(constellation={rr.constellation}, reason={rr.reason})",
+        flush=True,
+    )
+    fel_event(
+        "reprojection_pass2_dispatch",
+        model=target_model,
+        provider=provider_name,
+        details={
+            "stream": True,
+            "reason": rr.reason,
+            "constellation": rr.constellation,
+            "max_reprojections": 1,
+        },
+    )
+    resp2 = await _process_chat_completion(
+        rr.clean_body,
+        client_wants_anthropic,
+        client_wants_gemini,
+        _retry_state=same_state,
+        request=request,
+        _stream_guard=False,
+    )
+    if hasattr(resp2, "body_iterator"):
+        it2 = resp2.body_iterator
+    elif hasattr(resp2, "__aiter__"):
+        it2 = resp2
+    else:
+        raw_b = getattr(resp2, "body", b"") or b""
+        if isinstance(raw_b, str):
+            raw_b = raw_b.encode("utf-8", "replace")
+        msg_txt = raw_b.decode("utf-8", "replace")[:500] or "reprojection_pass2_failed"
+        sc2 = getattr(resp2, "status_code", 502) or 502
+        if client_wants_gemini:
+            from app.compat.adapters.gemini import sse_data as _g_sd, SSE_DONE as _G_SD, terminal_error_frame as _g_tf
+            yield _g_sd(_g_tf(sc2, msg_txt, target_model))
+            yield _G_SD
+        elif client_wants_anthropic:
+            for _tf in _anthropic_terminal_error_frames(msg_txt, target_model):
+                yield _tf
+        else:
+            yield f"data: {json.dumps({'error': {'message': msg_txt, 'type': 'proxy_error'}})}\n\n".encode("utf-8")
+            yield b"data: [DONE]\n\n"
+        return
+    try:
+        async for _fc in it2:
+            yield _fc
+    finally:
+        _acl = getattr(it2, "aclose", None)
+        if _acl is not None:
+            try:
+                await _acl()
+            except BaseException:
+                pass
+
+
 async def _deadline_stall_pump(
     raw_iter,
     attempt: int,
@@ -10050,6 +11174,7 @@ async def _deadline_stall_pump(
     # are distinct, so the legacy wait_for + except clause below keeps the
     # exact original behavior.
     _timeout_cm_factory = getattr(asyncio, "timeout", None)
+    _anext_task: asyncio.Task | None = None
     try:
         while True:
             remaining = deadline - loop.time()
@@ -10080,10 +11205,22 @@ async def _deadline_stall_pump(
                     async with _tcm:
                         chunk = await iterator.__anext__()
                 else:
-                    chunk = await asyncio.wait_for(
-                        iterator.__anext__(), timeout=remaining
-                    )
+                    _anext_task = asyncio.ensure_future(iterator.__anext__())
+                    _d, _p = await asyncio.wait({_anext_task}, timeout=remaining)
+                    if _p:
+                        _anext_task.cancel()
+                        try:
+                            await _anext_task
+                        except BaseException:
+                            pass
+                        _anext_task = None
+                        raise asyncio.TimeoutError()
+                    try:
+                        chunk = _anext_task.result()
+                    finally:
+                        _anext_task = None
             except StopAsyncIteration:
+                _anext_task = None
                 return
             except asyncio.TimeoutError:
                 if (
@@ -10117,6 +11254,13 @@ async def _deadline_stall_pump(
     except (asyncio.CancelledError, GeneratorExit):
         raise
     finally:
+        if _anext_task is not None and not _anext_task.done():
+            _anext_task.cancel()
+            try:
+                await _anext_task
+            except BaseException:
+                pass
+            _anext_task = None
         _ac = getattr(raw_iter, "aclose", None)
         if callable(_ac):
             try:
@@ -10184,13 +11328,16 @@ async def _deadline_stall_fire(
             raise _ComboFallbackNeeded(
                 504,
                 err,
-                {
-                    "chain": active_chain,
-                    "idx": _next_idx,
-                    "cache_bp": cache_bp,
-                    "original_model": original_model,
-                    "deadline": chain_deadline,
-                },
+                _propagate_retry_state(
+                    retry_state,
+                    {
+                        "chain": active_chain,
+                        "idx": _next_idx,
+                        "cache_bp": cache_bp,
+                        "original_model": original_model,
+                        "deadline": chain_deadline,
+                    },
+                ),
             )
 
     if attempt < len(STREAM_DEADLINE_LADDER) - 1:
@@ -10414,21 +11561,12 @@ def _is_responses_provider(provider_name: str, provider_config: dict | None = No
 
 
 def _anthropic_egress_openai_source(provider_name: str, raw_source, provider_config: dict | None = None):
-    """Return OpenAI SSE for the Anthropic normalizer, converting Responses-wire providers."""
+    """Return OpenAI SSE for the Anthropic normalizer, converting Responses-wire and Kiro EventStream providers."""
     if _is_responses_provider(provider_name, provider_config):
         return codex_adapter.responses_sse_to_openai_sse(raw_source)
+    if provider_name == "kiro":
+        return kiro_eventstream.eventstream_to_openai_sse_lines_with_fallback(raw_source)
     return raw_source
-
-
-GEMINI_PRECOMMIT_REFUSAL_CHAR_WINDOW = 160
-_PURE_PROSE_REFUSAL_START_RE = re.compile(
-    r"^\s*(?:"
-    r"I(?:'m|\s+am)\s+sorry,\s+but\s+I\s+can(?:'t|not)"
-    r"|I\s+can(?:'t|not)\s+(?:assist|help|fulfill|provide|comply)"
-    r"|Sorry,\s+I\s+can(?:'t|not)\s+(?:assist|fulfill|comply)"
-    r")",
-    re.IGNORECASE,
-)
 
 
 def _gemini_frame_commits_transcript(frame: dict, no_output_notice: str) -> bool:
@@ -10488,6 +11626,72 @@ async def _tee_codex_response_source(raw_source, client: str, model: str):
             await _flush_codex_response_tee(client, model, "".join(head_parts), total_bytes)
 
 
+async def _is_request_disconnected(request: Request | None) -> bool:
+    """Safely check whether the downstream client closed its connection."""
+    if request is None or not hasattr(request, "is_disconnected"):
+        return False
+    try:
+        return bool(await request.is_disconnected())
+    except Exception:
+        return False
+
+
+async def _sleep_or_disconnect(seconds: float, request: Request | None, poll_s: float = 0.25) -> bool:
+    """Sleep up to ``seconds`` while polling ``request.is_disconnected()``.
+
+    Returns True immediately when the client disconnects so never-stop retry
+    loops never continue hammering upstream providers after cancel in coding apps.
+    """
+    if await _is_request_disconnected(request):
+        return True
+    remaining = max(0.0, float(seconds or 0.0))
+    if remaining <= 0.0:
+        return False
+    deadline = time.monotonic() + remaining
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0.0:
+            return await _is_request_disconnected(request)
+        await asyncio.sleep(min(poll_s, left))
+        if await _is_request_disconnected(request):
+            return True
+
+
+def _is_direct_single_leaf_non_combo(model: str, active_chain: list | None, config: dict | None) -> bool:
+    """True for explicit direct ``provider/model`` calls (1 unique leaf, not a configured combo alias).
+
+    Multi-key providers expand a single ``provider/model`` leaf into N identical
+    ``(target_model, provider_name)`` entries in ``active_chain`` via
+    ``expand_chain_for_retries()``. Counting distinct leaves instead of raw list
+    length ensures direct calls like ``tokenharbor/deepseek-v4.1-flash:free``
+    (4 keys -> 4 chain entries) still surface errors cleanly instead of wrapping
+    infinitely.
+    """
+    try:
+        if not active_chain:
+            return False
+        unique_leaves: set[tuple[str, str]] = set()
+        for entry in active_chain:
+            if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+                unique_leaves.add((str(entry[0] or "").strip().lower(), str(entry[1] or "").strip().lower()))
+            elif isinstance(entry, dict):
+                unique_leaves.add((
+                    str(entry.get("model") or "").strip().lower(),
+                    str(entry.get("provider") or "").strip().lower(),
+                ))
+            elif isinstance(entry, str) and entry.strip():
+                unique_leaves.add((entry.strip().lower(), ""))
+        if len(unique_leaves) > 1:
+            return False
+        m = str(model or "").strip()
+        if "/" not in m:
+            return False
+        combos = (config or {}).get("combos") or []
+        return not any(isinstance(c, dict) and c.get("alias") == m for c in combos)
+    except Exception:
+        return False
+
+
 async def _process_chat_completion(body: dict, client_wants_anthropic: bool = False, client_wants_gemini: bool = False, _retry_state: dict = None, request: Request = None, _stream_guard: bool = True):
     """Entry: never-stop ROOT loop + single-pass nested dispatch (Bug 2 Part A).
 
@@ -10498,10 +11702,10 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
       * ROOT call (``_retry_state is None``, i.e. the original request from an
         endpoint or a BSL dispatcher): bounded ``while True`` loop. Wrap sites
         inside the pass raise :class:`_ComboWrapRestart`; this loop sleeps the
-        pass backoff (client disconnect during the sleep cancels it — the ONLY
-        permitted terminator) and re-dispatches the next pass IN THE SAME
-        FRAMES. Stack depth is O(1) in pass count: 10,000 passes are as safe
-        as 10 (proved by the sys.setrecursionlimit(300) test oracle).
+        pass backoff (client disconnect cancels it — the ONLY permitted
+        terminator) and re-dispatches the next pass IN THE SAME FRAMES.
+        Stack depth is O(1) in pass count: 10,000 passes are as safe as 10
+        (proved by the sys.setrecursionlimit(300) test oracle).
       * NESTED call (chain advance / stream-catcher re-dispatch, ``_retry_state``
         is not None): exactly ONE pass; a _ComboWrapRestart raised inside it
         unwinds to the caller's catcher (root loop or root stream catcher),
@@ -10522,17 +11726,28 @@ async def _process_chat_completion(body: dict, client_wants_anthropic: bool = Fa
         )
     _wrap_state = None
     while True:
+        if await _is_request_disconnected(request):
+            print("[Combo] client disconnected before pass dispatch — aborting immediately", flush=True)
+            return Response(status_code=499)
         try:
             return await _process_chat_completion_pass(
                 body, client_wants_anthropic, client_wants_gemini,
                 _retry_state=_wrap_state, request=request, _stream_guard=_stream_guard,
             )
         except _ComboWrapRestart as _wrap_signal:
-            # NEVER-STOP: sleep the pass backoff (client disconnect cancels —
-            # the only permitted terminator), then loop with the wrapped state
-            # (idx 0, deadline None re-arm, pass_no+1, 30s-capped backoff).
+            # NEVER-STOP: sleep the pass backoff while polling client disconnect
+            # so cancelled coding-app requests abort within <=250ms instead of
+            # hammering failing upstreams forever.
             if _wrap_signal.backoff:
-                await asyncio.sleep(_wrap_signal.backoff)
+                if request is not None and hasattr(request, "is_disconnected"):
+                    if await _sleep_or_disconnect(_wrap_signal.backoff, request):
+                        print("[Combo] client disconnected during never-stop backoff — aborting immediately", flush=True)
+                        return Response(status_code=499)
+                else:
+                    await asyncio.sleep(_wrap_signal.backoff)
+            if await _is_request_disconnected(request):
+                print("[Combo] client disconnected after never-stop backoff — aborting immediately", flush=True)
+                return Response(status_code=499)
             _wrap_state = _wrap_signal.retry_state
 
 
@@ -10576,6 +11791,27 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     )
     if _is_auth_probe_req and isinstance(body, dict):
         body["_bsl_auth_probe"] = True
+
+    # ── FEL v7.0 Entry Hygiene: scrub echoed prior-turn refusals on Turn N+1 ──
+    # Does NOT increment reprojection count on a fresh turn so Turn N+1 still
+    # retains its 1-shot pre-commit re-projection budget if needed.
+    if (
+        not _is_auth_probe_req
+        and isinstance(body, dict)
+        and not body.get("_bsl_refusal_safe_retry")
+        and _is_fel_v7_same_model_recovery_enabled(config, request)
+        and not body_has_hard_harm(body)
+        and messages_have_recent_refusal(body)
+    ):
+        try:
+            body = reproject_exchange_for_same_model_acceptance(
+                body,
+                provider_name="",
+                target_model=str(model or ""),
+                increment_reprojection_count=False,
+            )
+        except Exception as _eh_err:
+            print(f"[FEL-v7] entry refusal-history scrub failed (fail-open): {_eh_err}", flush=True)
 
     # ── FEL-2a PRE-FLIGHT: clarity preprocess on the last user message ─────
     # Runs ONLY when tools.fel.enabled is truthy (resolve_fel → None otherwise,
@@ -10809,12 +12045,18 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # a terminal. Wrap to idx 0, sleep exponential backoff (client
             # disconnect cancels the sleep — the only permitted terminator),
             # and recurse. settings.combo_infinite_retry=false restores 502.
-            if _combo_infinite_retry_enabled(config):
+            if _should_allow_pass_wrap(
+                model, config, _retry_state, _advance.active_chain, 503,
+                "entry_override_exhausted", "entry_override_exhausted",
+                request=request,
+            ):
                 _backoff, _wrap = _combo_restart_or_give_up(
                     model, _retry_state, _advance.active_chain,
                     _retry_state.get('original_model') or model,
                     _retry_state.get('cache_bp'), request,
                     reason="entry_override_exhausted",
+                    status_code=503,
+                    err_text="entry_override_exhausted",
                 )
                 # Bug 2 Part A: raise the pass-boundary sentinel instead of
                 # recursing. The ROOT never-stop loop sleeps the backoff
@@ -11010,6 +12252,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # normalize_to_openai_from_anthropic stashes breakpoints here; we pop them
     # so they don't leak into Pydantic or OpenAI-format upstreams.
     _cache_breakpoints = body.pop("_bsl_cache_breakpoints", None) if isinstance(body, dict) else None
+    _is_fel_v7_pass2_dispatch = bool(
+        (isinstance(body, dict) and (body.get("_bsl_refusal_safe_retry") or int(body.get("_bsl_refusal_reprojection_count") or 0) >= 1))
+        or (isinstance(_retry_state, dict) and int(_retry_state.get("fel_v7_reprojections") or 0) >= 1)
+    )
 
     # Convert incoming body to our strict internal Pydantic model
     try:
@@ -11369,6 +12615,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # Send version header, no beta (Anthropic-compatible upstreams)
             if _profile.requires_anthropic_version:
                 headers["anthropic-version"] = "2023-06-01"
+        if _is_fel_v7_pass2_dispatch:
+            apply_pass2_prompt_cache_isolation(upstream_payload, provider_name=provider_name, target_model=target_model)
 
         # Phase 3: Reasoning Policy Engine — inject thinking config.
         # Prefer per-model field written by UI, fallback to legacy config.yaml map.
@@ -11433,12 +12681,17 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         upstream_payload = PromptCachingAdapter.apply_provider_caching(
             upstream_payload, provider_name, target_model, tools_config=config.get("tools", {}), obs=obs
         )
+        if _is_fel_v7_pass2_dispatch:
+            apply_pass2_prompt_cache_isolation(upstream_payload, provider_name=provider_name, target_model=target_model)
 
     # Adapter metadata is routing/response context, never a provider parameter.
     # ChatCompletionRequest(extra="allow") intentionally preserves unknown client
     # fields, so these must be removed explicitly at the provider-egress boundary.
     upstream_payload.pop("_bsl_original_model", None)
     upstream_payload.pop("_bsl_auth_probe", None)
+    upstream_payload.pop("_bsl_refusal_safe_retry", None)
+    upstream_payload.pop("_bsl_refusal_reprojection_count", None)
+    upstream_payload.pop("_bsl_fel_constellation", None)
     upstream_payload.pop("x_antigravity_user_agent", None)
     upstream_payload.pop("x_gemini_tool_mode", None)
 
@@ -11562,6 +12815,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # Qwen's max_tokens hard cap below asks the registry rather than
     # re-declaring a local regex.
     is_qwen = matches_contract(f_val, "qwen")
+    is_deepseek = matches_contract(f_val, "deepseek-v4") or "deepseek" in (f_val or "").lower()
     
     # ── max_tokens budget ──
     # Two modes:
@@ -11574,7 +12828,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     #    the router. The floor no longer raises. The quality-gate retry
     #    ceiling is also clamped to the budget (see _mt_budget_cap below).
     _mt_enabled = bool(config.get("tools", {}).get("max_tokens_budget_enabled", False))
-    _client_mt = int(upstream_payload.get("max_tokens", 0) or 0)
+    _client_mt = _safe_int(
+        upstream_payload.get("max_tokens")
+        if upstream_payload.get("max_tokens") is not None
+        else upstream_payload.get("max_completion_tokens"),
+        0,
+    )
 
     if _mt_enabled:
         _mt_budget = int(config.get("tools", {}).get("max_tokens_budget", 65535))
@@ -11667,6 +12926,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         reasoning_context=reasoning_context,
         wire_format=provider_config.get("format", "openai"),
     )
+    if provider_name == "kiro":
+        # CodeWhisperer /generateAssistantResponse rejects root-level thinking/reasoning_effort
+        upstream_payload.pop("thinking", None)
+        upstream_payload.pop("reasoning_effort", None)
+        upstream_payload.pop("output_config", None)
 
     # Attach provenance to the request log. Fail-open: diagnostics must
     # never break routing.
@@ -11747,6 +13011,25 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         _tc["thinkingBudget"] = squeeze_target
                         print(f"[ThinkingSqueeze] Capped Gemini thinkingBudget {current_b} to {squeeze_target} (input ~{input_token_estimate} tokens)")
     # -----------------------------------------
+    # Request-scoped ephemeral 16384 max_tokens fallback on Pass 2+ after a
+    # Cloudflare/timeout/503 outage (runs AFTER ThinkingSqueeze so squeezed
+    # budget_tokens allows full reduction to 16384; resets next fresh call).
+    try:
+        _fb_applied_mt = _apply_request_scoped_fallback_max_tokens(
+            upstream_payload,
+            provider_name,
+            _retry_state,
+            model_max_output_tokens=_model_max_output_tokens,
+            wire_format=provider_config.get("format", "openai"),
+        )
+        if _fb_applied_mt is not None:
+            print(
+                f"[OutageFallback] {provider_name}/{target_model} applied request-scoped "
+                f"max_tokens={_fb_applied_mt} (next fresh call resets to default)",
+                flush=True,
+            )
+    except Exception as _fb_mt_err:
+        print(f"[OutageFallback] max_tokens fallback failed (fail-open): {_fb_mt_err}", flush=True)
     # -----------------------------------------
 
     # ── Output Intent-Driven Format Enforcement ──────────────────
@@ -11778,17 +13061,28 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
 
     # Streaming anti-stop (S3-streaming): tap raw upstream bytes for
     # finish_reason="length"/"max_tokens"/"MAX_TOKENS" and splice ONE
-    # continuation stream before the client sees stream end. Qwen-scoped
-    # (Qwen3.8-Max hard-stops at the 65535 cap), opt-in via
-    # tools.stream_anti_stop, fail-open by construction (detector disabled
-    # → truncated never set → plain stream).
-    _stream_anti_stop = bool(t_cfg.get("stream_anti_stop", False)) and is_stream and is_qwen
+    # continuation stream before the client sees stream end. Scoped to
+    # Qwen3.8-Max (65535 cap) and DeepSeek V4 (thinking:max / 32K cap),
+    # opt-in via tools.stream_anti_stop, fail-open by construction.
+    _stream_anti_stop = (
+        bool(t_cfg.get("stream_anti_stop", False))
+        and is_stream
+        and (is_qwen or is_deepseek)
+    )
     _cont_state = {"used": False}
     # `accumulate` is decoupled from the `enabled` splice gate: every STREAM
     # taps text into partial_text (capped, fail-open) even when anti-stop is
     # off, so usage backfill sees real delivered text for non-Qwen providers
     # (mintrouter/* in/out=0/0). Non-stream requests keep accumulation off.
     _detector = StreamTruncationDetector(f_val, enabled=_stream_anti_stop, accumulate=is_stream)
+
+    def _detector_has_visible_body(_det: Any) -> bool:
+        if _det is None:
+            return False
+        _vc = getattr(_det, "visible_chars", None)
+        if _vc is not None:
+            return int(_vc) > 0
+        return bool((getattr(_det, "partial_text", "") or "").strip())
 
     # ── Stream-Then-Buffer: 524 Mitigation Gate ──────────────────
     # Non-streaming requests to Cloudflare-fronted upstreams (vsllm/744000)
@@ -11824,6 +13118,54 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         upstream_payload = inject_json_instruction(upstream_payload)
         print(f"[ResponseFormat] JSON instruction injected for {provider_name}/{target_model}", flush=True)
     
+    # ── DeepSeek V4 Agentic Anti-Halt Reinforcement ──────────────
+    # DeepSeek V4 / V4.1 Flash models frequently stop midway after receiving
+    # tool results by narrating next steps in plain text instead of invoking
+    # the next tool. Inject a concise, cache-stable execution directive once
+    # into the system prompt whenever tools are attached (idempotent, fail-open).
+    if is_deepseek and isinstance(upstream_payload.get("tools"), list) and upstream_payload.get("tools"):
+        try:
+            _ds_tag = "[bsl-deepseek-complete]"
+            _ds_rule = (
+                f"\n\n{_ds_tag} Execution Persistence: When tools are provided, "
+                "execute the user's task continuously from start to finish. NEVER "
+                "stop midway to narrate next steps, announce plans, or summarize "
+                "partial work without emitting the next tool call. Only end your "
+                "turn in plain text once every requirement is implemented and verified."
+            )
+            if _is_anthropic_fmt:
+                _sys_val = upstream_payload.get("system")
+                if isinstance(_sys_val, str):
+                    if _ds_tag not in _sys_val:
+                        upstream_payload["system"] = _sys_val + _ds_rule
+                elif isinstance(_sys_val, list):
+                    _joined_sys = " ".join(str(p.get("text") or "") for p in _sys_val if isinstance(p, dict))
+                    if _ds_tag not in _joined_sys:
+                        upstream_payload["system"] = list(_sys_val) + [{"type": "text", "text": _ds_rule.strip()}]
+                else:
+                    upstream_payload["system"] = _ds_rule.strip()
+            elif isinstance(upstream_payload.get("messages"), list):
+                _msgs_list = upstream_payload["messages"]
+                _has_ds_tag = any(
+                    _ds_tag in str(m.get("content") or "")
+                    for m in _msgs_list
+                    if isinstance(m, dict) and m.get("role") == "system"
+                )
+                if not _has_ds_tag:
+                    _sys_idx = next(
+                        (i for i, m in enumerate(_msgs_list) if isinstance(m, dict) and m.get("role") == "system"),
+                        None,
+                    )
+                    if _sys_idx is not None and isinstance(_msgs_list[_sys_idx].get("content"), str):
+                        _msgs_list[_sys_idx] = {
+                            **_msgs_list[_sys_idx],
+                            "content": _msgs_list[_sys_idx]["content"] + _ds_rule,
+                        }
+                    else:
+                        _msgs_list.insert(0, {"role": "system", "content": _ds_rule.strip()})
+        except Exception:
+            pass
+
     # Deterministic JSON serialization (sort_keys) protects GLM/DeepSeek implicit
     # prefix caching by guaranteeing byte-for-byte stable payloads. The actual
     # serialization now happens inside _build_req below so retries stay stable too.
@@ -11868,7 +13210,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     if provider_name == "antigravity" or _upstream_host in _ANTIGRAVITY_NATIVE_HOSTS:
         _ag_acct_id = ""
         try:
-            _ag_acct_id = _oauth_antiban.extract_account_id(active_conn, conn_idx or 0)
+            _ag_acct_id = _oauth_antiban.extract_account_id(active_conn, _active_conn_index or 0)
         except Exception:
             _ag_acct_id = ""
         try:
@@ -12015,7 +13357,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 _deadline = time.monotonic() + CHAIN_TOTAL_BUDGET
             return await _process_chat_completion(
                 body, client_wants_anthropic, client_wants_gemini,
-                _retry_state={'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _deadline},
+                _retry_state=_propagate_retry_state(
+                    _retry_state,
+                    {'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _deadline},
+                ),
                 request=request,
             )
         if _budget_remaining <= 0:
@@ -12026,14 +13371,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             print(f"[AFZ-DEADLINE] chain budget exhausted after {_elapsed:.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
         # NEVER-STOP RETRY (2026-08-31): no next entry (or budget dead) —
         # wrap to pass 2+ instead of a terminal 400.
-        # Bug 2 B1: share the single terminal choke point so a terminal
-        # payload-defect 400 surfaces instead of wrapping forever.
-        if _combo_infinite_retry_enabled(config) and not _probe_wrap_terminal(
-            400, str(_ue_err), "unicode_serialization_exhausted"
+        if _should_allow_pass_wrap(
+            model, config, _retry_state, active_chain, 400, str(_ue_err), "unicode_serialization_exhausted",
+            request=request,
         ):
             _backoff, _wrap = _combo_restart_or_give_up(
                 model, _retry_state, active_chain, original_model,
                 _cache_breakpoints, request, reason="unicode_serialization_exhausted",
+                status_code=400,
+                err_text=str(_ue_err),
             )
             # Bug 2 Part A: sentinel, not recursion — stack O(1) in passes.
             raise _ComboWrapRestart(_backoff, _wrap)
@@ -12381,13 +13727,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     raise _ComboFallbackNeeded(
                         status_code,
                         err,
-                        {
-                            "chain": active_chain,
-                            "idx": _mid_next_idx,
-                            "cache_bp": _cache_breakpoints,
-                            "original_model": original_model,
-                            "deadline": _chain_deadline,
-                        },
+                        _propagate_retry_state(
+                            _retry_state,
+                            {
+                                "chain": active_chain,
+                                "idx": _mid_next_idx,
+                                "cache_bp": _cache_breakpoints,
+                                "original_model": original_model,
+                                "deadline": _chain_deadline,
+                            },
+                        ),
                     )
             elif _emit.may_fallback(f"midstream_transport_{status_code}"):
                 # NEVER-STOP RETRY (2026-08-31): chain exhausted pre-emission
@@ -12581,6 +13930,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
     # gemini_egress_stream emits its heartbeat before awaiting upstream headers
     # and already translates upstream failures into Gemini SSE error frames.
     def _mark_conn_failed_for_retry(_st: dict, _sc: int, _err_msg: str = "") -> dict:
+        if isinstance(_st, dict):
+            _propagate_retry_state(_retry_state, _st)
         if _active_conn_index is not None and isinstance(_st, dict):
             _leaf_tc_key = f"{provider_name}/{target_model}"
             _tc = {k: list(v) for k, v in ((_retry_state or {}).get("tried_conns") or {}).items()}
@@ -12592,7 +13943,25 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             try:
                 from app.utils.model_resolver import untried_connection_count as _ucc_retry
                 _is_model_404 = int(_sc or 0) == 404 and "model" in str(_err_msg or "").lower()
-                if not _is_model_404 and _ucc_retry(config, provider_name, target_model, set(_prov_tc)) > 0:
+                # Combo fallback order contract (2026-11-25): when a combo chain contains
+                # other fallback models, ANY failure on the current model must advance
+                # immediately to the next model in the fallback list (`_st["idx"]` is already
+                # `_next_idx = current + 1`) instead of pinning `_st["idx"]` on the same
+                # failing model across all sibling keys. `tried_conns[provider/model]` keeps
+                # the failed key recorded so Pass 2 of `expand_chain_for_retries` rotates to
+                # sibling keys only after all fallback models have had their turn.
+                # Single-model combos / direct multi-key calls (no other fallback model in
+                # the chain) retain same-leaf key rotation.
+                _st_chain = _st.get("chain") or active_chain or []
+                _has_other_fallback_model = any(
+                    (_cm != target_model or _cp != provider_name)
+                    for _cm, _cp, *_ in _st_chain
+                )
+                if (
+                    not _has_other_fallback_model
+                    and not _is_model_404
+                    and _ucc_retry(config, provider_name, target_model, set(_prov_tc)) > 0
+                ):
                     _st["idx"] = (_retry_state.get("idx", 0) if isinstance(_retry_state, dict) else 0)
                 else:
                     # Moving to the next model ID in the chain: clear the provider-wide legacy key
@@ -12612,7 +13981,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         return _st
 
     _probe_resp = None
-    if _should_probe_stream_status(is_stream, active_chain, client_wants_gemini):
+    if _should_probe_stream_status(
+        is_stream, active_chain, client_wants_gemini
+    ) and not _should_serialize_kiro_single_key(config, provider_name, target_model):
         try:
             # RC6: bound the pre-header wait for OpenAI/Anthropic combo streams.
             # On timeout, re-raise as a transport error so the existing
@@ -12727,13 +14098,88 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             if _probe_resp.status_code != 200:
                 await _probe_resp.aclose()
                 _err_text_short = _err_text[:500]
-                _dump_upstream_failure(
-                    provider_name, target_model, _upstream_url, headers,
-                    upstream_payload, _probe_resp.status_code, _err_text_short,
-                )
                 _log_upstream_http_error_forensics(
                     _probe_resp.status_code, provider_name, target_model,
                     active_conn, _active_conn_index, _err_text_short,
+                )
+                if is_http_or_sse_classifier_refusal(_probe_resp.status_code, _err_text):
+                    _ok_pr, _clean_pr, _const_pr = _try_build_fel_v7_same_model_retry(
+                        body,
+                        _retry_state,
+                        config,
+                        request,
+                        provider_name=provider_name,
+                        target_model=target_model,
+                        vis_text=_err_text,
+                    )
+                    if _ok_pr and _clean_pr is not None:
+                        if await _is_request_disconnected(request):
+                            return Response(status_code=499)
+                        if request is not None and getattr(request, "state", None) is not None:
+                            request.state.bsl_fel_v7_retried = True
+                        fel_event(
+                            "reprojection_pass1",
+                            model=target_model,
+                            provider=provider_name,
+                            details={
+                                "stream": True,
+                                "stage": "probe_status_peek",
+                                "status": _probe_resp.status_code,
+                                "constellation": _const_pr,
+                            },
+                        )
+                        _same_pr_state = _build_fel_v7_same_model_retry_state(
+                            _retry_state,
+                            target_model=target_model,
+                            provider_name=provider_name,
+                            combo_thinking_override=combo_thinking_override,
+                            cache_bp=_cache_breakpoints,
+                            original_model=original_model,
+                            chain_deadline=_chain_deadline,
+                            clean_body=_clean_pr,
+                        )
+                        return await _process_chat_completion(
+                            _clean_pr,
+                            client_wants_anthropic,
+                            client_wants_gemini,
+                            _retry_state=_same_pr_state,
+                            request=request,
+                            _stream_guard=_stream_guard,
+                        )
+                    # Pass-2 already attempted on cyber-policy 400/403: do NOT downgrade
+                    # to a substitute model and do NOT enter never-stop wrap loop!
+                    _exhausted_msg = _err_text_short or f"upstream_{_probe_resp.status_code}"
+                    if client_wants_gemini:
+                        async def _gemini_cyber_err():
+                            from app.compat.adapters.gemini import terminal_error_frame as _g_term
+                            yield gemini_sse_data(_g_term(_probe_resp.status_code, _exhausted_msg, target_model))
+                            yield GEMINI_SSE_DONE
+                        return StreamingResponse(
+                            _wrap_client_stream(_gemini_cyber_err(), next_stream_id(), protocol="gemini"),
+                            media_type="text/event-stream",
+                            headers=gemini_response_headers(stream=True),
+                        )
+                    if is_stream:
+                        async def _sse_cyber_err():
+                            if client_wants_anthropic:
+                                for _tf in _anthropic_terminal_error_frames(_exhausted_msg, target_model):
+                                    yield _tf
+                            else:
+                                yield f"data: {json.dumps({'error': {'message': _exhausted_msg, 'type': 'proxy_error', 'code': _probe_resp.status_code}})}\n\n".encode("utf-8")
+                                yield b"data: [DONE]\n\n"
+                        return StreamingResponse(
+                            _wrap_client_stream(
+                                _sse_cyber_err(),
+                                next_stream_id(),
+                                protocol="anthropic" if client_wants_anthropic else "openai",
+                            ),
+                            media_type="text/event-stream",
+                            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+                        )
+                    return JSONResponse({"error": _exhausted_msg}, status_code=_probe_resp.status_code)
+                _dump_upstream_failure(
+                    provider_name, target_model, _upstream_url, headers,
+                    upstream_payload, _probe_resp.status_code, _err_text_short,
                 )
                 obs.log_request(
                     provider=provider_name, model=target_model,
@@ -12788,8 +14234,18 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 # thought_signature 400 was wrapped forever instead of
                 # surfacing once. Bug 2 Part A: raise the pass-boundary
                 # sentinel instead of recursing (stack O(1) in passes).
-                if _combo_infinite_retry_enabled(config) and not _probe_wrap_terminal(
-                    _probe_resp.status_code, _err_text, "probe_exhausted"
+                if await _is_request_disconnected(request):
+                    if _probe_resp is not None:
+                        try:
+                            await _probe_resp.aclose()
+                        except Exception:
+                            pass
+                        _probe_resp = None
+                    return Response(status_code=499)
+                _probe_sc = _probe_resp.status_code
+                if _should_allow_pass_wrap(
+                    model, config, _retry_state, active_chain, _probe_sc, _err_text, "probe_exhausted",
+                    request=request,
                 ):
                     if _probe_resp is not None:
                         try:
@@ -12800,6 +14256,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     _backoff, _wrap = _combo_restart_or_give_up(
                         model, _retry_state, active_chain, original_model,
                         _cache_breakpoints, request, reason="probe_exhausted",
+                        status_code=_probe_sc,
+                        err_text=_err_text,
                     )
                     raise _ComboWrapRestart(_backoff, _wrap)
                 if client_wants_gemini:
@@ -12903,8 +14361,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 except BaseException:
                     pass
                 _probe_resp = None
-            if not isinstance(_probe_base_err, Exception):
+            # BUG R1 FIX: _ComboWrapRestart and _ComboFallbackNeeded are control-flow
+            # sentinels raised from probe_exhausted — never swallow them as probe network
+            # errors (which logged a bogus status=500 and triggered a duplicate wrap).
+            if not isinstance(_probe_base_err, Exception) or isinstance(
+                _probe_base_err, (_ComboWrapRestart, _ComboFallbackNeeded, _RefusalSameModelRetryNeeded)
+            ):
                 raise
+            if await _is_request_disconnected(request):
+                return Response(status_code=499)
             _probe_err = _probe_base_err
             obs.log_request(
                 provider=provider_name, model=target_model,
@@ -12941,14 +14406,22 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # this passes through and wraps exactly as before; a wrapped
             # HTTPStatusError-style failure still gets the guard). Bug 2 Part
             # A: sentinel, not recursion — stack O(1) in passes.
-            if _combo_infinite_retry_enabled(config) and not _probe_wrap_terminal(
-                getattr(getattr(_probe_err, "response", None), "status_code", None),
-                str(_probe_err),
-                "probe_network_exhausted",
+            _probe_net_sc = (
+                getattr(getattr(_probe_err, "response", None), "status_code", None)
+                or (504 if isinstance(_probe_err, (httpx.TimeoutException, TimeoutError, asyncio.TimeoutError)) else 502)
+            )
+            _probe_net_err_str = str(_probe_err) or type(_probe_err).__name__
+            if _should_allow_pass_wrap(
+                model, config, _retry_state, active_chain, _probe_net_sc, _probe_net_err_str, "probe_network_exhausted",
+                request=request,
             ):
+                if await _is_request_disconnected(request):
+                    return Response(status_code=499)
                 _backoff, _wrap = _combo_restart_or_give_up(
                     model, _retry_state, active_chain, original_model,
                     _cache_breakpoints, request, reason="probe_network_exhausted",
+                    status_code=_probe_net_sc,
+                    err_text=_probe_net_err_str,
                 )
                 raise _ComboWrapRestart(_backoff, _wrap)
             _probe_resp = None
@@ -12982,7 +14455,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 and getattr(_fel, "max_recoveries", 0) >= 1
                 and request is not None
                 and not getattr(request.state, "bsl_fel_recovered", False)
+                and not getattr(request.state, "bsl_fel_v7_retried", False)
                 and isinstance(body, dict)
+                and not body.get("_bsl_refusal_safe_retry")
+                and not body_has_hard_harm(body)
                 and isinstance(body.get("messages"), list)
                 and _fel_family_enabled(config, detect_family(target_model, provider_name))
             )
@@ -13030,7 +14506,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 yield _b
                             _buffered.clear()
                             continue
-                        if _peek_obs._had_tools or len(_buffered) >= 120:
+                        if _peek_obs._had_tools or getattr(_peek_obs, "_had_thinking", False):
+                            _passthrough = True
+                            for _b in _buffered:
+                                yield _b
+                            _buffered.clear()
+                            continue
+                        if len(_buffered) >= 120:
                             _passthrough = True
                             for _b in _buffered:
                                 yield _b
@@ -13038,6 +14520,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             continue
                         _peek_text = "".join(_peek_obs._text_chunks)
                         if len(_peek_text) >= 40:
+                            if is_hard_harm_refusal(_peek_text):
+                                _passthrough = True
+                                for _b in _buffered:
+                                    yield _b
+                                _buffered.clear()
+                                continue
                             _rc = classify_refusal(_peek_text, had_tool_calls=False)
                             if _rc in ("refusal", "tos_lecture"):
                                 _triggered_class = _rc
@@ -13055,7 +14543,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
 
                 if not _triggered_class and _buffered and not _passthrough:
                     _peek_text = "".join(_peek_obs._text_chunks)
-                    if _peek_text and not _peek_obs._had_tools:
+                    if _peek_text and not _peek_obs._had_tools and not is_hard_harm_refusal(_peek_text):
                         _rc = classify_refusal(_peek_text, had_tool_calls=False)
                         if _rc in ("refusal", "tos_lecture"):
                             _triggered_class = _rc
@@ -13216,6 +14704,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             )
 
         async def raw_upstream(_attempt: int = 0):
+            nonlocal start_time
             resp = None
             buffer = ""
             # Tracks whether any byte of UPSTREAM MODEL OUTPUT reached the client.
@@ -13231,6 +14720,14 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # stall, mid-stream transport) was then refused, and the combo chain
             # for blacksand-chat was dead on arrival.
             _emit = StreamEmissionState()
+            _refusal_retry_triggered = False
+            _delivered_terminal_refusal = False
+            _kiro_raw_lock = (
+                _get_kiro_single_key_lock(provider_name, _active_conn_index)
+                if _should_serialize_kiro_single_key(config, provider_name, target_model)
+                else None
+            )
+            _kiro_raw_acquired = False
             try:
                 if original_model == "blacksand-chat" and not _is_anthropic_fmt and not client_wants_anthropic and not client_wants_gemini:
                     mock_prefill = 'data: {"choices": [{"delta": {"reasoning_content": "BSL Router: Routing payload...\n"}}]}\n\n'
@@ -13238,6 +14735,29 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     # output has been delivered, so failover remains transparent -
                     # this status line stays valid whichever provider answers.
                     yield mock_prefill.encode('utf-8')
+
+                if _kiro_raw_lock is not None:
+                    _raw_lk_t0 = time.monotonic()
+                    while True:
+                        if await _client_disconnected():
+                            if _should_mark_client_disconnected(stats):
+                                stats["error"] = "client_disconnected"
+                                stats["status"] = 499
+                            return
+                        try:
+                            await asyncio.wait_for(_kiro_raw_lock.acquire(), timeout=0.25)
+                            _kiro_raw_acquired = True
+                            _raw_waited = time.monotonic() - _raw_lk_t0
+                            if _raw_waited >= 0.5:
+                                start_time = time.time()
+                                print(
+                                    f"[KiroSingleFlight] {provider_name}/{target_model}[{_active_conn_index}] "
+                                    f"acquired raw slot after {_raw_waited:.1f}s queue wait",
+                                    flush=True,
+                                )
+                            break
+                        except asyncio.TimeoutError:
+                            pass
 
                 if _probe_resp is not None:
                     resp = _probe_resp
@@ -13286,6 +14806,26 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         resp.status_code, provider_name, target_model,
                         active_conn, _active_conn_index, err_text,
                     )
+                    if is_http_or_sse_classifier_refusal(resp.status_code, err_text):
+                        _ok_rr, _clean_rr, _const_rr = _try_build_fel_v7_same_model_retry(
+                            body, _retry_state, config, request,
+                            provider_name=provider_name, target_model=target_model, vis_text=err_text,
+                        )
+                        if _ok_rr and _clean_rr is not None:
+                            _refusal_retry_triggered = True
+                            raise _RefusalSameModelRetryNeeded(_clean_rr, f"cyber_policy_{resp.status_code}", _const_rr)
+                        # Pass-2 already ran: surface once without benching or substituting.
+                        try:
+                            if client_wants_anthropic:
+                                for _tf in _anthropic_terminal_error_frames(err_text or f"upstream_{resp.status_code}", target_model):
+                                    yield _tf
+                            else:
+                                _err_frame = {"error": {"message": err_text or f"upstream_{resp.status_code}", "type": "proxy_error"}}
+                                yield f"data: {json.dumps(_err_frame)}\n\n".encode("utf-8")
+                                yield b"data: [DONE]\n\n"
+                        except Exception:
+                            pass
+                        return
                     bench_leaf(config, provider_name, target_model, resp.status_code, err_text, stats.get("out", 0))
                     # TERMINAL RELAY WALL (2026-09-24): upstream_safety_blocked /
                     # data_inspection_failed on 400/403 are hard provider walls,
@@ -13310,13 +14850,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     if _is_wall:
                         pass  # terminal wall: never advance, never wrap
                     elif active_chain and (_next_idx < len(active_chain) or _has_untried_sibling_conns()):
-                        _fb_state = {
-                            "chain": active_chain,
-                            "idx": _next_idx,
-                            "cache_bp": _cache_breakpoints,
-                            "original_model": original_model,
-                            "deadline": _chain_deadline,
-                        }
+                        _fb_state = _propagate_retry_state(
+                            _retry_state,
+                            {
+                                "chain": active_chain,
+                                "idx": _next_idx,
+                                "cache_bp": _cache_breakpoints,
+                                "original_model": original_model,
+                                "deadline": _chain_deadline,
+                            },
+                        )
                         print(f"[Combo Fallback] '{model}' raw upstream {resp.status_code} for {target_model}/{provider_name} — advancing to entry {_next_idx}", flush=True)
                         if _chain_budget_remaining() <= 0:
                             print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
@@ -13334,11 +14877,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             err_text[:500], reason="openai_raw_upstream_exhausted",
                         )
                     print(f"[AFZ-FORENSIC] route=chat stream=True status={resp.status_code} leaf={provider_name}/{target_model} active_streams={active_stream_count()} reason=stream_precontent_error_frame", flush=True)
-                    # No fallback available — emit error + [DONE] so IDE unblocks
+                    # No fallback available — emit error + terminal frame so IDE unblocks
                     try:
-                        _err_frame = {"error": {"message": err_text or f"upstream_{resp.status_code}", "type": "proxy_error"}}
-                        yield f"data: {json.dumps(_err_frame)}\n\n".encode("utf-8")
-                        yield b"data: [DONE]\n\n"
+                        if client_wants_anthropic:
+                            for _tf in _anthropic_terminal_error_frames(err_text or f"upstream_{resp.status_code}", target_model):
+                                yield _tf
+                        else:
+                            _err_frame = {"error": {"message": err_text or f"upstream_{resp.status_code}", "type": "proxy_error"}}
+                            yield f"data: {json.dumps(_err_frame)}\n\n".encode("utf-8")
+                            yield b"data: [DONE]\n\n"
                     except Exception:
                         pass
                     return
@@ -13373,6 +14920,82 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 while True:
                     _codex_retry_overload = False
                     _codex_pre_buf = []
+                    _fel_v7_stream_enabled = _is_fel_v7_same_model_recovery_enabled(config, request)
+                    _raw_ref_buf = (
+                        StreamRefusalPreCommitBuffer()
+                        if provider_name != "kiro"
+                        else None
+                    )
+
+                    _held_raw_done: list[bytes] = []
+                    _deferred_thought_eof: list[bytes] = []
+                    _hold_openai_done = (not client_wants_anthropic) and (not _is_responses_provider(provider_name, provider_config))
+
+                    def _filter_done_frames(_items: list) -> list:
+                        if not _hold_openai_done:
+                            return _items
+                        _kept = []
+                        for _it in _items:
+                            if (
+                                isinstance(_it, (bytes, bytearray))
+                                and b"data: [DONE]" in _it
+                                and not _detector_has_visible_body(_detector)
+                                and getattr(_detector, "tool_call_chars", 0) == 0
+                            ):
+                                _raw_b = bytes(_it)
+                                if _raw_b.strip() == b"data: [DONE]":
+                                    _held_raw_done.append(_raw_b)
+                                else:
+                                    # TCP may coalesce the final finish chunk and `data: [DONE]` into one read;
+                                    # split out `data: [DONE]` so `_held_raw_done` still gates notice emission.
+                                    _non_done_lines = [
+                                        _ln for _ln in _raw_b.splitlines(keepends=True)
+                                        if _ln.strip() != b"data: [DONE]"
+                                    ]
+                                    _prefix_b = b"".join(_non_done_lines)
+                                    if _prefix_b.strip():
+                                        _kept.append(_prefix_b)
+                                    _held_raw_done.append(b"data: [DONE]\n\n")
+                            else:
+                                _kept.append(_it)
+                        return _kept
+
+                    def _gate_raw_chunk(_b_out: bytes) -> list:
+                        nonlocal _refusal_retry_triggered, _delivered_terminal_refusal
+                        if not _b_out:
+                            return []
+                        if _raw_ref_buf is None or _raw_ref_buf.committed:
+                            _out_list = _filter_done_frames([_b_out])
+                            for _ol in _out_list:
+                                if not is_scaffolding_only(_ol):
+                                    _emit.mark_emitted(_ol)
+                            return _out_list
+                        _rdy = _raw_ref_buf.feed(_b_out)
+                        if _raw_ref_buf.refused:
+                            if _fel_v7_stream_enabled:
+                                _ok_r, _cln_r, _cst_r = _try_build_fel_v7_same_model_retry(
+                                    body, _retry_state, config, request,
+                                    provider_name=provider_name, target_model=target_model,
+                                    vis_text=_raw_ref_buf.vis_text, stop_details=_raw_ref_buf.last_stop_details,
+                                )
+                                if _ok_r and _cln_r is not None:
+                                    _refusal_retry_triggered = True
+                                    raise _RefusalSameModelRetryNeeded(_cln_r, _raw_ref_buf.refusal_reason, _cst_r)
+                            _raw_ref_buf.committed = True
+                            _delivered_terminal_refusal = True
+                            _flushed = _filter_done_frames(list(_raw_ref_buf.refused_chunks))
+                            _raw_ref_buf.refused_chunks.clear()
+                            for _fl in _flushed:
+                                if not is_scaffolding_only(_fl):
+                                    _emit.mark_emitted(_fl)
+                            return _flushed
+                        if _raw_ref_buf.committed:
+                            _rdy = _filter_done_frames(list(_rdy))
+                            for _fl in _rdy:
+                                if not is_scaffolding_only(_fl):
+                                    _emit.mark_emitted(_fl)
+                        return _rdy
+
                     _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
                     buffer = ""
                     _anth_lifecycle = (
@@ -13380,8 +15003,133 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         if (client_wants_anthropic and _is_anthropic_fmt)
                         else None
                     )
+                    _anth_ping_idle_s = (
+                        _kiro_ping_idle_seconds(config, provider_name, target_model)
+                        if _anth_lifecycle is not None
+                        else 0.0
+                    )
+                    _anth_has_tools = isinstance(upstream_payload, dict) and bool(upstream_payload.get("tools"))
+                    _anth_req_tc = isinstance(upstream_payload, dict) and _is_tool_choice_required(upstream_payload.get("tool_choice"))
+                    _anth_saw_tool_use = False
+                    _anth_pre_idle_s = _kiro_pre_content_idle_seconds(
+                        config, provider_name, target_model,
+                        prompt_chars=_estimate_payload_prompt_chars(upstream_payload),
+                    )
+                    _anth_pre_start_t = time.monotonic()
+                    _anth_blk_types: dict[int, str] = {}
+                    _anth_deliverable_closed_at = None
+                    _anth_ping_tail_done = False
+
+                    def _eff_anth_post_idle() -> float:
+                        if _anth_ping_idle_s <= 0.0:
+                            return 0.0
+                        if _anth_req_tc and not _anth_saw_tool_use:
+                            return 0.0
+                        if _anth_has_tools and not _anth_saw_tool_use:
+                            return max(_anth_ping_idle_s, 60.0)
+                        if _anth_saw_tool_use:
+                            return max(_anth_ping_idle_s, 30.0)
+                        return _anth_ping_idle_s
+                    _pending_rp_task = None
                     try:
-                        async for chunk in _pump(resp.aiter_raw(), _emit, _attempt, "openai"):
+                        _raw_pump_it = _pump(resp.aiter_raw(), _emit, _attempt, "openai").__aiter__()
+                        while True:
+                            _eff_ap_to = _eff_anth_post_idle() if (_anth_ping_idle_s > 0.0 and _anth_deliverable_closed_at is not None) else 0.0
+                            _raw_read_to = 0.0
+                            if _eff_ap_to > 0.0 and _anth_deliverable_closed_at is not None:
+                                _raw_read_to = max(0.05, _eff_ap_to - (time.monotonic() - _anth_deliverable_closed_at))
+                            elif (
+                                _anth_pre_idle_s > 0.0
+                                and not _emit.emitted
+                                and stats.get("ttft", 0.0) == 0.0
+                            ):
+                                _raw_read_to = max(
+                                    0.05,
+                                    min(GEMINI_EGRESS_MAX_IDLE, _anth_pre_idle_s) - (time.monotonic() - _anth_pre_start_t),
+                                )
+                            _ref_hold_to = (
+                                _raw_ref_buf.next_hold_timeout_s()
+                                if (_raw_ref_buf is not None and not _raw_ref_buf.committed)
+                                else None
+                            )
+                            if _raw_read_to > 0.0 or _ref_hold_to is not None:
+                                _wait_to = (
+                                    _raw_read_to
+                                    if _ref_hold_to is None
+                                    else (_ref_hold_to if _raw_read_to <= 0.0 else min(_raw_read_to, _ref_hold_to))
+                                )
+                                if _pending_rp_task is None:
+                                    _pending_rp_task = asyncio.ensure_future(_raw_pump_it.__anext__())
+                                _rp_done, _ = await asyncio.wait({_pending_rp_task}, timeout=max(0.01, _wait_to))
+                                if not _rp_done:
+                                    if _ref_hold_to is not None and _raw_ref_buf is not None and not _raw_ref_buf.committed:
+                                        _raw_exp = _raw_ref_buf.flush_if_expired()
+                                        if _raw_ref_buf.refused:
+                                            if _fel_v7_stream_enabled:
+                                                _ok_r, _cln_r, _cst_r = _try_build_fel_v7_same_model_retry(
+                                                    body, _retry_state, config, request,
+                                                    provider_name=provider_name, target_model=target_model,
+                                                    vis_text=_raw_ref_buf.vis_text, stop_details=_raw_ref_buf.last_stop_details,
+                                                )
+                                                if _ok_r and _cln_r is not None:
+                                                    _refusal_retry_triggered = True
+                                                    raise _RefusalSameModelRetryNeeded(_cln_r, _raw_ref_buf.refusal_reason, _cst_r)
+                                            _raw_ref_buf.committed = True
+                                            _delivered_terminal_refusal = True
+                                            _flushed_exp = _filter_done_frames(list(_raw_ref_buf.refused_chunks))
+                                            _raw_ref_buf.refused_chunks.clear()
+                                            for _fl in _flushed_exp:
+                                                if not is_scaffolding_only(_fl):
+                                                    _emit.mark_emitted(_fl)
+                                                yield _fl
+                                            continue
+                                        if _raw_exp:
+                                            for _fl in _filter_done_frames(list(_raw_exp)):
+                                                if not is_scaffolding_only(_fl):
+                                                    _emit.mark_emitted(_fl)
+                                                yield _fl
+                                            continue
+                                        if _raw_read_to <= 0.0:
+                                            continue
+                                    _pending_rp_task.cancel()
+                                    try:
+                                        await _pending_rp_task
+                                    except BaseException:
+                                        pass
+                                    _pending_rp_task = None
+                                    if _eff_ap_to > 0.0 and _anth_deliverable_closed_at is not None:
+                                        print(
+                                            f"[AnthropicRaw] {provider_name}/{target_model}: post-content_block_stop "
+                                            f"silent tail exceeded {_eff_ap_to:.0f}s — finalizing cleanly",
+                                            flush=True,
+                                        )
+                                        _anth_ping_tail_done = True
+                                        break
+                                    print(
+                                        f"[AnthropicRaw] {provider_name}/{target_model}: pre-content silent "
+                                        f"zombie exceeded {_anth_pre_idle_s:.0f}s — aborting for fallback",
+                                        flush=True,
+                                    )
+                                    stats["error"] = "upstream_idle_timeout"
+                                    stats["status"] = 504
+                                    _anth_ping_tail_done = True
+                                    break
+                                _rp_done_task = _pending_rp_task
+                                _pending_rp_task = None
+                                try:
+                                    chunk = _rp_done_task.result()
+                                except StopAsyncIteration:
+                                    break
+                            else:
+                                try:
+                                    if _pending_rp_task is not None:
+                                        _rp_done_task = _pending_rp_task
+                                        _pending_rp_task = None
+                                        chunk = await _rp_done_task
+                                    else:
+                                        chunk = await _raw_pump_it.__anext__()
+                                except StopAsyncIteration:
+                                    break
                             _detector.feed(chunk)
                             if await _client_disconnected():
                                 if _should_mark_client_disconnected(stats):
@@ -13394,28 +15142,28 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             try:
                                 text_chunk = _utf8_dec.decode(chunk)
                                 if stats["ttft"] == 0.0 and provider_name != "codex":
-                                    _is_openai_content = (
-                                        _openai_chunk_carries_output(text_chunk)
-                                        # CODEX FIX (2026-08-22): Responses SSE emits
-                                        # response.output_text.delta frames (delta field,
-                                        # no content/text keys). Without this match TTFT
-                                        # never sets and the zero_output_tokens guard
-                                        # below kills a healthy 200 stream pre-emission.
-                                        or '"output_text.delta"' in text_chunk
-                                    )
-                                    _is_gemini_content = (
-                                        '"candidates"' in text_chunk or
-                                        '"parts"' in text_chunk or
-                                        '"role":"' in text_chunk
-                                    )
                                     _is_anthropic_content = (
                                         '"text_delta"' in text_chunk or
                                         '"content_block_delta"' in text_chunk or
                                         '"message_delta"' in text_chunk or
-                                        '"thinking_delta"' in text_chunk
+                                        '"thinking_delta"' in text_chunk or
+                                        '"input_json_delta"' in text_chunk
                                     )
-                                    if _is_openai_content or _is_gemini_content or _is_anthropic_content:
-                                        stats["ttft"] = time.time() - start_time
+                                    if _is_anthropic_fmt:
+                                        if _is_anthropic_content:
+                                            stats["ttft"] = time.time() - start_time
+                                    else:
+                                        _is_openai_content = (
+                                            _openai_chunk_carries_output(text_chunk)
+                                            or '"output_text.delta"' in text_chunk
+                                        )
+                                        _is_gemini_content = (
+                                            '"candidates"' in text_chunk or
+                                            '"parts"' in text_chunk or
+                                            '"role":"' in text_chunk
+                                        )
+                                        if _is_openai_content or _is_gemini_content or _is_anthropic_content:
+                                            stats["ttft"] = time.time() - start_time
                                 buffer += text_chunk
                                 lines = buffer.split("\n")
                                 buffer = lines.pop()
@@ -13429,12 +15177,59 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             data_json = json.loads(data_str)
                                             if _anth_lifecycle is not None and isinstance(data_json, dict):
                                                 _anth_lifecycle.observe_event(data_json)
+                                                if _anth_ping_idle_s > 0.0:
+                                                    _ev_tp = str(data_json.get("type") or "")
+                                                    if _ev_tp == "content_block_start":
+                                                        _anth_deliverable_closed_at = None
+                                                        _bi = data_json.get("index")
+                                                        _cb = data_json.get("content_block")
+                                                        if isinstance(_bi, int) and isinstance(_cb, dict):
+                                                            _anth_blk_types[_bi] = str(_cb.get("type") or "")
+                                                    elif _ev_tp in ("content_block_delta", "message_delta"):
+                                                        _anth_deliverable_closed_at = None
+                                                    elif _ev_tp == "content_block_stop":
+                                                        _si = data_json.get("index")
+                                                        _st_tp = _anth_blk_types.get(_si) if isinstance(_si, int) else ""
+                                                        if _st_tp == "tool_use":
+                                                            _anth_saw_tool_use = True
+                                                        if _st_tp in ("text", "tool_use"):
+                                                            _anth_deliverable_closed_at = time.monotonic()
+                                                    elif _ev_tp == "ping":
+                                                        _eff_ap = _eff_anth_post_idle()
+                                                        if (
+                                                            _eff_ap > 0.0
+                                                            and _anth_deliverable_closed_at is not None
+                                                            and (time.monotonic() - _anth_deliverable_closed_at) >= _eff_ap
+                                                        ):
+                                                            print(
+                                                                f"[AnthropicRaw] {provider_name}/{target_model}: post-content_block_stop "
+                                                                f"ping-only tail exceeded {_eff_ap:.0f}s — finalizing cleanly",
+                                                                flush=True,
+                                                            )
+                                                            _anth_ping_tail_done = True
+                                                            break
+                                                        if (
+                                                            _anth_pre_idle_s > 0.0
+                                                            and not _emit.emitted
+                                                            and stats.get("ttft", 0.0) == 0.0
+                                                            and (time.monotonic() - _anth_pre_start_t) >= min(GEMINI_EGRESS_MAX_IDLE, _anth_pre_idle_s)
+                                                        ):
+                                                            print(
+                                                                f"[AnthropicRaw] {provider_name}/{target_model}: pre-content ping-only "
+                                                                f"zombie exceeded {_anth_pre_idle_s:.0f}s — aborting for fallback",
+                                                                flush=True,
+                                                            )
+                                                            stats["error"] = "upstream_idle_timeout"
+                                                            stats["status"] = 504
+                                                            _anth_ping_tail_done = True
+                                                            break
                                             if _is_responses_provider(provider_name, provider_config) and _codex_event_carries_output(data_json):
                                                 _codex_chunk_has_output = True
                                                 if stats["ttft"] == 0.0:
                                                     stats["ttft"] = time.time() - start_time
-                                            if isinstance(data_json, dict) and data_json.get("type") in ("response.failed", "error"):
-                                                _rf_sc, _rf_msg = _explicit_sse_failure_event(data_json)
+                                            _rf_expl = _explicit_sse_failure_event(data_json)
+                                            if _rf_expl is not None:
+                                                _rf_sc, _rf_msg = _rf_expl
                                                 if not _emit.emitted and _is_responses_provider(provider_name, provider_config) and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
                                                     _codex_overload_attempt += 1
                                                     _codex_retry_overload = True
@@ -13448,9 +15243,29 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                 stats["status"] = _rf_sc
                                                 stats["error"] = _rf_msg
                                                 if not _emit.emitted:
+                                                    _fel_v7_guard_sse_refusal(
+                                                        "raw_upstream/explicit",
+                                                        _rf_sc, _rf_msg,
+                                                        body=body, _retry_state=_retry_state,
+                                                        config=config, request=request,
+                                                        provider_name=provider_name,
+                                                        target_model=target_model,
+                                                    )
                                                     bench_leaf(config, provider_name, target_model, _rf_sc, _rf_msg, 0)
                                                     if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("codex_response_failed"):
-                                                        raise _ComboFallbackNeeded(_rf_sc, _rf_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                                        raise _ComboFallbackNeeded(
+                                                            _rf_sc, _rf_msg,
+                                                            _propagate_retry_state(
+                                                                _retry_state,
+                                                                {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline},
+                                                            ),
+                                                        )
+                                                    if _emit.may_fallback("explicit_sse_failure_wrap"):
+                                                        _raise_combo_wrap(
+                                                            model, config, request, _retry_state, active_chain,
+                                                            original_model, _cache_breakpoints, _rf_sc,
+                                                            _rf_msg, reason="explicit_sse_failure_exhausted",
+                                                        )
                                                 else:
                                                     # REQ-1 (P0, 2026-10-30): content already emitted —
                                                     # never splice a different provider into the live
@@ -13465,9 +15280,23 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                 stats["status"] = _inl_sc
                                                 stats["error"] = _inl_msg
                                                 _codex_pre_buf.clear()
+                                                _fel_v7_guard_sse_refusal(
+                                                    "raw_upstream/inline",
+                                                    _inl_sc, _inl_msg,
+                                                    body=body, _retry_state=_retry_state,
+                                                    config=config, request=request,
+                                                    provider_name=provider_name,
+                                                    target_model=target_model,
+                                                )
                                                 bench_leaf(config, provider_name, target_model, _inl_sc, _inl_msg, 0)
                                                 if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("inline_upstream_error"):
-                                                    raise _ComboFallbackNeeded(_inl_sc, _inl_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                                    raise _ComboFallbackNeeded(
+                                                        _inl_sc, _inl_msg,
+                                                        _propagate_retry_state(
+                                                            _retry_state,
+                                                            {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline},
+                                                        ),
+                                                    )
                                                 _raise_combo_wrap(
                                                     model, config, request, _retry_state, active_chain,
                                                     original_model, _cache_breakpoints, _inl_sc,
@@ -13487,22 +15316,22 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                 record_cache_warmth(provider_name, _active_conn_index, usage, tools_config=config.get("tools", {}))
                                         except json.JSONDecodeError:
                                             pass
-                            except _ComboFallbackNeeded:
+                            except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded, _RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE):
                                 raise
                             except Exception:
                                 pass
 
-                            if _codex_retry_overload:
+                            if _codex_retry_overload or _anth_ping_tail_done:
                                 break
 
                             if _is_responses_provider(provider_name, provider_config):
-                                if _codex_chunk_has_output:
-                                    _emit.mark_emitted(chunk)
-                                if _emit.emitted or stats.get("stream_completed") or stats.get("error"):
+                                if _codex_chunk_has_output or stats.get("stream_completed") or stats.get("error"):
                                     for _pb in _codex_pre_buf:
-                                        yield _pb
+                                        for _go in _gate_raw_chunk(_pb):
+                                            yield _go
                                     _codex_pre_buf.clear()
-                                    yield chunk
+                                    for _go in _gate_raw_chunk(chunk):
+                                        yield _go
                                 else:
                                     _codex_pre_buf.append(chunk)
                             elif _tool_guard is not None:
@@ -13510,30 +15339,23 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 # actually reaches the client (emission-state must
                                 # reflect delivered bytes, not inspected bytes).
                                 for _tg_out in _tool_guard.feed(chunk):
-                                    if not is_scaffolding_only(_tg_out):
-                                        _emit.mark_emitted(_tg_out)
-                                    yield _tg_out
+                                    for _go in _gate_raw_chunk(_tg_out):
+                                        yield _go
                             else:
                                 # BUG M (2026-09-27): an SSE keepalive/comment-only
-                                # chunk (": PING\n\n") must NOT flip emitted=True --
-                                # that vetoed every later fallback and surfaced the
-                                # client 502 on a mid-stream transport death. Yield
-                                # it (TTFT/keepalive) but commit only real content.
-                                # Hold non-comment scaffolding (e.g. OpenAI empty
-                                # role-priming delta) in _codex_pre_buf until the
-                                # first real output chunk arrives so inline HTTP-200
-                                # upstream error banners on chunk 2 can fail over
-                                # cleanly before any JSON frame reaches the client.
+                                # chunk (": PING\n\n") must NOT flip emitted=True.
                                 if not is_scaffolding_only(chunk):
                                     for _pb in _codex_pre_buf:
-                                        yield _pb
+                                        for _go in _gate_raw_chunk(_pb):
+                                            yield _go
                                     _codex_pre_buf.clear()
-                                    _emit.mark_emitted(chunk)
-                                    yield chunk
+                                    for _go in _gate_raw_chunk(chunk):
+                                        yield _go
                                 elif not _emit.emitted and not chunk.lstrip().startswith(b":"):
                                     _codex_pre_buf.append(chunk)
                                 else:
-                                    yield chunk
+                                    for _go in _gate_raw_chunk(chunk):
+                                        yield _go
                     except (httpx.RemoteProtocolError, httpx.TransportError) as _mid_err:
                         # BUG J: transport death mid-body. Route into the combo chain
                         # instead of falling through to `except Exception` (which
@@ -13544,6 +15366,14 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         )
                         # Not re-raised: fallback declined (content already sent, or
                         # chain exhausted). Fall through to the terminal frame below.
+                    finally:
+                        if _pending_rp_task is not None and not _pending_rp_task.done():
+                            _pending_rp_task.cancel()
+                            try:
+                                await _pending_rp_task
+                            except BaseException:
+                                pass
+                            _pending_rp_task = None
                     if buffer.strip().startswith("data:"):
                         try:
                             _tail_json = json.loads(buffer.strip()[5:].lstrip())
@@ -13571,8 +15401,45 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         stats["status"] = resp.status_code
                         continue
                     for _pb in _codex_pre_buf:
-                        yield _pb
+                        for _go in _gate_raw_chunk(_pb):
+                            yield _go
                     _codex_pre_buf.clear()
+                    if _raw_ref_buf is not None and not _raw_ref_buf.committed:
+                        _eof_ready = _raw_ref_buf.finalize()
+                        if _raw_ref_buf.refused:
+                            if _fel_v7_stream_enabled:
+                                _ok_r, _cln_r, _cst_r = _try_build_fel_v7_same_model_retry(
+                                    body, _retry_state, config, request,
+                                    provider_name=provider_name, target_model=target_model,
+                                    vis_text=_raw_ref_buf.vis_text, stop_details=_raw_ref_buf.last_stop_details,
+                                )
+                                if _ok_r and _cln_r is not None:
+                                    _refusal_retry_triggered = True
+                                    raise _RefusalSameModelRetryNeeded(_cln_r, _raw_ref_buf.refusal_reason, _cst_r)
+                            _raw_ref_buf.committed = True
+                            _delivered_terminal_refusal = True
+                            _fl_ref = _filter_done_frames(list(_raw_ref_buf.refused_chunks))
+                            _raw_ref_buf.refused_chunks.clear()
+                            for _fl in _fl_ref:
+                                if not is_scaffolding_only(_fl):
+                                    _emit.mark_emitted(_fl)
+                                yield _fl
+                        else:
+                            _filtered_eof = _filter_done_frames(list(_eof_ready))
+                            if (
+                                not _emit.emitted
+                                and stats.get("status") == 200
+                                and not stats.get("error")
+                                and not _detector_has_visible_body(_detector)
+                                and getattr(_detector, "tool_call_chars", 0) == 0
+                                and not _is_empty_output_exempt(target_model)
+                            ):
+                                _deferred_thought_eof.extend(_filtered_eof)
+                            else:
+                                for _fl in _filtered_eof:
+                                    if not is_scaffolding_only(_fl):
+                                        _emit.mark_emitted(_fl)
+                                    yield _fl
                     break
                 if _tool_guard is not None:
                     # ANTHROPIC TOOL REPAIR: release any block still held at
@@ -13584,7 +15451,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             yield _tg_out
                     except Exception:
                         pass
-                if should_splice_continuation(
+                if provider_name != "kiro" and should_splice_continuation(
                     truncated=_detector.truncated,
                     transport_died_partial=stats.get(TRANSPORT_DIED_PARTIAL_FLAG),
                     partial_text=_detector.partial_text,
@@ -13684,16 +15551,19 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         )
                     except Exception:
                         pass
-                if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft"):
+                if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft") and not _delivered_terminal_refusal:
                     _zero_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                     if active_chain and _zero_next_idx < len(active_chain):
-                        _zero_retry_state = {
-                            "chain": active_chain,
-                            "idx": _zero_next_idx,
-                            "cache_bp": _cache_breakpoints,
-                            "original_model": original_model,
-                            "deadline": _chain_deadline,
-                        }
+                        _zero_retry_state = _propagate_retry_state(
+                            _retry_state,
+                            {
+                                "chain": active_chain,
+                                "idx": _zero_next_idx,
+                                "cache_bp": _cache_breakpoints,
+                                "original_model": original_model,
+                                "deadline": _chain_deadline,
+                            },
+                        )
                         print(
                             f"[Combo Fallback] '{model}' OpenAI stream 200-with-0-tokens for "
                             f"{target_model}/{provider_name} — advancing to entry {_zero_next_idx}",
@@ -13706,14 +15576,100 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             # when real content streamed. Only advance pre-emission.
                             raise _ComboFallbackNeeded(504, "zero_output_tokens", _zero_retry_state)
                     else:
-                        # NEVER-STOP RETRY (2026-08-31): chain exhausted on
-                        # zero-token 200 — wrap to pass 2+ instead of falling
-                        # through to the terminal frames below.
+                        if _emit.may_fallback("zero_output_tokens"):
+                            # NEVER-STOP RETRY (2026-08-31): chain exhausted on
+                            # zero-token 200 — wrap to pass 2+ ONLY pre-emission
+                            # (prevents post-emission splice on binary EventStreams).
+                            _raise_combo_wrap(
+                                model, config, request, _retry_state, active_chain,
+                                original_model, _cache_breakpoints, 504,
+                                "zero_output_tokens", reason="openai_zero_tokens_chain_exhausted",
+                            )
+                if (
+                    stats.get("status") == 200
+                    and not stats.get("error")
+                    and not _delivered_terminal_refusal
+                    and not _detector_has_visible_body(_detector)
+                    and getattr(_detector, "tool_call_chars", 0) == 0
+                    and not _is_empty_output_exempt(target_model)
+                ):
+                    _raw_zero_next = (_retry_state["idx"] + 1) if _retry_state else 1
+                    _has_sib_zero = _has_untried_sibling_conns()
+                    if (
+                        active_chain
+                        and (_raw_zero_next < len(active_chain) or _has_sib_zero)
+                        and _emit.may_fallback("thought_only_or_zero_body_output")
+                        and _chain_budget_remaining() > 0
+                    ):
+                        try:
+                            bench_leaf(
+                                config, provider_name, target_model, 504,
+                                "thought_only_or_zero_body_output", 0,
+                            )
+                        except Exception:
+                            pass
+                        _adv_idx = (
+                            (_retry_state["idx"] if (isinstance(_retry_state, dict) and "idx" in _retry_state) else 0)
+                            if (_raw_zero_next >= len(active_chain) and _has_sib_zero)
+                            else _raw_zero_next
+                        )
+                        _raw_zero_st = _propagate_retry_state(
+                            _retry_state,
+                            {
+                                "chain": active_chain,
+                                "idx": _adv_idx,
+                                "cache_bp": _cache_breakpoints,
+                                "original_model": original_model,
+                                "deadline": _chain_deadline,
+                            },
+                        )
+                        print(
+                            f"[Combo Fallback] '{model}' OpenAI stream thought-only/zero-body for "
+                            f"{target_model}/{provider_name} — advancing to entry {_adv_idx}",
+                            flush=True,
+                        )
+                        raise _ComboFallbackNeeded(504, "thought_only_or_zero_body_output", _raw_zero_st)
+                    elif _emit.may_fallback("thought_only_or_zero_body_output"):
                         _raise_combo_wrap(
                             model, config, request, _retry_state, active_chain,
                             original_model, _cache_breakpoints, 504,
-                            "zero_output_tokens", reason="openai_zero_tokens_chain_exhausted",
+                            "thought_only_or_zero_body_output", reason="openai_thought_only_chain_exhausted",
                         )
+                if _deferred_thought_eof:
+                    for _df in _deferred_thought_eof:
+                        if not is_scaffolding_only(_df):
+                            _emit.mark_emitted(_df)
+                        yield _df
+                    _deferred_thought_eof.clear()
+                if _held_raw_done:
+                    if (
+                        stats.get("status") == 200
+                        and not stats.get("error")
+                        and not _delivered_terminal_refusal
+                        and not _detector_has_visible_body(_detector)
+                        and getattr(_detector, "tool_call_chars", 0) == 0
+                        and not _is_empty_output_exempt(target_model)
+                    ):
+                        from app.compat.adapters.gemini import BSL_NO_OUTPUT_NOTICE as _RAW_NO_OUT_NOTICE
+                        _raw_notice_chunk = {
+                            "id": f"chatcmpl-bsl-notice-{int(time.time() * 1000)}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": target_model or "bsl-routed",
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": _RAW_NO_OUT_NOTICE},
+                                    "finish_reason": "stop",
+                                }
+                            ],
+                        }
+                        _raw_nb = f"data: {json.dumps(_raw_notice_chunk)}\n\n".encode("utf-8")
+                        _emit.mark_emitted(_raw_nb)
+                        yield _raw_nb
+                    for _hd in _held_raw_done:
+                        yield _hd
+                    _held_raw_done.clear()
                 # Deadline-ladder terminal: pump returned after post-emission
                 # expiry or after ladder exhaustion. Emit error+[DONE].
                 if isinstance(stats.get("error"), str) and (
@@ -13721,22 +15677,29 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     or stats["error"].startswith("stream_deadline_")
                 ):
                     try:
-                        _dl_err = {"error": {"message": stats["error"], "type": "proxy_error"}}
-                        yield f"data: {json.dumps(_dl_err)}\n\n".encode("utf-8")
-                        yield b"data: [DONE]\n\n"
+                        if client_wants_anthropic:
+                            for _tf in _anthropic_terminal_error_frames(stats["error"], target_model):
+                                yield _tf
+                        else:
+                            _dl_err = {"error": {"message": stats["error"], "type": "proxy_error"}}
+                            yield f"data: {json.dumps(_dl_err)}\n\n".encode("utf-8")
+                            yield b"data: [DONE]\n\n"
                     except Exception:
                         pass
                     return
                 if stats.get("error") in ("ttft_stall", "stream_stall", "upstream_idle_timeout"):
                     _stall_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                     if not stats.get("ttft") and active_chain and _stall_next_idx < len(active_chain):
-                        _stall_retry_state = {
-                            "chain": active_chain,
-                            "idx": _stall_next_idx,
-                            "cache_bp": _cache_breakpoints,
-                            "original_model": original_model,
-                            "deadline": _chain_deadline,
-                        }
+                        _stall_retry_state = _propagate_retry_state(
+                            _retry_state,
+                            {
+                                "chain": active_chain,
+                                "idx": _stall_next_idx,
+                                "cache_bp": _cache_breakpoints,
+                                "original_model": original_model,
+                                "deadline": _chain_deadline,
+                            },
+                        )
                         print(
                             f"[Combo Fallback] '{model}' OpenAI stream stall for "
                             f"{target_model}/{provider_name} — advancing to entry {_stall_next_idx}",
@@ -13757,9 +15720,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             reason="openai_stall_chain_exhausted",
                         )
                     try:
-                        _stall_err = {"error": {"message": stats.get("error") or "stream_stall", "type": "proxy_error"}}
-                        yield f"data: {json.dumps(_stall_err)}\n\n".encode("utf-8")
-                        yield b"data: [DONE]\n\n"
+                        if client_wants_anthropic:
+                            for _tf in _anthropic_terminal_error_frames(stats.get("error") or "stream_stall", target_model):
+                                yield _tf
+                        else:
+                            _stall_err = {"error": {"message": stats.get("error") or "stream_stall", "type": "proxy_error"}}
+                            yield f"data: {json.dumps(_stall_err)}\n\n".encode("utf-8")
+                            yield b"data: [DONE]\n\n"
                     except Exception:
                         pass
             except (GeneratorExit, asyncio.CancelledError):
@@ -13771,6 +15738,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 raise
             except _DeadlineRetryNeeded:
                 raise
+            except (_RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE):
+                _refusal_retry_triggered = True
+                raise
             except UPSTREAM_TRANSPORT_ERRORS as _te:
                 # TRANSPORT FALLBACK FIX (2026-08-17): builtin TimeoutError /
                 # transport death that escaped narrower catches must advance the
@@ -13780,13 +15750,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 bench_leaf(config, provider_name, target_model, stats["status"], stats["error"], stats.get("out", 0))
                 _next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                 if active_chain and _next_idx < len(active_chain):
-                    _fb_retry_state = {
-                        "chain": active_chain,
-                        "idx": _next_idx,
-                        "cache_bp": _cache_breakpoints,
-                        "original_model": original_model,
-                        "deadline": _chain_deadline,
-                    }
+                    _fb_retry_state = _propagate_retry_state(
+                        _retry_state,
+                        {
+                            "chain": active_chain,
+                            "idx": _next_idx,
+                            "cache_bp": _cache_breakpoints,
+                            "original_model": original_model,
+                            "deadline": _chain_deadline,
+                        },
+                    )
                     print(
                         f"[Combo Fallback] '{model}' raw upstream transport_{stats['status']} "
                         f"for {target_model}/{provider_name} — advancing to entry {_next_idx}",
@@ -13805,20 +15778,32 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         stats["error"], reason="openai_transport_exhausted",
                     )
                 # Fallback refused / exhausted: fall through to terminal error+DONE.
-                err_payload = f"data: {json.dumps({'error': stats['error']})}\n\n"
-                yield err_payload.encode('utf-8')
-                yield b"data: [DONE]\n\n"
+                if client_wants_anthropic:
+                    for _tf in _anthropic_terminal_error_frames(stats["error"] or "transport_error", target_model):
+                        yield _tf
+                else:
+                    err_payload = f"data: {json.dumps({'error': stats['error']})}\n\n"
+                    yield err_payload.encode('utf-8')
+                    yield b"data: [DONE]\n\n"
             except Exception as e:
                 stats["error"] = str(e)
-                err_payload = f"data: {json.dumps({'error': stats['error']})}\n\n"
-                yield err_payload.encode('utf-8')
-                yield b"data: [DONE]\n\n"
+                if client_wants_anthropic:
+                    for _tf in _anthropic_terminal_error_frames(stats["error"] or "stream_error", target_model):
+                        yield _tf
+                else:
+                    err_payload = f"data: {json.dumps({'error': stats['error']})}\n\n"
+                    yield err_payload.encode('utf-8')
+                    yield b"data: [DONE]\n\n"
             finally:
                 if resp is not None:
+                    await _bounded_drain_cleanup(None, None, resp, force_close_resp=True)
+                    resp = None
+                if _kiro_raw_acquired and _kiro_raw_lock is not None:
                     try:
-                        await resp.aclose()
+                        _kiro_raw_lock.release()
                     except Exception:
                         pass
+                    _kiro_raw_acquired = False
 
                 # FREEZE FIX: report refused post-emission fallbacks.
                 try:
@@ -13835,38 +15820,46 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 # `finally:`. Running backfill here ensures truthful token accounting
                 # is never lost on client teardown. Idempotent: returns immediately if
                 # usage already populated.
-                try:
-                    _backfill_missing_usage(
-                        stats, internal_request.messages, _detector.partial_text,
-                        provider_name=provider_name, target_model=target_model,
-                        delivered_chars=getattr(_detector, "tool_call_chars", 0),
-                    )
-                except Exception:
-                    pass
-                try:
-                    obs.log_request(
-                        provider=provider_name,
+                if _refusal_retry_triggered:
+                    fel_event(
+                        "reprojection_pass1",
                         model=target_model,
-                        status=stats["status"],
-                        ttft=stats["ttft"],
-                        in_tokens=stats["in"],
-                        out_tokens=stats["out"],
-                        cached_tokens=stats["cached"],
-                        config=config,
-                        error_msg=stats["error"],
-                        total_time=time.time() - start_time,
-                        request_id=request_id,
-                        client=client_label,
-                        stream=True,
-                        upstream_url=_upstream_url,
-                        conn_index=_active_conn_index,
-                        thinking=thinking_info,
-                        cache_write_tokens=stats.get("cache_write", 0),
-                        combo=_combo_label,
-                        degenerate=bool(stats.get("degenerate")),
+                        provider=provider_name,
+                        details={"stream": True, "lane": "raw_upstream"},
                     )
-                except Exception as _log_err:
-                    print(f"[BSL Router] finally-log failed (non-blocking): {_log_err}", flush=True)
+                else:
+                    try:
+                        _backfill_missing_usage(
+                            stats, internal_request.messages, _detector.partial_text,
+                            provider_name=provider_name, target_model=target_model,
+                            delivered_chars=getattr(_detector, "tool_call_chars", 0),
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        obs.log_request(
+                            provider=provider_name,
+                            model=target_model,
+                            status=stats["status"],
+                            ttft=stats["ttft"],
+                            in_tokens=stats["in"],
+                            out_tokens=stats["out"],
+                            cached_tokens=stats["cached"],
+                            config=config,
+                            error_msg=stats["error"],
+                            total_time=time.time() - start_time,
+                            request_id=request_id,
+                            client=client_label,
+                            stream=True,
+                            upstream_url=_upstream_url,
+                            conn_index=_active_conn_index,
+                            thinking=thinking_info,
+                            cache_write_tokens=stats.get("cache_write", 0),
+                            combo=_combo_label,
+                            degenerate=bool(stats.get("degenerate")),
+                        )
+                    except Exception as _log_err:
+                        print(f"[BSL Router] finally-log failed (non-blocking): {_log_err}", flush=True)
 
 
         async def raw_upstream_guarded():
@@ -13874,9 +15867,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             while True:
                 if _attempt >= len(STREAM_DEADLINE_LADDER):
                     try:
-                        _cap_err = {"error": {"message": stats.get("error") or "deadline_ladder_exhausted", "type": "proxy_error"}}
-                        yield f"data: {json.dumps(_cap_err)}\n\n".encode("utf-8")
-                        yield b"data: [DONE]\n\n"
+                        if client_wants_anthropic:
+                            for _tf in _anthropic_terminal_error_frames(stats.get("error") or "deadline_ladder_exhausted", target_model):
+                                yield _tf
+                        else:
+                            _cap_err = {"error": {"message": stats.get("error") or "deadline_ladder_exhausted", "type": "proxy_error"}}
+                            yield f"data: {json.dumps(_cap_err)}\n\n".encode("utf-8")
+                            yield b"data: [DONE]\n\n"
                     except Exception:
                         pass
                     return
@@ -13899,6 +15896,36 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     stats["status"] = 500
                     stats["error"] = None
                     _retry_again = True
+                except _RefusalSameModelRetryNeeded as _rr_raw:
+                    stats["ttft"] = 0.0
+                    stats["out"] = 0
+                    stats["error"] = None
+                    async for _fc in _dispatch_fel_v7_same_model_stream(
+                        _rr_raw,
+                        client_wants_anthropic=client_wants_anthropic,
+                        client_wants_gemini=client_wants_gemini,
+                        retry_state=_retry_state,
+                        target_model=target_model,
+                        provider_name=provider_name,
+                        combo_thinking_override=combo_thinking_override,
+                        cache_bp=_cache_breakpoints,
+                        original_model=original_model,
+                        chain_deadline=_chain_deadline,
+                        request=request,
+                    ):
+                        yield _fc
+                    return
+                except _TerminalClassifierRefusalSSE as _tcr_raw:
+                    stats["status"] = 200
+                    stats["error"] = None
+                    for _tf in _emit_terminal_classifier_refusal_sse(
+                        _tcr_raw,
+                        client_wants_anthropic=client_wants_anthropic,
+                        client_wants_gemini=client_wants_gemini,
+                        target_model=target_model,
+                    ):
+                        yield _tf
+                    return
                 except _ComboFallbackNeeded as _cf_raw:
                     # NEVER-STOP BOUNDED LOOP (Bug 2 Part A, 2026-09-29): this
                     # used to re-dispatch and iterate a NESTED guarded stream,
@@ -13915,10 +15942,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     if not _ns_backoff:
                         _mark_conn_failed_for_retry(_ns_state, getattr(_cf_raw, "status_code", 502), getattr(_cf_raw, "err_text", ""))
                     while True:
+                        if await _is_request_disconnected(request):
+                            print(f"[Combo] client disconnected in raw_upstream_guarded — aborting retry", flush=True)
+                            return
                         if _ns_backoff:
-                            # NEVER-STOP wrap: sleep the pass backoff (client
-                            # disconnect cancels — the only permitted terminator).
-                            await asyncio.sleep(_ns_backoff)
+                            # NEVER-STOP wrap: sleep the pass backoff while polling
+                            # client disconnect so cancelled requests abort immediately.
+                            if await _sleep_or_disconnect(_ns_backoff, request):
+                                print(f"[Combo] client disconnected during raw_upstream backoff — aborting", flush=True)
+                                return
                         try:
                             _raw_fallback = await _process_chat_completion(
                                 body, client_wants_anthropic, client_wants_gemini,
@@ -13985,9 +16017,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     # the IDE waits for [DONE] forever. Emit error + [DONE] so the
                     # client unblocks, matching every other egress path.
                     try:
-                        _raw_err_frame = {"error": {"message": stats.get("error") or str(_raw_guarded_err) or "stream_interrupted", "type": "proxy_error"}}
-                        yield f"data: {json.dumps(_raw_err_frame)}\n\n".encode("utf-8")
-                        yield b"data: [DONE]\n\n"
+                        if client_wants_anthropic:
+                            for _tf in _anthropic_terminal_error_frames(stats.get("error") or str(_raw_guarded_err) or "stream_interrupted", target_model):
+                                yield _tf
+                        else:
+                            _raw_err_frame = {"error": {"message": stats.get("error") or str(_raw_guarded_err) or "stream_interrupted", "type": "proxy_error"}}
+                            yield f"data: {json.dumps(_raw_err_frame)}\n\n".encode("utf-8")
+                            yield b"data: [DONE]\n\n"
                     except Exception:
                         pass
                     return
@@ -14004,6 +16040,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
 
         if convert_egress:
             async def egress_stream(_attempt: int = 0):
+                nonlocal start_time
                 resp = None
                 buffer = ""
                 # FREEZE FIX: tracks whether any byte has reached the client.
@@ -14011,7 +16048,37 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 # upstream stream into a parser that is mid-way through the
                 # first one is what freezes the IDE.
                 _emit = StreamEmissionState()
+                _refusal_retry_triggered = False
+                _delivered_terminal_refusal = False
+                _kiro_egl_lock = (
+                    _get_kiro_single_key_lock(provider_name, _active_conn_index)
+                    if _should_serialize_kiro_single_key(config, provider_name, target_model)
+                    else None
+                )
+                _kiro_egl_acquired = False
                 try:
+                    if _kiro_egl_lock is not None:
+                        _egl_lk_t0 = time.monotonic()
+                        while True:
+                            if await _client_disconnected():
+                                if _should_mark_client_disconnected(stats):
+                                    stats["error"] = "client_disconnected"
+                                    stats["status"] = 499
+                                return
+                            try:
+                                await asyncio.wait_for(_kiro_egl_lock.acquire(), timeout=0.25)
+                                _kiro_egl_acquired = True
+                                _egl_waited = time.monotonic() - _egl_lk_t0
+                                if _egl_waited >= 0.5:
+                                    start_time = time.time()
+                                    print(
+                                        f"[KiroSingleFlight] {provider_name}/{target_model}[{_active_conn_index}] "
+                                        f"acquired egress slot after {_egl_waited:.1f}s queue wait",
+                                        flush=True,
+                                    )
+                                break
+                            except asyncio.TimeoutError:
+                                pass
                     if _probe_resp is not None:
                         resp = _probe_resp
                     else:
@@ -14040,6 +16107,25 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         except Exception:
                             err_text = str(raw_err)
                         stats["error"] = err_text[:500]
+                        _log_upstream_http_error_forensics(
+                            resp.status_code, provider_name, target_model,
+                            active_conn, _active_conn_index, err_text[:500],
+                        )
+                        if is_http_or_sse_classifier_refusal(resp.status_code, err_text):
+                            _ok_ae, _cln_ae, _cst_ae = _try_build_fel_v7_same_model_retry(
+                                body, _retry_state, config, request,
+                                provider_name=provider_name, target_model=target_model, vis_text=err_text,
+                            )
+                            if _ok_ae and _cln_ae is not None:
+                                _refusal_retry_triggered = True
+                                raise _RefusalSameModelRetryNeeded(_cln_ae, f"cyber_policy_{resp.status_code}", _cst_ae)
+                            err_event = {
+                                "type": "error",
+                                "error": {"type": "upstream_error", "message": err_text[:1000]},
+                            }
+                            yield f"event: error\ndata: {json.dumps(err_event)}\n\n".encode("utf-8")
+                            yield b"event: message_stop\ndata: {\"type\": \"message_stop\"}\n\n"
+                            return
                         # ANTI-FREEZE (2026-08-01): bench the leaf so auto-heal
                         # bans/cooldowns it; the NEXT request skips this dead leaf.
                         bench_leaf(config, provider_name, target_model, resp.status_code, err_text[:500], stats.get("out", 0))
@@ -14056,13 +16142,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             )
                         _fb_next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
                         if not _is_wall_ae and active_chain and (_fb_next_idx < len(active_chain) or _has_untried_sibling_conns()):
-                            _fb_retry_state = {
-                                "chain": active_chain,
-                                "idx": _fb_next_idx,
-                                "cache_bp": _cache_breakpoints,
-                                "original_model": original_model,
-                                "deadline": _chain_deadline,
-                            }
+                            _fb_retry_state = _propagate_retry_state(
+                                _retry_state,
+                                {
+                                    "chain": active_chain,
+                                    "idx": _fb_next_idx,
+                                    "cache_bp": _cache_breakpoints,
+                                    "original_model": original_model,
+                                    "deadline": _chain_deadline,
+                                },
+                            )
                             print(
                                 f"[Combo Fallback] '{model}' Anthropic egress {resp.status_code} "
                                 f"for {target_model}/{provider_name} — advancing to entry {_fb_next_idx}",
@@ -14110,6 +16199,44 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         while True:
                             _codex_retry_overload = False
                             _codex_pre_buf = []
+                            _ae_ref_buf = (
+                                StreamRefusalPreCommitBuffer()
+                                if (provider_name != "kiro" and _is_fel_v7_same_model_recovery_enabled(config, request))
+                                else None
+                            )
+
+                            def _gate_ae_chunk(_b_out: bytes) -> list:
+                                nonlocal _refusal_retry_triggered, _delivered_terminal_refusal
+                                if not _b_out:
+                                    return []
+                                if _ae_ref_buf is None or _ae_ref_buf.committed:
+                                    if not is_scaffolding_only(_b_out):
+                                        _emit.mark_emitted(_b_out)
+                                    return [_b_out]
+                                _rdy = _ae_ref_buf.feed(_b_out)
+                                if _ae_ref_buf.refused:
+                                    _ok_r, _cln_r, _cst_r = _try_build_fel_v7_same_model_retry(
+                                        body, _retry_state, config, request,
+                                        provider_name=provider_name, target_model=target_model,
+                                        vis_text=_ae_ref_buf.vis_text, stop_details=_ae_ref_buf.last_stop_details,
+                                    )
+                                    if _ok_r and _cln_r is not None:
+                                        _refusal_retry_triggered = True
+                                        raise _RefusalSameModelRetryNeeded(_cln_r, _ae_ref_buf.refusal_reason, _cst_r)
+                                    _ae_ref_buf.committed = True
+                                    _delivered_terminal_refusal = True
+                                    _flushed = list(_ae_ref_buf.refused_chunks)
+                                    _ae_ref_buf.refused_chunks.clear()
+                                    for _fl in _flushed:
+                                        if not is_scaffolding_only(_fl):
+                                            _emit.mark_emitted(_fl)
+                                    return _flushed
+                                if _ae_ref_buf.committed:
+                                    for _fl in _rdy:
+                                        if not is_scaffolding_only(_fl):
+                                            _emit.mark_emitted(_fl)
+                                return _rdy
+
                             buffer = ""
                             _ae_q: asyncio.Queue = asyncio.Queue()
                             _SENTINEL = object()
@@ -14124,10 +16251,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 try:
                                     async for _c in _guarded_source:
                                         await _ae_q.put(_c)
-                                except _ComboFallbackNeeded as _cf:
-                                    _ae_drain_err = _cf
-                                except _DeadlineRetryNeeded as _dr:
-                                    _ae_drain_err = _dr
+                                except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded, _RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE) as _ae_s:
+                                    _ae_drain_err = _ae_s
                                 except Exception as _de:
                                     _ae_drain_err = _de
                                 finally:
@@ -14136,11 +16261,25 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             _drain_task = asyncio.ensure_future(_drain_ae_source())
                             _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
                             _last_upstream_data = time.monotonic()
+                            _ae_kiro_pre_idle_s = _kiro_pre_content_idle_seconds(
+                                config, provider_name, target_model,
+                                prompt_chars=_estimate_payload_prompt_chars(upstream_payload),
+                            )
                             try:
                                 while True:
+                                    _ae_hold_to = (
+                                        _ae_ref_buf.next_hold_timeout_s()
+                                        if (_ae_ref_buf is not None and not _ae_ref_buf.committed)
+                                        else None
+                                    )
+                                    _ae_wait_to = (
+                                        min(GEMINI_EGRESS_KEEPALIVE_INTERVAL, _ae_hold_to)
+                                        if _ae_hold_to is not None
+                                        else GEMINI_EGRESS_KEEPALIVE_INTERVAL
+                                    )
                                     try:
                                         chunk = await asyncio.wait_for(
-                                            _ae_q.get(), timeout=GEMINI_EGRESS_KEEPALIVE_INTERVAL
+                                            _ae_q.get(), timeout=_ae_wait_to
                                         )
                                     except asyncio.TimeoutError:
                                         if await _client_disconnected():
@@ -14148,11 +16287,42 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                 stats["error"] = stats["error"] or "client_disconnected"
                                                 stats["status"] = 499
                                             break
+                                        if _ae_ref_buf is not None and not _ae_ref_buf.committed:
+                                            _ae_exp_list = _ae_ref_buf.flush_if_expired()
+                                            if _ae_ref_buf.refused:
+                                                _ok_r, _cln_r, _cst_r = _try_build_fel_v7_same_model_retry(
+                                                    body, _retry_state, config, request,
+                                                    provider_name=provider_name, target_model=target_model,
+                                                    vis_text=_ae_ref_buf.vis_text, stop_details=_ae_ref_buf.last_stop_details,
+                                                )
+                                                if _ok_r and _cln_r is not None:
+                                                    _refusal_retry_triggered = True
+                                                    raise _RefusalSameModelRetryNeeded(_cln_r, _ae_ref_buf.refusal_reason, _cst_r)
+                                                _ae_ref_buf.committed = True
+                                                _delivered_terminal_refusal = True
+                                                _ae_ref_fl = list(_ae_ref_buf.refused_chunks)
+                                                _ae_ref_buf.refused_chunks.clear()
+                                                for _ae_exp in _ae_ref_fl:
+                                                    if not is_scaffolding_only(_ae_exp):
+                                                        _emit.mark_emitted(_ae_exp)
+                                                    yield _ae_exp
+                                                continue
+                                            if _ae_exp_list:
+                                                for _ae_exp in _ae_exp_list:
+                                                    if not is_scaffolding_only(_ae_exp):
+                                                        _emit.mark_emitted(_ae_exp)
+                                                    yield _ae_exp
+                                                continue
                                         _idle = time.monotonic() - _last_upstream_data
-                                        if _idle > GEMINI_EGRESS_MAX_IDLE:
+                                        _ae_eff_idle = (
+                                            min(GEMINI_EGRESS_MAX_IDLE, _ae_kiro_pre_idle_s)
+                                            if (_ae_kiro_pre_idle_s > 0.0 and not _emit.emitted and stats.get("ttft", 0.0) == 0.0)
+                                            else GEMINI_EGRESS_MAX_IDLE
+                                        )
+                                        if _idle > _ae_eff_idle:
                                             print(
                                                 f"[AnthropicEgress] upstream idle {_idle:.0f}s > "
-                                                f"{GEMINI_EGRESS_MAX_IDLE}s - ending wedged stream "
+                                                f"{_ae_eff_idle}s - ending wedged stream "
                                                 f"(provider={provider_name} model={target_model})",
                                                 flush=True,
                                             )
@@ -14169,7 +16339,21 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                         ):
                                             stats["stream_completed"] = True
                                         break
-                                    _last_upstream_data = time.monotonic()
+                                    if not (_ae_kiro_pre_idle_s > 0.0 and not _emit.emitted and stats.get("ttft", 0.0) == 0.0 and is_scaffolding_only(chunk)):
+                                        _last_upstream_data = time.monotonic()
+                                    else:
+                                        _idle_aep = time.monotonic() - _last_upstream_data
+                                        _ae_eff_p = min(GEMINI_EGRESS_MAX_IDLE, _ae_kiro_pre_idle_s)
+                                        if _idle_aep > _ae_eff_p:
+                                            print(
+                                                f"[AnthropicEgress] pre-content ping-only idle {_idle_aep:.0f}s > "
+                                                f"{_ae_eff_p}s - ending wedged stream "
+                                                f"(provider={provider_name} model={target_model})",
+                                                flush=True,
+                                            )
+                                            stats["error"] = stats.get("error") or "upstream_idle_timeout"
+                                            stats["status"] = 504
+                                            break
                                     _detector.feed(chunk)
                                     if await _client_disconnected():
                                         if _should_mark_client_disconnected(stats):
@@ -14207,8 +16391,9 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                         _codex_chunk_has_output = True
                                                         if stats["ttft"] == 0.0:
                                                             stats["ttft"] = time.time() - start_time
-                                                    if isinstance(dj, dict) and dj.get("type") in ("response.failed", "error"):
-                                                        _rf_sc, _rf_msg = _explicit_sse_failure_event(dj)
+                                                    _rf_egr = _explicit_sse_failure_event(dj)
+                                                    if _rf_egr is not None:
+                                                        _rf_sc, _rf_msg = _rf_egr
                                                         if not _emit.emitted and _is_responses_provider(provider_name, provider_config) and _rf_sc == 503 and _codex_overload_attempt < _CODEX_OVERLOAD_MAX:
                                                             _codex_overload_attempt += 1
                                                             _codex_retry_overload = True
@@ -14222,9 +16407,23 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                         stats["status"] = _rf_sc
                                                         stats["error"] = _rf_msg
                                                         if not _emit.emitted:
+                                                            _fel_v7_guard_sse_refusal(
+                                                                "egress/explicit",
+                                                                _rf_sc, _rf_msg,
+                                                                body=body, _retry_state=_retry_state,
+                                                                config=config, request=request,
+                                                                provider_name=provider_name,
+                                                                target_model=target_model,
+                                                            )
                                                             bench_leaf(config, provider_name, target_model, _rf_sc, _rf_msg, 0)
                                                             if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("codex_response_failed"):
-                                                                raise _ComboFallbackNeeded(_rf_sc, _rf_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                                                raise _ComboFallbackNeeded(
+                                                                    _rf_sc, _rf_msg,
+                                                                    _propagate_retry_state(
+                                                                        _retry_state,
+                                                                        {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline},
+                                                                    ),
+                                                                )
                                                         else:
                                                             # REQ-1 (P0, 2026-10-30): post-content explicit
                                                             # failure — same-provider continuation only.
@@ -14236,9 +16435,23 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                         stats["status"] = _inl_sc
                                                         stats["error"] = _inl_msg
                                                         _codex_pre_buf.clear()
+                                                        _fel_v7_guard_sse_refusal(
+                                                            "egress/inline",
+                                                            _inl_sc, _inl_msg,
+                                                            body=body, _retry_state=_retry_state,
+                                                            config=config, request=request,
+                                                            provider_name=provider_name,
+                                                            target_model=target_model,
+                                                        )
                                                         bench_leaf(config, provider_name, target_model, _inl_sc, _inl_msg, 0)
                                                         if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("inline_upstream_error"):
-                                                            raise _ComboFallbackNeeded(_inl_sc, _inl_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                                            raise _ComboFallbackNeeded(
+                                                                _inl_sc, _inl_msg,
+                                                                _propagate_retry_state(
+                                                                    _retry_state,
+                                                                    {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline},
+                                                                ),
+                                                            )
                                                         _raise_combo_wrap(
                                                             model, config, request, _retry_state, active_chain,
                                                             original_model, _cache_breakpoints, _inl_sc,
@@ -14251,46 +16464,41 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                         record_cache_warmth(provider_name, _active_conn_index, u, tools_config=config.get("tools", {}))
                                                 except json.JSONDecodeError:
                                                     pass
-                                    except _ComboFallbackNeeded:
+                                    except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded, _RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE):
                                         raise
                                     except Exception:
                                         pass
                                     if _codex_retry_overload:
                                         break
                                     if _is_responses_provider(provider_name, provider_config):
-                                        if _codex_chunk_has_output:
-                                            _emit.mark_emitted(chunk)
-                                        if _emit.emitted or stats.get("stream_completed") or stats.get("error"):
+                                        if _codex_chunk_has_output or stats.get("stream_completed") or stats.get("error"):
                                             for _pb in _codex_pre_buf:
-                                                yield _pb
+                                                for _go in _gate_ae_chunk(_pb):
+                                                    yield _go
                                             _codex_pre_buf.clear()
-                                            yield chunk
+                                            for _go in _gate_ae_chunk(chunk):
+                                                yield _go
                                         else:
                                             _codex_pre_buf.append(chunk)
                                     else:
                                         if not is_scaffolding_only(chunk):
                                             for _pb in _codex_pre_buf:
-                                                yield _pb
+                                                for _go in _gate_ae_chunk(_pb):
+                                                    yield _go
                                             _codex_pre_buf.clear()
-                                            _emit.mark_emitted(chunk)
-                                            yield chunk
+                                            for _go in _gate_ae_chunk(chunk):
+                                                yield _go
                                         elif not _emit.emitted and not chunk.lstrip().startswith(b":"):
                                             _codex_pre_buf.append(chunk)
                                         else:
-                                            yield chunk
+                                            for _go in _gate_ae_chunk(chunk):
+                                                yield _go
                             finally:
-                                if not _drain_task.done():
-                                    _drain_task.cancel()
-                                try:
-                                    await _drain_task
-                                except BaseException:
-                                    pass
-                                try:
-                                    _close_source = getattr(_guarded_source, "aclose", None)
-                                    if _close_source is not None:
-                                        await _close_source()
-                                except BaseException:
-                                    pass
+                                if await _bounded_drain_cleanup(
+                                    _drain_task, _guarded_source, resp,
+                                    force_close_resp=(stats.get("error") in ("upstream_idle_timeout", "client_disconnected")),
+                                ):
+                                    resp = None
                             if _codex_retry_overload:
                                 try:
                                     await resp.aclose()
@@ -14305,8 +16513,33 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 stats["status"] = resp.status_code
                                 continue
                             for _pb in _codex_pre_buf:
-                                yield _pb
+                                for _go in _gate_ae_chunk(_pb):
+                                    yield _go
                             _codex_pre_buf.clear()
+                            if _ae_ref_buf is not None and not _ae_ref_buf.committed:
+                                _ae_eof_ready = _ae_ref_buf.finalize()
+                                if _ae_ref_buf.refused:
+                                    _ok_r, _cln_r, _cst_r = _try_build_fel_v7_same_model_retry(
+                                        body, _retry_state, config, request,
+                                        provider_name=provider_name, target_model=target_model,
+                                        vis_text=_ae_ref_buf.vis_text, stop_details=_ae_ref_buf.last_stop_details,
+                                    )
+                                    if _ok_r and _cln_r is not None:
+                                        _refusal_retry_triggered = True
+                                        raise _RefusalSameModelRetryNeeded(_cln_r, _ae_ref_buf.refusal_reason, _cst_r)
+                                    _ae_ref_buf.committed = True
+                                    _delivered_terminal_refusal = True
+                                    _ae_ref_fl = list(_ae_ref_buf.refused_chunks)
+                                    _ae_ref_buf.refused_chunks.clear()
+                                    for _fl in _ae_ref_fl:
+                                        if not is_scaffolding_only(_fl):
+                                            _emit.mark_emitted(_fl)
+                                        yield _fl
+                                else:
+                                    for _fl in _ae_eof_ready:
+                                        if not is_scaffolding_only(_fl):
+                                            _emit.mark_emitted(_fl)
+                                        yield _fl
                             if _ae_drain_err is not None:
                                 raise _ae_drain_err
                             break
@@ -14328,16 +16561,19 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             provider_name=provider_name, target_model=target_model,
                             delivered_chars=getattr(_detector, "tool_call_chars", 0),
                         )
-                        if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft"):
+                        if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft") and not _delivered_terminal_refusal:
                             _zero_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                             if active_chain and _zero_next_idx < len(active_chain):
-                                _zero_retry_state = {
-                                    "chain": active_chain,
-                                    "idx": _zero_next_idx,
-                                    "cache_bp": _cache_breakpoints,
-                                    "original_model": original_model,
-                                    "deadline": _chain_deadline,
-                                }
+                                _zero_retry_state = _propagate_retry_state(
+                                    _retry_state,
+                                    {
+                                        "chain": active_chain,
+                                        "idx": _zero_next_idx,
+                                        "cache_bp": _cache_breakpoints,
+                                        "original_model": original_model,
+                                        "deadline": _chain_deadline,
+                                    },
+                                )
                                 print(
                                     f"[Combo Fallback] '{model}' Anthropic stream 200-with-0-tokens for "
                                     f"{target_model}/{provider_name} — advancing to entry {_zero_next_idx}",
@@ -14366,13 +16602,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         if stats.get("error") in ("ttft_stall", "stream_stall", "upstream_idle_timeout"):
                             _stall_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                             if not stats.get("ttft") and active_chain and _stall_next_idx < len(active_chain):
-                                _stall_retry_state = {
-                                    "chain": active_chain,
-                                    "idx": _stall_next_idx,
-                                    "cache_bp": _cache_breakpoints,
-                                    "original_model": original_model,
-                                    "deadline": _chain_deadline,
-                                }
+                                _stall_retry_state = _propagate_retry_state(
+                                    _retry_state,
+                                    {
+                                        "chain": active_chain,
+                                        "idx": _stall_next_idx,
+                                        "cache_bp": _cache_breakpoints,
+                                        "original_model": original_model,
+                                        "deadline": _chain_deadline,
+                                    },
+                                )
                                 print(
                                     f"[Combo Fallback] '{model}' Anthropic stream stall for "
                                     f"{target_model}/{provider_name} — advancing to entry {_stall_next_idx}",
@@ -14462,8 +16701,48 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     _req_has_tools = isinstance(upstream_payload, dict) and bool(upstream_payload.get("tools"))
                     normalizer = StreamNormalizer("openai_sse", "anthropic_sse", tools_in_request=_req_has_tools)
                     _openai_source = _anthropic_egress_openai_source(provider_name, _raw_ok_chain(), provider_config)
+                    _held_egr_stop: list[bytes] = []
                     async for out in normalizer.convert_openai_to_anthropic(_openai_source):
+                        if (
+                            isinstance(out, (bytes, bytearray))
+                            and b'"message_stop"' in out
+                            and b'"content_block_delta"' not in out
+                        ):
+                            _held_egr_stop.append(bytes(out))
+                            continue
                         yield out
+                    if (
+                        stats.get("status") == 200
+                        and stats.get("error") is None
+                        and not _detector_has_visible_body(_detector)
+                        and getattr(_detector, "tool_call_chars", 0) == 0
+                        and not _is_empty_output_exempt(target_model)
+                    ):
+                        _egr_zero_next = (_retry_state["idx"] + 1) if _retry_state else 1
+                        if (
+                            active_chain
+                            and _egr_zero_next < len(active_chain)
+                            and _emit.may_fallback("thought_only_or_zero_body_output")
+                            and _chain_budget_remaining() > 0
+                        ):
+                            _egr_zero_st = _propagate_retry_state(
+                                _retry_state,
+                                {
+                                    "chain": active_chain,
+                                    "idx": _egr_zero_next,
+                                    "cache_bp": _cache_breakpoints,
+                                    "original_model": original_model,
+                                    "deadline": _chain_deadline,
+                                },
+                            )
+                            raise _ComboFallbackNeeded(504, "thought_only_or_zero_body_output", _egr_zero_st)
+                        from app.compat.adapters.gemini import BSL_NO_OUTPUT_NOTICE as _EGR_NO_OUT_NOTICE
+                        _egr_idx = 99
+                        yield f'event: content_block_start\ndata: {json.dumps({"type": "content_block_start", "index": _egr_idx, "content_block": {"type": "text", "text": ""}})}\n\n'.encode("utf-8")
+                        yield f'event: content_block_delta\ndata: {json.dumps({"type": "content_block_delta", "index": _egr_idx, "delta": {"type": "text_delta", "text": _EGR_NO_OUT_NOTICE}})}\n\n'.encode("utf-8")
+                        yield f'event: content_block_stop\ndata: {json.dumps({"type": "content_block_stop", "index": _egr_idx})}\n\n'.encode("utf-8")
+                    for _hs in _held_egr_stop:
+                        yield _hs
                     if stats.get("error") is None and (stats.get("out", 0) > 0 or bool(_detector.partial_text) or getattr(_detector, "tool_call_chars", 0) > 0):
                         stats["stream_completed"] = True
                 except (GeneratorExit, asyncio.CancelledError):
@@ -14471,7 +16750,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         stats["error"] = stats["error"] or "client_disconnected"
                         stats["status"] = 499
                     raise
-                except (_ComboFallbackNeeded, _DeadlineRetryNeeded):
+                except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded):
+                    raise
+                except (_RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE):
+                    _refusal_retry_triggered = True
                     raise
                 except UPSTREAM_TRANSPORT_ERRORS as _te:
                     # TRANSPORT FALLBACK FIX (2026-08-17): route transport death
@@ -14481,13 +16763,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     bench_leaf(config, provider_name, target_model, stats["status"], stats["error"], stats.get("out", 0))
                     _next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                     if active_chain and _next_idx < len(active_chain):
-                        _fb_retry_state = {
-                            "chain": active_chain,
-                            "idx": _next_idx,
-                            "cache_bp": _cache_breakpoints,
-                            "original_model": original_model,
-                            "deadline": _chain_deadline,
-                        }
+                        _fb_retry_state = _propagate_retry_state(
+                            _retry_state,
+                            {
+                                "chain": active_chain,
+                                "idx": _next_idx,
+                                "cache_bp": _cache_breakpoints,
+                                "original_model": original_model,
+                                "deadline": _chain_deadline,
+                            },
+                        )
                         print(
                             f"[Combo Fallback] '{model}' Anthropic egress transport_{stats['status']} "
                             f"for {target_model}/{provider_name} — advancing to entry {_next_idx}",
@@ -14522,10 +16807,14 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     yield b"event: message_stop\ndata: {\"type\": \"message_stop\"}\n\n"
                 finally:
                     if resp is not None:
+                        await _bounded_drain_cleanup(None, None, resp, force_close_resp=True)
+                        resp = None
+                    if _kiro_egl_acquired and _kiro_egl_lock is not None:
                         try:
-                            await resp.aclose()
+                            _kiro_egl_lock.release()
                         except Exception:
                             pass
+                        _kiro_egl_acquired = False
                     # FREEZE FIX: surface refused post-emission fallbacks. A
                     # non-empty line here means a leaf died mid-stream — the
                     # exact scenario that used to freeze the IDE.
@@ -14535,38 +16824,50 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             print(_refusal, flush=True)
                     except Exception:
                         pass
-                    # CLIENT DISCONNECT / GENERATOR-EXIT USAGE BACKFILL (2026-11-20):
-                    try:
-                        _backfill_missing_usage(
-                            stats, internal_request.messages, _detector.partial_text,
-                            provider_name=provider_name, target_model=target_model,
-                            delivered_chars=getattr(_detector, "tool_call_chars", 0),
+                    if _refusal_retry_triggered:
+                        fel_event(
+                            "reprojection_pass1",
+                            model=target_model,
+                            provider=provider_name,
+                            details={"stream": True, "lane": "egress_stream"},
                         )
-                    except Exception:
-                        pass
-                    try:
-                        obs.log_request(
-                            provider=provider_name, model=target_model, status=stats["status"],
-                            ttft=stats["ttft"], in_tokens=stats["in"], out_tokens=stats["out"],
-                            cached_tokens=stats["cached"], config=config, error_msg=stats["error"],
-                            total_time=time.time() - start_time,
-                            request_id=request_id, client=client_label, stream=True, upstream_url=_upstream_url,
-                            conn_index=_active_conn_index,
-                            thinking=thinking_info,
-                            cache_write_tokens=stats.get("cache_write", 0),
-                            combo=_combo_label,
-                        )
-                    except Exception as _log_err:
-                        print(f"[BSL Router] finally-log failed (non-blocking): {_log_err}", flush=True)
+                    else:
+                        # CLIENT DISCONNECT / GENERATOR-EXIT USAGE BACKFILL (2026-11-20):
+                        try:
+                            _backfill_missing_usage(
+                                stats, internal_request.messages, _detector.partial_text,
+                                provider_name=provider_name, target_model=target_model,
+                                delivered_chars=getattr(_detector, "tool_call_chars", 0),
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            obs.log_request(
+                                provider=provider_name, model=target_model, status=stats["status"],
+                                ttft=stats["ttft"], in_tokens=stats["in"], out_tokens=stats["out"],
+                                cached_tokens=stats["cached"], config=config, error_msg=stats["error"],
+                                total_time=time.time() - start_time,
+                                request_id=request_id, client=client_label, stream=True, upstream_url=_upstream_url,
+                                conn_index=_active_conn_index,
+                                thinking=thinking_info,
+                                cache_write_tokens=stats.get("cache_write", 0),
+                                combo=_combo_label,
+                            )
+                        except Exception as _log_err:
+                            print(f"[BSL Router] finally-log failed (non-blocking): {_log_err}", flush=True)
 
             async def egress_stream_guarded():
                 _attempt = 0
                 while True:
                     if _attempt >= len(STREAM_DEADLINE_LADDER):
                         try:
-                            _cap_err = {"error": {"message": stats.get("error") or "deadline_ladder_exhausted", "type": "proxy_error"}}
-                            yield f"data: {json.dumps(_cap_err)}\n\n".encode("utf-8")
-                            yield b"data: [DONE]\n\n"
+                            if client_wants_anthropic:
+                                for _tf in _anthropic_terminal_error_frames(stats.get("error") or "deadline_ladder_exhausted", target_model):
+                                    yield _tf
+                            else:
+                                _cap_err = {"error": {"message": stats.get("error") or "deadline_ladder_exhausted", "type": "proxy_error"}}
+                                yield f"data: {json.dumps(_cap_err)}\n\n".encode("utf-8")
+                                yield b"data: [DONE]\n\n"
                         except Exception:
                             pass
                         return
@@ -14589,16 +16890,51 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         stats["status"] = 500
                         stats["error"] = None
                         _retry_again = True
+                    except _RefusalSameModelRetryNeeded as _rr_egr:
+                        stats["ttft"] = 0.0
+                        stats["out"] = 0
+                        stats["error"] = None
+                        async for _fc in _dispatch_fel_v7_same_model_stream(
+                            _rr_egr,
+                            client_wants_anthropic=client_wants_anthropic,
+                            client_wants_gemini=client_wants_gemini,
+                            retry_state=_retry_state,
+                            target_model=target_model,
+                            provider_name=provider_name,
+                            combo_thinking_override=combo_thinking_override,
+                            cache_bp=_cache_breakpoints,
+                            original_model=original_model,
+                            chain_deadline=_chain_deadline,
+                            request=request,
+                        ):
+                            yield _fc
+                        return
+                    except _TerminalClassifierRefusalSSE as _tcr_egr:
+                        stats["status"] = 200
+                        stats["error"] = None
+                        for _tf in _emit_terminal_classifier_refusal_sse(
+                            _tcr_egr,
+                            client_wants_anthropic=True,
+                            client_wants_gemini=False,
+                            target_model=target_model,
+                        ):
+                            yield _tf
+                        return
                     except _ComboFallbackNeeded as _cf_egr:
                         _ns_backoff = float(getattr(_cf_egr, "backoff", 0) or 0)
                         _ns_state = _cf_egr.retry_state
                         if not _ns_backoff:
                             _mark_conn_failed_for_retry(_ns_state, getattr(_cf_egr, "status_code", 502), getattr(_cf_egr, "err_text", ""))
                         while True:
+                            if await _is_request_disconnected(request):
+                                print(f"[Combo] client disconnected in egress_stream_guarded — aborting retry", flush=True)
+                                return
                             if _ns_backoff:
-                                # NEVER-STOP wrap: sleep the pass backoff (client
-                                # disconnect cancels — the only permitted terminator).
-                                await asyncio.sleep(_ns_backoff)
+                                # NEVER-STOP wrap: sleep the pass backoff while polling
+                                # client disconnect so cancelled requests abort immediately.
+                                if await _sleep_or_disconnect(_ns_backoff, request):
+                                    print(f"[Combo] client disconnected during egress_stream backoff — aborting", flush=True)
+                                    return
                             try:
                                 _egr_fallback = await _process_chat_completion(
                                     body, client_wants_anthropic, client_wants_gemini,
@@ -14696,15 +17032,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 _next_idx = (_retry_state["idx"] + 1) if (_retry_state and "idx" in _retry_state) else 1
                 if not active_chain or (_next_idx >= len(active_chain) and not _has_untried_sibling_conns()):
                     return None
-                _nxt = {
-                    "chain": active_chain,
-                    "idx": _next_idx,
-                    "cache_bp": _cache_breakpoints,
-                    "original_model": original_model,
-                    "deadline": _chain_deadline,
-                }
-                if isinstance(_retry_state, dict) and isinstance(_retry_state.get("clean_body"), dict):
-                    _nxt["clean_body"] = _retry_state["clean_body"]
+                _nxt = _propagate_retry_state(
+                    _retry_state,
+                    {
+                        "chain": active_chain,
+                        "idx": _next_idx,
+                        "cache_bp": _cache_breakpoints,
+                        "original_model": original_model,
+                        "deadline": _chain_deadline,
+                    },
+                )
                 return _nxt
 
             def _raise_gemini_combo_fallback(status_code: int, err_text: str, emit=None) -> None:
@@ -14756,11 +17093,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     raise _ComboFallbackNeeded(status_code, err_text, _next_state)
 
             async def gemini_egress_stream():
+                nonlocal start_time
                 resp = None
                 from app.compat.adapters.gemini import extract_openai_tool_schemas as _extract_gemini_schemas
                 state = {
                     "is_antigravity": bool(request and "antigravity" in request.headers.get("user-agent", "").lower()),
                     "tool_schemas": _extract_gemini_schemas(body.get("tools") if isinstance(body, dict) else None),
+                    "tools_in_request": bool(isinstance(body, dict) and body.get("tools")),
                 }
                 emitted_model_data = False
                 # BUG N (2026-08-13): PRE-RENDER BUFFER. Thought-only frames
@@ -14773,11 +17112,60 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 _thought_buf: list = []
                 _thought_buf_bytes = 0
                 _buffered_thought_chars = 0
+                _delivered_vis_chars = 0
                 _delivered_body_or_tool = False
                 _deferred_scaffolding_frames: list = []
                 _deferred_empty_finish_frames: list = []
                 _precommit_vis_buf: list = []
                 _precommit_vis_text_acc = ""
+                # F9 + M257: monotonic stamps for withheld pre-commit frames.
+                # `_precommit_hold_since` starts ONLY once post-banner body prose arrives
+                # (`extract_post_banner_body(_precommit_vis_text_acc) != ""`), while
+                # `_precommit_banner_since` provides a 6.0s banner-only safety valve so a
+                # Line-1 `→ ...` Studio Status Banner never prematurely commits at 1.5s
+                # before a Line-2 refusal arrives, yet short answers ("Hello") still flush in 1.5s.
+                _precommit_hold_since = None
+                _precommit_banner_since = None
+
+                def _f9_take_held_if_expired() -> list:
+                    """F9 + M257: return withheld pre-commit frames once the hold ceiling elapsed."""
+                    nonlocal emitted_model_data, _delivered_body_or_tool, _precommit_hold_since, _precommit_banner_since
+                    if not _precommit_vis_buf or (_precommit_hold_since is None and _precommit_banner_since is None):
+                        return []
+                    if not is_precommit_hold_expired(
+                        _precommit_vis_text_acc,
+                        _precommit_hold_since,
+                        _precommit_banner_since,
+                        hold_timeout_s=GEMINI_PRECOMMIT_HOLD_TIMEOUT_S,
+                    ):
+                        return []
+                    _ref_anchor_t = _precommit_hold_since if _precommit_hold_since is not None else _precommit_banner_since
+                    _held_s = (time.monotonic() - _ref_anchor_t) if _ref_anchor_t is not None else GEMINI_PRECOMMIT_HOLD_TIMEOUT_S
+                    # Flush in strict chronological order: thoughts -> scaffolding -> held body!
+                    _released: list = []
+                    if _thought_buf:
+                        _released.extend(_thought_buf)
+                        _thought_buf.clear()
+                    if _deferred_scaffolding_frames:
+                        _released.extend(_deferred_scaffolding_frames)
+                        _deferred_scaffolding_frames.clear()
+                    _vis_only = list(_precommit_vis_buf)
+                    _released.extend(_vis_only)
+                    _precommit_vis_buf.clear()
+                    _precommit_hold_since = None
+                    _precommit_banner_since = None
+                    emitted_model_data = True
+                    _delivered_body_or_tool = True
+                    for _rel in _vis_only:
+                        _emit.mark_emitted(_rel)
+                    print(
+                        f"[GeminiEgress] pre-commit hold {_held_s:.1f}s >= "
+                        f"{GEMINI_PRECOMMIT_HOLD_TIMEOUT_S}s - releasing "
+                        f"{len(_vis_only)} held frame(s) to keep the stream visible "
+                        f"(provider={provider_name} model={target_model})",
+                        flush=True,
+                    )
+                    return _released
                 # FREEZE FIX: this generator was already correct (the flag below
                 # is set immediately before the client-facing yield). Unified
                 # onto the shared guard so all four stream paths report refusals
@@ -14787,14 +17175,57 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 # marked as emission — marking them would wrongly disable all
                 # fallback for every Gemini request.
                 _emit = StreamEmissionState()
+                _refusal_retry_triggered = False
+                _kiro_slot_lock = (
+                    _get_kiro_single_key_lock(provider_name, _active_conn_index)
+                    if _should_serialize_kiro_single_key(config, provider_name, target_model)
+                    else None
+                )
+                _kiro_slot_acquired = False
                 try:
                     yield b": heartbeat\n\n"
+
+                    if _kiro_slot_lock is not None:
+                        _lock_wait_t0 = time.monotonic()
+                        _last_lock_ka = _lock_wait_t0
+                        while True:
+                            if await _client_disconnected():
+                                if _should_mark_client_disconnected(stats):
+                                    stats["error"] = "client_disconnected"
+                                    stats["status"] = 499
+                                return
+                            try:
+                                await asyncio.wait_for(_kiro_slot_lock.acquire(), timeout=0.25)
+                                _kiro_slot_acquired = True
+                                _waited = time.monotonic() - _lock_wait_t0
+                                if _waited >= 0.5:
+                                    start_time = time.time()
+                                    print(
+                                        f"[KiroSingleFlight] {provider_name}/{target_model}[{_active_conn_index}] "
+                                        f"acquired slot after {_waited:.1f}s queue wait",
+                                        flush=True,
+                                    )
+                                break
+                            except asyncio.TimeoutError:
+                                _now_lk = time.monotonic()
+                                if (_now_lk - _last_lock_ka) >= GEMINI_EGRESS_CONNECT_KEEPALIVE_INTERVAL:
+                                    _last_lock_ka = _now_lk
+                                    yield b": keepalive\n\n"
 
                     if _probe_resp is not None:
                         resp = _probe_resp
                     else:
                         _conn_task = asyncio.ensure_future(_send_stream_with_thinking_fallback())
-                        _conn_timeout = HEADER_WAIT_TIMEOUT if thinking_info else GEMINI_EGRESS_CONNECT_TIMEOUT
+                        _is_slow_header_lane = (
+                            bool(thinking_info)
+                            or payload_has_thinking(upstream_payload)
+                            or str(provider_name or "").strip().lower() in ("bslforge", "chat2api")
+                            or any(
+                                _k in str(target_model or "").lower()
+                                for _k in ("glm-5.3", "gemini-4-", "qwen3.8", "deepseek-v4", "-max", "-high")
+                            )
+                        )
+                        _conn_timeout = HEADER_WAIT_TIMEOUT if _is_slow_header_lane else GEMINI_EGRESS_CONNECT_TIMEOUT
                         _conn_deadline = asyncio.get_running_loop().time() + _conn_timeout
 
                         async def _cancel_connection_task():
@@ -14899,6 +17330,18 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             resp.status_code, provider_name, target_model,
                             active_conn, _active_conn_index, err_text[:500],
                         )
+                        if is_http_or_sse_classifier_refusal(resp.status_code, err_text):
+                            _ok_gm, _cln_gm, _cst_gm = _try_build_fel_v7_same_model_retry(
+                                body, _retry_state, config, request,
+                                provider_name=provider_name, target_model=target_model, vis_text=err_text,
+                            )
+                            if _ok_gm and _cln_gm is not None:
+                                _refusal_retry_triggered = True
+                                raise _RefusalSameModelRetryNeeded(_cln_gm, f"cyber_policy_{resp.status_code}", _cst_gm)
+                            from app.compat.adapters.gemini import sse_data as _g_sse_data, SSE_DONE as _G_SSE_DONE, terminal_error_frame as _g_term
+                            yield _g_sse_data(_g_term(resp.status_code, err_text, target_model))
+                            yield _G_SSE_DONE
+                            return
                         bench_leaf(config, provider_name, target_model, resp.status_code, err_text[:500], stats.get("out", 0))
                         # NEVER-STOP FIX (2026-09-04): call unconditionally — the
                         # helper advances to the next entry when one exists and
@@ -14941,20 +17384,25 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 try:
                                     _c = _raw_utf8_dec.decode(chunk)
                                     if stats["ttft"] == 0.0 and provider_name != "codex":
-                                        _is_openai_content = _openai_chunk_carries_output(_c)
-                                        _is_gemini_content = (
-                                            '"candidates"' in _c or
-                                            '"parts"' in _c or
-                                            '"role":"' in _c
-                                        )
                                         _is_anthropic_content = (
                                             '"text_delta"' in _c or
                                             '"content_block_delta"' in _c or
                                             '"message_delta"' in _c or
-                                            '"thinking_delta"' in _c
+                                            '"thinking_delta"' in _c or
+                                            '"input_json_delta"' in _c
                                         )
-                                        if _is_openai_content or _is_gemini_content or _is_anthropic_content:
-                                            stats["ttft"] = time.time() - start_time
+                                        if _is_anthropic_fmt:
+                                            if _is_anthropic_content:
+                                                stats["ttft"] = time.time() - start_time
+                                        else:
+                                            _is_openai_content = _openai_chunk_carries_output(_c)
+                                            _is_gemini_content = (
+                                                '"candidates"' in _c or
+                                                '"parts"' in _c or
+                                                '"role":"' in _c
+                                            )
+                                            if _is_openai_content or _is_gemini_content or _is_anthropic_content:
+                                                stats["ttft"] = time.time() - start_time
                                     buffer += _c
                                     lines = buffer.split("\n")
                                     buffer = lines.pop()
@@ -14991,6 +17439,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                 break
                                             stats["status"] = _rf_sc
                                             stats["error"] = _rf_msg
+                                            if not _emit.emitted:
+                                                _fel_v7_guard_sse_refusal(
+                                                    "gemini/explicit",
+                                                    _rf_sc, _rf_msg,
+                                                    body=body, _retry_state=_retry_state,
+                                                    config=config, request=request,
+                                                    provider_name=provider_name,
+                                                    target_model=target_model,
+                                                )
                                             bench_leaf(config, provider_name, target_model, _rf_sc, _rf_msg, 0)
                                             if not _emit.emitted:
                                                 _raise_gemini_combo_fallback(_rf_sc, _rf_msg, _emit)
@@ -15005,6 +17462,14 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             stats["status"] = _inl_sc
                                             stats["error"] = _inl_msg
                                             _codex_pre_buf.clear()
+                                            _fel_v7_guard_sse_refusal(
+                                                "gemini/inline",
+                                                _inl_sc, _inl_msg,
+                                                body=body, _retry_state=_retry_state,
+                                                config=config, request=request,
+                                                provider_name=provider_name,
+                                                target_model=target_model,
+                                            )
                                             bench_leaf(config, provider_name, target_model, _inl_sc, _inl_msg, 0)
                                             if not _emit.emitted:
                                                 _raise_gemini_combo_fallback(_inl_sc, _inl_msg, _emit)
@@ -15014,7 +17479,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                         if _u_gem:
                                             _merge_usage_into_stats(stats, _u_gem)
                                             record_cache_warmth(provider_name, _active_conn_index, _u_gem, tools_config=config.get("tools", {}))
-                                except _ComboFallbackNeeded:
+                                except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded, _RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE):
                                     raise
                                 except Exception:
                                     pass
@@ -15058,11 +17523,18 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             _tee_codex_response_source(_raw_ok(), "gemini", target_model)
                         )
                     elif _is_anthropic_fmt:
+                        _gem_has_tools = isinstance(upstream_payload, dict) and bool(upstream_payload.get("tools"))
+                        _gem_req_tc = isinstance(upstream_payload, dict) and _is_tool_choice_required(upstream_payload.get("tool_choice"))
                         _normalizer = StreamNormalizer(
                             "anthropic_sse", "openai_sse",
                             model_name=target_model or "bsl-routed",
+                            tools_in_request=_gem_has_tools,
+                            post_block_ping_idle_s=_kiro_ping_idle_seconds(config, provider_name, target_model),
+                            tool_choice_required=_gem_req_tc,
                         )
                         openai_source = _normalizer.convert_anthropic_to_openai(_raw_ok())
+                    elif provider_name == "kiro":
+                        openai_source = kiro_eventstream.eventstream_to_openai_sse_lines_with_fallback(_raw_ok())
                     else:
                         openai_source = _raw_ok()
 
@@ -15104,6 +17576,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             _cont_src = codex_adapter.responses_sse_to_openai_sse(_cont_raw)
                                         elif _is_anthropic_fmt:
                                             _cont_src = _normalizer.convert_anthropic_to_openai(_cont_raw)
+                                        elif provider_name == "kiro":
+                                            _cont_src = kiro_eventstream.eventstream_to_openai_sse_lines_with_fallback(_cont_raw)
                                         else:
                                             _cont_src = _cont_raw
                                         # No _detector.feed here: chunks reach the detector via
@@ -15135,10 +17609,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         try:
                             async for _c in _openai_source_chain():
                                 await _q.put(_c)
-                        except _ComboFallbackNeeded as _cf:
+                        except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded) as _cf:
                             _drain_err = _cf
-                        except _DeadlineRetryNeeded as _dr:
-                            _drain_err = _dr
+                        except (_RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE) as _rs:
+                            # F3 (2026-11-21): a classifier refusal is a prompt-surface
+                            # event, not leaf death. Store it (never `raise`): this is a
+                            # detached task, so a raised sentinel would die here instead
+                            # of reaching the consumer. `_drain_err` is re-raised by the
+                            # consumer below AFTER the final queue chunk is drained.
+                            _drain_err = _rs
                         except Exception as _de:
                             _drain_err = _de
                         finally:
@@ -15175,6 +17654,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     # emits it when the continuation byte arrives.
                     _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
                     _last_upstream_data = time.monotonic()
+                    _kiro_pre_idle_s = _kiro_pre_content_idle_seconds(
+                        config, provider_name, target_model,
+                        prompt_chars=_estimate_payload_prompt_chars(upstream_payload),
+                    )
+                    _eof_sentinel_seen = False
                     try:
                         while True:
                             try:
@@ -15191,10 +17675,22 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 # upstream data — do not reset the timer here. Only
                                 # a real ochunk (below) resets it.
                                 _idle = time.monotonic() - _last_upstream_data
-                                if _idle > GEMINI_EGRESS_MAX_IDLE:
+                                _in_pre_content_window = (
+                                    _kiro_pre_idle_s > 0.0
+                                    and not _emit.emitted
+                                    and _buffered_thought_chars == 0
+                                    and not _precommit_vis_buf
+                                    and not _delivered_body_or_tool
+                                )
+                                _effective_max_idle = (
+                                    min(GEMINI_EGRESS_MAX_IDLE, _kiro_pre_idle_s)
+                                    if _in_pre_content_window
+                                    else GEMINI_EGRESS_MAX_IDLE
+                                )
+                                if _idle > _effective_max_idle:
                                     print(
                                         f"[GeminiEgress] upstream idle {_idle:.0f}s > "
-                                        f"{GEMINI_EGRESS_MAX_IDLE}s - ending wedged stream "
+                                        f"{_effective_max_idle}s - ending wedged stream "
                                         f"(provider={provider_name} model={target_model})",
                                         flush=True,
                                     )
@@ -15211,6 +17707,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     # runs after the loop.
                                     stats["status"] = 504
                                     break
+                                for _f9_out in _f9_take_held_if_expired():
+                                    yield _f9_out
                                 yield b": keepalive\n\n"
                                 continue
                             if ochunk is _SENTINEL:
@@ -15220,28 +17718,53 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     or getattr(_detector, "tool_call_chars", 0) > 0
                                 ):
                                     stats["stream_completed"] = True
-                                break
+                                if stats.get("error") is not None or _drain_err is not None:
+                                    break
+                                _eof_sentinel_seen = True
+                                ochunk = b"\ndata: [BSL_EOF_FLUSH]\n\n"
                             # BUG A: real upstream data arrived — reset the idle
                             # timer so a healthy stream with intermittent reasoning
                             # gaps can run as long as it keeps producing bytes.
-                            _last_upstream_data = time.monotonic()
+                            # Pre-content scaffolding/pings do NOT reset Kiro's pre-content cap.
+                            if _eof_sentinel_seen:
+                                pass
+                            elif not (_kiro_pre_idle_s > 0.0 and not _emit.emitted and stats.get("ttft", 0.0) == 0.0 and is_scaffolding_only(ochunk)):
+                                _last_upstream_data = time.monotonic()
+                            else:
+                                _idle_gping = time.monotonic() - _last_upstream_data
+                                _eff_gping = min(GEMINI_EGRESS_MAX_IDLE, _kiro_pre_idle_s)
+                                if _idle_gping > _eff_gping:
+                                    print(
+                                        f"[GeminiEgress] pre-content ping-only idle {_idle_gping:.0f}s > "
+                                        f"{_eff_gping}s - ending wedged stream "
+                                        f"(provider={provider_name} model={target_model})",
+                                        flush=True,
+                                    )
+                                    stats["error"] = stats.get("error") or "upstream_idle_timeout"
+                                    stats["status"] = 504
+                                    break
                             try:
-                                obuffer += _utf8_dec.decode(ochunk)
+                                obuffer += _utf8_dec.decode(ochunk, final=_eof_sentinel_seen)
                                 olines = obuffer.split("\n")
                                 obuffer = olines.pop()
                                 for line in olines:
                                     stripped = line.strip()
-                                    if stripped == "data: [DONE]":
-                                        stats["stream_completed"] = True
+                                    if stripped in ("data: [DONE]", "data: [BSL_EOF_FLUSH]"):
+                                        if stripped == "data: [DONE]":
+                                            stats["stream_completed"] = True
+                                        from app.compat.adapters.gemini import flush_openai_to_gemini_eof as _flush_g_eof
+                                        g = _flush_g_eof(state)
+                                        if g is None:
+                                            continue
+                                    elif not stripped.startswith("data: "):
                                         continue
-                                    if not stripped.startswith("data: "):
-                                        continue
-                                    try:
-                                        openai_chunk = json.loads(stripped[6:])
-                                    except json.JSONDecodeError:
-                                        continue
-                                    _mark_stream_completed_if_terminal(stats, openai_chunk)
-                                    g = openai_chunk_to_gemini(openai_chunk, state)
+                                    else:
+                                        try:
+                                            openai_chunk = json.loads(stripped[6:])
+                                        except json.JSONDecodeError:
+                                            continue
+                                        _mark_stream_completed_if_terminal(stats, openai_chunk)
+                                        g = openai_chunk_to_gemini(openai_chunk, state)
                                     if g is not None:
                                         from app.compat.adapters.gemini import (
                                             sse_data as _g_sse_data,
@@ -15287,18 +17810,53 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             and isinstance(_p.get("text"), str)
                                             and _p.get("text") != _BSL_NO_OUTPUT_NOTICE_CONST
                                         )
+                                        if _frame_vis_text:
+                                            _delivered_vis_chars += len(_frame_vis_text)
 
-                                        # Gap R-2: pre-commit upstream content_filter finish advances combo chain.
+                                        # FEL v7.0 pre-commit content_filter / refusal recovery on SAME model (zero leaf benching).
                                         if not emitted_model_data and state.get("sawContentFilter"):
-                                            bench_leaf(config, provider_name, target_model, 502, "upstream_refusal_or_content_filter", 0)
-                                            _raise_gemini_combo_fallback(502, "upstream_refusal_or_content_filter", _emit)
-                                            stats["status"] = 502
-                                            stats["error"] = "upstream_refusal_or_content_filter"
-                                            yield _g_sse_data(_g_term_inl(502, "upstream_refusal_or_content_filter", target_model))
+                                            _ok_gr, _cln_gr, _cst_gr = _try_build_fel_v7_same_model_retry(
+                                                body, _retry_state, config, request,
+                                                provider_name=provider_name, target_model=target_model,
+                                                vis_text=_precommit_vis_text_acc or _frame_vis_text,
+                                            )
+                                            if _ok_gr and _cln_gr is not None:
+                                                _refusal_retry_triggered = True
+                                                raise _RefusalSameModelRetryNeeded(_cln_gr, "gemini_content_filter", _cst_gr)
+                                            # Terminal hard-harm or Pass-2 still refused: flush buffered text or honest notice (never 502-crash or bench!).
+                                            if _precommit_vis_buf or _frame_vis_text:
+                                                for _vis_held in _precommit_vis_buf:
+                                                    emitted_model_data = True
+                                                    _emit.mark_emitted(_vis_held)
+                                                    yield _vis_held
+                                                _precommit_vis_buf.clear()
+                                                if _frame_vis_text:
+                                                    emitted_model_data = True
+                                                    _emit.mark_emitted(_payload)
+                                                    yield _payload
+                                                yield _G_SSE_DONE_INL
+                                                return
+                                            stats["status"] = 200
+                                            stats["error"] = None
+                                            _cf_notice = {
+                                                "response": {
+                                                    "candidates": [{"content": {"role": "model", "parts": [{"text": "[Safety filter declined this output.]"}]}, "finishReason": "STOP"}],
+                                                    "modelVersion": state.get("modelVersion") or target_model or "bsl-routed",
+                                                }
+                                            }
+                                            yield _g_sse_data(_cf_notice)
                                             yield _G_SSE_DONE_INL
                                             return
 
                                         if not emitted_model_data and not _is_body_content:
+                                            for _f9_out in _f9_take_held_if_expired():
+                                                yield _f9_out
+                                            if emitted_model_data:
+                                                if _is_thought_only:
+                                                    yield _payload
+                                                    continue
+                                                yield _payload
+                                                continue
                                             if _is_thought_only:
                                                 if _thought_buf_bytes + len(_payload) <= GEMINI_THOUGHT_BUFFER_CAP_BYTES:
                                                     _thought_buf.append(_payload)
@@ -15342,17 +17900,34 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                         if not emitted_model_data:
                                             if not _has_tool_or_media:
                                                 _precommit_vis_text_acc += _frame_vis_text
-                                                if _PURE_PROSE_REFUSAL_START_RE.search(_precommit_vis_text_acc):
-                                                    bench_leaf(config, provider_name, target_model, 502, "upstream_refusal_or_content_filter", 0)
-                                                    _raise_gemini_combo_fallback(502, "upstream_refusal_or_content_filter", _emit)
-                                                    stats["status"] = 502
-                                                    stats["error"] = "upstream_refusal_or_content_filter"
-                                                    yield _g_sse_data(_g_term_inl(502, "upstream_refusal_or_content_filter", target_model))
-                                                    yield _G_SSE_DONE_INL
-                                                    return
-                                                if len(_precommit_vis_text_acc) < GEMINI_PRECOMMIT_REFUSAL_CHAR_WINDOW:
-                                                    _precommit_vis_buf.append(_payload)
-                                                    continue
+                                                _g_is_ref, _g_ref_rsn = detect_upstream_refusal(
+                                                    _precommit_vis_text_acc,
+                                                    finish_reason=str(_frame_finish_reason) if _frame_finish_reason else None,
+                                                )
+                                                if _g_is_ref:
+                                                    _ok_gr, _cln_gr, _cst_gr = _try_build_fel_v7_same_model_retry(
+                                                        body, _retry_state, config, request,
+                                                        provider_name=provider_name, target_model=target_model,
+                                                        vis_text=_precommit_vis_text_acc,
+                                                    )
+                                                    if _ok_gr and _cln_gr is not None:
+                                                        _refusal_retry_triggered = True
+                                                        raise _RefusalSameModelRetryNeeded(_cln_gr, _g_ref_rsn, _cst_gr)
+                                                else:
+                                                    _g_hold_more = should_hold_precommit_body(
+                                                        _precommit_vis_text_acc,
+                                                        char_window=PRECOMMIT_REFUSAL_CHAR_WINDOW,
+                                                        post_banner_min_chars=PRECOMMIT_POST_BANNER_MIN_CLEAN_CHARS,
+                                                    )
+                                                    if _g_hold_more:
+                                                        _precommit_vis_buf.append(_payload)
+                                                        # F9 + M257: start `_precommit_banner_since` on the first frame,
+                                                        # and `_precommit_hold_since` ONLY once post-banner body prose arrives.
+                                                        if _precommit_banner_since is None and _precommit_vis_text_acc.strip():
+                                                            _precommit_banner_since = time.monotonic()
+                                                        if _precommit_hold_since is None and extract_post_banner_body(_precommit_vis_text_acc):
+                                                            _precommit_hold_since = time.monotonic()
+                                                        continue
                                             # Commit transcript in exact chronological order:
                                             # 1) buffered thoughts, 2) pre-body scaffolding, 3) pre-commit visible text, 4) current frame.
                                             if _thought_buf:
@@ -15369,6 +17944,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                     _emit.mark_emitted(_vis_held)
                                                     yield _vis_held
                                                 _precommit_vis_buf.clear()
+                                                _precommit_hold_since = None
+                                                _precommit_banner_since = None
                                             if _gemini_frame_commits_transcript(_frame, _BSL_NO_OUTPUT_NOTICE_CONST) or _is_body_content:
                                                 emitted_model_data = True
                                                 _emit.mark_emitted(_payload)
@@ -15386,23 +17963,18 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             _emit.mark_emitted(_payload)
                                         _delivered_body_or_tool = True
                                         yield _payload
-                            except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded):
+                            except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded, _RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE):
                                 raise
                             except Exception as _render_err:
                                 print(f"[CodexDrain] render exception swallowed: {type(_render_err).__name__}: {_render_err}", flush=True)
+                            if _eof_sentinel_seen:
+                                break
                     finally:
-                        if not _drain_task.done():
-                            _drain_task.cancel()
-                        try:
-                            await _drain_task
-                        except BaseException:
-                            pass
-                        try:
-                            _close_source = getattr(openai_source, "aclose", None)
-                            if _close_source is not None:
-                                await _close_source()
-                        except BaseException:
-                            pass
+                        if await _bounded_drain_cleanup(
+                            _drain_task, openai_source, resp,
+                            force_close_resp=(stats.get("error") in ("upstream_idle_timeout", "client_disconnected")),
+                        ):
+                            resp = None
 
                     # leaf so the NEXT request starts on the fallback combo entry.
                     if stats.get("error") in ("ttft_stall", "stream_stall", "upstream_idle_timeout"):
@@ -15423,13 +17995,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             # PRE-CONTENT: Try combo fallback before giving up
                             _pre_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                             if active_chain and _pre_next_idx < len(active_chain):
-                                _pre_retry_state = {
-                                    "chain": active_chain,
-                                    "idx": _pre_next_idx,
-                                    "cache_bp": _cache_breakpoints,
-                                    "original_model": original_model,
-                                    "deadline": _chain_deadline,
-                                }
+                                _pre_retry_state = _propagate_retry_state(
+                                    _retry_state,
+                                    {
+                                        "chain": active_chain,
+                                        "idx": _pre_next_idx,
+                                        "cache_bp": _cache_breakpoints,
+                                        "original_model": original_model,
+                                        "deadline": _chain_deadline,
+                                    },
+                                )
                                 print(
                                     f"[Combo Fallback] '{model}' Gemini pre-content stall for "
                                     f"{target_model}/{provider_name} — advancing to entry {_pre_next_idx}",
@@ -15489,7 +18064,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     _backfill_missing_usage(
                         stats, internal_request.messages, _detector.partial_text,
                         provider_name=provider_name, target_model=target_model,
-                        delivered_chars=getattr(_detector, "tool_call_chars", 0),
+                        delivered_chars=(
+                            getattr(_detector, "tool_call_chars", 0)
+                            + (_buffered_thought_chars + _delivered_vis_chars if not _detector.partial_text else 0)
+                        ),
                     )
                     if _drain_err is not None:
                         if isinstance(_drain_err, _ComboFallbackNeeded):
@@ -15507,6 +18085,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 raise _drain_err
                             stats["status"] = 504
                             stats["error"] = getattr(_drain_err, "err", None) or str(_drain_err)
+                        if isinstance(_drain_err, (_RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE, _ComboWrapRestart)):
+                            # F3 (2026-11-21): a classifier refusal (or pass-boundary wrap)
+                            # is a routing sentinel, not leaf death. Always bubble it to
+                            # `gemini_egress_stream_guarded`.
+                            raise _drain_err
                         if isinstance(_drain_err, UPSTREAM_TRANSPORT_ERRORS):
                             stats["status"] = 502 if isinstance(_drain_err, httpx.TransportError) else 504
                             stats["error"] = str(_drain_err) or type(_drain_err).__name__
@@ -15517,7 +18100,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         from app.compat.adapters.gemini import sse_data as _g_sse_data, SSE_DONE as _G_SSE_DONE, terminal_error_frame as _g_term
                         # FREEZE FIX (2026-08-07): SOLE terminal contract; no
                         # bare {"error":...} prefix (poisons Gemini parser).
-                        yield _g_sse_data(_g_term(stats.get("status", 502), str(_drain_err) or "upstream drain error", target_model))
+                        _drain_sc = stats.get("status")
+                        if not isinstance(_drain_sc, int) or _drain_sc < 400:
+                            _drain_sc = 502
+                        stats["status"] = _drain_sc
+                        yield _g_sse_data(_g_term(_drain_sc, str(_drain_err) or "upstream drain error", target_model))
                         yield _G_SSE_DONE
                         return
                     if stats.get("status") == 499:
@@ -15541,19 +18128,33 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         yield _G_SSE_DONE
                         return
 
-                    # Gap R-2: final pre-commit refusal / content_filter check for <160-char buffered output.
-                    if not emitted_model_data and (
-                        state.get("sawContentFilter")
-                        or (_precommit_vis_text_acc and _PURE_PROSE_REFUSAL_START_RE.search(_precommit_vis_text_acc))
-                    ):
-                        bench_leaf(config, provider_name, target_model, 502, "upstream_refusal_or_content_filter", 0)
-                        _raise_gemini_combo_fallback(502, "upstream_refusal_or_content_filter", _emit)
-                        stats["status"] = 502
-                        stats["error"] = "upstream_refusal_or_content_filter"
-                        from app.compat.adapters.gemini import sse_data as _g_sse_data, SSE_DONE as _G_SSE_DONE, terminal_error_frame as _g_term
-                        yield _g_sse_data(_g_term(502, "upstream_refusal_or_content_filter", target_model))
-                        yield _G_SSE_DONE
-                        return
+                    # FEL v7.0: final pre-commit refusal / content_filter check for buffered output (zero leaf benching).
+                    if not emitted_model_data:
+                        _g_eof_ref, _g_eof_rsn = detect_upstream_refusal(
+                            _precommit_vis_text_acc,
+                            finish_reason="content_filter" if state.get("sawContentFilter") else None,
+                        )
+                        if _g_eof_ref:
+                            _ok_gr, _cln_gr, _cst_gr = _try_build_fel_v7_same_model_retry(
+                                body, _retry_state, config, request,
+                                provider_name=provider_name, target_model=target_model,
+                                vis_text=_precommit_vis_text_acc,
+                            )
+                            if _ok_gr and _cln_gr is not None:
+                                _refusal_retry_triggered = True
+                                raise _RefusalSameModelRetryNeeded(_cln_gr, _g_eof_rsn, _cst_gr)
+                            if not _precommit_vis_buf:
+                                from app.compat.adapters.gemini import sse_data as _g_sse_data, SSE_DONE as _G_SSE_DONE
+                                _cf_eof_notice = {
+                                    "response": {
+                                        "candidates": [{"content": {"role": "model", "parts": [{"text": "[Safety filter declined this output.]"}]}, "finishReason": "STOP"}],
+                                        "modelVersion": state.get("modelVersion") or target_model or "bsl-routed",
+                                    }
+                                }
+                                yield _g_sse_data(_cf_eof_notice)
+                                stats["stream_completed"] = True
+                                yield _G_SSE_DONE
+                                return
 
                     # Legitimate short (<160 char) non-refusal visible response held in _precommit_vis_buf.
                     if not emitted_model_data and _precommit_vis_buf:
@@ -15612,22 +18213,28 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     })
                                     _cont_body["messages"] = _cont_msgs
                                     if active_chain:
-                                        _same_leaf_state = {
-                                            "chain": active_chain,
-                                            "idx": _retry_state["idx"] if (isinstance(_retry_state, dict) and "idx" in _retry_state) else 0,
-                                            "cache_bp": _cache_breakpoints,
-                                            "original_model": original_model,
-                                            "deadline": _chain_deadline,
-                                            "same_leaf_continued": True,
-                                            "clean_body": _orig_clean_body,
-                                        }
+                                        _same_leaf_state = _propagate_retry_state(
+                                            _retry_state,
+                                            {
+                                                "chain": active_chain,
+                                                "idx": _retry_state["idx"] if (isinstance(_retry_state, dict) and "idx" in _retry_state) else 0,
+                                                "cache_bp": _cache_breakpoints,
+                                                "original_model": original_model,
+                                                "deadline": _chain_deadline,
+                                                "same_leaf_continued": True,
+                                                "clean_body": _orig_clean_body,
+                                            },
+                                        )
                                     else:
-                                        _same_leaf_state = {
-                                            "original_model": original_model,
-                                            "deadline": _chain_deadline,
-                                            "same_leaf_continued": True,
-                                            "clean_body": _orig_clean_body,
-                                        }
+                                        _same_leaf_state = _propagate_retry_state(
+                                            _retry_state,
+                                            {
+                                                "original_model": original_model,
+                                                "deadline": _chain_deadline,
+                                                "same_leaf_continued": True,
+                                                "clean_body": _orig_clean_body,
+                                            },
+                                        )
                                     print(
                                         f"[SameLeafContinuation] '{model}' {provider_name}/{target_model} "
                                         f"emitted {_buffered_thought_chars} thought chars with zero body/tool — running 1-shot continuation",
@@ -15741,9 +18348,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         stats["error"] = stats["error"] or "client_disconnected"
                         stats["status"] = 499
                     raise
-                except (_ComboFallbackNeeded, _ComboWrapRestart):
+                except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded):
                     raise
-                except _DeadlineRetryNeeded:
+                except (_RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE):
+                    _refusal_retry_triggered = True
                     raise
                 except UPSTREAM_TRANSPORT_ERRORS as _te:
                     # TRANSPORT FALLBACK FIX (2026-08-17): builtin TimeoutError on
@@ -15775,15 +18383,17 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     # t.end() pattern: emit error frame, close, done).
                     return
                 finally:
-                    # FIX B (2026-07-30): Wrap resp.aclose() in try/except so a
-                    # failed close (e.g. socket already reset) doesn't skip logging
-                    # or leave the connection in a half-open state that poisons the
-                    # keepalive pool for subsequent requests.
+                    # Bounded resp.aclose() BEFORE releasing _kiro_slot_lock so a wedged
+                    # TLS/httpcore teardown never holds the 1-key Kiro slot lock.
                     if resp is not None:
+                        await _bounded_drain_cleanup(None, None, resp, force_close_resp=True)
+                        resp = None
+                    if _kiro_slot_acquired and _kiro_slot_lock is not None:
                         try:
-                            await resp.aclose()
+                            _kiro_slot_lock.release()
                         except Exception:
                             pass
+                        _kiro_slot_acquired = False
                     # FREEZE FIX: report refused post-emission fallbacks.
                     try:
                         _r = _emit.refusal_log(model=target_model, provider=provider_name)
@@ -15791,29 +18401,40 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             print(_r, flush=True)
                     except Exception:
                         pass
-                    # CLIENT DISCONNECT / GENERATOR-EXIT USAGE BACKFILL (2026-11-20):
-                    try:
-                        _backfill_missing_usage(
-                            stats, internal_request.messages, _detector.partial_text,
-                            provider_name=provider_name, target_model=target_model,
-                            delivered_chars=getattr(_detector, "tool_call_chars", 0),
+                    if _refusal_retry_triggered:
+                        fel_event(
+                            "reprojection_pass1",
+                            model=target_model,
+                            provider=provider_name,
+                            details={"stream": True, "lane": "gemini_egress_stream"},
                         )
-                    except Exception:
-                        pass
-                    try:
-                        obs.log_request(
-                            provider=provider_name, model=target_model, status=stats["status"],
-                            ttft=stats["ttft"], in_tokens=stats["in"], out_tokens=stats["out"],
-                            cached_tokens=stats["cached"], config=config, error_msg=stats["error"],
-                            total_time=time.time() - start_time,
-                            request_id=request_id, client=client_label, stream=True, upstream_url=_upstream_url,
-                            conn_index=_active_conn_index,
-                            thinking=thinking_info,
-                            cache_write_tokens=stats.get("cache_write", 0),
-                            combo=_combo_label,
-                        )
-                    except Exception as _log_err:
-                        print(f"[BSL Router] finally-log failed (non-blocking): {_log_err}", flush=True)
+                    else:
+                        # CLIENT DISCONNECT / GENERATOR-EXIT USAGE BACKFILL (2026-11-20):
+                        try:
+                            _backfill_missing_usage(
+                                stats, internal_request.messages, _detector.partial_text,
+                                provider_name=provider_name, target_model=target_model,
+                                delivered_chars=(
+                                    getattr(_detector, "tool_call_chars", 0)
+                                    + (_buffered_thought_chars + _delivered_vis_chars if not _detector.partial_text else 0)
+                                ),
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            obs.log_request(
+                                provider=provider_name, model=target_model, status=stats["status"],
+                                ttft=stats["ttft"], in_tokens=stats["in"], out_tokens=stats["out"],
+                                cached_tokens=stats["cached"], config=config, error_msg=stats["error"],
+                                total_time=time.time() - start_time,
+                                request_id=request_id, client=client_label, stream=True, upstream_url=_upstream_url,
+                                conn_index=_active_conn_index,
+                                thinking=thinking_info,
+                                cache_write_tokens=stats.get("cache_write", 0),
+                                combo=_combo_label,
+                            )
+                        except Exception as _log_err:
+                            print(f"[BSL Router] finally-log failed (non-blocking): {_log_err}", flush=True)
 
             async def gemini_egress_stream_guarded():
                 # Gemini's nested drain/queue structure does not cleanly re-enter
@@ -15846,6 +18467,36 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     except Exception:
                         pass
                     return
+                except _RefusalSameModelRetryNeeded as _rr_gem:
+                    stats["ttft"] = 0.0
+                    stats["out"] = 0
+                    stats["error"] = None
+                    async for _fc in _dispatch_fel_v7_same_model_stream(
+                        _rr_gem,
+                        client_wants_anthropic=client_wants_anthropic,
+                        client_wants_gemini=client_wants_gemini,
+                        retry_state=_retry_state,
+                        target_model=target_model,
+                        provider_name=provider_name,
+                        combo_thinking_override=combo_thinking_override,
+                        cache_bp=_cache_breakpoints,
+                        original_model=original_model,
+                        chain_deadline=_chain_deadline,
+                        request=request,
+                    ):
+                        yield _fc
+                    return
+                except _TerminalClassifierRefusalSSE as _tcr_gem:
+                    stats["status"] = 200
+                    stats["error"] = None
+                    for _tf in _emit_terminal_classifier_refusal_sse(
+                        _tcr_gem,
+                        client_wants_anthropic=False,
+                        client_wants_gemini=True,
+                        target_model=target_model,
+                    ):
+                        yield _tf
+                    return
                 except _ComboFallbackNeeded as _cf:
                     _ns_backoff = float(getattr(_cf, "backoff", 0) or 0)
                     _ns_state = _cf.retry_state
@@ -15861,13 +18512,20 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         )
                         or body
                     )
-                    if not _ns_backoff and not _skip_mark:
-                        _mark_conn_failed_for_retry(_ns_state, getattr(_cf, "status_code", 502), getattr(_cf, "err_text", ""))
+                    if not _ns_backoff:
+                        _propagate_retry_state(_retry_state, _ns_state)
+                        if not _skip_mark:
+                            _mark_conn_failed_for_retry(_ns_state, getattr(_cf, "status_code", 502), getattr(_cf, "err_text", ""))
                     while True:
+                        if await _is_request_disconnected(request):
+                            print(f"[Combo] client disconnected in gemini_egress_stream_guarded — aborting retry", flush=True)
+                            return
                         if _ns_backoff:
-                            # NEVER-STOP wrap: sleep the pass backoff (client
-                            # disconnect cancels — the only permitted terminator).
-                            await asyncio.sleep(_ns_backoff)
+                            # NEVER-STOP wrap: sleep the pass backoff while polling
+                            # client disconnect so cancelled requests abort immediately.
+                            if await _sleep_or_disconnect(_ns_backoff, request):
+                                print(f"[Combo] client disconnected during gemini_egress backoff — aborting", flush=True)
+                                return
                         try:
                             _fallback = await _process_chat_completion(
                                 _dispatch_body, client_wants_anthropic, client_wants_gemini,
@@ -15970,8 +18628,17 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             SSE_DONE as _G_SSE_GUARDED,
                             terminal_error_frame as _g_term_guarded,
                         )
+                        # F5b (2026-11-21): `stats.get("status") or 502` is a
+                        # truthiness trap — a still-healthy 200 is truthy, so a
+                        # mid-stream exception rendered the literal frame
+                        # `upstream error 200: anext(): asynchronous generator is
+                        # already running`. A terminal ERROR frame must never
+                        # carry a success code; clamp anything below 400 to 502.
+                        _g_term_sc = stats.get("status")
+                        if not isinstance(_g_term_sc, int) or _g_term_sc < 400:
+                            _g_term_sc = 502
                         yield _g_sse_guarded(_g_term_guarded(
-                            stats.get("status") or 502,
+                            _g_term_sc,
                             stats.get("error") or "stream_interrupted",
                             target_model,
                         ))
@@ -16021,6 +18688,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # Reverse egress: OpenAI client (/v1/chat/completions) but upstream is
             # Anthropic-compatible (GLM/Kimi/MiniMax). Convert Anthropic SSE → OpenAI SSE.
             async def anthropic_to_openai_egress_stream(_attempt: int = 0):
+                nonlocal start_time
                 resp = None
                 buffer = ""
                 emitted_model_data = False  # Track if we've sent data to IDE (for pre-content check)
@@ -16030,7 +18698,41 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 # dead code. This state object is marked at every yield, so the
                 # invariant actually holds.
                 _emit = StreamEmissionState()
+                _refusal_retry_triggered = False
+                _delivered_terminal_refusal = False
+                _kiro_a2o_lock = (
+                    _get_kiro_single_key_lock(provider_name, _active_conn_index)
+                    if _should_serialize_kiro_single_key(config, provider_name, target_model)
+                    else None
+                )
+                _kiro_a2o_acquired = False
                 try:
+                    if _kiro_a2o_lock is not None:
+                        _a2o_lk_t0 = time.monotonic()
+                        _a2o_last_ka = _a2o_lk_t0
+                        while True:
+                            if await _client_disconnected():
+                                if _should_mark_client_disconnected(stats):
+                                    stats["error"] = "client_disconnected"
+                                    stats["status"] = 499
+                                return
+                            try:
+                                await asyncio.wait_for(_kiro_a2o_lock.acquire(), timeout=0.25)
+                                _kiro_a2o_acquired = True
+                                _a2o_waited = time.monotonic() - _a2o_lk_t0
+                                if _a2o_waited >= 0.5:
+                                    start_time = time.time()
+                                    print(
+                                        f"[KiroSingleFlight] {provider_name}/{target_model}[{_active_conn_index}] "
+                                        f"acquired a2o slot after {_a2o_waited:.1f}s queue wait",
+                                        flush=True,
+                                    )
+                                break
+                            except asyncio.TimeoutError:
+                                _now_a2o_lk = time.monotonic()
+                                if (_now_a2o_lk - _a2o_last_ka) >= GEMINI_EGRESS_CONNECT_KEEPALIVE_INTERVAL:
+                                    _a2o_last_ka = _now_a2o_lk
+                                    yield b": keepalive\n\n"
                     # Use pre-sent probe response if available (combo fallback status-peek)
                     if _probe_resp is not None:
                         resp = _probe_resp
@@ -16054,6 +18756,24 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             resp.status_code, provider_name, target_model,
                             active_conn, _active_conn_index, err_text[:500],
                         )
+                        if is_http_or_sse_classifier_refusal(resp.status_code, err_text):
+                            _ok_ao, _cln_ao, _cst_ao = _try_build_fel_v7_same_model_retry(
+                                body, _retry_state, config, request,
+                                provider_name=provider_name, target_model=target_model, vis_text=err_text,
+                            )
+                            if _ok_ao and _cln_ao is not None:
+                                _refusal_retry_triggered = True
+                                raise _RefusalSameModelRetryNeeded(_cln_ao, f"cyber_policy_{resp.status_code}", _cst_ao)
+                            _err_oa_cy = {
+                                "error": {
+                                    "message": f"Upstream error {resp.status_code}: {err_text[:400]}",
+                                    "type": "proxy_error",
+                                    "code": resp.status_code,
+                                }
+                            }
+                            yield f"data: {json.dumps(_err_oa_cy)}\n\n".encode("utf-8")
+                            yield b"data: [DONE]\n\n"
+                            return
                         bench_leaf(config, provider_name, target_model, resp.status_code, err_text[:500], stats.get("out", 0))
                         # TERMINAL RELAY WALL (2026-09-24): a hard provider wall never
                         # advances the combo chain and never wraps — fall through to
@@ -16069,13 +18789,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         # ALL non-200 triggers combo fallback (per user directive).
                         _fb_next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
                         if not _is_wall_ao and active_chain and (_fb_next_idx < len(active_chain) or _has_untried_sibling_conns()):
-                            _fb_retry_state = {
-                                "chain": active_chain,
-                                "idx": _fb_next_idx,
-                                "cache_bp": _cache_breakpoints,
-                                "original_model": original_model,
-                                "deadline": _chain_deadline,
-                            }
+                            _fb_retry_state = _propagate_retry_state(
+                                _retry_state,
+                                {
+                                    "chain": active_chain,
+                                    "idx": _fb_next_idx,
+                                    "cache_bp": _cache_breakpoints,
+                                    "original_model": original_model,
+                                    "deadline": _chain_deadline,
+                                },
+                            )
                             print(
                                 f"[Combo Fallback] '{model}' Anthropic→OpenAI egress {resp.status_code} "
                                 f"for {target_model}/{provider_name} — advancing to entry {_fb_next_idx}",
@@ -16112,7 +18835,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         return
 
                     async def _raw_anthropic_ok():
-                        nonlocal buffer
+                        nonlocal buffer, resp
                         # 2026-10-02 idle-parity mirror (BUG A class, Gemini
                         # lane sibling): this lane iterated the guarded pump
                         # DIRECTLY, so a wedged relay (content streams, then the
@@ -16148,10 +18871,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             try:
                                 async for _c in _guarded_source:
                                     await _a2o_q.put(_c)
-                            except _ComboFallbackNeeded as _cf:
-                                _a2o_drain_err = _cf
-                            except _DeadlineRetryNeeded as _dr:
-                                _a2o_drain_err = _dr
+                            except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded, _RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE) as _a2o_s:
+                                _a2o_drain_err = _a2o_s
                             except Exception as _de:
                                 _a2o_drain_err = _de
                             finally:
@@ -16164,11 +18885,63 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         # multi-byte character straddles the boundary.
                         _utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
                         _last_upstream_data = time.monotonic()
+                        _a2o_kiro_pre_idle_s = _kiro_pre_content_idle_seconds(
+                            config, provider_name, target_model,
+                            prompt_chars=_estimate_payload_prompt_chars(upstream_payload),
+                        )
+                        _a2o_ref_buf = (
+                            StreamRefusalPreCommitBuffer()
+                            if (provider_name != "kiro" and _is_fel_v7_same_model_recovery_enabled(config, request))
+                            else None
+                        )
+
+                        def _gate_a2o_chunk(_b_out: bytes) -> list:
+                            nonlocal _refusal_retry_triggered, _delivered_terminal_refusal
+                            if not _b_out:
+                                return []
+                            if _a2o_ref_buf is None or _a2o_ref_buf.committed:
+                                if not is_scaffolding_only(_b_out):
+                                    _emit.mark_emitted(_b_out)
+                                return [_b_out]
+                            _rdy = _a2o_ref_buf.feed(_b_out)
+                            if _a2o_ref_buf.refused:
+                                _ok_r, _cln_r, _cst_r = _try_build_fel_v7_same_model_retry(
+                                    body, _retry_state, config, request,
+                                    provider_name=provider_name, target_model=target_model,
+                                    vis_text=_a2o_ref_buf.vis_text, stop_details=_a2o_ref_buf.last_stop_details,
+                                )
+                                if _ok_r and _cln_r is not None:
+                                    _refusal_retry_triggered = True
+                                    raise _RefusalSameModelRetryNeeded(_cln_r, _a2o_ref_buf.refusal_reason, _cst_r)
+                                _a2o_ref_buf.committed = True
+                                _delivered_terminal_refusal = True
+                                _flushed = list(_a2o_ref_buf.refused_chunks)
+                                _a2o_ref_buf.refused_chunks.clear()
+                                for _fl in _flushed:
+                                    if not is_scaffolding_only(_fl):
+                                        _emit.mark_emitted(_fl)
+                                return _flushed
+                            if _a2o_ref_buf.committed:
+                                for _fl in _rdy:
+                                    if not is_scaffolding_only(_fl):
+                                        _emit.mark_emitted(_fl)
+                            return _rdy
+
                         try:
                             while True:
+                                _a2o_hold_to = (
+                                    _a2o_ref_buf.next_hold_timeout_s()
+                                    if (_a2o_ref_buf is not None and not _a2o_ref_buf.committed)
+                                    else None
+                                )
+                                _a2o_wait_to = (
+                                    min(GEMINI_EGRESS_KEEPALIVE_INTERVAL, _a2o_hold_to)
+                                    if _a2o_hold_to is not None
+                                    else GEMINI_EGRESS_KEEPALIVE_INTERVAL
+                                )
                                 try:
                                     chunk = await asyncio.wait_for(
-                                        _a2o_q.get(), timeout=GEMINI_EGRESS_KEEPALIVE_INTERVAL
+                                        _a2o_q.get(), timeout=_a2o_wait_to
                                     )
                                 except asyncio.TimeoutError:
                                     if await _client_disconnected():
@@ -16176,15 +18949,46 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                             stats["error"] = stats["error"] or "client_disconnected"
                                             stats["status"] = 499
                                         break
+                                    if _a2o_ref_buf is not None and not _a2o_ref_buf.committed:
+                                        _a2o_exp_list = _a2o_ref_buf.flush_if_expired()
+                                        if _a2o_ref_buf.refused:
+                                            _ok_r, _cln_r, _cst_r = _try_build_fel_v7_same_model_retry(
+                                                body, _retry_state, config, request,
+                                                provider_name=provider_name, target_model=target_model,
+                                                vis_text=_a2o_ref_buf.vis_text, stop_details=_a2o_ref_buf.last_stop_details,
+                                            )
+                                            if _ok_r and _cln_r is not None:
+                                                _refusal_retry_triggered = True
+                                                raise _RefusalSameModelRetryNeeded(_cln_r, _a2o_ref_buf.refusal_reason, _cst_r)
+                                            _a2o_ref_buf.committed = True
+                                            _delivered_terminal_refusal = True
+                                            _a2o_ref_fl = list(_a2o_ref_buf.refused_chunks)
+                                            _a2o_ref_buf.refused_chunks.clear()
+                                            for _a2o_exp in _a2o_ref_fl:
+                                                if not is_scaffolding_only(_a2o_exp):
+                                                    _emit.mark_emitted(_a2o_exp)
+                                                yield _a2o_exp
+                                            continue
+                                        if _a2o_exp_list:
+                                            for _a2o_exp in _a2o_exp_list:
+                                                if not is_scaffolding_only(_a2o_exp):
+                                                    _emit.mark_emitted(_a2o_exp)
+                                                yield _a2o_exp
+                                            continue
                                     # 2026-10-02 idle-parity mirror: a keepalive
                                     # tick is NOT upstream data — do not reset
                                     # the timer here. Only a real chunk (below)
                                     # resets it.
                                     _idle = time.monotonic() - _last_upstream_data
-                                    if _idle > GEMINI_EGRESS_MAX_IDLE:
+                                    _a2o_effective_max_idle = (
+                                        min(GEMINI_EGRESS_MAX_IDLE, _a2o_kiro_pre_idle_s)
+                                        if (_a2o_kiro_pre_idle_s > 0.0 and not _emit.emitted and stats.get("ttft", 0.0) == 0.0)
+                                        else GEMINI_EGRESS_MAX_IDLE
+                                    )
+                                    if _idle > _a2o_effective_max_idle:
                                         print(
                                             f"[AnthropicToOpenAI] upstream idle {_idle:.0f}s > "
-                                            f"{GEMINI_EGRESS_MAX_IDLE}s - ending wedged stream "
+                                            f"{_a2o_effective_max_idle}s - ending wedged stream "
                                             f"(provider={provider_name} model={target_model})",
                                             flush=True,
                                         )
@@ -16204,8 +19008,24 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 # Real upstream data arrived — reset the idle
                                 # timer so a healthy stream with intermittent
                                 # reasoning gaps can run as long as it keeps
-                                # producing bytes.
-                                _last_upstream_data = time.monotonic()
+                                # producing bytes. Pre-content scaffolding
+                                # (event: ping / message_start) does NOT reset
+                                # Kiro's pre-content idle timer.
+                                if not (_a2o_kiro_pre_idle_s > 0.0 and not _emit.emitted and stats.get("ttft", 0.0) == 0.0 and is_scaffolding_only(chunk)):
+                                    _last_upstream_data = time.monotonic()
+                                else:
+                                    _idle_ping = time.monotonic() - _last_upstream_data
+                                    _a2o_effective_max_idle = min(GEMINI_EGRESS_MAX_IDLE, _a2o_kiro_pre_idle_s)
+                                    if _idle_ping > _a2o_effective_max_idle:
+                                        print(
+                                            f"[AnthropicToOpenAI] pre-content ping-only idle {_idle_ping:.0f}s > "
+                                            f"{_a2o_effective_max_idle}s - ending wedged stream "
+                                            f"(provider={provider_name} model={target_model})",
+                                            flush=True,
+                                        )
+                                        stats["error"] = stats.get("error") or "upstream_idle_timeout"
+                                        stats["status"] = 504
+                                        break
                                 # Feed the detector so partial_text accumulates real
                                 # delivered text (decoupled from the splice gate).
                                 _detector.feed(chunk)
@@ -16217,21 +19037,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 try:
                                     text_chunk = _utf8_dec.decode(chunk)
                                     if stats["ttft"] == 0.0:
-                                        # OpenAI format: content/reasoning_content/text fields
-                                        # Gemini/Antigravity format: candidates/parts/role fields
-                                        _is_openai_content = _openai_chunk_carries_output(text_chunk)
-                                        _is_gemini_content = (
-                                            '"candidates"' in text_chunk or
-                                            '"parts"' in text_chunk or
-                                            '"role":"' in text_chunk
-                                        )
+                                        # Anthropic-format upstream: only content deltas count as TTFT
+                                        # (never message_start's `"role":"assistant"`).
                                         _is_anthropic_content = (
                                             '"text_delta"' in text_chunk or
                                             '"content_block_delta"' in text_chunk or
                                             '"message_delta"' in text_chunk or
-                                            '"thinking_delta"' in text_chunk
+                                            '"thinking_delta"' in text_chunk or
+                                            '"input_json_delta"' in text_chunk
                                         )
-                                        if _is_openai_content or _is_gemini_content or _is_anthropic_content:
+                                        if _is_anthropic_content:
                                             stats["ttft"] = time.time() - start_time
                                     buffer += text_chunk
                                     lines = buffer.split("\n")
@@ -16254,15 +19069,53 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                     stats["status"] = _exp_a2o_sc
                                                     stats["error"] = _exp_a2o_msg
                                                     _flag_post_content_explicit_sse_failure(stats, _emit)
+                                                elif _exp_a2o is not None and not _emit.emitted:
+                                                    _exp_a2o_sc, _exp_a2o_msg = _exp_a2o
+                                                    stats["status"] = _exp_a2o_sc
+                                                    stats["error"] = _exp_a2o_msg
+                                                    _fel_v7_guard_sse_refusal(
+                                                        "a2o/explicit",
+                                                        _exp_a2o_sc, _exp_a2o_msg,
+                                                        body=body, _retry_state=_retry_state,
+                                                        config=config, request=request,
+                                                        provider_name=provider_name,
+                                                        target_model=target_model,
+                                                    )
+                                                    bench_leaf(config, provider_name, target_model, _exp_a2o_sc, _exp_a2o_msg, 0)
+                                                    if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("explicit_sse_failure"):
+                                                        _exp_next_state = _propagate_retry_state(
+                                                            _retry_state,
+                                                            {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline},
+                                                        )
+                                                        raise _ComboFallbackNeeded(_exp_a2o_sc, _exp_a2o_msg, _exp_next_state)
+                                                    _raise_combo_wrap(
+                                                        model, config, request, _retry_state, active_chain,
+                                                        original_model, _cache_breakpoints, _exp_a2o_sc,
+                                                        _exp_a2o_msg, reason="a2o_explicit_sse_failure",
+                                                    )
                                                 _inl_a2o = _detect_inline_upstream_error_from_sse_event(dj) if not _emit.emitted else None
                                                 if _inl_a2o is not None:
                                                     _inl_sc, _inl_msg = _inl_a2o
                                                     stats["ttft"] = 0.0
                                                     stats["status"] = _inl_sc
                                                     stats["error"] = _inl_msg
+                                                    _fel_v7_guard_sse_refusal(
+                                                        "a2o/inline",
+                                                        _inl_sc, _inl_msg,
+                                                        body=body, _retry_state=_retry_state,
+                                                        config=config, request=request,
+                                                        provider_name=provider_name,
+                                                        target_model=target_model,
+                                                    )
                                                     bench_leaf(config, provider_name, target_model, _inl_sc, _inl_msg, 0)
                                                     if active_chain and (((_retry_state["idx"] + 1) if _retry_state else 1) < len(active_chain) or _has_untried_sibling_conns()) and _emit.may_fallback("inline_upstream_error"):
-                                                        raise _ComboFallbackNeeded(_inl_sc, _inl_msg, {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline})
+                                                        raise _ComboFallbackNeeded(
+                                                            _inl_sc, _inl_msg,
+                                                            _propagate_retry_state(
+                                                                _retry_state,
+                                                                {"chain": active_chain, "idx": (_retry_state["idx"] + 1) if _retry_state else 1, "cache_bp": _cache_breakpoints, "original_model": original_model, "deadline": _chain_deadline},
+                                                            ),
+                                                        )
                                                     _raise_combo_wrap(
                                                         model, config, request, _retry_state, active_chain,
                                                         original_model, _cache_breakpoints, _inl_sc,
@@ -16275,28 +19128,44 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                                     record_cache_warmth(provider_name, _active_conn_index, _u_a2o, tools_config=config.get("tools", {}))
                                             except json.JSONDecodeError:
                                                 pass
-                                except _ComboFallbackNeeded:
+                                except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded, _RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE):
                                     raise
                                 except Exception:
                                     pass
                                 # BUG M (2026-09-27): keepalive/comment-only chunk
                                 # (": PING\n\n") must not commit the transcript.
-                                if not is_scaffolding_only(chunk):
-                                    _emit.mark_emitted(chunk)
-                                yield chunk
+                                for _go in _gate_a2o_chunk(chunk):
+                                    yield _go
+                            if _a2o_ref_buf is not None and not _a2o_ref_buf.committed and stats.get("status") != 499 and stats.get("error") is None:
+                                _a2o_eof_rdy = _a2o_ref_buf.finalize()
+                                if _a2o_ref_buf.refused:
+                                    _ok_r, _cln_r, _cst_r = _try_build_fel_v7_same_model_retry(
+                                        body, _retry_state, config, request,
+                                        provider_name=provider_name, target_model=target_model,
+                                        vis_text=_a2o_ref_buf.vis_text, stop_details=_a2o_ref_buf.last_stop_details,
+                                    )
+                                    if _ok_r and _cln_r is not None:
+                                        _refusal_retry_triggered = True
+                                        raise _RefusalSameModelRetryNeeded(_cln_r, _a2o_ref_buf.refusal_reason, _cst_r)
+                                    _a2o_ref_buf.committed = True
+                                    _delivered_terminal_refusal = True
+                                    _a2o_ref_fl = list(_a2o_ref_buf.refused_chunks)
+                                    _a2o_ref_buf.refused_chunks.clear()
+                                    for _fl in _a2o_ref_fl:
+                                        if not is_scaffolding_only(_fl):
+                                            _emit.mark_emitted(_fl)
+                                        yield _fl
+                                else:
+                                    for _fl in _a2o_eof_rdy:
+                                        if not is_scaffolding_only(_fl):
+                                            _emit.mark_emitted(_fl)
+                                        yield _fl
                         finally:
-                            if not _drain_task.done():
-                                _drain_task.cancel()
-                            try:
-                                await _drain_task
-                            except BaseException:
-                                pass
-                            try:
-                                _close_source = getattr(_guarded_source, "aclose", None)
-                                if _close_source is not None:
-                                    await _close_source()
-                            except BaseException:
-                                pass
+                            if await _bounded_drain_cleanup(
+                                _drain_task, _guarded_source, resp,
+                                force_close_resp=(stats.get("error") in ("upstream_idle_timeout", "client_disconnected")),
+                            ):
+                                resp = None
                         # 2026-10-02 idle-parity mirror: a drain error (combo
                         # fallback signal, deadline retry, transport death)
                         # must propagate EXACTLY as it did when the pump was
@@ -16324,16 +19193,19 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         )
                         # Zero-token 200: stream completed with status 200 but produced
                         # zero output tokens — dead leaf. Advance combo if possible.
-                        if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft"):
+                        if stats.get("status") == 200 and stats.get("out", 0) == 0 and not stats.get("ttft") and not _delivered_terminal_refusal:
                             _zero_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                             if active_chain and _zero_next_idx < len(active_chain):
-                                _zero_retry_state = {
-                                    "chain": active_chain,
-                                    "idx": _zero_next_idx,
-                                    "cache_bp": _cache_breakpoints,
-                                    "original_model": original_model,
-                                    "deadline": _chain_deadline,
-                                }
+                                _zero_retry_state = _propagate_retry_state(
+                                    _retry_state,
+                                    {
+                                        "chain": active_chain,
+                                        "idx": _zero_next_idx,
+                                        "cache_bp": _cache_breakpoints,
+                                        "original_model": original_model,
+                                        "deadline": _chain_deadline,
+                                    },
+                                )
                                 print(
                                     f"[Combo Fallback] '{model}' Anthropic→OpenAI stream 200-with-0-tokens for "
                                     f"{target_model}/{provider_name} — advancing to entry {_zero_next_idx}",
@@ -16376,13 +19248,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             _stall_next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                             # PRE-CONTENT check: only fallback if we haven't sent data to IDE yet
                             if _emit.may_fallback("stream_stall_precheck") and active_chain and _stall_next_idx < len(active_chain):
-                                _stall_retry_state = {
-                                    "chain": active_chain,
-                                    "idx": _stall_next_idx,
-                                    "cache_bp": _cache_breakpoints,
-                                    "original_model": original_model,
-                                    "deadline": _chain_deadline,
-                                }
+                                _stall_retry_state = _propagate_retry_state(
+                                    _retry_state,
+                                    {
+                                        "chain": active_chain,
+                                        "idx": _stall_next_idx,
+                                        "cache_bp": _cache_breakpoints,
+                                        "original_model": original_model,
+                                        "deadline": _chain_deadline,
+                                    },
+                                )
                                 print(
                                     f"[Combo Fallback] '{model}' Anthropic stream stall for "
                                     f"{target_model}/{provider_name} — advancing to entry {_stall_next_idx}",
@@ -16424,10 +19299,117 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                     reason="a2o_stall_chain_exhausted",
                                 )
 
-                    normalizer = StreamNormalizer("anthropic_sse", "openai_sse", model_name=target_model or "bsl-routed")
-                    async for out in normalizer.convert_anthropic_to_openai(_raw_anthropic_ok()):
-                        emitted_model_data = True  # Mark that we've sent data to IDE
-                        _emit.mark_emitted(out)
+                    _a2o_has_tools = isinstance(upstream_payload, dict) and bool(upstream_payload.get("tools"))
+                    _a2o_req_tc = isinstance(upstream_payload, dict) and _is_tool_choice_required(upstream_payload.get("tool_choice"))
+                    normalizer = StreamNormalizer(
+                        "anthropic_sse",
+                        "openai_sse",
+                        model_name=target_model or "bsl-routed",
+                        tools_in_request=_a2o_has_tools,
+                        post_block_ping_idle_s=_kiro_ping_idle_seconds(config, provider_name, target_model),
+                        tool_choice_required=_a2o_req_tc,
+                    )
+                    async def _a2o_openai_chain():
+                        _saw_done_a2o = False
+                        _held_done_a2o = None
+                        async for _c in normalizer.convert_anthropic_to_openai(_raw_anthropic_ok()):
+                            if isinstance(_c, (bytes, bytearray)) and _c.strip() == b"data: [DONE]":
+                                _saw_done_a2o = True
+                                _held_done_a2o = _c
+                                continue
+                            yield _c
+                        if should_splice_continuation(
+                            truncated=_detector.truncated,
+                            transport_died_partial=stats.get(TRANSPORT_DIED_PARTIAL_FLAG),
+                            partial_text=_detector.partial_text,
+                            infinite_retry_enabled=_combo_infinite_retry_enabled(config),
+                            used=_cont_state["used"],
+                        ):
+                            _cont_state["used"] = True
+                            _cont_commit = _continuation_status_guard(_emit)
+                            try:
+                                _cont_payload = build_continuation_stream_payload(upstream_payload, _detector.partial_text)
+                                if _cont_payload:
+                                    print(
+                                        f"[AntiStop] {f_val} {'transport death' if stats.get(TRANSPORT_DIED_PARTIAL_FLAG) else 'truncated'} "
+                                        f"after {len(_detector.partial_text)} chars - splicing continuation (a2o)",
+                                        flush=True,
+                                    )
+                                    _cont_resp = await _open_continuation_with_retry(
+                                        _send_stream_with_thinking_fallback, _build_req, _cont_payload, "a2o-cont"
+                                    )
+                                    _cont_chunks = 0
+                                    _cont_bytes = 0
+                                    try:
+                                        _cont_raw = _transport_guarded(_pump(_cont_resp.aiter_raw(), _emit, _attempt, "a2o-cont"), stats, _emit)
+                                        _cont_norm = StreamNormalizer(
+                                            "anthropic_sse", "openai_sse",
+                                            model_name=target_model or "bsl-routed",
+                                            tools_in_request=_a2o_has_tools,
+                                            post_block_ping_idle_s=_kiro_ping_idle_seconds(config, provider_name, target_model),
+                                            tool_choice_required=_a2o_req_tc,
+                                        )
+                                        async for _cc in _cont_norm.convert_anthropic_to_openai(_cont_raw):
+                                            _detector.feed(_cc)
+                                            _cont_chunks += 1
+                                            _cont_bytes += len(_cc) if _cc else 0
+                                            yield _cc
+                                        _saw_done_a2o = False
+                                    finally:
+                                        try:
+                                            await _cont_resp.aclose()
+                                        except Exception:
+                                            pass
+                                    _cont_commit(_cont_chunks, _cont_bytes)
+                            except Exception as _ce:
+                                print(f"[AntiStop] a2o continuation failed (fail-open): {_ce}", flush=True)
+                        if (
+                            stats.get("status") == 200
+                            and not stats.get("error")
+                            and not _detector_has_visible_body(_detector)
+                            and getattr(_detector, "tool_call_chars", 0) == 0
+                            and not _is_empty_output_exempt(target_model)
+                        ):
+                            _a2o_zero_next = (_retry_state["idx"] + 1) if _retry_state else 1
+                            if (
+                                active_chain
+                                and _a2o_zero_next < len(active_chain)
+                                and _emit.may_fallback("thought_only_or_zero_body_output")
+                                and _chain_budget_remaining() > 0
+                            ):
+                                _a2o_zero_st = _propagate_retry_state(
+                                    _retry_state,
+                                    {
+                                        "chain": active_chain,
+                                        "idx": _a2o_zero_next,
+                                        "cache_bp": _cache_breakpoints,
+                                        "original_model": original_model,
+                                        "deadline": _chain_deadline,
+                                    },
+                                )
+                                raise _ComboFallbackNeeded(504, "thought_only_or_zero_body_output", _a2o_zero_st)
+                            from app.compat.adapters.gemini import BSL_NO_OUTPUT_NOTICE as _A2O_NO_OUT_NOTICE
+                            _a2o_notice_chunk = {
+                                "id": f"chatcmpl-bsl-notice-{int(time.time() * 1000)}",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": target_model or "bsl-routed",
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {"content": _A2O_NO_OUT_NOTICE},
+                                        "finish_reason": "stop",
+                                    }
+                                ],
+                            }
+                            yield f"data: {json.dumps(_a2o_notice_chunk)}\n\n".encode("utf-8")
+                        if _saw_done_a2o and _held_done_a2o is not None:
+                            yield _held_done_a2o
+
+                    async for out in _a2o_openai_chain():
+                        if not is_scaffolding_only(out):
+                            emitted_model_data = True  # Mark that we've sent data to IDE
+                            _emit.mark_emitted(out)
                         yield out
                     # FREEZE FIX 2026-07-25: client-disconnect path. _raw_anthropic_ok()
                     # breaks on 499, normalizer ends, but no [DONE] was emitted.
@@ -16437,7 +19419,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             yield b"data: [DONE]\n\n"
                         except Exception:
                             pass
-                except (_ComboFallbackNeeded, _DeadlineRetryNeeded):
+                except (_ComboFallbackNeeded, _ComboWrapRestart, _DeadlineRetryNeeded):
+                    raise
+                except (_RefusalSameModelRetryNeeded, _TerminalClassifierRefusalSSE):
+                    _refusal_retry_triggered = True
                     raise
                 except UPSTREAM_TRANSPORT_ERRORS as _te:
                     # TRANSPORT FALLBACK FIX (2026-08-17): route transport death
@@ -16447,13 +19432,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     bench_leaf(config, provider_name, target_model, stats["status"], stats["error"], stats.get("out", 0))
                     _next_idx = (_retry_state["idx"] + 1) if _retry_state else 1
                     if active_chain and _next_idx < len(active_chain):
-                        _fb_retry_state = {
-                            "chain": active_chain,
-                            "idx": _next_idx,
-                            "cache_bp": _cache_breakpoints,
-                            "original_model": original_model,
-                            "deadline": _chain_deadline,
-                        }
+                        _fb_retry_state = _propagate_retry_state(
+                            _retry_state,
+                            {
+                                "chain": active_chain,
+                                "idx": _next_idx,
+                                "cache_bp": _cache_breakpoints,
+                                "original_model": original_model,
+                                "deadline": _chain_deadline,
+                            },
+                        )
                         print(
                             f"[Combo Fallback] '{model}' Anthropic→OpenAI egress transport_{stats['status']} "
                             f"for {target_model}/{provider_name} — advancing to entry {_next_idx}",
@@ -16481,12 +19469,17 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     yield f"data: {json.dumps(err_chunk)}\n\n".encode("utf-8")
                     yield b"data: [DONE]\n\n"
                 finally:
-                    # FIX B (2026-07-30): try/except to prevent pool poisoning.
+                    # Bounded resp.aclose() BEFORE releasing _kiro_a2o_lock so a wedged
+                    # TLS/httpcore teardown never holds the 1-key Kiro slot lock.
                     if resp is not None:
+                        await _bounded_drain_cleanup(None, None, resp, force_close_resp=True)
+                        resp = None
+                    if _kiro_a2o_acquired and _kiro_a2o_lock is not None:
                         try:
-                            await resp.aclose()
+                            _kiro_a2o_lock.release()
                         except Exception:
                             pass
+                        _kiro_a2o_acquired = False
                     # FREEZE FIX: report refused post-emission fallbacks.
                     try:
                         _r = _emit.refusal_log(model=target_model, provider=provider_name)
@@ -16494,38 +19487,50 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             print(_r, flush=True)
                     except Exception:
                         pass
-                    # CLIENT DISCONNECT / GENERATOR-EXIT USAGE BACKFILL (2026-11-20):
-                    try:
-                        _backfill_missing_usage(
-                            stats, internal_request.messages, _detector.partial_text,
-                            provider_name=provider_name, target_model=target_model,
-                            delivered_chars=getattr(_detector, "tool_call_chars", 0),
+                    if _refusal_retry_triggered:
+                        fel_event(
+                            "reprojection_pass1",
+                            model=target_model,
+                            provider=provider_name,
+                            details={"stream": True, "lane": "anthropic_to_openai_egress_stream"},
                         )
-                    except Exception:
-                        pass
-                    try:
-                        obs.log_request(
-                            provider=provider_name, model=target_model, status=stats["status"],
-                            ttft=stats["ttft"], in_tokens=stats["in"], out_tokens=stats["out"],
-                            cached_tokens=stats["cached"], config=config, error_msg=stats["error"],
-                            total_time=time.time() - start_time,
-                            request_id=request_id, client=client_label, stream=True, upstream_url=_upstream_url,
-                            conn_index=_active_conn_index,
-                            thinking=thinking_info,
-                            cache_write_tokens=stats.get("cache_write", 0),
-                            combo=_combo_label,
-                        )
-                    except Exception as _log_err:
-                        print(f"[BSL Router] finally-log failed (non-blocking): {_log_err}", flush=True)
+                    else:
+                        # CLIENT DISCONNECT / GENERATOR-EXIT USAGE BACKFILL (2026-11-20):
+                        try:
+                            _backfill_missing_usage(
+                                stats, internal_request.messages, _detector.partial_text,
+                                provider_name=provider_name, target_model=target_model,
+                                delivered_chars=getattr(_detector, "tool_call_chars", 0),
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            obs.log_request(
+                                provider=provider_name, model=target_model, status=stats["status"],
+                                ttft=stats["ttft"], in_tokens=stats["in"], out_tokens=stats["out"],
+                                cached_tokens=stats["cached"], config=config, error_msg=stats["error"],
+                                total_time=time.time() - start_time,
+                                request_id=request_id, client=client_label, stream=True, upstream_url=_upstream_url,
+                                conn_index=_active_conn_index,
+                                thinking=thinking_info,
+                                cache_write_tokens=stats.get("cache_write", 0),
+                                combo=_combo_label,
+                            )
+                        except Exception as _log_err:
+                            print(f"[BSL Router] finally-log failed (non-blocking): {_log_err}", flush=True)
 
             async def anthropic_to_openai_egress_stream_guarded():
                 _attempt = 0
                 while True:
                     if _attempt >= len(STREAM_DEADLINE_LADDER):
                         try:
-                            _cap_err = {"error": {"message": stats.get("error") or "deadline_ladder_exhausted", "type": "proxy_error"}}
-                            yield f"data: {json.dumps(_cap_err)}\n\n".encode("utf-8")
-                            yield b"data: [DONE]\n\n"
+                            if client_wants_anthropic:
+                                for _tf in _anthropic_terminal_error_frames(stats.get("error") or "deadline_ladder_exhausted", target_model):
+                                    yield _tf
+                            else:
+                                _cap_err = {"error": {"message": stats.get("error") or "deadline_ladder_exhausted", "type": "proxy_error"}}
+                                yield f"data: {json.dumps(_cap_err)}\n\n".encode("utf-8")
+                                yield b"data: [DONE]\n\n"
                         except Exception:
                             pass
                         return
@@ -16548,6 +19553,36 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         stats["status"] = 500
                         stats["error"] = None
                         _retry_again = True
+                    except _RefusalSameModelRetryNeeded as _rr_anthr:
+                        stats["ttft"] = 0.0
+                        stats["out"] = 0
+                        stats["error"] = None
+                        async for _fc in _dispatch_fel_v7_same_model_stream(
+                            _rr_anthr,
+                            client_wants_anthropic=client_wants_anthropic,
+                            client_wants_gemini=client_wants_gemini,
+                            retry_state=_retry_state,
+                            target_model=target_model,
+                            provider_name=provider_name,
+                            combo_thinking_override=combo_thinking_override,
+                            cache_bp=_cache_breakpoints,
+                            original_model=original_model,
+                            chain_deadline=_chain_deadline,
+                            request=request,
+                        ):
+                            yield _fc
+                        return
+                    except _TerminalClassifierRefusalSSE as _tcr_anthr:
+                        stats["status"] = 200
+                        stats["error"] = None
+                        for _tf in _emit_terminal_classifier_refusal_sse(
+                            _tcr_anthr,
+                            client_wants_anthropic=client_wants_anthropic,
+                            client_wants_gemini=client_wants_gemini,
+                            target_model=target_model,
+                        ):
+                            yield _tf
+                        return
                     except _ComboFallbackNeeded as _cf_anthr:
                         _ns_backoff = float(getattr(_cf_anthr, "backoff", 0) or 0)
                         _ns_state = _cf_anthr.retry_state
@@ -16556,10 +19591,15 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         # Body-level upstream failure (e.g. 524 stall after headers) —
                         # advance the combo chain instead of returning an error to the client.
                         while True:
+                            if await _is_request_disconnected(request):
+                                print(f"[Combo] client disconnected in anthropic_to_openai_egress — aborting retry", flush=True)
+                                return
                             if _ns_backoff:
-                                # NEVER-STOP wrap: sleep the pass backoff (client
-                                # disconnect cancels — the only permitted terminator).
-                                await asyncio.sleep(_ns_backoff)
+                                # NEVER-STOP wrap: sleep the pass backoff while polling
+                                # client disconnect so cancelled requests abort immediately.
+                                if await _sleep_or_disconnect(_ns_backoff, request):
+                                    print(f"[Combo] client disconnected during anthropic_to_openai backoff — aborting", flush=True)
+                                    return
                             try:
                                 _anthr_fallback = await _process_chat_completion(
                                     body, client_wants_anthropic, client_wants_gemini,
@@ -16723,7 +19763,50 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
         _ka_body = _guard_observe_stream(_ka_body, model=target_model, provider=provider_name)
         return StreamingResponse(_ka_body, media_type="text/event-stream")
     else:
+        _kiro_ns_lock = (
+            _get_kiro_single_key_lock(provider_name, _active_conn_index)
+            if _should_serialize_kiro_single_key(config, provider_name, target_model)
+            else None
+        )
+        _kiro_ns_acquired = False
+
+        def _release_kiro_ns_lock() -> None:
+            nonlocal _kiro_ns_acquired
+            if _kiro_ns_acquired and _kiro_ns_lock is not None:
+                try:
+                    _kiro_ns_lock.release()
+                except Exception:
+                    pass
+                _kiro_ns_acquired = False
+
         try:
+            if _kiro_ns_lock is not None:
+                _ns_lk_t0 = time.monotonic()
+                while True:
+                    if await _is_request_disconnected(request):
+                        return Response(status_code=499)
+                    try:
+                        await asyncio.wait_for(_kiro_ns_lock.acquire(), timeout=0.25)
+                        _kiro_ns_acquired = True
+                        _ns_waited = time.monotonic() - _ns_lk_t0
+                        if _ns_waited >= 0.5:
+                            start_time = time.time()
+                            print(
+                                f"[KiroSingleFlight] {provider_name}/{target_model}[{_active_conn_index}] "
+                                f"acquired non-stream slot after {_ns_waited:.1f}s queue wait",
+                                flush=True,
+                            )
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+
+            _ns_has_tools = isinstance(upstream_payload, dict) and bool(upstream_payload.get("tools"))
+            _ns_req_tc = isinstance(upstream_payload, dict) and _is_tool_choice_required(upstream_payload.get("tool_choice"))
+            _ns_pre_idle_s = _kiro_pre_content_idle_seconds(
+                config, provider_name, target_model,
+                prompt_chars=_estimate_payload_prompt_chars(upstream_payload),
+            )
+            _ns_post_ping_s = _kiro_ping_idle_seconds(config, provider_name, target_model)
 
             # ── Stream-Buffer helper for S3/S6 continuation calls ────
             # Rewrites payload to stream:true, accumulates via the shared
@@ -16773,6 +19856,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     _request=request,
                     _label=_label,
                     _thinking_info=thinking_info,
+                    _pre_content_idle_s=_ns_pre_idle_s,
+                    _post_block_ping_idle_s=_ns_post_ping_s,
+                    _tools_in_request=_ns_has_tools,
+                    _tool_choice_required=_ns_req_tc,
                 )
                 print(
                     f"[StreamBuffer:{_label}] '{target_model}/{provider_name}' "
@@ -16848,6 +19935,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             _request=request,
                             _label="buf",
                             _thinking_info=thinking_info,
+                            _pre_content_idle_s=_ns_pre_idle_s,
+                            _post_block_ping_idle_s=_ns_post_ping_s,
+                            _tools_in_request=_ns_has_tools,
+                            _tool_choice_required=_ns_req_tc,
                         )
                         _sb_resp = None
                         print(
@@ -16990,6 +20081,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             {'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
                             _failure_status, _failure_text,
                         )
+                        _release_kiro_ns_lock()
                         return await _process_chat_completion(
                             body, client_wants_anthropic, client_wants_gemini,
                             _retry_state=_next_retry_state,
@@ -16997,16 +20089,21 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         )
                     if _chain_budget_remaining() <= 0:
                         print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
-                        # NEVER-STOP RETRY (2026-08-31): chain/budget exhausted pre-emission
-                        # (non-stream, nothing emitted) - wrap to pass 2+ instead of a terminal error.
-                        if _combo_infinite_retry_enabled(config):
-                            _backoff, _wrap = _combo_restart_or_give_up(
-                                model, _retry_state, active_chain, original_model,
-                                _cache_breakpoints, request,
-                                reason="nonstream_budget_exhausted",
-                            )
-                            # Bug 2 Part A: sentinel, not recursion.
-                            raise _ComboWrapRestart(_backoff, _wrap)
+                    # NEVER-STOP RETRY (2026-08-31): chain/budget exhausted pre-emission
+                    # (non-stream, nothing emitted) - wrap to pass 2+ instead of a terminal error.
+                    if _should_allow_pass_wrap(
+                        model, config, _retry_state, active_chain, _failure_status, _failure_text, "nonstream_budget_exhausted",
+                        request=request,
+                    ):
+                        _backoff, _wrap = _combo_restart_or_give_up(
+                            model, _retry_state, active_chain, original_model,
+                            _cache_breakpoints, request,
+                            reason="nonstream_budget_exhausted",
+                            status_code=_failure_status,
+                            err_text=_failure_text,
+                        )
+                        # Bug 2 Part A: sentinel, not recursion.
+                        raise _ComboWrapRestart(_backoff, _wrap)
                     print(f"[AFZ-FORENSIC] route=chat stream=False status=504 leaf={provider_name}/{target_model} active_streams={active_stream_count()} reason=nonstream_budget_exhausted", flush=True)
                     return JSONResponse(
                         {
@@ -17047,6 +20144,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             {'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
                             _failure_status, _failure_text,
                         )
+                        _release_kiro_ns_lock()
                         return await _process_chat_completion(
                             body, client_wants_anthropic, client_wants_gemini,
                             _retry_state=_next_retry_state,
@@ -17055,11 +20153,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     if _chain_budget_remaining() <= 0:
                         print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
                     # NEVER-STOP RETRY: wrap to pass 2+ instead of a terminal 502.
-                    if _combo_infinite_retry_enabled(config):
+                    if _should_allow_pass_wrap(
+                        model, config, _retry_state, active_chain, _failure_status, _failure_text, "nonstream_transport_exhausted",
+                        request=request,
+                    ):
                         _backoff, _wrap = _combo_restart_or_give_up(
                             model, _retry_state, active_chain, original_model,
                             _cache_breakpoints, request,
                             reason="nonstream_transport_exhausted",
+                            status_code=_failure_status,
+                            err_text=_failure_text,
                         )
                         # Bug 2 Part A: sentinel, not recursion.
                         raise _ComboWrapRestart(_backoff, _wrap)
@@ -17103,6 +20206,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                             {'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
                             _failure_status, _failure_text,
                         )
+                        _release_kiro_ns_lock()
                         return await _process_chat_completion(
                             body, client_wants_anthropic, client_wants_gemini,
                             _retry_state=_next_retry_state,
@@ -17111,11 +20215,16 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     if _chain_budget_remaining() <= 0:
                         print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
                     # NEVER-STOP RETRY: wrap to pass 2+ instead of a terminal 502.
-                    if _combo_infinite_retry_enabled(config):
+                    if _should_allow_pass_wrap(
+                        model, config, _retry_state, active_chain, _failure_status, _failure_text, "nonstream_unexpected_exhausted",
+                        request=request,
+                    ):
                         _backoff, _wrap = _combo_restart_or_give_up(
                             model, _retry_state, active_chain, original_model,
                             _cache_breakpoints, request,
                             reason="nonstream_unexpected_exhausted",
+                            status_code=_failure_status,
+                            err_text=_failure_text,
                         )
                         # Bug 2 Part A: sentinel, not recursion.
                         raise _ComboWrapRestart(_backoff, _wrap)
@@ -17375,6 +20484,71 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         flush=True,
                     )
                     resp = _SyntheticResponse(_inl_sc, {"error": _inl_msg}, _inl_msg)
+
+                # ── FEL v7.0 Pre-Zombie / Pre-S3/S6 Non-Stream Same-Model Recovery ──
+                if not _guard_mutated and _inline_ns_err is None:
+                    _ns_v7_ref, _ns_v7_rsn = detect_refusal_in_response_json(_response_json)
+                    if _ns_v7_ref:
+                        _ns_vis_chk, _ = fel_response_visible_text(_response_json)
+                        _ns_sd_chk = (
+                            _response_json.get("stop_details")
+                            if isinstance(_response_json, dict)
+                            else None
+                        )
+                        if not _ns_sd_chk and isinstance(_response_json, dict) and isinstance(_response_json.get("choices"), list) and _response_json["choices"]:
+                            _c0_sd = _response_json["choices"][0]
+                            if isinstance(_c0_sd, dict):
+                                _ns_sd_chk = _c0_sd.get("stop_details")
+                        _ok_ns_v7, _cln_ns_v7, _cst_ns_v7 = _try_build_fel_v7_same_model_retry(
+                            body,
+                            _retry_state,
+                            config,
+                            request,
+                            provider_name=provider_name,
+                            target_model=target_model,
+                            vis_text=_ns_vis_chk or "",
+                            stop_details=_ns_sd_chk,
+                        )
+                        if _ok_ns_v7 and _cln_ns_v7 is not None:
+                            if await _is_request_disconnected(request):
+                                return Response(status_code=499)
+                            if request is not None and getattr(request, "state", None) is not None:
+                                request.state.bsl_fel_v7_retried = True
+                            fel_event(
+                                "reprojection_pass1",
+                                model=target_model,
+                                provider=provider_name,
+                                details={
+                                    "stream": False,
+                                    "reason": _ns_v7_rsn,
+                                    "constellation": _cst_ns_v7,
+                                },
+                            )
+                            _same_ns_state = _build_fel_v7_same_model_retry_state(
+                                _retry_state,
+                                target_model=target_model,
+                                provider_name=provider_name,
+                                combo_thinking_override=combo_thinking_override,
+                                cache_bp=_cache_breakpoints,
+                                original_model=original_model,
+                                chain_deadline=_chain_deadline,
+                                clean_body=_cln_ns_v7,
+                            )
+                            _release_kiro_ns_lock()
+                            _ns_pass2_resp = await _process_chat_completion(
+                                _cln_ns_v7,
+                                client_wants_anthropic,
+                                client_wants_gemini,
+                                _retry_state=_same_ns_state,
+                                request=request,
+                            )
+                            try:
+                                _ns_pass2_resp.headers["x-bsl-fel-v7-reprojected"] = "true"
+                                _ns_pass2_resp.headers["x-bsl-fel-constellation"] = _cst_ns_v7
+                            except Exception:
+                                pass
+                            return _ns_pass2_resp
+
                 _zombie_check = True if (_guard_mutated or _inline_ns_err is not None) else _response_has_model_output(_response_json, out_tokens)
                 if _zombie_check and _inline_ns_err is None and (not in_tokens or not out_tokens):
                     try:
@@ -17414,6 +20588,61 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     resp = _SyntheticResponse(504, {"error": error_msg})
             else:
                 error_msg = resp.text[:200]
+                if is_http_or_sse_classifier_refusal(resp.status_code, resp.text[:1000]):
+                    _log_upstream_http_error_forensics(
+                        resp.status_code, provider_name, target_model,
+                        active_conn, _active_conn_index, resp.text[:500],
+                    )
+                    _ok_ns_cy, _cln_ns_cy, _cst_ns_cy = _try_build_fel_v7_same_model_retry(
+                        body,
+                        _retry_state,
+                        config,
+                        request,
+                        provider_name=provider_name,
+                        target_model=target_model,
+                        vis_text=resp.text[:1000],
+                    )
+                    if _ok_ns_cy and _cln_ns_cy is not None:
+                        if await _is_request_disconnected(request):
+                            return Response(status_code=499)
+                        if request is not None and getattr(request, "state", None) is not None:
+                            request.state.bsl_fel_v7_retried = True
+                        fel_event(
+                            "reprojection_pass1",
+                            model=target_model,
+                            provider=provider_name,
+                            details={
+                                "stream": False,
+                                "reason": f"cyber_policy_{resp.status_code}",
+                                "constellation": _cst_ns_cy,
+                            },
+                        )
+                        _same_ns_cy_state = _build_fel_v7_same_model_retry_state(
+                            _retry_state,
+                            target_model=target_model,
+                            provider_name=provider_name,
+                            combo_thinking_override=combo_thinking_override,
+                            cache_bp=_cache_breakpoints,
+                            original_model=original_model,
+                            chain_deadline=_chain_deadline,
+                            clean_body=_cln_ns_cy,
+                        )
+                        _release_kiro_ns_lock()
+                        _ns_cy_resp = await _process_chat_completion(
+                            _cln_ns_cy,
+                            client_wants_anthropic,
+                            client_wants_gemini,
+                            _retry_state=_same_ns_cy_state,
+                            request=request,
+                        )
+                        try:
+                            _ns_cy_resp.headers["x-bsl-fel-v7-reprojected"] = "true"
+                            _ns_cy_resp.headers["x-bsl-fel-constellation"] = _cst_ns_cy
+                        except Exception:
+                            pass
+                        return _ns_cy_resp
+                    # Pass-2 already ran on cyber-policy 400/403: return once without substitute fallback or infinite wrap!
+                    return JSONResponse({"error": resp.text[:500] or f"upstream_{resp.status_code}"}, status_code=resp.status_code)
                 # ERE-F4: on upstream 404 model_not_found, optionally auto-register
                 # a fuzzy-matched alias (default OFF via tools.auto_register_models).
                 _maybe_auto_register(provider_name, target_model, resp)
@@ -17453,7 +20682,10 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 and _fel.max_recoveries >= 1
                 and resp.status_code == 200
                 and not getattr(request.state, "bsl_fel_recovered", False)
+                and not getattr(request.state, "bsl_fel_v7_retried", False)
                 and isinstance(body, dict)
+                and not body.get("_bsl_refusal_safe_retry")
+                and not body_has_hard_harm(body)
             ):
                 try:
                     _fel_first_json = _response_json if _response_json else {}
@@ -17463,7 +20695,11 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         except Exception:
                             _fel_first_json = {}
                     _fel_visible, _fel_had_tools = fel_response_visible_text(_fel_first_json)
-                    _fel_verdict = classify_refusal(_fel_visible, _fel_had_tools)
+                    _fel_verdict = (
+                        "blocked"
+                        if is_hard_harm_refusal(_fel_visible or "")
+                        else classify_refusal(_fel_visible, _fel_had_tools)
+                    )
                     if _fel_verdict in ("refusal", "tos_lecture"):
                         fel_event("refusal", model=target_model, provider=provider_name, details={
                             "classification": _fel_verdict,
@@ -17483,6 +20719,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 f"{target_model}/{provider_name}",
                                 flush=True,
                             )
+                            _release_kiro_ns_lock()
                             _fel_second = await _process_chat_completion(
                                 _fel_recovery_body,
                                 client_wants_anthropic,
@@ -17702,6 +20939,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                                 **_retry_state,
                                 "idx": _retry_state.get("idx", 0),
                             }
+                            _release_kiro_ns_lock()
                             return await _process_chat_completion(
                                 body,
                                 client_wants_anthropic,
@@ -17732,6 +20970,7 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                         {'chain': active_chain, 'idx': _next_idx, 'cache_bp': _cache_breakpoints, 'original_model': original_model, 'deadline': _chain_deadline},
                         _fb_code, _ns_err_text,
                     )
+                    _release_kiro_ns_lock()
                     return await _process_chat_completion(
                         body, client_wants_anthropic, client_wants_gemini,
                         _retry_state=_next_retry_state,
@@ -17739,16 +20978,22 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     )
                 if _chain_budget_remaining() <= 0:
                     print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
-                    # NEVER-STOP RETRY (2026-08-31): chain/budget exhausted pre-emission
-                    # (non-stream, nothing emitted) - wrap to pass 2+ instead of a terminal error.
-                    if _combo_infinite_retry_enabled(config):
-                        _backoff, _wrap = _combo_restart_or_give_up(
-                            model, _retry_state, active_chain, original_model,
-                            _cache_breakpoints, request,
-                            reason="nonstream_upstream_exhausted",
-                        )
-                        # Bug 2 Part A: sentinel, not recursion.
-                        raise _ComboWrapRestart(_backoff, _wrap)
+                # NEVER-STOP RETRY (2026-08-31): chain/budget exhausted pre-emission
+                # (non-stream, nothing emitted) - wrap to pass 2+ instead of a terminal error.
+                _ns_up_sc = 504 if _is_zombie else resp.status_code
+                if _should_allow_pass_wrap(
+                    model, config, _retry_state, active_chain, _ns_up_sc, _ns_err_text, "nonstream_upstream_exhausted",
+                    request=request,
+                ):
+                    _backoff, _wrap = _combo_restart_or_give_up(
+                        model, _retry_state, active_chain, original_model,
+                        _cache_breakpoints, request,
+                        reason="nonstream_upstream_exhausted",
+                        status_code=_ns_up_sc,
+                        err_text=_ns_err_text,
+                    )
+                    # Bug 2 Part A: sentinel, not recursion.
+                    raise _ComboWrapRestart(_backoff, _wrap)
 
             # ── HTML / 400 Bad-Response Detection ─────────────────────
 
@@ -18149,6 +21394,8 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                 media_type=resp.headers.get("content-type", "application/json"),
                 headers={k: v for k, v in resp.headers.items() if k.lower() not in ("content-encoding", "transfer-encoding")}
             )
+        except (_ComboWrapRestart, _ComboFallbackNeeded):
+            raise
         except Exception as e:
             ttft = time.time() - start_time
             obs.log_request(
@@ -18175,6 +21422,12 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
             # to the next combo chain entry if available.
             if (active_chain
                     and not isinstance(e, (json.JSONDecodeError, ValueError, KeyError, TypeError))):
+                if _kiro_ns_acquired and _kiro_ns_lock is not None:
+                    try:
+                        _kiro_ns_lock.release()
+                    except Exception:
+                        pass
+                    _kiro_ns_acquired = False
                 _next_idx = (_retry_state['idx'] + 1) if _retry_state else 1
                 if (_next_idx < len(active_chain) or _has_untried_sibling_conns()) and _chain_budget_remaining() > 0:
                     print(f"[Combo Fallback] '{model}' non-stream network error for {target_model}/{provider_name}: {e} — advancing to entry {_next_idx}")
@@ -18191,16 +21444,22 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     )
                 if _chain_budget_remaining() <= 0:
                     print(f"[AFZ-DEADLINE] chain budget exhausted after {time.monotonic() - (_chain_deadline - CHAIN_TOTAL_BUDGET):.1f}s, idx={_next_idx}, refusing further fallback", flush=True)
-                    # NEVER-STOP RETRY (2026-08-31): chain/budget exhausted pre-emission
-                    # (non-stream, nothing emitted) - wrap to pass 2+ instead of a terminal error.
-                    if _combo_infinite_retry_enabled(config):
-                        _backoff, _wrap = _combo_restart_or_give_up(
-                            model, _retry_state, active_chain, original_model,
-                            _cache_breakpoints, request,
-                            reason="nonstream_network_error_exhausted",
-                        )
-                        # Bug 2 Part A: sentinel, not recursion.
-                        raise _ComboWrapRestart(_backoff, _wrap)
+                # NEVER-STOP RETRY (2026-08-31): chain/budget exhausted pre-emission
+                # (non-stream, nothing emitted) - wrap to pass 2+ instead of a terminal error.
+                _ns_net_sc = 504 if isinstance(e, (httpx.TimeoutException, TimeoutError, asyncio.TimeoutError)) else 502
+                if _should_allow_pass_wrap(
+                    model, config, _retry_state, active_chain, _ns_net_sc, str(e), "nonstream_network_error_exhausted",
+                    request=request,
+                ):
+                    _backoff, _wrap = _combo_restart_or_give_up(
+                        model, _retry_state, active_chain, original_model,
+                        _cache_breakpoints, request,
+                        reason="nonstream_network_error_exhausted",
+                        status_code=_ns_net_sc,
+                        err_text=str(e),
+                    )
+                    # Bug 2 Part A: sentinel, not recursion.
+                    raise _ComboWrapRestart(_backoff, _wrap)
             if client_wants_gemini:
                 # Return a Gemini-shaped error so Antigravity IDE terminates cleanly
                 # instead of freezing on an unrecognized {"error": "..."} bare JSON.
@@ -18209,6 +21468,13 @@ async def _process_chat_completion_pass(body: dict, client_wants_anthropic: bool
                     status_code=500,
                 )
             return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            if _kiro_ns_acquired and _kiro_ns_lock is not None:
+                try:
+                    _kiro_ns_lock.release()
+                except Exception:
+                    pass
+                _kiro_ns_acquired = False
 
 # ─── Output Intent Detection ─────────────────────────────────────────────
 
@@ -19076,17 +22342,24 @@ async def anthropic_messages(request: Request):
     # This endpoint is only hit by Claude Code (no other client sends Anthropic format).
     model_aliases = config.get("claude_code_aliases", {})
     raw_model = body.get("model", "")
-    integration_target = _resolve_claude_code_alias(config, raw_model)
-    if integration_target:
-        body["model"] = integration_target
-    elif raw_model in model_aliases:
-        body["model"] = model_aliases[raw_model]
-    else:
-        # Wildcard match (e.g. "*sonnet*" -> combo_sonnet)
-        for pattern, alias in model_aliases.items():
-            if fnmatch.fnmatch(raw_model.lower(), pattern.lower()):
-                body["model"] = alias
-                break
+    _raw_prefix = str(raw_model or "").split("/", 1)[0] if "/" in str(raw_model or "") else ""
+    _is_explicit_provider_model = bool(_raw_prefix and _raw_prefix in (config.get("providers") or {}))
+    if not _is_explicit_provider_model:
+        integration_target = _resolve_claude_code_alias(config, raw_model)
+        if integration_target:
+            body["model"] = integration_target
+        elif raw_model in model_aliases:
+            body["model"] = model_aliases[raw_model]
+        else:
+            # Wildcard match (e.g. "*sonnet*" -> combo_sonnet)
+            for pattern, alias in model_aliases.items():
+                if fnmatch.fnmatch(raw_model.lower(), pattern.lower()):
+                    body["model"] = alias
+                    break
+
+    # Unified 4-Plane Modular Switchboard for Claude Code (/v1/messages):
+    # 0.0ms fast-path when `apply_claude_code` is OFF or all Plane 1/3/4 wire flags are ON.
+    _apply_ls_components_to_anthropic_body(body, _get_ls_components_from_config(config))
 
     openai_body = UniversalNormalizer.normalize_to_openai_from_anthropic(body)
     openai_body = _preserve_anthropic_prompt_cache_key(body, openai_body)
@@ -19253,6 +22526,9 @@ async def antigravity_generate(request: Request, model: str = None):
                 f"[DEDUP] removed {_dedup_stats['duplicates_removed']} dup view_file pairs, "
                 f"~{_dedup_stats['bytes_saved_est']:,} bytes saved"
             )
+        # 4-Plane Modular LS Components Switchboard (0.0ms fast-path when all ON;
+        # mutates `inner` in place when Plane 1/3/4 wire filters are active).
+        _apply_ls_components_to_gemini_inner(inner, _get_ls_components_from_config(config))
         # The dedicated mapping is authoritative. Do not normalize this target or
         # consult global aliases before dispatching it through BSL's resolver.
         openai_body = gemini_request_to_openai(inner, mapping_target)
@@ -19363,7 +22639,7 @@ async def antigravity_generate(request: Request, model: str = None):
 # and model-discovery RPCs. Inference stays on the exact routes above so it can
 # continue through BSL's model mapping; this narrow route forwards only other
 # valid Cloud Code RPC operation names to an approved Google origin.
-_ANTIGRAVITY_CCPA_BASE_URL = "https://cloudcode-pa.googleapis.com"
+_ANTIGRAVITY_CCPA_BASE_URL = "https://daily-cloudcode-pa.googleapis.com"
 _ANTIGRAVITY_CCPA_OPERATION_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
 
 
@@ -19748,6 +23024,25 @@ async def _forward_antigravity_ccpa_control(request: Request, operation: str):
         try:
             stage = "response-headers"
             upstream_headers = _antigravity_native_response_headers(upstream_response)
+            _lsc_cfg = _get_ls_components_from_config(cs_get_config()) if operation == "listExperiments" else None
+            if (
+                operation == "listExperiments"
+                and upstream_response.status_code == 200
+                and _requires_experiment_filtering(_lsc_cfg)
+            ):
+                _exp_body = await upstream_response.aread()
+                await upstream_response.aclose()
+                _patched_exp = _filter_list_experiments_bytes(_exp_body, _lsc_cfg)
+                _clean_headers = {
+                    k: v for k, v in upstream_headers.items()
+                    if k.lower() not in ("content-encoding", "content-length")
+                }
+                return Response(
+                    content=_patched_exp,
+                    status_code=upstream_response.status_code,
+                    headers=_clean_headers,
+                    media_type=upstream_response.headers.get("content-type", "application/json"),
+                )
             stage = "response-stream"
             # ANTI-FREEZE: register this CCPA control-plane passthrough so
             # POST /api/antifreeze/force-stop can cancel it. Control-plane
@@ -19872,6 +23167,118 @@ _ANTIGRAVITY_GEMINI_4_CARBON_CATALOG = (
                 "video/mp4": True,
             },
             "thinkingLevel": 1,
+            "supportsModelInfoOverride": False,
+        },
+    ),
+    (
+        "gemini-4-neon-low",
+        {
+            "displayName": "Gemini 4 Neon (Low)",
+            "supportsImages": True,
+            "supportsThinking": True,
+            "supportsVideo": True,
+            "thinkingBudget": -1,
+            "minThinkingBudget": 32,
+            "recommended": True,
+            "maxTokens": 1048576,
+            "maxOutputTokens": 262144,
+            "tokenizerType": "LLAMA_WITH_SPECIAL",
+            "model": "MODEL_PLACEHOLDER_M534",
+            "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+            "modelProvider": "MODEL_PROVIDER_GOOGLE",
+            "tagTitle": "New",
+            "supportedMimeTypes": {
+                "image/png": True,
+                "image/jpeg": True,
+                "image/webp": True,
+                "application/pdf": True,
+                "video/mp4": True,
+            },
+            "thinkingLevel": 1,
+            "supportsModelInfoOverride": False,
+        },
+    ),
+    (
+        "gemini-4-neon-medium",
+        {
+            "displayName": "Gemini 4 Neon (Medium)",
+            "supportsImages": True,
+            "supportsThinking": True,
+            "supportsVideo": True,
+            "thinkingBudget": -1,
+            "minThinkingBudget": 32,
+            "recommended": True,
+            "maxTokens": 1048576,
+            "maxOutputTokens": 262144,
+            "tokenizerType": "LLAMA_WITH_SPECIAL",
+            "model": "MODEL_PLACEHOLDER_M533",
+            "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+            "modelProvider": "MODEL_PROVIDER_GOOGLE",
+            "tagTitle": "New",
+            "supportedMimeTypes": {
+                "image/png": True,
+                "image/jpeg": True,
+                "image/webp": True,
+                "application/pdf": True,
+                "video/mp4": True,
+            },
+            "thinkingLevel": 2,
+            "supportsModelInfoOverride": False,
+        },
+    ),
+    (
+        "gemini-4-neon-high",
+        {
+            "displayName": "Gemini 4 Neon (High)",
+            "supportsImages": True,
+            "supportsThinking": True,
+            "supportsVideo": True,
+            "thinkingBudget": -1,
+            "minThinkingBudget": 32,
+            "recommended": True,
+            "maxTokens": 1048576,
+            "maxOutputTokens": 262144,
+            "tokenizerType": "LLAMA_WITH_SPECIAL",
+            "model": "MODEL_PLACEHOLDER_M532",
+            "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+            "modelProvider": "MODEL_PROVIDER_GOOGLE",
+            "tagTitle": "New",
+            "supportedMimeTypes": {
+                "image/png": True,
+                "image/jpeg": True,
+                "image/webp": True,
+                "application/pdf": True,
+                "video/mp4": True,
+            },
+            "thinkingLevel": 3,
+            "supportsModelInfoOverride": False,
+        },
+    ),
+    (
+        "gemini-4-neon-xhigh",
+        {
+            "displayName": "Gemini 4 Neon (XHigh)",
+            "supportsImages": True,
+            "supportsThinking": True,
+            "supportsVideo": True,
+            "thinkingBudget": -1,
+            "minThinkingBudget": 32,
+            "recommended": True,
+            "maxTokens": 1048576,
+            "maxOutputTokens": 262144,
+            "tokenizerType": "LLAMA_WITH_SPECIAL",
+            "model": "MODEL_PLACEHOLDER_M535",
+            "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+            "modelProvider": "MODEL_PROVIDER_GOOGLE",
+            "tagTitle": "New",
+            "supportedMimeTypes": {
+                "image/png": True,
+                "image/jpeg": True,
+                "image/webp": True,
+                "application/pdf": True,
+                "video/mp4": True,
+            },
+            "thinkingLevel": 100,
             "supportsModelInfoOverride": False,
         },
     ),
@@ -20077,6 +23484,8 @@ async def app_integration_status():
     ag_cfg = cfg.get("antigravity_integration", {}) if isinstance(cfg, dict) else {}
     status["enabled"] = ag_cfg.get("enabled", False)
     status["quota_saver"] = _validate_antigravity_quota_saver_config(cfg, ag_cfg.get("quota_saver"))
+    status["ls_components"] = _validate_ls_components_config(ag_cfg.get("ls_components"))
+    status["ls_environment"] = await asyncio.to_thread(_detect_ls_components_environment, status["ls_components"])
     bsl_targets = {}
     for _lbl, _env_name in (
         ("blacksand_studio", "BSL_BLACKSAND_STUDIO_ASAR"),
@@ -20105,6 +23514,47 @@ async def app_integration_antigravity_quota_saver(request: Request):
         synced = await asyncio.to_thread(_sync_persistent_quota_saver_state, validated_qs)
         await asyncio.to_thread(_replace_runtime_config, cfg)
         return JSONResponse({"ok": True, "quota_saver": synced})
+    except (OSError, ValueError, KeyError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/app-integration/antigravity/ls-components")
+async def app_integration_antigravity_ls_components(request: Request):
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("ls_components payload must be a JSON object.")
+        cfg = cs_get_config()
+        ag = cfg.setdefault("antigravity_integration", {})
+        cur_lsc = _validate_ls_components_config(ag.get("ls_components"))
+        # Support 1-click preset replacement (preserving target checkboxes) OR partial checkbox deltas
+        if isinstance(body.get("preset"), str) and body.get("preset").strip():
+            validated_lsc = _validate_ls_components_config(body, existing=cur_lsc)
+        else:
+            merged = {**cur_lsc, **body}
+            validated_lsc = _validate_ls_components_config(merged, existing=cur_lsc)
+        ag["ls_components"] = validated_lsc
+        await asyncio.to_thread(_replace_runtime_config, cfg)
+        # Sync disk hook files idempotently on explicit save (both sync functions write disk ONLY when JSON changes)
+        _ag_target_changed = cur_lsc.get("apply_antigravity") != validated_lsc.get("apply_antigravity")
+        _cc_target_changed = cur_lsc.get("apply_claude_code") != validated_lsc.get("apply_claude_code")
+        hooks_sync = {"updated": [], "unchanged": []}
+        if "pytest" not in _sys.modules:
+            if _ag_target_changed or validated_lsc.get("apply_antigravity", True):
+                ag_res = await asyncio.to_thread(_sync_antigravity_hooks_file, validated_lsc)
+                hooks_sync["updated"].extend(ag_res.get("updated", []))
+                hooks_sync["unchanged"].extend(ag_res.get("unchanged", []))
+            if _cc_target_changed or validated_lsc.get("apply_claude_code", True):
+                cc_res = await asyncio.to_thread(_sync_claude_code_hooks_file, validated_lsc)
+                hooks_sync["updated"].extend(cc_res.get("updated", []))
+                hooks_sync["unchanged"].extend(cc_res.get("unchanged", []))
+        ls_env = await asyncio.to_thread(_detect_ls_components_environment, validated_lsc)
+        return JSONResponse({
+            "ok": True,
+            "ls_components": validated_lsc,
+            "ls_environment": ls_env,
+            "hooks_sync": hooks_sync,
+        })
     except (OSError, ValueError, KeyError) as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
@@ -21171,7 +24621,7 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
             if sub_data is None:
                 try:
                     sub_resp = google_cloudcode_sync_post(
-                        "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+                        "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
                         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": ag_ua},
                         json={"metadata": {"ideType": "ANTIGRAVITY"}, "mode": 1},
                         timeout=4.5,
@@ -21238,12 +24688,18 @@ def _probe_oauth_quota(provider_id: str, conn_index: int, conn: dict, force: boo
             if not raw_groups and provider == "gemini-cli" and project_id:
                 try:
                     g_resp = google_cloudcode_sync_post(
-                        "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
-                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                        "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": ag_ua},
                         json={"project": project_id},
                         timeout=4.5,
+                        proxy_url=_probe_proxy,
                     )
-                    if g_resp.status_code == 200 and isinstance(g_resp.json(), dict) and g_resp.json().get("buckets"):
+                    if g_resp.status_code in (401, 403) and is_terminal_account_ban(g_resp.status_code, getattr(g_resp, "text", "")):
+                        if isinstance(conn, dict):
+                            conn.setdefault("provider_data", {})["quarantined"] = True
+                        if _cb_inst is not None:
+                            _cb_inst.record_outcome(provider_id, "_quota", conn_index, g_resp.status_code, error_msg=getattr(g_resp, "text", ""))
+                    elif g_resp.status_code == 200 and isinstance(g_resp.json(), dict) and g_resp.json().get("buckets"):
                         raw_groups.append({"displayName": "Google", "buckets": list(g_resp.json().get("buckets") or [])})
                 except Exception:
                     pass
@@ -21667,8 +25123,11 @@ def _quota_failure(previous: dict, category: str, status=None, conn=None) -> dic
 def _quota_blocked(provider_id, conn_index, conn, prov_cfg):
     if prov_cfg.get("enabled") is False or conn.get("enabled") is False:
         return "disabled"
+    pd = conn.get("provider_data") or {}
+    if pd.get("quarantined") is True:
+        return "quarantined"
     breaker = get_breaker()
-    if (conn.get("provider_data") or {}).get("tos_banned") is True or (
+    if pd.get("tos_banned") is True or (
         breaker is not None and f"{provider_id}/{conn_index}" in getattr(breaker, "banned_connections", {})
     ):
         return "banned"
@@ -21701,6 +25160,8 @@ async def get_quota_status_endpoint(provider: Optional[str] = None, force: bool 
     providers = (cs_get_config().get("providers") or {})
     output = {}
     for pid, p in providers.items():
+        if provider is None and isinstance(p, dict) and p.get("hidden"):
+            continue
         if provider is not None and pid != provider:
             continue
         rows = []

@@ -371,6 +371,7 @@ class StreamTruncationDetector:
         # Total delivered chars (uncapped) so the usage estimate stays
         # representative even after the buffer hit the byte cap.
         self.partial_len = 0
+        self.visible_chars = 0
         self.tool_call_chars = 0
         self.truncated = False
         self._buf = ""
@@ -422,6 +423,13 @@ class StreamTruncationDetector:
         self._parts = [_v] if _v else []
         self._parts_chars = len(_v)
         self._joined = _v
+        self.visible_chars = len(_v.strip())
+
+    def _append_visible(self, text: str) -> None:
+        if text:
+            stripped = text.strip()
+            if stripped:
+                self.visible_chars += len(stripped)
 
     def _append_text(self, text: str) -> None:
         """Record one text delta in O(1) amortized time and bounded memory.
@@ -459,6 +467,7 @@ class StreamTruncationDetector:
             content = delta.get("content")
             if isinstance(content, str) and self.accumulate:
                 self._append_text(content)
+                self._append_visible(content)
             # REASONING continuation (2026-09-27): thinking-heavy streams (GLM,
             # o-series, reasoning Claude) put their partial output in
             # delta.reasoning_content, leaving `content` empty until the final
@@ -492,14 +501,19 @@ class StreamTruncationDetector:
         if data.get("type") == "content_block_start":
             if self.accumulate:
                 _cb = data.get("content_block")
-                if isinstance(_cb, dict) and _cb.get("type") == "tool_use":
-                    self.tool_call_chars += len(str(_cb.get("name") or ""))
+                if isinstance(_cb, dict):
+                    if _cb.get("type") == "tool_use":
+                        self.tool_call_chars += len(str(_cb.get("name") or ""))
+                    elif _cb.get("type") == "text" and isinstance(_cb.get("text"), str):
+                        self._append_text(_cb["text"])
+                        self._append_visible(_cb["text"])
             return
         if data.get("type") == "content_block_delta":
             delta = data.get("delta") or {}
             text = delta.get("text")
             if isinstance(text, str) and self.accumulate:
                 self._append_text(text)
+                self._append_visible(text)
             # Anthropic extended-thinking deltas carry their text in
             # delta.thinking, not delta.text -- same reasoning-stream gap.
             thinking = delta.get("thinking")
@@ -531,6 +545,8 @@ class StreamTruncationDetector:
             delta_str = data.get("delta")
             if isinstance(delta_str, str) and self.accumulate:
                 self._append_text(delta_str)
+                if ev_type == "response.output_text.delta":
+                    self._append_visible(delta_str)
             return
         if ev_type == "response.output_item.done":
             if self.accumulate:
@@ -556,8 +572,9 @@ class StreamTruncationDetector:
                     self.truncated = True
             return
 
-        # Gemini native chunk: candidates[].content.parts + finishReason
-        candidates = data.get("candidates") or []
+        # Gemini native chunk: candidates[].content.parts + finishReason (bare or v1internal `response`)
+        gem_root = data.get("response") if isinstance(data.get("response"), dict) else data
+        candidates = (gem_root.get("candidates") if isinstance(gem_root, dict) else None) or []
         if candidates and isinstance(candidates[0], dict):
             candidate = candidates[0]
             if self.enabled and candidate.get("finishReason") == "MAX_TOKENS":
@@ -571,6 +588,10 @@ class StreamTruncationDetector:
                         # thought:true -- both are continuable model output, so
                         # accumulate regardless of the thought flag.
                         self._append_text(text)
+                        if not part.get("thought"):
+                            self._append_visible(text)
+                    if self.accumulate and part.get("inlineData"):
+                        self.visible_chars += 1
                     if self.accumulate and isinstance(part.get("functionCall"), dict):
                         try:
                             self.tool_call_chars += len(json.dumps(part["functionCall"], ensure_ascii=False))

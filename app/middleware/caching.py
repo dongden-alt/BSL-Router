@@ -6,9 +6,34 @@ import json
 from collections import OrderedDict
 
 
+# OpenAI / AgentRouter Responses & Chat Completions enforce max length 64 on prompt_cache_key.
+_PROMPT_CACHE_KEY_MAX_LEN = 64
+
 # OpenAI has no verified explicit-breakpoint contract available in this project.
 # Key-bound routing is limited to large static system/developer prefixes instead.
 _OPENAI_GPT56_CACHE_MIN_PREFIX_CHARS = 1024
+
+
+def bound_prompt_cache_key(key: str, max_len: int = _PROMPT_CACHE_KEY_MAX_LEN) -> str:
+    """Enforce upstream max length (default 64) on prompt_cache_key deterministically.
+
+    Keys already within `max_len` are returned untouched. Oversized keys are
+    compacted using a SHA-256 suffix so distinct long keys never collide on a
+    shared prefix.
+    """
+    if not isinstance(key, str):
+        return ""
+    if max_len <= 0 or len(key) <= max_len:
+        return key
+    digest = hashlib.sha256(key.encode("utf-8", errors="ignore")).hexdigest()
+    if max_len <= 33:
+        return digest[:max_len]
+    hash_len = 32
+    prefix_budget = max_len - 1 - hash_len
+    prefix = key[:prefix_budget].rstrip("-")
+    if not prefix:
+        return digest[:max_len]
+    return f"{prefix}-{digest[:hash_len]}"
 _OPENAI_GPT56_ROUTING_SUFFIXES = (
     "-antigravity-ultra",
     "-antigravity",
@@ -122,8 +147,12 @@ def _apply_openai_gpt56_cache_key(
         return "implicit"
     if payload.get("prompt_cache_key"):
         existing = payload["prompt_cache_key"]
-        if isinstance(existing, str) and existing.startswith("bsl-cache-"):
-            return "bsl-generated"
+        if isinstance(existing, str):
+            bounded = bound_prompt_cache_key(existing)
+            if bounded != existing:
+                payload["prompt_cache_key"] = bounded
+            if existing.startswith("bsl-cache-"):
+                return "bsl-generated"
         return "preserved"
     if not tools_config.get("caching_enabled", True) or not tools_config.get("caching_openai_key_bound", True):
         return "disabled"
@@ -137,7 +166,9 @@ def _apply_openai_gpt56_cache_key(
     digest = hashlib.sha256(
         f"bsl-router-openai-cache-v1\0{family}\0{prefix}".encode("utf-8")
     ).hexdigest()
-    payload["prompt_cache_key"] = f"bsl-cache-{family}-{digest}"
+    key_prefix = f"bsl-cache-{family}-"
+    digest_budget = max(16, _PROMPT_CACHE_KEY_MAX_LEN - len(key_prefix))
+    payload["prompt_cache_key"] = bound_prompt_cache_key(f"{key_prefix}{digest[:digest_budget]}")
     if tools_config.get("caching_openai_retention_24h") and not payload.get("prompt_cache_retention"):
         payload["prompt_cache_retention"] = "24h"
     return "generated"
@@ -607,7 +638,7 @@ def propagate_prompt_cache_key(upstream_payload: Any, request_obj: Any) -> Any:
         else:
             value = getattr(request_obj, "prompt_cache_key", None)
         if isinstance(value, str) and value:
-            upstream_payload["prompt_cache_key"] = value
+            upstream_payload["prompt_cache_key"] = bound_prompt_cache_key(value)
     except Exception:
         pass  # fail-open
     return upstream_payload

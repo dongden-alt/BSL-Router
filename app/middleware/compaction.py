@@ -483,7 +483,6 @@ async def apply_compaction(
 
     # Gate 3: read thresholds — high-water triggers compaction, target is low-water
     high_water = int(t.get("compaction_threshold", 48000))
-    low_water = max(16000, int(high_water * 0.667))  # ~2/3 of high-water
 
     # Gate 4: count total input tokens (calibrated — Part B.1)
     total_tokens = _calibrated_count_tokens(request.messages, request.model)

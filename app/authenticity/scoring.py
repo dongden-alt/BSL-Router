@@ -306,7 +306,7 @@ def _build_conclusions(v) -> None:
         specific_rationale = {
             "substitution": f"Specifically a SUBSTITUTION - a different model family ('{v.identified_as}') is served under the claimed name.",
             "downgrade": f"Specifically a DOWNGRADE - real family, but a cheaper/older sub-version ('{v.identified_as}') than claimed.",
-            "family_match": f"Specifically a FAMILY MATCH - correct family, sub-version unconfirmed.",
+            "family_match": "Specifically a FAMILY MATCH - correct family, sub-version unconfirmed.",
         }.get(v.verdict, "")
         if specific_rationale:
             v.conclusions.append({

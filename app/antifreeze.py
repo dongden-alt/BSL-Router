@@ -183,6 +183,7 @@ async def stream_deadline(
         return
 
     deadline = loop.time() + deadline_s
+    _anext_task: asyncio.Task | None = None
     try:
         while True:
             remaining = deadline - loop.time()
@@ -196,11 +197,15 @@ async def stream_deadline(
                 except Exception:
                     pass
                 return
-            try:
-                chunk = await asyncio.wait_for(iterator.__anext__(), timeout=remaining)
-            except StopAsyncIteration:
-                return
-            except asyncio.TimeoutError:
+            _anext_task = asyncio.ensure_future(iterator.__anext__())
+            _done, _pend = await asyncio.wait({_anext_task}, timeout=remaining)
+            if _pend:
+                _anext_task.cancel()
+                try:
+                    await _anext_task
+                except BaseException:
+                    pass
+                _anext_task = None
                 _safe_print(
                     f"[AntiFreeze] {stream_id} exceeded hard deadline ({deadline_s}s) — force-closing."
                 )
@@ -210,10 +215,24 @@ async def stream_deadline(
                 except Exception:
                     pass
                 return
+            try:
+                chunk = _anext_task.result()
+            except StopAsyncIteration:
+                _anext_task = None
+                return
+            finally:
+                _anext_task = None
             yield chunk
     except asyncio.CancelledError:
         raise
     finally:
+        if _anext_task is not None and not _anext_task.done():
+            _anext_task.cancel()
+            try:
+                await _anext_task
+            except BaseException:
+                pass
+            _anext_task = None
         try:
             await agen.aclose()
         except BaseException:

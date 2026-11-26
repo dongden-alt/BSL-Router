@@ -300,6 +300,22 @@ class ErrorPreventionManager:
         )
         if status_code in (400, 422, 499) and not _is_billing_error:
             return None
+
+        # FEL v7.0 invariant: classifier / content-policy / cyber-safeguard
+        # refusals describe prompt-surface friction, NEVER leaf or account
+        # death. Exempt them so ErrorPrevention never softbans/longbans/disables
+        # a healthy frontier leaf onto a weaker substitute model.
+        #
+        # F3-nuance (2026-11-21): the marker list lives in ONE place
+        # (`refusal_guard.CLASSIFIER_REFUSAL_MARKERS`). This module's private
+        # copy had drifted and omitted `finish_reason:blocklist`, so a pure
+        # classifier refusal still softbanned a healthy leaf for 90s.
+        from app.middleware.refusal_guard import CLASSIFIER_REFUSAL_MARKERS
+        _is_classifier_refusal = any(
+            marker in _msg_lower for marker in CLASSIFIER_REFUSAL_MARKERS
+        )
+        if _is_classifier_refusal:
+            return None
         
         # Initialize or update state
         if key not in self.state:

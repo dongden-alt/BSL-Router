@@ -509,8 +509,8 @@ def scan_single_key(
     return findings
 
 
-def scan_provider_config(config: dict) -> ScanResult:
-    """Scan all provider configurations for security risks."""
+def scan_provider_config(config: dict, *, include_hidden: bool = False) -> ScanResult:
+    """Scan provider configurations for security risks (excludes invisible hidden:true providers by default)."""
     result = ScanResult()
     providers = config.get("providers", {})
 
@@ -523,6 +523,8 @@ def scan_provider_config(config: dict) -> ScanResult:
 
     for prov_id, prov_data in providers.items():
         if not isinstance(prov_data, dict):
+            continue
+        if not include_hidden and prov_data.get("hidden"):
             continue
 
         provider_format = prov_data.get("format", "openai")

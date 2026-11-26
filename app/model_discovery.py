@@ -56,8 +56,7 @@ def _get_auth_headers(provider_id: str, provider_config: dict) -> dict[str, str]
             continue
         api_key = conn.get("api_key", "")
         if api_key:
-            # Check token_type to determine auth scheme
-            token_type = conn.get("token_type", "")
+            # Determine auth scheme by provider_id
             if provider_id in ("claude", "anthropic"):
                 headers["x-api-key"] = api_key
                 headers["anthropic-version"] = "2023-06-01"

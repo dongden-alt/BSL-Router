@@ -14,6 +14,9 @@ import shutil
 
 import yaml
 
+_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+_YAML_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
+
 _config: dict = {}
 _decrypted_cache: dict | None = None
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -111,7 +114,7 @@ def init_config(path: str | None = None) -> None:
             raise FileNotFoundError(hint)
 
     with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+        raw = yaml.load(f, Loader=_YAML_LOADER)
 
     # An empty or comment-only YAML file parses to None, which would crash every
     # downstream .get() call with a confusing AttributeError.
@@ -170,7 +173,7 @@ def init_config(path: str | None = None) -> None:
     if migrated:
         shutil.copy2(path, path + ".pre-encryption.bak")
         with open(path, "w", encoding="utf-8") as f:
-            yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
+            yaml.dump(raw, f, Dumper=_YAML_DUMPER, default_flow_style=False, sort_keys=False)
         print("[CRYPTO] Migrated plaintext secrets to encrypted format. "
               "Backup saved as config.yaml.pre-encryption.bak", flush=True)
 

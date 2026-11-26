@@ -691,7 +691,26 @@ def _get_google_egress_sync_client(account_key: str = "", proxy_url: Optional[st
     global _SYNC_CLIENT
     acct = (account_key or "").strip()
     norm_proxy = str(proxy_url or "").strip()
-    use_proxy = bool(norm_proxy and norm_proxy.lower() != "direct")
+    if norm_proxy.lower().startswith("proxyhub://"):
+        try:
+            from app.proxy_hub_bridge import resolve_unified_proxy_url
+            import app.config_state as cs
+
+            resolved = resolve_unified_proxy_url(
+                norm_proxy,
+                {},
+                provider_name="antigravity",
+                config=cs.get_config() if hasattr(cs, "get_config") else None,
+            )
+            norm_proxy = str(resolved or "").strip()
+        except Exception:
+            norm_proxy = ""
+    _valid_schemes = ("http://", "https://", "socks5://", "socks5h://", "socks4://", "socks4a://")
+    use_proxy = bool(
+        norm_proxy
+        and norm_proxy.lower() != "direct"
+        and norm_proxy.lower().startswith(_valid_schemes)
+    )
     if acct or use_proxy:
         cache_key = f"{acct or 'anon'}|{norm_proxy}" if use_proxy else acct
         with _SYNC_CLIENT_LOCK:

@@ -889,7 +889,7 @@ def _guard_line(rec: dict) -> None:
     Without a running loop (tests, CLI probes) falls back to a direct write."""
     global _guard_queue
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         _guard_write_direct(rec)
         return

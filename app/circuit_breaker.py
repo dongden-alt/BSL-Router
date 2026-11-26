@@ -188,18 +188,21 @@ def _classify_for_breaker(status_code: int, error_msg: Optional[str]) -> str:
 
 TERMINAL_ACCOUNT_BAN_MARKERS = (
     "violation of terms of service",
+    "terms of service",
     "disabled in this account",
     "this service has been disabled",
     "account_disabled",
     "account_suspended",
     "account_deactivated",
     "organization_disabled",
+    "validation_required",
+    "verify your account",
 )
 
 
 def is_terminal_account_ban(status_code: int, error_msg: Optional[str]) -> bool:
     """Return True when an upstream error indicates a terminal account/ToS ban."""
-    if status_code not in (401, 403) and not error_msg:
+    if status_code not in (400, 401, 403) and not error_msg:
         return False
     msg = (error_msg or "").lower()
     return any(marker in msg for marker in TERMINAL_ACCOUNT_BAN_MARKERS)
@@ -346,25 +349,41 @@ class CircuitBreaker:
         # CLOSED or HALF_OPEN: traffic flows.
         return False, None
 
+    def _is_conn_banned(self, provider: str, idx: int, conn: Any) -> bool:
+        if self._dim_key(provider, idx) in self.banned_connections:
+            return True
+        if isinstance(conn, dict):
+            pd = conn.get("provider_data")
+            if isinstance(pd, dict) and (pd.get("tos_banned") is True or pd.get("quarantined") is True):
+                return True
+        return False
+
     def filter_healthy_connections(
         self,
         provider: str,
         model: str,
         connections: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """Filter out OPEN connections from the selection pool.
+        """Filter out OPEN and banned/quarantined connections from the selection pool.
 
-        If ALL connections are OPEN, returns the full list (least-recently-failed
-        first) so the proxy never deadlocks. A stuck proxy is worse than retrying
-        a possibly-bad connection.
+        If ALL non-banned connections are OPEN, returns only the non-banned list
+        (least-recently-failed first) so the proxy avoids deadlock on transient
+        failures while NEVER re-admitting ToS-banned or quarantined accounts.
         """
-        if not self.enabled or not connections:
+        if not connections:
             return connections
 
+        non_banned = [
+            entry
+            for entry in connections
+            if not self._is_conn_banned(provider, entry["index"], entry["conn"])
+        ]
+        if not self.enabled or not non_banned:
+            return non_banned
+
         healthy = []
-        for entry in connections:
+        for entry in non_banned:
             idx = entry["index"]
-            conn = entry["conn"]
             is_open, remaining = self.is_open(provider, model, idx)
             if not is_open:
                 healthy.append(entry)
@@ -372,23 +391,19 @@ class CircuitBreaker:
         if healthy:
             return healthy
 
-        # All OPEN — fall back to least-recently-failed to avoid deadlock.
-        # Sort non-terminally-banned connections ahead of ToS-banned connections,
-        # then by last_failure_time ascending (oldest failure = least suspect).
         def _sort_key(entry):
             idx = entry["index"]
-            is_banned = 1 if self._dim_key(provider, idx) in self.banned_connections else 0
             key = self._key(provider, model, idx)
             s = self.state.get(key, {})
-            return (is_banned, s.get("last_failure_time", 0.0))
+            return s.get("last_failure_time", 0.0)
 
         print(
-            f"[CircuitBreaker] All {len(connections)} connections OPEN for "
+            f"[CircuitBreaker] All {len(non_banned)} non-banned connections OPEN for "
             f"{provider}/{model} — falling back to least-recently-failed "
-            f"(avoiding deadlock)",
+            f"(avoiding deadlock, excluding banned/quarantined)",
             flush=True,
         )
-        return sorted(connections, key=_sort_key)
+        return sorted(non_banned, key=_sort_key)
 
     def record_outcome(
         self,
@@ -503,8 +518,19 @@ class CircuitBreaker:
                                         _explicit_reset = True
                                 except Exception:
                                     pass
+                    if not _explicit_reset:
+                        _low_rl = str(error_msg).lower()
+                        if "free allowance" in _low_rl and any(
+                            _tok in _low_rl
+                            for _tok in ("rolling", "7-day", "comes back", "period's free allowance", "used up")
+                        ):
+                            _cooldown = max(_cooldown, 1800.0)
                 elif classification == "auth" and status_code == 404:
                     _cooldown = max(_cooldown, 3600.0)
+                elif classification == "auth" and status_code == 403 and error_msg:
+                    _low_auth = str(error_msg).lower()
+                    if "free_models_disabled" in _low_auth or "confirm free-model data sharing" in _low_auth:
+                        _cooldown = max(_cooldown, 1800.0)
                 if is_terminal_account_ban(status_code, error_msg):
                     _cooldown = max(_cooldown, 86400.0)
                     self.banned_connections[self._dim_key(provider, conn_index)] = {
@@ -512,6 +538,14 @@ class CircuitBreaker:
                         "since": now,
                         "status_code": status_code,
                         "reason": str(error_msg or "")[:300],
+                    }
+                elif str(provider or "").lower() in ("antigravity", "gemini-cli") and status_code == 403:
+                    _cooldown = max(_cooldown, 86400.0)
+                    self.banned_connections[self._dim_key(provider, conn_index)] = {
+                        "open_until": now + _cooldown,
+                        "since": now,
+                        "status_code": 403,
+                        "reason": str(error_msg or "google_403_quarantine")[:300] or "google_403_quarantine",
                     }
                 entry["open_until"] = now + _cooldown
                 if classification == "rate_limit" and (

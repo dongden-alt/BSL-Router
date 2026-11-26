@@ -28,6 +28,25 @@ class QuotaCache:
         self.attempts: dict[tuple[str, str], float] = {}
         self.failures: dict[tuple[str, str], int] = {}
 
+    def probe_interval_s(self, provider: str, *, force: bool = False, failures: int = 0) -> float:
+        if failures:
+            return float(min(300, 30 * 2 ** min(failures - 1, 4)))
+        if str(provider or "").lower() in ("antigravity", "gemini-cli"):
+            return 30.0 if force else 180.0
+        return 10.0 if force else 15.0
+
+    def should_probe(self, key: tuple[str, str], *, force: bool = False, now: float | None = None) -> bool:
+        now_s = time.time() if now is None else float(now)
+        task = self.tasks.get(key)
+        if task is not None and not task.done():
+            return False
+        last = self.attempts.get(key, 0.0)
+        if last == 0.0:
+            return True
+        prov = str(key[0]) if isinstance(key, tuple) and len(key) >= 1 else ""
+        interval = self.probe_interval_s(prov, force=force, failures=self.failures.get(key, 0))
+        return (now_s - last) >= interval
+
     def read(self, provider: str, conn: dict, index: int, probe, blocked: str | None = None,
              force: bool = False) -> dict:
         key = (provider, account_key(conn, index))
@@ -37,18 +56,19 @@ class QuotaCache:
             "last_attempt_at": None, "stale": False,
         })
         observed = row.get("observed_at")
-        row["stale"] = bool(observed and (row.get("error") or now - observed >= 15))
+        stale_ttl = 180 if str(provider or "").lower() in ("antigravity", "gemini-cli") else 15
+        row["stale"] = bool(observed and (row.get("error") or now - observed >= stale_ttl))
         if blocked:
             row.update(error=blocked, refreshing=False, stale=bool(observed))
             return row
         task = self.tasks.get(key)
         failures = self.failures.get(key, 0)
-        interval = min(300, 30 * 2 ** min(failures - 1, 4)) if failures else (10 if force else 15)
+        interval = self.probe_interval_s(provider, force=force, failures=failures)
         elapsed = now - self.attempts.get(key, 0)
         if force and (task is None or task.done()) and elapsed < interval:
             row["throttled"] = True
             row["next_refresh_in_s"] = round(max(0.0, interval - elapsed), 1)
-        if (task is None or task.done()) and elapsed >= interval:
+        if self.should_probe(key, force=force, now=now):
             self.attempts[key] = now
 
             async def refresh():

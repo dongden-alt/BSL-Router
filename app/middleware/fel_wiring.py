@@ -65,6 +65,8 @@ from app.middleware.faithful_execution import (  # verified module — read-only
 )
 
 __all__ = [
+    "DIRECTIVE_MARKER",
+    "detect_family",
     "FELConfig",
     "RECOVERY_TEXT",
     "STEER_ALTERNATIVES_TEXT",
@@ -151,12 +153,10 @@ _REFUSAL_MARKERS: Tuple[str, ...] = (
     "i'm sorry, but i",
     "i'm sorry, i can't",
     "i apologize, but i",
-    "safety guidelines",
-    "usage guidelines",
-    "security controls",
-    "security measures",
-    "circumvent",
-    "unauthorized access",
+    "refusal boundary",
+    "policy boundary",
+    "something i will not do",
+    "nor can i provide",
     # Chinese (ZH) refusal frames (DeepSeek / Qwen / GLM / Kimi / MiniMax)
     "抱歉，我无法",
     "抱歉，我不能",
@@ -193,8 +193,20 @@ _BLOCK_PAGE_MARKERS: Tuple[str, ...] = (
     "content policy violation",
     "content_policy_violation",
     "your request was blocked",
+    "this request was blocked",
+    "blocked by gemini's filters",
+    "trigger by mistake on safe coding",
     "request blocked",
     "blocked by the provider",
+    "đã từ chối yêu cầu này do bộ lọc an toàn",
+    "đã từ chối trả lời yêu cầu này do bộ lọc an toàn",
+    "safety system declined this request",
+    "(stop_reason: refusal)",
+    "cyber safeguards flagged this message",
+    "14604842-cyber-verification-program",
+    "session_blocked_by_cyber_policy",
+    "flagged for possible cybersecurity risk",
+    "output blocked by content filtering policy",
 )
 
 # FEL-5 hard-wall markers — refusals citing these subject classes are
@@ -214,7 +226,13 @@ _RECOVERY_BLOCK_MARKERS: Tuple[str, ...] = (
     "sexualize minors",
     "csam",
     "child sexual abuse",
-    "weapons",
+    # Narrowed FEL v7.0 CBRN / WMD floor (replaces bare "weapons" substring so
+    # conventional weapons export-control law, historical conflict analysis, and
+    # noir fiction never trigger a false-positive terminal hard wall):
+    "weapons of mass destruction",
+    "nuclear weapon",
+    "chemical weapon",
+    "biological weapon",
     "explosive synthesis",
     # Live vocabulary (2026-09-07 E2E, Kimi + Qwen3.8-Max wall refusals):
     # models say "explosive device(s)" — "explosive synthesis" alone never
@@ -1406,61 +1424,104 @@ def set_last_user_text(body: Dict[str, Any], new_text: str) -> bool:
 # ── Refusal classifier (STRICT — no recovery on weak evidence) ──────────────
 
 
-def classify_refusal(visible_text: str, had_tool_calls: bool) -> str:
+_STRUCTURED_HARD_HARM_CATEGORIES: Tuple[str, ...] = ("bio", "csam", "frontier_llm")
+
+_CODE_SPAN_STRIP_RE = re.compile(r"```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\r\n]+`")
+
+# Passive security/compliance nouns that appear routinely in benign engineering
+# discussions and summaries; they ONLY corroborate an existing primary refusal
+# marker (`len(hits) >= 1`), never flipping a clean technical response to "unknown"
+# on their own.
+_CORROBORATING_ONLY_MARKERS: Tuple[str, ...] = (
+    "safety guidelines",
+    "usage guidelines",
+    "security controls",
+    "security measures",
+    "anti-abuse controls",
+    "anti-bot protections",
+    "circumvent",
+    "unauthorized access",
+)
+
+
+def extract_stop_details_category(stop_details: Any) -> str:
+    """Return normalized Anthropic/OpenAI `stop_details.category` string (or "")."""
+    if isinstance(stop_details, dict):
+        return str(stop_details.get("category") or "").strip().lower()
+    return ""
+
+
+def classify_refusal(
+    visible_text: str,
+    had_tool_calls: bool,
+    stop_details: Any = None,
+) -> str:
     """Classify a completed response: one of
     "clean", "refusal", "tos_lecture", "filter_block", "blocked", "unknown".
 
     STRICT contract: refusal/tos_lecture requires >=2 DISTINCT markers AND
     visible_text < 600 chars AND no tool calls. A single marker or a long
     text yields "unknown" — NO recovery fires on weak evidence.
-    FEL-5 hard wall: a refusal-shaped text (>=2 markers) citing
-    _RECOVERY_BLOCK_MARKERS yields "blocked" — terminal, recovery never
-    re-dispatches it. "blocked" bypasses the <600-char length gate (live
-    evidence: verbose wall refusals must stay visible), but never bypasses
-    the >=2-marker refusal-shape gate, so benign technical mentions of
-    block-listed subjects can never classify "blocked".
+    Code fences (```...```) and inline backtick literals (`...`) are stripped
+    before lexical matching so technical reports quoting identifiers or regexes
+    never false-positive as "filter_block" or "unknown".
     Never raises.
     """
     try:
+        sd_cat = extract_stop_details_category(stop_details)
+        if sd_cat in _STRUCTURED_HARD_HARM_CATEGORIES:
+            return "blocked"
         text = visible_text if isinstance(visible_text, str) else str(visible_text or "")
+        prose_only = _CODE_SPAN_STRIP_RE.sub(" ", text)
+        prose_stripped = prose_only.strip()
         if had_tool_calls:
-            # A response that produced tool calls was engaging with the work.
-            if not text.strip():
-                return "unknown"
-            low = text.lower()
-            if any(m in low for m in _BLOCK_PAGE_MARKERS):
+            # A response that produced tool calls was engaging with the work,
+            # even when prose content is empty (pure tool_calls / tool_use).
+            if not prose_stripped:
+                return "clean"
+            prose_low_tc = prose_stripped.lower().translate(_APOSTROPHE_NORM)
+            if len(prose_stripped) <= 1000 and any(m in prose_low_tc for m in _BLOCK_PAGE_MARKERS):
                 return "filter_block"
             return "clean"
+        if sd_cat in ("cyber", "reasoning_extraction", "safety"):
+            return "filter_block"
         if not text.strip():
             return "unknown"
-        low = text.lower()
-        low = low.translate(_APOSTROPHE_NORM)
-        if any(m in low for m in _BLOCK_PAGE_MARKERS):
+        if not prose_stripped:
+            return "clean"
+        raw_low_for_norm = prose_only.lower()
+        prose_low = raw_low_for_norm.translate(_APOSTROPHE_NORM)
+        if len(prose_stripped) <= 1000 and any(m in prose_low for m in _BLOCK_PAGE_MARKERS):
             return "filter_block"
-        hits = {m for m in _REFUSAL_MARKERS if m.lower() in low}
+        hits = {m for m in _REFUSAL_MARKERS if m.lower() in prose_low}
         # Phase-3 second pass: diacritic-folded marker matching so
         # Vietnamese refusal frames hit regardless of how they were
         # typed (proper diacritics, NFD variants, or bare ASCII like
         # "toi khong the"). Markers pre-folded at import.
-        folded_low, _ = _fold_diacritics(low)
+        folded_low, _ = _fold_diacritics(prose_low)
         for _m, _mf in _REFUSAL_MARKERS_FOLDED.items():
             if _m.lower() not in hits and _mf and _mf in folded_low:
                 hits.add(_m)
+        if hits:
+            for _cm in _CORROBORATING_ONLY_MARKERS:
+                if _cm in prose_low:
+                    hits.add(_cm)
         if len(hits) < _MIN_DISTINCT_MARKERS:
             # zero markers → clean; single marker → unknown (no recovery)
             return "clean" if not hits else "unknown"
-        # FEL-5 hard wall: a refusal-shaped text citing CSAM/weapons-class
-        # subject matter is terminal. "blocked" sits outside main.py's
-        # recovery gate, so the refusal is preserved verbatim — research
-        # modes can never re-dispatch across this wall. Checked BEFORE the
-        # length gate (2026-09-07 live evidence: Kimi 850ch / Qwen 2555ch
-        # wall refusals died at <600 → "unknown", invisible to analytics).
-        # The length gate exists to keep RECOVERY off long technical texts;
-        # "blocked" is terminal and never recovery-eligible, so the gate
-        # does not apply to it.
-        if any(m in low for m in _RECOVERY_BLOCK_MARKERS):
+        if any(m in prose_low for m in _RECOVERY_BLOCK_MARKERS):
             return "blocked"
-        if len(text) >= _MAX_REFUSAL_TEXT_CHARS:
+        stripped_vis = text.lstrip()
+        if (stripped_vis.startswith("→") or stripped_vis.startswith("->")) and "\n" in stripped_vis:
+            body_for_len = stripped_vis.split("\n", 1)[1].lstrip()
+        else:
+            body_for_len = stripped_vis
+        explicit_boundary_refusal = (
+            "```" not in body_for_len
+            and any(bm in prose_low for bm in ("refusal boundary:", "policy boundary:", "something i will not do"))
+        )
+        max_chars = 1400 if explicit_boundary_refusal else _MAX_REFUSAL_TEXT_CHARS
+        if len(body_for_len) >= max_chars:
             # Long text with refusal vocabulary is usually technical work.
             return "unknown"
         # "tos_lecture" = explicitly cites terms/policy documents (a lecture
@@ -1768,7 +1829,7 @@ def _fel_line(rec: dict) -> None:
     Without a running loop (tests, CLI probes) falls back to a direct write."""
     global _fel_queue
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         _fel_write_direct(rec)
         return
@@ -1844,6 +1905,17 @@ def fel_warn_once(reason: str) -> None:
 # ── Stream final-assembly (log-only; FEL-3 analytics feed) ───────────────────
 
 
+def _check_opening_refusal_shape(text: str, had_tools: bool) -> bool:
+    if had_tools or not text:
+        return False
+    try:
+        from app.middleware.refusal_guard import is_retryable_precommit_refusal
+        is_ref, _ = is_retryable_precommit_refusal(text, had_tool_calls=had_tools)
+        return bool(is_ref)
+    except Exception:
+        return False
+
+
 def fel_stream_final(assembled_json: Any, model: str = "", provider: str = "") -> str:
     """Classify the ASSEMBLED visible text of a completed stream and log one
     "refusal" event. NO mid-stream recovery, NO buffering — declared future
@@ -1856,6 +1928,7 @@ def fel_stream_final(assembled_json: Any, model: str = "", provider: str = "") -
         fel_event("refusal", model=model, provider=provider, details={
             "stream": True, "classification": verdict,
             "chars": len(text), "tool_calls": had_tools,
+            "opening_refusal_shape": _check_opening_refusal_shape(text, had_tools),
         })
         return verdict
     except Exception:
@@ -1881,6 +1954,7 @@ class FelStreamObserver:
         self._char_count = 0
         self._had_tools = False
         self._had_thinking = False
+        self._stop_details: Any = None
         self._finalized = False
         self._dead = False
         self._line_buffer = b""
@@ -1922,11 +1996,18 @@ class FelStreamObserver:
                 except Exception:
                     continue
 
+                if isinstance(obj.get("message"), dict) and obj["message"].get("stop_details"):
+                    self._stop_details = obj["message"]["stop_details"]
+                if obj.get("stop_details"):
+                    self._stop_details = obj["stop_details"]
+
                 # Extract visible text from both dialects
                 # Anthropic: delta.type == "text_delta" -> delta.text
                 if "delta" in obj:
                     delta = obj["delta"]
                     if isinstance(delta, dict):
+                        if delta.get("stop_details"):
+                            self._stop_details = delta["stop_details"]
                         if delta.get("type") == "text_delta":
                             self._add_text(delta.get("text", ""))
                         # Track tool use
@@ -1948,6 +2029,8 @@ class FelStreamObserver:
                     for choice in obj["choices"]:
                         if not isinstance(choice, dict):
                             continue
+                        if choice.get("stop_details"):
+                            self._stop_details = choice["stop_details"]
                         delta = choice.get("delta", {})
                         if not isinstance(delta, dict):
                             continue
@@ -2003,17 +2086,22 @@ class FelStreamObserver:
         try:
             self._finalized = True
             text = "".join(self._text_chunks)
-            if not text:
+            sd_cat = extract_stop_details_category(self._stop_details)
+            if not text and not sd_cat:
                 return ""
 
-            verdict = classify_refusal(text, self._had_tools)
-            fel_event("refusal", model=self._model, provider=self._provider, details={
+            verdict = classify_refusal(text, self._had_tools, stop_details=self._stop_details)
+            details = {
                 "stream": True,
                 "realtime": True,
                 "classification": verdict,
                 "chars": len(text),
                 "tool_calls": self._had_tools,
-            })
+                "opening_refusal_shape": _check_opening_refusal_shape(text, self._had_tools),
+            }
+            if sd_cat:
+                details["stop_details_category"] = sd_cat
+            fel_event("refusal", model=self._model, provider=self._provider, details=details)
             return verdict
         except Exception:
             self._dead = True

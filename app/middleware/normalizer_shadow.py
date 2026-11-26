@@ -292,7 +292,7 @@ def _shadow_write_direct(rec: dict) -> None:
         pass
 
 
-async def _shadow_writer_task() -> None:
+async def _shadow_writer_loop() -> None:
     """Background drain: queue → to_thread(direct write). One at a time keeps
     the file append-ordered; the queue absorbs bursts off the event loop."""
     while True:
@@ -313,7 +313,7 @@ def _shadow_line(rec: dict) -> None:
     """
     global _shadow_queue
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         _shadow_write_direct(rec)
         return
@@ -347,7 +347,7 @@ def _ensure_shadow_writer() -> None:
             _shadow_queue = asyncio.Queue(maxsize=_SHADOW_QUEUE_MAX)
         task = _shadow_writer_task
         if task is None or task.done() or task.get_loop() is not loop:
-            _shadow_writer_task = loop.create_task(_shadow_writer_task())
+            _shadow_writer_task = loop.create_task(_shadow_writer_loop())
     except Exception:
         pass
 

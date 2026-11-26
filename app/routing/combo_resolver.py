@@ -425,7 +425,6 @@ def resolve_combo(
 
     combo_thinking_override = None
     active_chain = None
-    _combo_matched = False
 
     for combo in config.get("combos", []):
         if combo.get("alias") != model:
@@ -520,6 +519,8 @@ def resolve_combo(
                 )
         except Exception as _epf_err:
             print(f"[Combo] ban pre-filter failed (non-blocking): {_epf_err}")
+        # FEL v7.0 invariant: never demote or filter out a primary leaf due to a
+        # prior classifier refusal (refusals recover on the SAME model).
 
         if strategy == "round_robin":
             idx = round_robin_state.get(model, 0) % len(active_chain)
@@ -540,7 +541,6 @@ def resolve_combo(
             provider_name = cm_provider
             print(f"[Combo] {model} > {cm_provider}/{cm_target} [1/{len(active_chain)}, fallback-primary]", flush=True)
 
-        _combo_matched = True
         return ComboResolution(
             matched=True,
             target_model=target_model,
@@ -627,6 +627,8 @@ def advance_combo_retry(
             idx += 1
             continue
         banned, _, _ = _ep.check_ban(config, cand_provider, cand_model)
+        # FEL v7.0 invariant: never skip a leaf in advance_combo_retry due to a
+        # refusal bench; classifier refusals recover on the SAME model.
         if not banned:
             break
         # KEY FAILOVER FIX (2026-08-27): the leaf-level ban is keyed

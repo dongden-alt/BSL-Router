@@ -25,14 +25,13 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Dict, List, Optional, Tuple, Literal
+from typing import Awaitable, Callable, Dict, List, Optional
 
 from app.middleware.coding_category_classifier import (
     CATEGORY_AUDITOR,
     CATEGORY_FAST_CODER,
     CATEGORY_FRONTEND_CODER,
     CATEGORY_GENERAL,
-    CATEGORY_PLANNER,
     CATEGORY_POWER_CODER,
     CATEGORY_REFACTOR,
     CATEGORY_SCOUT,
@@ -42,21 +41,14 @@ from app.middleware.coding_category_classifier import (
 )
 from app.middleware.bsl_router_utils import resolve_agent_route, _extract_route
 from app.middleware.blacksand_quality_gate import (
-    QualityVerdict,
-    MemberVerdict,
     parse_verdict,
     parse_member_verdict,
     failed_member_verdict,
     merge_members,
     derive_verdict,
     quality_gate_summary,
-    failed_dims,
-    QUALITY_RUBRIC,
-    ARCHITECT_RUBRIC,
     is_quality_gated_role,
     get_rubric_prompt,
-    build_lead_turn1,
-    build_turn2,
     build_member_brief,
     build_member_synthesis,
     TEAM_LEAD_INSTRUCTIONS,
@@ -767,7 +759,6 @@ async def run_balanced(
     # ── Phase loop (cap from config, default 22) ──────────────────────────
     context_outputs: List[str] = []
     final_text = ""
-    n = len(phases)
     executed = 0
     for idx, phase in enumerate(phases):
         if executed >= phase_cap:

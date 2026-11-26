@@ -278,7 +278,8 @@ def openai_to_responses(chat_body: dict) -> dict[str, Any]:
     # so multi-turn agentic coding sessions with store=False still hit OpenAI's prompt cache.
     explicit_cache_key = chat_body.get("prompt_cache_key")
     if isinstance(explicit_cache_key, str) and explicit_cache_key.strip():
-        body["prompt_cache_key"] = explicit_cache_key.strip()
+        from app.middleware.caching import bound_prompt_cache_key
+        body["prompt_cache_key"] = bound_prompt_cache_key(explicit_cache_key.strip())
     else:
         first_anchor = ""
         for part in input_parts:

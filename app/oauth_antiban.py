@@ -138,6 +138,8 @@ _DEFAULTS = {
     "backoff_base_seconds": 1.0,
     "backoff_max_seconds": 90.0,
     "backoff_max_retries": 4,
+    # M229 same-egress Google account switch dwell cooldown
+    "min_switch_cooldown_seconds": 120.0,
     # G3 lane pinning
     "session_ttl_seconds": 1800,
     # G6 usage budget
@@ -339,6 +341,8 @@ class AffinityStore:
         with self._lock:
             self._data.pop((session_key, provider), None)
 
+    unbind = release
+
     def __len__(self) -> int:  # pragma: no cover - trivial
         with self._lock:
             return len(self._data)
@@ -383,12 +387,214 @@ def get_store() -> AffinityStore:
     return _STORE
 
 
+DEFAULT_GOOGLE_SWITCH_COOLDOWN_S = 120.0
+
+_GOOGLE_TOS_MARKERS = (
+    "violation of terms of service",
+    "terms of service",
+    "disabled in this account",
+    "this service has been disabled",
+    "account_disabled",
+    "account_suspended",
+    "account_deactivated",
+    "organization_disabled",
+)
+_GOOGLE_VALIDATION_MARKERS = (
+    "validation_required",
+    "validation_url",
+    "signin/continue",
+    "verify your account",
+    "verify it's you",
+    "challenge_required",
+)
+
+
+def classify_google_http_error(status_code: int, body_text: str = "") -> str:
+    """Classify Google Cloud Code / OAuth HTTP errors for 2026 ban-wave protection."""
+    lower = str(body_text or "").lower()
+    if status_code in (400, 401, 403):
+        if any(m in lower for m in _GOOGLE_TOS_MARKERS):
+            return "tos_ban"
+        if any(m in lower for m in _GOOGLE_VALIDATION_MARKERS):
+            return "validation_required"
+    if status_code == 403:
+        return "permission_denied_403"
+    if status_code == 401:
+        return "auth"
+    if status_code == 429:
+        return "rate_limit"
+    if status_code in (500, 502, 503, 504, 529):
+        return "transient"
+    return "other"
+
+
+def is_google_terminal_ban_or_403(provider_id: str, status_code: int, body_text: str = "") -> bool:
+    """Return True when a Google OAuth lane hits ToS ban, validation challenge, or 403."""
+    if str(provider_id or "").strip().lower() not in ("antigravity", "gemini-cli"):
+        return False
+    return classify_google_http_error(status_code, body_text) in (
+        "tos_ban",
+        "validation_required",
+        "permission_denied_403",
+    )
+
+
+def normalize_egress_slot(proxy_url: Optional[str]) -> str:
+    """Normalize an egress proxy URL to scheme://host[:port] with zero userinfo secrets."""
+    raw = str(proxy_url or "").strip()
+    if not raw or raw.lower() == "direct":
+        return "direct"
+    try:
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(raw)
+        scheme = (parsed.scheme or "http").lower()
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return "direct"
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        port_sfx = f":{parsed.port}" if parsed.port else ""
+        return f"{scheme}://{host}{port_sfx}"
+    except Exception:
+        return "direct"
+
+
+class EgressSwitchCooldownError(RuntimeError):
+    """Raised when switching Google accounts on the same egress slot violates dwell cooldown."""
+
+    def __init__(self, provider_id: str, egress_slot: str, remaining_seconds: float):
+        self.provider_id = provider_id
+        self.egress_slot = egress_slot
+        self.remaining_seconds = float(max(0.0, remaining_seconds))
+        super().__init__(
+            f"Google anti-ban same-egress switch cooldown active on {egress_slot} "
+            f"for {provider_id} ({self.remaining_seconds:.1f}s remaining)"
+        )
+
+
+class EgressSwitchGuard:
+    """Enforces a minimum dwell cooldown before switching Google accounts on the same egress IP."""
+
+    def __init__(self) -> None:
+        self._last_by_slot: Dict[Tuple[str, str], Tuple[str, float]] = {}
+        self._lock = threading.Lock()
+
+    def clear(self) -> None:
+        with self._lock:
+            self._last_by_slot.clear()
+
+    def locked_account_for_slot(
+        self,
+        provider_id: str,
+        egress_slot: str,
+        cooldown_s: float,
+        monotonic=None,
+    ) -> Optional[str]:
+        if cooldown_s <= 0:
+            return None
+        now = (monotonic or time.monotonic)()
+        key = (str(provider_id or "").strip().lower(), normalize_egress_slot(egress_slot))
+        with self._lock:
+            entry = self._last_by_slot.get(key)
+            if entry is None:
+                return None
+            acct_id, ts = entry
+            if (now - ts) < float(cooldown_s):
+                return acct_id
+            return None
+
+    def check_switch_allowed(
+        self,
+        provider_id: str,
+        egress_slot: str,
+        account_id: str,
+        cooldown_s: float = DEFAULT_GOOGLE_SWITCH_COOLDOWN_S,
+        monotonic=None,
+    ) -> None:
+        if cooldown_s <= 0:
+            return
+        now = (monotonic or time.monotonic)()
+        slot = normalize_egress_slot(egress_slot)
+        key = (str(provider_id or "").strip().lower(), slot)
+        with self._lock:
+            entry = self._last_by_slot.get(key)
+            if entry is None:
+                return
+            last_acct, ts = entry
+            if last_acct == account_id:
+                return
+            elapsed = now - ts
+            if elapsed < float(cooldown_s):
+                raise EgressSwitchCooldownError(provider_id, slot, float(cooldown_s) - elapsed)
+
+    def record_send(
+        self,
+        provider_id: str,
+        egress_slot: str,
+        account_id: str,
+        monotonic=None,
+    ) -> None:
+        now = (monotonic or time.monotonic)()
+        slot = normalize_egress_slot(egress_slot)
+        key = (str(provider_id or "").strip().lower(), slot)
+        with self._lock:
+            self._last_by_slot[key] = (str(account_id), now)
+
+
+_EGRESS_SWITCH_GUARD = EgressSwitchGuard()
+
+
+def get_egress_switch_guard() -> EgressSwitchGuard:
+    return _EGRESS_SWITCH_GUARD
+
+
+def _resolve_google_switch_cooldown_s(
+    provider_config: Optional[Dict[str, Any]],
+    config: Optional[Dict[str, Any]],
+    cfg: Optional[Dict[str, Any]] = None,
+) -> float:
+    if isinstance(provider_config, dict) and provider_config.get("min_switch_cooldown_seconds") is not None:
+        try:
+            return max(0.0, float(provider_config["min_switch_cooldown_seconds"]))
+        except (TypeError, ValueError):
+            pass
+    if isinstance(config, dict):
+        oab = config.get("oauth_antiban")
+        if isinstance(oab, dict) and oab.get("min_switch_cooldown_seconds") is not None:
+            try:
+                return max(0.0, float(oab["min_switch_cooldown_seconds"]))
+            except (TypeError, ValueError):
+                pass
+    if isinstance(cfg, dict) and cfg.get("min_switch_cooldown_seconds") is not None:
+        try:
+            return max(0.0, float(cfg["min_switch_cooldown_seconds"]))
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_GOOGLE_SWITCH_COOLDOWN_S
+
+
+def _conn_egress_slot(conn: Optional[Dict[str, Any]], provider_config: Optional[Dict[str, Any]] = None) -> str:
+    if isinstance(conn, dict):
+        if conn.get("proxy_bypass") is True:
+            return "direct"
+        raw = conn.get("proxy_url") or conn.get("egress_proxy")
+        if raw:
+            return normalize_egress_slot(str(raw))
+    if isinstance(provider_config, dict):
+        raw_p = provider_config.get("proxy_url") or provider_config.get("egress_proxy")
+        if raw_p:
+            return normalize_egress_slot(str(raw_p))
+    return "direct"
+
+
 def reset_store() -> None:
     """Test/config-reload hook: drop all bindings."""
     global _STORE
     _STORE = AffinityStore()
     with _SESSION_RR_LOCK:
         _SESSION_RR_CURSOR.clear()
+    _EGRESS_SWITCH_GUARD.clear()
 
 
 def apply_affinity(
@@ -416,6 +622,39 @@ def apply_affinity(
             return eligible
         if not eligible:
             return eligible
+
+        prov_lower = str(provider_name or "").strip().lower()
+        if prov_lower in ("antigravity", "gemini-cli"):
+            if isinstance(provider_config, dict) and provider_config.get("block_shared_ip_auto_switch") is True:
+                seen_slots = set()
+                deduped = []
+                for e in eligible:
+                    if not isinstance(e, dict):
+                        continue
+                    slot = _conn_egress_slot(e.get("conn"), provider_config)
+                    if slot in seen_slots:
+                        continue
+                    seen_slots.add(slot)
+                    deduped.append(e)
+                if deduped:
+                    eligible = deduped
+
+            cooldown_s = _resolve_google_switch_cooldown_s(provider_config, config, cfg)
+            if cooldown_s > 0:
+                unlocked = []
+                for e in eligible:
+                    if not isinstance(e, dict):
+                        continue
+                    c_dict = e.get("conn") if isinstance(e.get("conn"), dict) else {}
+                    slot = _conn_egress_slot(c_dict, provider_config)
+                    locked_acct = _EGRESS_SWITCH_GUARD.locked_account_for_slot(
+                        prov_lower, slot, cooldown_s
+                    )
+                    cand_acct = account_identity(c_dict, e.get("index"))
+                    if locked_acct is None or locked_acct == cand_acct:
+                        unlocked.append(e)
+                if unlocked:
+                    eligible = unlocked
 
         store = store or _STORE
         by_index = {e["index"]: e for e in eligible if isinstance(e, dict) and "index" in e}
@@ -550,6 +789,9 @@ def account_identity(conn: Dict[str, Any], fallback_index: Optional[int] = None)
                 if pv:
                     return str(pv)
     return "idx:%s" % fallback_index if fallback_index is not None else "anon"
+
+
+extract_account_id = account_identity
 
 
 def get_client_for_account(
@@ -1153,6 +1395,7 @@ def reset_all() -> None:
     _USAGE = UsageBudgetTracker()
     with _CONNECTION_USAGE_LOCK:
         _CONNECTION_USAGE.clear()
+    _EGRESS_SWITCH_GUARD.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1171,7 +1414,8 @@ async def govern_pre_send(
 
     Returns a decision dict:
       {proceed, waited, grade, score, pinned_account, pinned_egress, headers}
-    Fail-open: any internal error -> proceed=True with zero added latency.
+    Fail-open: any internal error -> proceed=True with zero added latency,
+    except EgressSwitchCooldownError which fails closed to protect Google accounts.
     """
     decision = {
         "proceed": True, "waited": 0.0, "grade": "unknown", "score": 1.0,
@@ -1186,6 +1430,14 @@ async def govern_pre_send(
 
         acct = account_identity(conn, conn_index)
         session_key = session_key or current_request_session_key()
+
+        prov_lower = str(provider_name or "").strip().lower()
+        if prov_lower in ("antigravity", "gemini-cli"):
+            prov_cfg = ((config or {}).get("providers") or {}).get(provider_name) if isinstance(config, dict) else None
+            cooldown_s = _resolve_google_switch_cooldown_s(prov_cfg, config, cfg)
+            egress_slot = _conn_egress_slot(conn, prov_cfg)
+            _EGRESS_SWITCH_GUARD.check_switch_allowed(prov_lower, egress_slot, acct, cooldown_s)
+            _EGRESS_SWITCH_GUARD.record_send(prov_lower, egress_slot, acct)
 
         # G1 -- cadence governor (per-provider jittered min-interval)
         min_iv, jitter = provider_cadence_params(provider_name, cfg)
@@ -1256,6 +1508,8 @@ async def govern_pre_send(
                 flush=True,
             )
         return decision
+    except EgressSwitchCooldownError:
+        raise
     except Exception as exc:
         print("[antiban] pre-send fail-open (%s)" % type(exc).__name__, flush=True)
         decision["proceed"] = True
@@ -1270,6 +1524,9 @@ def govern_post_send(
     retry_after: Optional[float] = None,
     tokens_used: float = 0.0,
     config: Optional[Dict[str, Any]] = None,
+    *,
+    body_text: str = "",
+    has_prior_assistant_turns: bool = False,
 ) -> Dict[str, Any]:
     """One composed post-send gate: G2 adaptive backoff + G6 usage tracking.
 
@@ -1284,11 +1541,16 @@ def govern_post_send(
             _q.append((_now, float(tokens_used)))
     except Exception:
         pass
+    prov_lower = str(provider_name or "").strip().lower()
+    _google_terminal = is_google_terminal_ban_or_403(prov_lower, status_code, body_text)
     if status_code in (401, 402, 403, 429) or (isinstance(status_code, int) and status_code >= 500):
-        try:
-            _STORE.release(current_request_session_key(), provider_name)
-        except Exception:
-            pass
+        if not (prov_lower in ("antigravity", "gemini-cli") and (_google_terminal or has_prior_assistant_turns)):
+            try:
+                _STORE.release(current_request_session_key(), provider_name)
+            except Exception:
+                pass
+    if _google_terminal:
+        return out
     try:
         cfg = resolve_antiban_config(config)
         if not cfg["enabled"]:

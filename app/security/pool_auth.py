@@ -18,7 +18,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
-from typing import Sequence
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
@@ -387,3 +386,137 @@ def make_pool_auth_middleware(get_config):
         return await call_next(request)  # OUTSIDE exception net
 
     return pool_auth_middleware
+
+
+class PoolAuthASGIMiddleware:
+    """Pure ASGI Tier-2 Ed25519 verifier middleware for POST /v1/chat/completions.
+
+    Avoids Starlette BaseHTTPMiddleware per-request task groups and stream
+    buffering (which caused ``RuntimeError: No response returned.`` on client
+    disconnects and added SSE chunk overhead). Preserves exact behavioral
+    parity with :func:`make_pool_auth_middleware`.
+    """
+
+    def __init__(self, app, get_config):
+        self.app = app
+        self.get_config = get_config
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        from fastapi.responses import JSONResponse
+        from starlette.datastructures import Headers
+        import logging
+
+        log = logging.getLogger("pool_auth")
+        path = scope.get("path", "")
+        method = scope.get("method", "")
+
+        # Gate 1: config load + validation
+        try:
+            root_cfg = self.get_config() or {}
+            cfg = load_pool_auth_config(root_cfg)
+        except Exception as exc:
+            log.error("pool_auth config error: %s", exc)
+            if path == POOL_AUTH_PATH and method == "POST":
+                resp = JSONResponse(
+                    {"error": {"type": "pool_auth_config", "message": "pool_auth configuration error"}},
+                    status_code=503,
+                )
+                await resp(scope, receive, send)
+                return
+            await self.app(scope, receive, send)
+            return
+
+        if not cfg["enabled"]:
+            await self.app(scope, receive, send)
+            return
+
+        if path != POOL_AUTH_PATH or method != "POST":
+            await self.app(scope, receive, send)
+            return
+
+        # Gate 2: headers check + body read + Ed25519 verification
+        replay_receive = receive
+        try:
+            headers = Headers(scope=scope)
+            mode = cfg.get("mode", "optional")
+            if mode == "optional" and not _headers_have_any_pool_auth(headers):
+                await self.app(scope, receive, send)
+                return
+
+            chunks: list[bytes] = []
+            while True:
+                msg = await receive()
+                if msg.get("type") == "http.request":
+                    body_part = msg.get("body", b"")
+                    if body_part:
+                        chunks.append(body_part)
+                    if not msg.get("more_body", False):
+                        break
+                elif msg.get("type") == "http.disconnect":
+                    break
+            raw_body = b"".join(chunks)
+
+            # Build replayable receive so downstream FastAPI reads the full body.
+            sent_body = False
+
+            async def _replay_receive():
+                nonlocal sent_body
+                if not sent_body:
+                    sent_body = True
+                    return {"type": "http.request", "body": raw_body, "more_body": False}
+                return await receive()
+
+            replay_receive = _replay_receive
+
+            scheme = scope.get("scheme") or "http"
+            host = headers.get("host")
+            if not host:
+                server = scope.get("server")
+                if server:
+                    host = f"{server[0]}:{server[1]}" if server[1] not in (80, 443) else str(server[0])
+                else:
+                    host = ""
+            peer_host = cfg["router_address"] or f"{scheme}://{host}"
+            window = cfg.get("replay_window_secs", 300)
+            allowlist = cfg.get("allowlist") or []
+
+            result = verify_request_headers(
+                headers,
+                method=method,
+                path=path,
+                peer_host=peer_host,
+                window=window,
+                allowlist=allowlist,
+                body=raw_body,
+            )
+            try:
+                scope.setdefault("state", {})["pool_peer_id"] = result["peer_id"]
+            except Exception:
+                pass
+            pid = result["peer_id"]
+            log.info("pool_auth OK peer_id=%s", pid[:16] + "???" if len(pid) > 16 else pid)
+        except PoolAuthError as exc:
+            log.warning("pool_auth reject: %s", exc)
+            resp = JSONResponse(
+                {"error": {"type": "pool_auth", "message": str(exc)}},
+                status_code=401,
+            )
+            await resp(scope, receive, send)
+            return
+        except Exception as exc:
+            log.error("pool_auth unexpected error: %s", exc)
+            resp = JSONResponse(
+                {"error": {"type": "pool_auth_config", "message": "pool_auth internal error"}},
+                status_code=503,
+            )
+            await resp(scope, receive, send)
+            return
+
+        # Downstream execution stays OUTSIDE the exception net so streaming
+        # errors or client disconnects are never misclassified as 503.
+        await self.app(scope, replay_receive, send)
+

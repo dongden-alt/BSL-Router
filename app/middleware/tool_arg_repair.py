@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Tuple
 
 __all__ = [
     "repair_json_arguments",

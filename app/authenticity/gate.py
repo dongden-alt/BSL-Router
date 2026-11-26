@@ -425,7 +425,6 @@ async def authenticity_check(
                 # the V5 gap on logprob-hiding upstreams (0/25 lanes return
                 # logprobs on this infrastructure). Fail-open + budget-guard,
                 # identical to the lanes above; router-only traffic.
-                _l1_landed = False
                 if features is not None and _budget_ok("boundary"):
                     try:
                         from .probes import run_boundary_probes
@@ -439,7 +438,6 @@ async def authenticity_check(
                         if sig and (sig.get("stop_mode") == "ok"
                                     or sig.get("json_mode") == "supported"):
                             features.boundary_signature = sig
-                            _l1_landed = True
                             _b4 = _match_baselines()
                             if _b4:
                                 match_result = match_submodel(features, _b4)
@@ -532,7 +530,6 @@ async def authenticity_check(
                 # ── V6b STABILITY lane (L2, deep mode, only if ABSTAINING) ──
                 # temp=0 identical-probe repetition; carries veto power
                 # (replaces V5's decisive role on logprob-hiding upstreams).
-                _l2_landed = False
                 if match_result is not None and not match_result.abstain:
                     # By design (cost): L2/L3 only run to break an abstain.
                     for _l in ("stability", "timing"):
@@ -549,7 +546,6 @@ async def authenticity_check(
                             **_probe_kwargs(run_stability_probe))
                         if prof and prof.get("mode_hash"):
                             features.stability_profile = prof
-                            _l2_landed = True
                             _b5 = _match_baselines()
                             if _b5:
                                 match_result = match_submodel(features, _b5)

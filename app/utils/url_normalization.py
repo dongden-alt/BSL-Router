@@ -92,6 +92,8 @@ def build_custom_text_upstream_url(base_url: str, provider_format: str, model_id
     
     if provider_format == "anthropic":
         suffix = "/v1/messages"
+    elif provider_format == "openai-responses":
+        suffix = "/v1/responses"
     elif provider_format == "gemini":
         action = ":streamGenerateContent" if is_stream else ":generateContent"
         if model_id:
