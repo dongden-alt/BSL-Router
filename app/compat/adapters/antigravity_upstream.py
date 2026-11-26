@@ -47,7 +47,7 @@ from typing import Any, Dict, List, Optional
 
 # ── Verified upstream contract constants ────────────────────────────────────
 
-ANTIGRAVITY_UPSTREAM_UA = "antigravity/ide/2.1.1 windows/amd64"
+ANTIGRAVITY_UPSTREAM_UA = "antigravity/hub/2.26.0 windows/amd64"
 ANTIGRAVITY_DEFAULT_PROJECT = "ungoogly-rite-fd7ql"
 ANTIGRAVITY_STREAM_URL_PATH = "/v1internal:streamGenerateContent?alt=sse"
 
@@ -91,6 +91,8 @@ _EFFORT_TO_BUDGET = {
     "low": 2048,
     "medium": 8192,
     "high": 24576,
+    "xhigh": 65536,
+    "max": 65536,
 }
 
 # Gemini finishReason → OpenAI finish_reason.
@@ -635,7 +637,14 @@ def openai_to_cloudcode_envelope(
             _ag_sess_seed = None
     _acct_scope = str(account_id or "").strip()
     _ag_session_id = (
-        str(uuid.uuid5(uuid.NAMESPACE_OID, f"ag-session:{_acct_scope or 'default'}:{_ag_sess_seed}"))
+        str(
+            uuid.UUID(
+                bytes=hashlib.sha256(
+                    f"ag-session:{_acct_scope or 'default'}:{_ag_sess_seed}".encode("utf-8")
+                ).digest()[:16],
+                version=4,
+            )
+        )
         if _ag_sess_seed
         else str(uuid.uuid4())
     )
@@ -1024,6 +1033,11 @@ _PRO_TIER_ARGON_FALLBACK_MAP: Dict[str, str] = {
     "gemini-4-carbon-medium": "gemini-3.8-flash-medium",
     "gemini-4-carbon-high": "gemini-3.8-flash-high",
     "gemini-4-carbon": "gemini-3.8-flash-high",
+    "gemini-4-neon-low": "gemini-3.8-flash-low",
+    "gemini-4-neon-medium": "gemini-3.8-flash-medium",
+    "gemini-4-neon-high": "gemini-3.8-flash-high",
+    "gemini-4-neon-xhigh": "gemini-3.8-flash-high",
+    "gemini-4-neon": "gemini-3.8-flash-high",
 }
 _ARGON_DISABLED_AUTH_HASHES: "OrderedDict[str, float]" = OrderedDict()
 _ARGON_DISABLED_LOCK = threading.Lock()

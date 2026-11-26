@@ -12,8 +12,6 @@ The Responses API (/v1/responses) is a different protocol from chat/completions:
 This module converts between Responses format and BSL's internal OpenAI format.
 """
 from typing import Dict, Any, List
-import json
-import uuid
 
 
 class ResponsesConverter:
@@ -68,12 +66,8 @@ class ResponsesConverter:
                 elif item_type == "reasoning":
                     # Preserve reasoning items — convert to a system note
                     # The reasoning ID is preserved in metadata for replay
-                    reasoning_id = item.get("id", "")
-                    summary = item.get("summary", [])
-                    if isinstance(summary, list) and summary:
-                        summary_text = summary[0].get("text", "") if isinstance(summary[0], dict) else str(summary[0])
-                        # Don't inject as a message — reasoning is handled by the policy engine
-                        pass
+                    # Don't inject as a message — reasoning is handled by the policy engine
+                    pass
 
                 elif item_type == "function_call":
                     # Convert to assistant tool_calls

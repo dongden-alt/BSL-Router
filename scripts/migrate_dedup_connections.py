@@ -152,7 +152,6 @@ def migrate(config_path: str, apply: bool) -> int:
             total_before += len(conns) if isinstance(conns, list) else 0
             total_after += len(conns) if isinstance(conns, list) else 0
             continue
-        before = [c for c in conns if isinstance(c, dict)]
         before_n = len(conns)
         total_before += before_n
         # Snapshot identities for dropped-row classification BEFORE mutating.
@@ -174,7 +173,6 @@ def migrate(config_path: str, apply: bool) -> int:
         # iff the very same dict object is still present in after_conns. This
         # is exact for both union-find collapses (survivor kept, copy dropped)
         # and id-less blank-row drops (no survivor, row just gone).
-        from app.main import _connection_identity  # type: ignore
         survivor_objs = {id(ac) for ac in after_conns if isinstance(ac, dict)}
         dropped_indices = []
         dropped_conns = []
@@ -206,7 +204,7 @@ def migrate(config_path: str, apply: bool) -> int:
         for label, reason in drops:
             print(f"  dropped {label}  reason={reason}")
         if remap:
-            print(f"  connection_indexes remap (old_idx -> new_idx):")
+            print("  connection_indexes remap (old_idx -> new_idx):")
             for old_i, new_i in remap:
                 tgt = f"new {new_i}" if new_i is not None else "dropped (dangling)"
                 print(f"    [{old_i}] -> {tgt}")

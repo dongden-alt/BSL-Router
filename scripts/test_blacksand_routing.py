@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 Blacksand Models Live Routing Test
 ===================================
 Sends a minimal chat-completion request to each of the 5 Blacksand models
@@ -248,7 +248,7 @@ def main():
     args = parser.parse_args()
 
     print(f"\n{'=' * 62}")
-    print(f"  Blacksand Models Live Routing Test")
+    print("  Blacksand Models Live Routing Test")
     print(f"{'=' * 62}")
     print(f"  Server:  {args.url}")
     print(f"  Time:    {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -267,7 +267,7 @@ def main():
                 print(f"  OK - Server up - {model_count} models in catalog")
     except Exception as e:
         print(f"  FAIL - SERVER DOWN: {e}")
-        print(f"  Start it with:  .venv\\Scripts\\python -m app.main")
+        print("  Start it with:  .venv\\Scripts\\python -m app.main")
         sys.exit(1)
 
     print()
@@ -284,13 +284,10 @@ def main():
         # Print result
         verdict = result.get("verdict", "UNKNOWN")
         if "PASS" in verdict:
-            v_color = "green"
             icon = "OK"
         elif "PARTIAL" in verdict:
-            v_color = "yellow"
             icon = "WARN"
         else:
-            v_color = "red"
             icon = "FAIL"
 
         print(f"{icon} {verdict} ({fmt_ms(result['latency_ms'])})")

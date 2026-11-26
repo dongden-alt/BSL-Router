@@ -1,4 +1,4 @@
-﻿"""Certify a harvested canonical standard -- Phase 2 of the Harvest Protocol.
+r"""Certify a harvested canonical standard -- Phase 2 of the Harvest Protocol.
 
 The gate that was missing (docs/ARCHITECTURE.md, "Canonical Standard Harvest
 Protocol"). A standard is NOT trusted to accuse anyone until all four checks

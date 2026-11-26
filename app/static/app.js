@@ -1791,9 +1791,16 @@ function getThinkingSpec(modelId) {
     // Backend contract: app/compat/families/kimi.py (id "kimi-k3").
     if (/kimi-?k3/.test(id)) return { effort: ['low','high','max'], mandatory: true };
 
+    // K2-Horizon (crowllm/k2-horizon-375b-a23b-uncensored:free, k2-horizon-375b-a23b:free):
+    // LLM360/MBZUAI K2-Horizon 375B-A23B uses OpenAI reasoning_effort. Live probe
+    // (2026-11-26) proved 'high' cleanly separates <ifm|think> into reasoning_content
+    // while 'low'/'off' skip CoT cleanly (and medium/xhigh/max leak raw CoT tags).
+    // Backend contract: app/compat/families/kimi.py (id "k2-horizon").
+    if (/\bk2[-_.]?horizon\b/.test(id)) return { effort: ['off','low','high'] };
+
     // Kimi K2 family. K2.7-code and any *-thinking SKU are always-on (the
     // parameter is a no-op). K2.5 / K2.6 are toggleable via enable_thinking.
-    // K2 is BINARY — no graduated effort levels. K3 explicitly excluded above.
+    // K2 is BINARY — no graduated effort levels. K3 and K2-Horizon excluded above.
     if (/kimi|k2\./.test(id)) {
         if (/2\.7|thinking/.test(id)) return { alwaysOn: true };
         return { effort: ['off','enable'] };
@@ -1806,6 +1813,22 @@ function getThinkingSpec(modelId) {
     if (/(claude|opus|sonnet)/.test(id)) return { effort: ['off','low','medium','high','xhigh','max'], mode: ['adaptive'] };
     // DeepSeek V4.
     if (/deepseek-v4/.test(id)) return { effort: ['off','low','medium','high','max'] };
+    // Particle-1 family (crowllm/particle-1-uncensored:free, particle-1:free,
+    // kilocode-free/particle-ai/particle-1:free, freepi-free/particle).
+    // Backend contract: app/compat/families/particle.py (id "particle-1").
+    // UI 'off' emits reasoning_effort='none'; low/medium/high/xhigh/max pass through.
+    if (/\bparticle(?:[-_.]?\d+)?\b/.test(id)) return { effort: ['off','low','medium','high','xhigh','max'] };
+    // NVIDIA Nemotron reasoning family (nemotron-3-ultra-550b-a55b-uncensored:free,
+    // nemotron-3-ultra-550b-a55b, nemotron-3-super-120b-a12b, nemotron-3.5-super-vl,
+    // nemotron-3-nano-omni-30b-a3b-reasoning, nemotron-3.5-lightning, nemotron-ultra).
+    // Excludes non-reasoning 4B edge bolt and content-safety/guard/embed/reward SKUs.
+    // Live probe (2026-11-26): low/medium/high/xhigh scale reasoning_content; 'max'
+    // falls back to a 63-token default budget on vLLM and clamps to 'high' server-side.
+    // Backend contract: app/compat/families/nemotron.py (id "nemotron-3").
+    if (/\bnemotron\b/.test(id)) {
+        if (/bolt|content-safety|guard|embed|reward|parse|rerank/.test(id)) return null;
+        return { effort: ['off','low','medium','high','xhigh'] };
+    }
     // GLM-5.3 — ONLY low/high/max on the wire (backend families/glm.py coerces).
     // Thinking is ALWAYS ON: upstream rejects disabled/missing thinking (code
     // 1210). Backend forces enabled + low/high/max even for off/auto settings.
@@ -4180,6 +4203,31 @@ async function pollAppIntegrationStatus() {
                 qsPill.classList.toggle('is-active', qsOn);
             }
         }
+        if (_agLsSaveInFlight === 0) {
+            let lsBoardChanged = false;
+            if (data.antigravity && data.antigravity.ls_components) {
+                const prevCfgJson = JSON.stringify(appIntegrationConfig('antigravity').ls_components || {});
+                const nextCfgJson = JSON.stringify(data.antigravity.ls_components);
+                if (prevCfgJson !== nextCfgJson) {
+                    appIntegrationConfig('antigravity').ls_components = data.antigravity.ls_components;
+                    lsBoardChanged = true;
+                }
+            }
+            if (data.antigravity && data.antigravity.ls_environment) {
+                const prevEnvJson = JSON.stringify(_agLsEnvironment || null);
+                const nextEnvJson = JSON.stringify(data.antigravity.ls_environment);
+                if (prevEnvJson !== nextEnvJson) {
+                    _agLsEnvironment = data.antigravity.ls_environment;
+                    lsBoardChanged = true;
+                }
+            }
+            if (lsBoardChanged) {
+                const liveDetails = document.getElementById('ag-ls-components-details');
+                if (liveDetails) _agLsBoardOpen = !!liveDetails.open;
+                const host = document.getElementById('app-ls-board-host');
+                if (host) host.outerHTML = renderLsComponentsSubmodule();
+            }
+        }
         if (cc) {
             cc.textContent = `${data.claude_code.enabled ? 'Enabled' : 'Disabled'} · ${data.claude_code.models} models`;
             cc.classList.toggle('is-active', !!data.claude_code.enabled);
@@ -4340,11 +4388,384 @@ function renderQuotaSaverSubmodule() {
         ${fbListHtml}
     </div>`;
 }
+const _AG_LS_DEFAULTS = {
+    apply_antigravity: true,
+    apply_claude_code: true,
+    hook_session_start: true,
+    hook_pre_invocation: true,
+    hook_pre_tool_use: true,
+    hook_post_tool_use: true,
+    hook_stop: true,
+    custom_rules: true,
+    custom_skills: true,
+    custom_plugins: true,
+    custom_subagents: true,
+    enable_mcp_sidecars: true,
+    prompt_guidelines: true,
+    prompt_user_rules: true,
+    prompt_skills_catalog: true,
+    prompt_mcp_servers: true,
+    prompt_subagents_section: true,
+    prompt_artifacts_section: true,
+    prompt_slash_and_style: true,
+    tool_core_execution: true,
+    tool_ask_question: true,
+    tool_subagents_swarm: true,
+    tool_mcp_bridge: true,
+    tool_web_search: true,
+    tool_generate_image: true
+};
+const _AG_LS_PRESETS = {
+    lean_coder: {
+        label: '1. Lean Coder',
+        subtitle: 'Recommended',
+        desc: '100% coding productivity + MCP + Subagents + Git rules. Strips <guidelines>, Stop grader, PreInvocation/UserPromptSubmit throttle, and ask_question / AskUserQuestion popups.',
+        values: {
+            hook_session_start: true, hook_pre_invocation: false, hook_pre_tool_use: true, hook_post_tool_use: true, hook_stop: false,
+            custom_rules: true, custom_skills: false, custom_plugins: true, custom_subagents: true, enable_mcp_sidecars: true,
+            prompt_guidelines: false, prompt_user_rules: true, prompt_skills_catalog: false, prompt_mcp_servers: true,
+            prompt_subagents_section: true, prompt_artifacts_section: false, prompt_slash_and_style: false,
+            tool_core_execution: true, tool_ask_question: false, tool_subagents_swarm: true, tool_mcp_bridge: true, tool_web_search: true, tool_generate_image: false
+        }
+    },
+    raw_uncensored: {
+        label: '2. Raw Uncensored',
+        subtitle: 'Zero-Friction',
+        desc: 'Shuts down all hooks, <guidelines>, <user_rules>/CLAUDE.md, <skills>, ask_question/AskUserQuestion, and subagents. Keeps only core file, shell, and search tools.',
+        values: {
+            hook_session_start: false, hook_pre_invocation: false, hook_pre_tool_use: false, hook_post_tool_use: false, hook_stop: false,
+            custom_rules: false, custom_skills: false, custom_plugins: false, custom_subagents: false, enable_mcp_sidecars: false,
+            prompt_guidelines: false, prompt_user_rules: false, prompt_skills_catalog: false, prompt_mcp_servers: false,
+            prompt_subagents_section: false, prompt_artifacts_section: false, prompt_slash_and_style: false,
+            tool_core_execution: true, tool_ask_question: false, tool_subagents_swarm: false, tool_mcp_bridge: false, tool_web_search: true, tool_generate_image: false
+        }
+    },
+    full_studio: {
+        label: '3. Full Default',
+        studioLabel: '3. Full Studio',
+        subtitle: 'All Planes ON',
+        desc: 'Enables all 4 planes with 0.0ms wire fast-path bypass: lifecycle hooks, skills catalog, MCP sidecars, subagents, and all built-in tools.',
+        values: Object.fromEntries(Object.entries(_AG_LS_DEFAULTS).filter(([k]) => k !== 'apply_antigravity' && k !== 'apply_claude_code'))
+    }
+};
+const _AG_LS_ANTIGRAVITY_ONLY_KEYS = new Set([
+    'custom_plugins', 'custom_subagents', 'enable_mcp_sidecars',
+    'prompt_guidelines', 'prompt_mcp_servers', 'prompt_subagents_section',
+    'prompt_artifacts_section', 'prompt_slash_and_style', 'tool_generate_image'
+]);
+const _AG_LS_PLANES = [
+    {
+        id: 'plane1',
+        tabLabel: 'Plane 1 · Hooks',
+        title: 'Plane 1 — Lifecycle Hook Interceptors (hooks.json / ~/.claude/settings.json & Wire Filter)',
+        desc: 'Losslessly stashes/restores configured hook phases on save (zero app.asar rebuild). Unchecking PreInvocation / UserPromptSubmit also strips hook prompt reminders on the wire immediately.',
+        items: [
+            { key: 'hook_session_start', title: 'SessionStart / StatusLine Hook', desc: 'SessionStart bootstrap hook and Claude Code statusLine command.', bslDesc: 'Antigravity SessionStart bootstrap & Claude Code SessionStart / statusLine command.' },
+            { key: 'hook_pre_invocation', title: 'PreInvocation / UserPromptSubmit Hook', bslTitle: 'PreInvocation / UserPromptSubmit Hook & Metadata', desc: 'Pauses PreInvocation / UserPromptSubmit hooks and strips prompt-submit hook reminders on the wire.', bslDesc: 'Strips [BSL-ROUTING-METADATA], <bsl_Completion_Contract>, and UserPromptSubmit hook reminders immediately.' },
+            { key: 'hook_pre_tool_use', title: 'PreToolUse Hook', bslTitle: 'PreToolUse Security Guard', desc: 'Pre-execution hook triggered before shell or file-edit tool calls.', bslDesc: 'Pre-execution guard on shell/file edit tools before destructive disk or git actions.' },
+            { key: 'hook_post_tool_use', title: 'PostToolUse Hook', bslTitle: 'PostToolUse Audit Guard', desc: 'Post-execution hook triggered after tool calls complete.', bslDesc: 'Post-edit verification hook after file writes, edits, and shell commands.' },
+            { key: 'hook_stop', title: 'Stop Hook', bslTitle: 'Stop Contract Grader (Banner / [Q1])', desc: 'Post-turn Stop lifecycle hook executed before a turn completes.', bslDesc: 'Post-turn Stop hook that blocks completion and forces retries when studio markers are missing.' }
+        ]
+    },
+    {
+        id: 'plane2',
+        tabLabel: 'Plane 2 · Discovery',
+        title: 'Plane 2 — Discovery & Experiment Gates (:listExperiments & Claude skillOverrides)',
+        desc: 'Filters Antigravity :listExperiments flags on the wire (zero disk mutations in ~/.gemini/) and toggles Claude Code skillOverrides in ~/.claude/settings.json.',
+        items: [
+            { key: 'custom_rules', title: 'User & Workspace Rules (rules/*.md / CLAUDE.md)', desc: 'Antigravity enable-customization-kind-rule & Claude Code CLAUDE.md reminder gate.' },
+            { key: 'custom_skills', title: 'Skills Catalog Discovery (skills/*/SKILL.md / skillOverrides)', desc: 'Antigravity enable-customization-kind-skill & Claude Code skillOverrides in settings.json.' },
+            { key: 'custom_plugins', title: 'Plugins & Workflows (Antigravity plugins/*)', desc: 'Controls Antigravity enable-plugins, enable-customization-kind-plugin, and workflow bundles.' },
+            { key: 'custom_subagents', title: 'Custom Subagent & Swarm Gates (Antigravity)', desc: 'Controls enable-customization-kind-agent, enable-native-swarm, and invoke-subagent-config.' },
+            { key: 'enable_mcp_sidecars', title: 'MCP Sidecars & UI Extensions (Antigravity)', desc: 'Controls enable-customization-kind-mcp, enable-sidecars, and sidecar-gateway flags.' }
+        ]
+    },
+    {
+        id: 'plane3',
+        tabLabel: 'Plane 3 · Prompt XML',
+        title: 'Plane 3 — System Prompt XML & Reminder Filters (0ms Hot-Reload)',
+        desc: 'Live in-place outbound sanitizer on /v1internal:* (Antigravity) and /v1/messages (Claude Code). Uncheck any block to strip it before reaching the model — zero restart required.',
+        items: [
+            { key: 'prompt_guidelines', title: 'IDE <guidelines> / Policy Safety Block', desc: 'Strips hardcoded <guidelines>, <cyber_policy>, and <refusal_policy> blocks to eliminate policy refusals.' },
+            { key: 'prompt_user_rules', title: '<user_rules> / CLAUDE.md Constitution Block', desc: 'Strips Antigravity <user_rules> and Claude Code CLAUDE.md project instruction reminders.' },
+            { key: 'prompt_skills_catalog', title: '<skills> Skill Catalog Block (~11 KB)', desc: 'Strips Antigravity <skills> and Claude Code skill catalog reminders to save ~3,500 tokens/turn.' },
+            { key: 'prompt_mcp_servers', title: '<mcp_servers> Schema Catalog Block', desc: 'Lists available eager & lazy MCP servers and tool names in the system prompt.' },
+            { key: 'prompt_subagents_section', title: '<subagents> & <messaging> Delegation Block', desc: 'Instructions for spawning background subagents and reactive wakeup messaging.' },
+            { key: 'prompt_artifacts_section', title: '<artifacts> Formatting & Carousel Rules', desc: 'Instructions for brain artifact markdown files, Mermaid diagrams, and carousels.' },
+            { key: 'prompt_slash_and_style', title: '<slash_commands> & <communication_style>', desc: 'UI slash-command suggestions (/goal, /plan, /grill-me) and formatting coaching.' }
+        ]
+    },
+    {
+        id: 'plane4',
+        tabLabel: 'Plane 4 · Tools',
+        title: 'Plane 4 — Built-in Tool Declarations Filter (0ms Hot-Reload)',
+        desc: 'Filters Gemini functionDeclarations (Antigravity) and Anthropic tools[] (Claude Code) on the wire. Unchecked tools cannot be invoked — takes effect on the very next turn.',
+        items: [
+            { key: 'tool_core_execution', title: 'Core File & Shell Tools (read_file/Read, edit_file/Edit, run_command/Bash)', desc: 'Core file read/write/edit, search, and terminal execution tools (Keep ON for coding).' },
+            { key: 'tool_ask_question', title: 'Interactive Question Popup (ask_question / AskUserQuestion)', desc: 'Multiple-choice UI popup tool. Uncheck to force the agent to execute instead of halting to ask questions.' },
+            { key: 'tool_subagents_swarm', title: 'Subagent, Swarm & Cron (invoke_subagent/Agent/Task/swarm/schedule)', desc: 'Spawns background subagents, agent teams, swarms, and scheduled tasks.' },
+            { key: 'tool_mcp_bridge', title: 'MCP Bridge & Eager MCP Tools (call_mcp_tool / ToolSearch / mcp_*)', desc: 'MCP tool invocation bridge and all eager mcp_* / mcp__* declarations.' },
+            { key: 'tool_web_search', title: 'Built-in Web Search (search_web / WebSearch / WebFetch)', desc: 'Built-in web search and URL fetch tool declarations.' },
+            { key: 'tool_generate_image', title: 'Built-in generate_image Tool', desc: 'Image generation / editing tool declaration.' }
+        ]
+    }
+];
+let _agLsBoardOpen = false;
+let _agLsBoardActivePlane = 'plane1';
+let _agLsEnvironment = null;
+let _agLsSaveInFlight = 0;
+
+function getLsItemApplicability(key, c) {
+    const serverEntry = _agLsEnvironment?.applicability?.[key];
+    if (serverEntry && typeof serverEntry.applicable === 'boolean') {
+        return serverEntry;
+    }
+    const applyAg = c.apply_antigravity !== false;
+    const applyCc = c.apply_claude_code !== false;
+    if (!applyAg && !applyCc) {
+        return { applicable: false, reason: 'Enable an app target above', targets: [] };
+    }
+    const agLabel = _agLsEnvironment?.apps?.antigravity_label || 'Antigravity App / IDE';
+    if (_AG_LS_ANTIGRAVITY_ONLY_KEYS.has(key) && !applyAg) {
+        return { applicable: false, reason: `${agLabel} only`, targets: [] };
+    }
+    return { applicable: true, reason: '', targets: [] };
+}
+
+function lsComponentsConfig() {
+    const ag = appIntegrationConfig('antigravity');
+    const raw = (ag.ls_components && typeof ag.ls_components === 'object') ? ag.ls_components : {};
+    const merged = { ..._AG_LS_DEFAULTS };
+    for (const k of Object.keys(_AG_LS_DEFAULTS)) {
+        if (typeof raw[k] === 'boolean') merged[k] = raw[k];
+    }
+    ag.ls_components = merged;
+    return merged;
+}
+function detectLsComponentsPreset(c) {
+    for (const [presetKey, meta] of Object.entries(_AG_LS_PRESETS)) {
+        const matches = Object.entries(meta.values).every(([k, v]) => (c[k] !== false) === v);
+        if (matches) return presetKey;
+    }
+    const allSwitchKeys = Object.keys(_AG_LS_PRESETS.full_studio.values);
+    const applicableKeys = allSwitchKeys.filter(k => getLsItemApplicability(k, c).applicable !== false);
+    if (applicableKeys.length > 0) {
+        for (const [presetKey, meta] of Object.entries(_AG_LS_PRESETS)) {
+            const matchesApplicable = applicableKeys.every(k => (c[k] !== false) === meta.values[k]);
+            if (matchesApplicable) return presetKey;
+        }
+    }
+    return 'custom';
+}
+function countActiveLsWireFilters(c) {
+    const applyAg = c.apply_antigravity !== false;
+    const applyCc = c.apply_claude_code !== false;
+    if (!applyAg && !applyCc) return 0;
+    const activeWireKeys = new Set();
+    if (applyAg) {
+        for (const k of [
+            'hook_pre_invocation',
+            'prompt_guidelines', 'prompt_user_rules', 'prompt_skills_catalog', 'prompt_mcp_servers',
+            'prompt_subagents_section', 'prompt_artifacts_section', 'prompt_slash_and_style',
+            'tool_core_execution', 'tool_ask_question', 'tool_subagents_swarm', 'tool_mcp_bridge',
+            'tool_web_search', 'tool_generate_image'
+        ]) activeWireKeys.add(k);
+    }
+    if (applyCc) {
+        for (const k of [
+            'hook_pre_invocation', 'custom_rules', 'custom_skills',
+            'prompt_user_rules', 'prompt_skills_catalog',
+            'tool_core_execution', 'tool_ask_question', 'tool_subagents_swarm', 'tool_mcp_bridge',
+            'tool_web_search'
+        ]) activeWireKeys.add(k);
+    }
+    return Array.from(activeWireKeys).filter(k => c[k] === false).length;
+}
+window.toggleLsComponentsDetails = (isOpen) => {
+    _agLsBoardOpen = !!isOpen;
+};
+window.selectLsComponentsPlane = (planeId) => {
+    _agLsBoardActivePlane = planeId;
+    _agLsBoardOpen = true;
+    renderActiveTab();
+};
+window.editLsComponents = async (action, keyOrPlane, value) => {
+    const c = lsComponentsConfig();
+    let payload = null;
+    let toastMsg = 'Modular Switchboard updated';
+    if (action === 'preset' && _AG_LS_PRESETS[keyOrPlane]) {
+        Object.assign(c, _AG_LS_PRESETS[keyOrPlane].values);
+        payload = { preset: keyOrPlane };
+        toastMsg = `Activated ${_AG_LS_PRESETS[keyOrPlane].label} preset`;
+    } else if (action === 'plane_all') {
+        const plane = _AG_LS_PLANES.find(p => p.id === keyOrPlane);
+        if (!plane) return;
+        payload = {};
+        for (const item of plane.items) {
+            if (!getLsItemApplicability(item.key, c).applicable) continue;
+            c[item.key] = !!value;
+            payload[item.key] = !!value;
+        }
+        if (!Object.keys(payload).length) {
+            showToast(`No applicable items in ${plane.tabLabel}`);
+            return;
+        }
+        toastMsg = `${plane.tabLabel}: ${value ? 'All ON' : 'All OFF'}`;
+    } else if (action === 'toggle') {
+        c[keyOrPlane] = !!value;
+        payload = { [keyOrPlane]: !!value };
+        const agName = _agLsEnvironment?.apps?.antigravity_label || 'Antigravity';
+        const niceLabel = keyOrPlane === 'apply_antigravity'
+            ? `${agName} target`
+            : (keyOrPlane === 'apply_claude_code' ? 'Claude Code target' : keyOrPlane);
+        toastMsg = `Updated ${niceLabel} (${value ? 'ON' : 'OFF'})`;
+    } else {
+        return;
+    }
+    _agLsBoardOpen = true;
+    _agLsSaveInFlight += 1;
+    try {
+        const data = await appIntegrationRequest('/api/app-integration/antigravity/ls-components', payload);
+        if (data && data.ls_components) appIntegrationConfig('antigravity').ls_components = data.ls_components;
+        if (data && data.ls_environment) _agLsEnvironment = data.ls_environment;
+        const hooksUpdated = data?.hooks_sync?.updated?.length || 0;
+        showToast(hooksUpdated ? `${toastMsg} (${hooksUpdated} hook config synced)` : toastMsg);
+    } catch (e) {
+        showToast(`Switchboard update failed: ${e.message || 'request failed'}`, true);
+    } finally {
+        _agLsSaveInFlight = Math.max(0, _agLsSaveInFlight - 1);
+    }
+    renderActiveTab();
+};
+function renderLsComponentsSubmodule() {
+    const c = lsComponentsConfig();
+    const envApps = _agLsEnvironment?.apps || null;
+    const isBslStudio = !!(envApps && envApps.blacksand_code_installed);
+    const hasBslHooks = !!(envApps && envApps.has_bsl_hooks);
+    const agDetected = envApps ? envApps.antigravity_installed !== false : true;
+    const ccDetected = envApps ? envApps.claude_code_installed !== false : true;
+    const agTargetLabel = envApps?.antigravity_label || 'Antigravity App / IDE';
+
+    const applyAg = c.apply_antigravity !== false;
+    const applyCc = c.apply_claude_code !== false;
+    const targetSummary = applyAg && applyCc
+        ? 'Antigravity + Claude Code'
+        : (applyAg ? (isBslStudio ? 'Antigravity / Blacksand Code' : 'Antigravity Only') : (applyCc ? 'Claude Code Only' : 'Paused (No App Selected)'));
+    const activePreset = detectLsComponentsPreset(c);
+    const presetMeta = _AG_LS_PRESETS[activePreset];
+    const presetLabel = presetMeta ? ((isBslStudio && presetMeta.studioLabel) || presetMeta.label) : 'Custom';
+    const activeFilters = countActiveLsWireFilters(c);
+    const activePlane = _AG_LS_PLANES.find(p => p.id === _agLsBoardActivePlane) || _AG_LS_PLANES[0];
+
+    const presetCardsHtml = Object.entries(_AG_LS_PRESETS).map(([pKey, meta]) => {
+        const isSelected = activePreset === pKey;
+        const displayLabel = (isBslStudio && meta.studioLabel) ? meta.studioLabel : meta.label;
+        const descText = (pKey === 'lean_coder' && !hasBslHooks)
+            ? '100% coding productivity + MCP + Subagents + Rules. Strips <guidelines>, Stop/PreInvocation hooks, and ask_question / AskUserQuestion popups.'
+            : meta.desc;
+        return `<div class="app-ls-preset-card ${isSelected ? 'is-selected' : ''}">
+            <div class="app-ls-preset-copy">
+                <div class="app-ls-preset-title">${agEsc(displayLabel)} <span class="app-ls-preset-sub">(${agEsc(meta.subtitle)})</span></div>
+                <div class="app-ls-preset-desc">${agEsc(descText)}</div>
+            </div>
+            <div class="app-ls-preset-foot">
+                <button type="button" class="btn ${isSelected ? 'btn-primary' : 'btn-outline'} app-ls-preset-btn" onclick="editLsComponents('preset','${pKey}')">${isSelected ? 'Active' : `Activate ${agEsc(displayLabel.replace(/^\d+\.\s*/, ''))}`}</button>
+            </div>
+        </div>`;
+    }).join('');
+
+    const tabsHtml = _AG_LS_PLANES.map(plane => {
+        const applicableItems = plane.items.filter(it => getLsItemApplicability(it.key, c).applicable);
+        const onCount = applicableItems.filter(it => c[it.key] !== false).length;
+        const isActive = plane.id === activePlane.id;
+        return `<button type="button" role="tab" aria-selected="${isActive ? 'true' : 'false'}" class="app-ls-plane-tab ${isActive ? 'is-active' : ''}" onclick="selectLsComponentsPlane('${plane.id}')"><span>${agEsc(plane.tabLabel)}</span><span class="app-ls-plane-count">${onCount}/${applicableItems.length}</span></button>`;
+    }).join('');
+
+    const itemsHtml = activePlane.items.map(item => {
+        const isOn = c[item.key] !== false;
+        const appInfo = getLsItemApplicability(item.key, c);
+        const isApplicable = appInfo.applicable !== false;
+        const itemTitle = (hasBslHooks && item.bslTitle) ? item.bslTitle : item.title;
+        const itemDesc = (hasBslHooks && item.bslDesc) ? item.bslDesc : item.desc;
+        const naBadge = !isApplicable && appInfo.reason
+            ? `<span class="app-ls-na-badge">${agEsc(appInfo.reason)}</span>`
+            : '';
+        return `
+        <label class="app-ls-item ${isOn ? '' : 'is-off'} ${isApplicable ? '' : 'is-inapplicable'}" ${!isApplicable && appInfo.reason ? `title="${agEsc(appInfo.reason)}"` : ''}>
+            <div class="app-ls-item-copy">
+                <div class="app-ls-item-title"><span>${agEsc(itemTitle)}</span>${naBadge}</div>
+                <div class="app-ls-item-desc">${agEsc(itemDesc)}</div>
+            </div>
+            <span class="switch app-ls-switch">
+                <input type="checkbox" data-ls-key="${item.key}" ${isOn ? 'checked' : ''} ${isApplicable ? '' : 'disabled'} onchange="editLsComponents('toggle','${item.key}',this.checked)">
+                <span class="slider"></span>
+            </span>
+        </label>`;
+    }).join('');
+
+    return `
+    <section class="detail-card app-integration-card app-ls-shared-card" id="app-ls-board-host">
+        <details class="app-ls-board-details" id="ag-ls-components-details" ${_agLsBoardOpen ? 'open' : ''} ontoggle="toggleLsComponentsDetails(this.open)">
+            <summary>
+                <div class="app-ls-board-summary-left">
+                    <span class="app-ls-board-chevron" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"><polyline points="9 18 15 12 9 6"/></svg>
+                    </span>
+                    <div class="app-ls-board-summary-copy">
+                        <div class="app-ls-board-summary-title">Unified 4-Plane Modular Switchboard <span class="app-ls-board-summary-tag">LS &amp; Harness</span></div>
+                        <div class="app-ls-board-summary-sub">Auto-paired for ${agEsc(agTargetLabel)} &amp; Claude Code &mdash; <strong>zero app.asar rebuild &amp; 0.0ms fast-path when unchecked or all ON</strong>.</div>
+                    </div>
+                </div>
+                <div class="app-ls-board-summary-badges">
+                    <span class="app-integration-status-pill ${(applyAg || applyCc) ? 'is-active' : ''}">${agEsc(targetSummary)}</span>
+                    <span id="app-ag-ls-preset-pill" class="app-integration-status-pill ${activePreset === 'full_studio' ? 'is-active' : ''}">Preset: ${agEsc(presetLabel)}</span>
+                    <span class="app-integration-status-pill ${activeFilters === 0 ? 'is-active' : ''}">${activeFilters === 0 ? '0.0ms Fast-Path' : `${activeFilters} Wire Filter${activeFilters === 1 ? '' : 's'} Active`}</span>
+                </div>
+            </summary>
+            <div class="app-ls-board-body">
+                <div class="app-ls-targets-bar">
+                    <span class="app-ls-targets-label">Apply Switchboard To</span>
+                    <div class="app-ls-targets-group">
+                        <label class="app-ls-target-chip ${applyAg ? 'is-on' : ''} ${agDetected ? '' : 'is-missing'}">
+                            <span class="switch switch-sm">
+                                <input type="checkbox" data-ls-key="apply_antigravity" ${applyAg ? 'checked' : ''} onchange="editLsComponents('toggle','apply_antigravity',this.checked)">
+                                <span class="slider"></span>
+                            </span>
+                            <span class="app-ls-target-text">${agEsc(agTargetLabel)} <code class="app-ls-inline-code">/v1internal:*</code> <code class="app-ls-inline-code">hooks.json</code>${agDetected ? '' : '<span class="app-ls-na-badge">Not detected</span>'}</span>
+                        </label>
+                        <label class="app-ls-target-chip ${applyCc ? 'is-on' : ''} ${ccDetected ? '' : 'is-missing'}">
+                            <span class="switch switch-sm">
+                                <input type="checkbox" data-ls-key="apply_claude_code" ${applyCc ? 'checked' : ''} onchange="editLsComponents('toggle','apply_claude_code',this.checked)">
+                                <span class="slider"></span>
+                            </span>
+                            <span class="app-ls-target-text">Claude Code Desktop / CLI <code class="app-ls-inline-code">/v1/messages</code> <code class="app-ls-inline-code">~/.claude/settings.json</code>${ccDetected ? '' : '<span class="app-ls-na-badge">Not detected</span>'}</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="app-ls-presets-bar">${presetCardsHtml}</div>
+                <div class="app-ls-plane-tabs">
+                    <div class="app-ls-plane-tablist" role="tablist">${tabsHtml}</div>
+                    <div class="app-integration-toolbar-actions">
+                        <button type="button" class="btn btn-outline app-ls-plane-action-btn" onclick="editLsComponents('plane_all','${activePlane.id}',true)">Plane All ON</button>
+                        <button type="button" class="btn btn-outline app-ls-plane-action-btn" onclick="editLsComponents('plane_all','${activePlane.id}',false)">Plane All OFF</button>
+                    </div>
+                </div>
+                <div class="app-ls-plane-meta">
+                    <strong class="app-ls-plane-meta-title">${agEsc(activePlane.title)}</strong>
+                    <span class="app-ls-plane-meta-sep">&mdash;</span>
+                    <span>${agEsc(activePlane.desc)}</span>
+                </div>
+                <div class="app-ls-grid">${itemsHtml}</div>
+            </div>
+        </details>
+    </section>`;
+}
 function renderMitmTab() {
     const cc = appIntegrationConfig('claude_code');
     appIntegrationConfig('antigravity');
     setTimeout(pollAppIntegrationStatus, 0);
     return `
+    ${renderLsComponentsSubmodule()}
     <section class="detail-card app-integration-card">
         <div class="app-integration-header">
             <div class="app-integration-title-group">

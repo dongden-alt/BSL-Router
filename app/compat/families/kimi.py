@@ -128,6 +128,95 @@ def _sanitize_k2(
     return prov.apply(payload, contract, "strip_sampling_k2", removals)
 
 
+_K2_HORIZON_RE = r"\bk2[-_.]?horizon\b"
+_K2_HORIZON_EFFORTS = ("low", "high")
+_K2_HORIZON_DISABLE = ("off", "none", "false", "disable", "disabled")
+
+
+def _normalize_k2_horizon_effort(raw: Any) -> str:
+    v = str(raw or "").strip().lower()
+    if v in ("low", "minimal"):
+        return "low"
+    # auto / "" / medium / high / xhigh / max / enable / adaptive -> "high".
+    # Live probe (2026-11-26): omitting reasoning_effort (auto) or passing
+    # medium/xhigh/max causes CrowLLM's upstream parser to leak raw
+    # <ifm|think> monologue into `content` or drop `reasoning_content`.
+    return "high"
+
+
+def _apply_k2_horizon(
+    payload: Dict[str, Any],
+    ctx: ThinkingContext,
+    prov: Provenance,
+    contract: Contract,
+) -> Dict[str, Any]:
+    """LLM360/MBZUAI K2-Horizon 375B-A23B (`k2-horizon-375b-a23b*`).
+
+    Live-verified against `crowllm/k2-horizon-375b-a23b-uncensored:free`
+    (2026-11-26):
+      - Ignores Moonshot's `enable_thinking` boolean (`rc_len=0`).
+      - Cleanly separates `<ifm|think>...</ifm|think>` into `reasoning_content`
+        ONLY when `reasoning_effort="high"` is sent (3/3 trials).
+      - Cleanly skips reasoning when `reasoning_effort="none"` or `"low"` is sent.
+      - Omitting `reasoning_effort` (`auto`) or sending `"medium"`/`"xhigh"`/`"max"`
+        causes the upstream parser to leak raw internal monologue or a bare
+        `</ifm|think>` tag into `content`; therefore `auto`/`medium`/`xhigh`/`max`
+        all normalize to `"high"`.
+    """
+    effort = str(ctx.effort or "").strip().lower()
+
+    if ctx.wire_format == "anthropic":
+        if effort in _K2_HORIZON_DISABLE:
+            return prov.apply(
+                payload,
+                contract,
+                "thinking_off_anthropic",
+                {
+                    "thinking": {"type": "disabled"},
+                    "reasoning_effort": None,
+                    "output_config": None,
+                },
+            )
+        lvl = _normalize_k2_horizon_effort(effort)
+        return prov.apply(
+            payload,
+            contract,
+            "output_config_effort",
+            {
+                "thinking": {"type": "enabled"},
+                "output_config": {"effort": lvl},
+                "reasoning_effort": None,
+            },
+        )
+
+    if ctx.wire_format == "openai":
+        if effort in _K2_HORIZON_DISABLE:
+            return prov.apply(
+                payload,
+                contract,
+                "reasoning_effort_none",
+                {
+                    "reasoning_effort": "none",
+                    "thinking": None,
+                    "output_config": None,
+                },
+            )
+        lvl = _normalize_k2_horizon_effort(effort)
+        rule = "reasoning_effort" if lvl == effort else "reasoning_effort_normalized"
+        return prov.apply(
+            payload,
+            contract,
+            rule,
+            {
+                "reasoning_effort": lvl,
+                "thinking": None,
+                "output_config": None,
+            },
+        )
+
+    return payload
+
+
 CONTRACTS = [
     Contract(
         id="kimi-k3",
@@ -138,11 +227,19 @@ CONTRACTS = [
         sanitize=_sanitize_k3,
     ),
     Contract(
+        id="k2-horizon",
+        source=SOURCE,
+        priority=60,
+        pattern=_K2_HORIZON_RE,
+        apply=_apply_k2_horizon,
+        always_applies=True,
+    ),
+    Contract(
         id="kimi-k2",
         source=SOURCE,
         priority=45,
         pattern=r"kimi|k2\.|moonshot",
-        exclude=_K3_RE,
+        exclude=rf"{_K3_RE}|{_K2_HORIZON_RE}",
         apply=_apply_k2,
         sanitize=_sanitize_k2,
     ),

@@ -65,7 +65,6 @@ def openai_to_commandcode_envelope(payload: Dict[str, Any], model: str) -> Dict[
         if key in payload and payload[key] is not None:
             params[key] = payload[key]
 
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     today = time.strftime("%Y-%m-%d", time.gmtime())
     return {
         "threadId": str(uuid.uuid4()),

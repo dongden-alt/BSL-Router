@@ -51,6 +51,8 @@ from app.compat.families import (
     kat_coder as _kat_coder,
     muse as _muse,
     stepfun as _stepfun,
+    particle as _particle,
+    nemotron as _nemotron,
 )
 
 # Registry assembly. Order here is irrelevant — resolution is by the
@@ -73,6 +75,8 @@ _FAMILY_MODULES = [
     _kat_coder,
     _muse,
     _stepfun,
+    _particle,
+    _nemotron,
 ]
 
 CONTRACTS: List[Contract] = []

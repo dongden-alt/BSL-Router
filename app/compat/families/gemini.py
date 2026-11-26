@@ -4,7 +4,7 @@ Gemini family contracts.
 TWO axes of variation, which the legacy cascade conflated:
 
   AXIS 1 — model generation (what the setting MEANS):
-    - 3.x / 4.x (argon) -> thinkingLevel enum (low/medium/high/max)
+    - 3.x / 4.x -> thinkingLevel enum (max, or xhigh on Neon and Hydrogen)
     - 2.5  -> thinkingBudget numeric token count (-1 = dynamic)
 
   AXIS 2 — upstream transport (WHERE the setting goes on the wire):
@@ -29,6 +29,7 @@ also matches 3.x model ids.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 
 from app.compat.families._base import Contract, Provenance, ThinkingContext
@@ -51,6 +52,9 @@ _EFFORT_BUDGET_MAP = {
 
 # Gemini 3.x accepts these thinkingLevel enum values.
 _VALID_LEVELS = {"low", "medium", "high", "max"}
+_XHIGH_CAPABLE_RE = re.compile(r"gemini-4-(?:neon|hydrogen)", re.I)
+_XHIGH_LEVELS = (_VALID_LEVELS - {"max"}) | {"xhigh"}
+_XHIGH_ALIASES = {"max": "xhigh", "ultra": "xhigh", "minimal": "low"}
 
 # Effort words that are not levels, mapped onto the nearest valid level
 # so a config value like "32k" on a 3.x model still means something.
@@ -108,7 +112,17 @@ def _apply_gemini3(
     prov: Provenance,
     contract: Contract,
 ) -> Dict[str, Any]:
-    level = _resolve_level(ctx.effort)
+    supports_xhigh = bool(
+        _XHIGH_CAPABLE_RE.search(ctx.model_id) or _XHIGH_CAPABLE_RE.search(ctx.f_val)
+    )
+    if supports_xhigh and ctx.effort in _XHIGH_LEVELS:
+        level = ctx.effort
+    elif supports_xhigh:
+        level = _XHIGH_ALIASES.get(ctx.effort, _resolve_level(ctx.effort))
+        if level == "max":
+            level = "xhigh"
+    else:
+        level = _resolve_level(ctx.effort)
 
     if ctx.wire_format == _NATIVE:
         payload = _set_native_thinking_config(
@@ -120,11 +134,11 @@ def _apply_gemini3(
         )
 
     if ctx.wire_format == _ANTHROPIC:
-        return prov.apply(
-            payload, contract, "thinking_level_anthropic",
-            {"thinking": {"type": "enabled",
-                          "budget_tokens": _resolve_budget(ctx.effort)}},
-        )
+        budget = _resolve_budget(level if supports_xhigh else ctx.effort)
+        fields: Dict[str, Any] = {"thinking": {"type": "enabled", "budget_tokens": budget}}
+        if supports_xhigh and level == "xhigh":
+            fields["max_tokens"] = max(int(payload.get("max_tokens") or 0), budget + 32768)
+        return prov.apply(payload, contract, "thinking_level_anthropic", fields)
 
     # OpenAI-compatible gateway.
     return prov.apply(

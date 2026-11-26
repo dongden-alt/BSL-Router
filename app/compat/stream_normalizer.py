@@ -17,8 +17,9 @@ Key rules:
 - Preserve block index ordering
 - Convert usage/stop reasons correctly
 """
-from typing import AsyncIterator, Optional, Dict, Any, List
+from typing import AsyncIterator, Dict, Any, List, Optional
 from app.compat.adapters.gemini import bound_tool_call_id, _mint_tool_call_id
+import asyncio
 import json
 import time
 import codecs
@@ -35,10 +36,12 @@ def _as_obj(value):
 # BUG A streaming rescue helpers (delimiter-scoped buffering for text-form
 # tool calls emitted by GLM/Opus/Sonnet). See app/middleware/glm_tools.py.
 from app.middleware.glm_tools import (
+    StreamTextToolRescue,
     find_earliest_opener,
     find_block_closer,
     find_hold_tail,
     parse_streamed_tool_block,
+    strip_orphan_ifm_close,
 )
 
 
@@ -56,14 +59,45 @@ class StreamNormalizer:
             yield chunk
     """
 
-    def __init__(self, source_dialect: str, target_dialect: str, model_name: str = "bsl-routed", tools_in_request: bool = False):
+    def __init__(
+        self,
+        source_dialect: str,
+        target_dialect: str,
+        model_name: str = "bsl-routed",
+        tools_in_request: bool = False,
+        post_block_ping_idle_s: float = 0.0,
+        tool_choice_required: bool = False,
+    ):
         self.source = source_dialect
         self.target = target_dialect
         self.model_name = model_name
         # BUG A gate: the text-form tool-call rescue only activates when the
         # request declared tools (Split Pump contract: tool-less chats and
         # structured-call streams stay pure passthrough).
-        self.tools_in_request = tools_in_request
+        self.tools_in_request = bool(tools_in_request)
+        self.tool_choice_required = bool(tool_choice_required)
+        # Kiro/Anthropic-SSE ping-tail guard (default 0.0 = disabled): when > 0,
+        # if a deliverable block (text/tool_use) has already emitted
+        # content_block_stop and upstream emits ONLY `event: ping` / `: ping` /
+        # silence for at least the tool-aware threshold with zero new block
+        # starts/deltas, finalize cleanly instead of hanging 60-360s.
+        self.post_block_ping_idle_s = max(0.0, float(post_block_ping_idle_s or 0.0))
+
+    def _effective_post_block_idle_s(self, saw_tool_use: bool) -> float:
+        base = float(getattr(self, "post_block_ping_idle_s", 0.0) or 0.0)
+        if base <= 0.0:
+            return 0.0
+        # Never cut after text-only when tool_choice forces a tool call
+        if getattr(self, "tool_choice_required", False) and not saw_tool_use:
+            return 0.0
+        # When tools are declared and only preamble text closed so far, Kiro/Bedrock
+        # can spend 20-55s buffering a large tool_use input JSON before content_block_start
+        if getattr(self, "tools_in_request", False) and not saw_tool_use:
+            return max(base, 60.0)
+        # After at least one tool_use closed, allow 30s for parallel tool_use #2+
+        if saw_tool_use:
+            return max(base, 30.0)
+        return base
 
     def needs_conversion(self) -> bool:
         """Check if source and target dialects differ."""
@@ -121,15 +155,10 @@ class StreamNormalizer:
 
         # ── BUG A: text-form tool-call rescue state ──────────────────────
         # Active only when the request declared tools; otherwise the stream
-        # stays a pure forwarder. Buffering is decided by DELIMITERS, never
-        # by timers -- the same 9router-forwarder principle as antifreeze.py.
+        # stays a pure forwarder. Buffering is decided by DELIMITERS (plus
+        # markdown code-fence protection), never by timers.
         rescue_active = bool(self.tools_in_request)
-        rescue_hold = ""           # text not yet proven safe to emit
-        rescue_in_block = False    # a complete opener arrived; awaiting closer
-        rescue_mode = ""           # opener mode: "tool_call" | "unicode" | "tool_use"
-        rescue_body_start = 0      # body start index inside rescue_hold
-        _RESCUE_MAX_HOLD = 60      # max chars of text deferred for a decision
-        _RESCUE_MAX_BLOCK = 131072  # memory cap for one buffered block
+        rescue_sm = StreamTextToolRescue(max_hold=96, max_block=131072) if rescue_active else None
 
         def _emit_text(text: str):
             """Yield Anthropic text events for proven-safe text."""
@@ -209,66 +238,16 @@ class StreamNormalizer:
                 }
                 current_tool_index += 1
 
-        def _drain_rescue():
-            """Consume rescue_hold after a text delta was appended.
-
-            Emits text deltas for proven-safe text and registers rescued tool
-            calls in tool_blocks. Decisions are delimiter-driven only:
-              - text before an opener            -> emit immediately
-              - a tail that may become an opener -> hold (bounded)
-              - opener seen, closer pending      -> hold the block body
-              - complete block                   -> parse, emit structured
-              - unparseable / unclosed at EOF    -> fail-open as text
-            """
-            nonlocal rescue_in_block, rescue_mode, rescue_hold, rescue_body_start
-            while rescue_hold:
-                if not rescue_in_block:
-                    found = find_earliest_opener(rescue_hold)
-                    if found is None:
-                        keep_from = find_hold_tail(rescue_hold)
-                        # A pathological run of '<' would otherwise be held
-                        # forever; force-release beyond the bounded deferral.
-                        if len(rescue_hold) - keep_from > _RESCUE_MAX_HOLD:
-                            keep_from = len(rescue_hold) - _RESCUE_MAX_HOLD
-                        for _ev in _emit_text(rescue_hold[:keep_from]):
-                            yield _ev
-                        rescue_hold = rescue_hold[keep_from:]
-                        return
-                    start, end, mode = found
-                    for _ev in _emit_text(rescue_hold[:start]):
-                        yield _ev
-                    rescue_in_block = True
-                    rescue_mode = mode
-                    rescue_body_start = end - start
-                    rescue_hold = rescue_hold[start:]
-                    continue
-                closer = find_block_closer(rescue_hold, rescue_mode, pos=rescue_body_start)
-                if closer is None:
-                    if len(rescue_hold) > _RESCUE_MAX_BLOCK:
-                        # Memory cap: fail-open, emit the whole span as text.
-                        for _ev in _emit_text(rescue_hold):
-                            yield _ev
-                        rescue_hold = ""
-                        rescue_in_block = False
-                    return
-                cs, ce = closer
-                body = rescue_hold[rescue_body_start:cs]
-                calls = parse_streamed_tool_block(body, rescue_mode)
-                if calls:
-                    _register_rescued(calls)
-                    print(
-                        f"[StreamToolRescue] extracted {len(calls)} tool_call(s) "
-                        f"from streaming text",
-                        flush=True,
-                    )
-                else:
-                    # Unparseable block: fail-open, emit it raw (today's
-                    # behavior) -- never swallow bytes.
-                    for _ev in _emit_text(rescue_hold[:ce]):
-                        yield _ev
-                rescue_hold = rescue_hold[ce:]
-                rescue_in_block = False
-                continue
+        def _drain_rescue(delta_str: str):
+            """Feed delta_str into StreamTextToolRescue (fenced-code-safe)."""
+            if rescue_sm is None:
+                return
+            safe_txt, rescued_calls = rescue_sm.push(delta_str)
+            if safe_txt:
+                for _ev in _emit_text(safe_txt):
+                    yield _ev
+            if rescued_calls:
+                _register_rescued(rescued_calls)
 
         def _repair_tool_input(tc_index: int, tc_data: Dict[str, Any]) -> None:
             """Make a tool call's arguments emittable. NEVER raises.
@@ -406,6 +385,15 @@ class StreamNormalizer:
 
                 choices = data.get("choices") or []
                 if not choices:
+                    if isinstance(data.get("error"), (dict, str)) and data.get("error"):
+                        _err_v = data["error"]
+                        _err_msg = _err_v.get("message", str(_err_v)) if isinstance(_err_v, dict) else str(_err_v)
+                        yield self._encode_anthropic_event("error", {
+                            "type": "error",
+                            "error": {"type": "upstream_error", "message": str(_err_msg)[:1000]},
+                        })
+                        yield self._encode_anthropic_event("message_stop", {"type": "message_stop"})
+                        return
                     continue
 
                 choice = choices[0]
@@ -421,12 +409,7 @@ class StreamNormalizer:
                         for _tev in _flush_thinking():
                             yield _tev
                     if rescue_active:
-                        # BUG A rescue: the text may contain tool-call markup.
-                        # Feed the delimiter-scoped state machine; proven-safe
-                        # text emits immediately, block spans hold until the
-                        # closing delimiter arrives.
-                        rescue_hold += text_content
-                        for _rev in _drain_rescue():
+                        for _rev in _drain_rescue(text_content):
                             yield _rev
                     else:
                         if not text_block_started:
@@ -443,8 +426,8 @@ class StreamNormalizer:
                             "delta": {"type": "text_delta", "text": text_content},
                         })
 
-                # Reasoning content delta (max-thinking models: effort max)
-                reasoning_content = delta.get("reasoning_content")
+                # Reasoning content delta (max-thinking models: effort max; supports OpenRouter/MiMo `reasoning`)
+                reasoning_content = delta.get("reasoning_content") or delta.get("reasoning")
                 if reasoning_content:
                     reasoning_buffer += reasoning_content
 
@@ -516,6 +499,8 @@ class StreamNormalizer:
                         stop_reason = "tool_use"
                     elif finish == "length":
                         stop_reason = "max_tokens"
+                    elif finish in ("content_filter", "refusal", "safety"):
+                        stop_reason = "refusal"
                     elif finish == "stop":
                         stop_reason = "end_turn"
 
@@ -526,11 +511,13 @@ class StreamNormalizer:
 
         # BUG A -- flush any rescue hold. An unclosed block at EOF cannot be
         # rescued; emit it as text (fail-open) rather than swallow it.
-        if rescue_active and rescue_hold:
-            for _rev in _emit_text(rescue_hold):
-                yield _rev
-            rescue_hold = ""
-            rescue_in_block = False
+        if rescue_sm is not None:
+            _eof_txt, _eof_calls = rescue_sm.flush_eof()
+            if _eof_txt:
+                for _rev in _emit_text(_eof_txt):
+                    yield _rev
+            if _eof_calls:
+                _register_rescued(_eof_calls)
 
         if buffer.strip():
             line = buffer.strip()
@@ -657,217 +644,349 @@ class StreamNormalizer:
         current_tool_name = None
         current_tool_index = -1
         finished_emitted = False
-        tool_args_buffer = ""
-        _tool_id_counter: Dict[str, int] = {}  # per-tool-name counter for unique IDs
         input_tokens = 0
         cache_read_tokens = 0
         cache_write_tokens = 0
         prompt_tokens_inclusive = 0
         output_tokens = 0
+        streamed_output_chars = 0
+        block_types: Dict[int, str] = {}
+        deliverable_block_closed_at = None
+        ping_tail_terminated = False
+        error_seen = False
 
-        async for chunk in anthropic_stream:
-            try:
-                text_chunk = decoder.decode(chunk)
-                buffer += text_chunk
-                lines = buffer.split("\n")
-                buffer = lines.pop()
+        def _build_usage_dict() -> Optional[Dict[str, Any]]:
+            _final_prompt = (
+                prompt_tokens_inclusive
+                if prompt_tokens_inclusive > 0
+                else (input_tokens + cache_read_tokens + cache_write_tokens)
+            )
+            _eff_out = output_tokens
+            if _eff_out <= 0 and streamed_output_chars > 0:
+                _eff_out = max(1, streamed_output_chars // 4)
+            if not (_final_prompt or _eff_out or cache_read_tokens or cache_write_tokens):
+                return None
+            _u_out: Dict[str, Any] = {
+                "prompt_tokens": _final_prompt,
+                "completion_tokens": _eff_out,
+                "total_tokens": _final_prompt + _eff_out,
+            }
+            if cache_read_tokens > 0 or cache_write_tokens > 0:
+                _u_out["prompt_tokens_details"] = {
+                    **({"cached_tokens": cache_read_tokens} if cache_read_tokens > 0 else {}),
+                    **({"cache_write_tokens": cache_write_tokens} if cache_write_tokens > 0 else {}),
+                }
+            return _u_out
 
-                for line in lines:
-                    if line.startswith("data: "):
-                        data_str = line[6:].strip()
-                        if data_str == "[DONE]":
+        def _check_post_block_idle_expired() -> bool:
+            if deliverable_block_closed_at is None:
+                return False
+            _cap = self._effective_post_block_idle_s(saw_tool_use=(current_tool_index >= 0))
+            if _cap <= 0.0:
+                return False
+            if (time.monotonic() - deliverable_block_closed_at) >= _cap:
+                print(
+                    f"[StreamNormalizer] {self.model_name}: post-content_block_stop "
+                    f"ping/idle tail exceeded {_cap:.0f}s — finalizing cleanly",
+                    flush=True,
+                )
+                return True
+            return False
+
+        _aiter = anthropic_stream.__aiter__()
+        _nt: Optional[asyncio.Task] = None
+        try:
+            while True:
+                _wait_cap = 0.0
+                if deliverable_block_closed_at is not None:
+                    _eff_cap = self._effective_post_block_idle_s(saw_tool_use=(current_tool_index >= 0))
+                    if _eff_cap > 0.0:
+                        _rem = _eff_cap - (time.monotonic() - deliverable_block_closed_at)
+                        if _rem <= 0.0:
+                            if _check_post_block_idle_expired():
+                                ping_tail_terminated = True
+                                break
+                        _wait_cap = max(0.02, _rem)
+                try:
+                    if _wait_cap > 0.0:
+                        _nt = asyncio.ensure_future(_aiter.__anext__())
+                        _done, _pend = await asyncio.wait({_nt}, timeout=_wait_cap)
+                        if _pend:
+                            _nt.cancel()
+                            try:
+                                await _nt
+                            except BaseException:
+                                pass
+                            _nt = None
+                            if _check_post_block_idle_expired():
+                                ping_tail_terminated = True
+                                break
                             continue
                         try:
-                            data = json.loads(data_str)
-                        except json.JSONDecodeError:
+                            chunk = _nt.result()
+                        finally:
+                            _nt = None
+                    else:
+                        chunk = await _aiter.__anext__()
+                except StopAsyncIteration:
+                    _nt = None
+                    break
+
+                try:
+                    text_chunk = decoder.decode(chunk)
+                    buffer += text_chunk
+                    lines = buffer.split("\n")
+                    buffer = lines.pop()
+
+                    for line in lines:
+                        if line.startswith(":"):
+                            if _check_post_block_idle_expired():
+                                ping_tail_terminated = True
+                                break
                             continue
+                        if line.startswith("data: "):
+                            data_str = line[6:].strip()
+                            if data_str == "[DONE]":
+                                continue
+                            try:
+                                data = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
 
-                        event_type = data.get("type", "")
+                            event_type = data.get("type", "")
 
-                        if event_type == "message_start":
-                            _msg = _as_obj(data.get("message"))
-                            if _msg.get("id"):
-                                stream_id = str(_msg["id"])
-                            _start_usage = _msg.get("usage") or {}
-                            if _start_usage:
-                                if _start_usage.get("prompt_tokens"):
-                                    prompt_tokens_inclusive = int(_start_usage["prompt_tokens"])
-                                if _start_usage.get("input_tokens") is not None:
-                                    input_tokens = int(_start_usage.get("input_tokens") or 0)
-                                if _start_usage.get("cache_read_input_tokens"):
-                                    cache_read_tokens = int(_start_usage["cache_read_input_tokens"])
-                                if _start_usage.get("cache_creation_input_tokens"):
-                                    cache_write_tokens = int(_start_usage["cache_creation_input_tokens"])
+                            if event_type == "ping":
+                                if _check_post_block_idle_expired():
+                                    ping_tail_terminated = True
+                                    break
+                                continue
 
-                        elif event_type == "content_block_delta":
-                            delta = _as_obj(data.get("delta"))
-                            delta_type = delta.get("type", "")
-
-                            if delta_type == "text_delta":
-                                yield self._encode_openai_chunk({
-                                    "id": stream_id,
-                                    "object": "chat.completion.chunk",
-                                    "created": created,
-                                    "model": self.model_name,
-                                    "choices": [{
-                                        "index": 0,
-                                        "delta": {"content": delta.get("text", "")},
-                                        "finish_reason": None,
-                                    }],
-                                })
-
-                            elif delta_type == "thinking_delta":
-                                # Anthropic extended-thinking block → OpenAI reasoning_content
-                                # This keeps Gemini thought parts alive during long thinking phases
-                                # so the IDE sees SSE frames instead of silence.
-                                thinking_text = delta.get("thinking", "")
-                                if thinking_text:
-                                    yield self._encode_openai_chunk({
-                                        "id": stream_id,
-                                        "object": "chat.completion.chunk",
-                                        "created": created,
-                                        "model": self.model_name,
-                                        "choices": [{
-                                            "index": 0,
-                                            "delta": {"reasoning_content": thinking_text},
-                                            "finish_reason": None,
-                                        }],
-                                    })
-
-                            elif delta_type == "input_json_delta":
-                                # Tool call argument delta
-                                partial = delta.get("partial_json", "")
-                                if partial and current_tool_id:
-                                    yield self._encode_openai_chunk({
-                                        "id": stream_id,
-                                        "object": "chat.completion.chunk",
-                                        "created": created,
-                                        "model": self.model_name,
-                                        "choices": [{
-                                            "index": 0,
-                                            "delta": {
-                                                "tool_calls": [{
-                                                    "index": current_tool_index,
-                                                    "function": {"arguments": partial},
-                                                }],
-                                            },
-                                            "finish_reason": None,
-                                        }],
-                                    })
-
-                        elif event_type == "content_block_start":
-                            block = _as_obj(data.get("content_block"))
-                            if block.get("type") == "tool_use":
-                                current_tool_index += 1
-                                current_tool_name = block.get("name", "")
-                                current_tool_id = bound_tool_call_id(block.get("id") or _mint_tool_call_id(current_tool_name or 'function', current_tool_index))
-                                # Preserve the provider ID: clients echo it in tool_result.
-                                # Synthesize only when the upstream omitted one.
-                                # Emit start chunk (arguments: "" init slot in accumulator)
-                                yield self._encode_openai_chunk({
-                                    "id": stream_id,
-                                    "object": "chat.completion.chunk",
-                                    "created": created,
-                                    "model": self.model_name,
-                                    "choices": [{
-                                        "index": 0,
-                                        "delta": {
-                                            "tool_calls": [{
-                                                "index": current_tool_index,
-                                                "id": current_tool_id,
-                                                "type": "function",
-                                                "function": {"name": current_tool_name, "arguments": ""},
-                                            }],
-                                        },
-                                        "finish_reason": None,
-                                    }],
-                                })
-                                # Some providers (xAI/Grok) put the full tool
-                                # input directly in content_block_start instead
-                                # of streaming it via input_json_delta.  Capture
-                                # it here so the args aren't silently lost.
-                                existing_input = block.get("input")
-                                if existing_input:
-                                    args_str = json.dumps(existing_input, ensure_ascii=False)
-                                    yield self._encode_openai_chunk({
-                                        "id": stream_id,
-                                        "object": "chat.completion.chunk",
-                                        "created": created,
-                                        "model": self.model_name,
-                                        "choices": [{
-                                            "index": 0,
-                                            "delta": {
-                                                "tool_calls": [{
-                                                    "index": current_tool_index,
-                                                    "function": {"arguments": args_str},
-                                                }],
-                                            },
-                                            "finish_reason": None,
-                                        }],
-                                    })
-
-                        elif event_type == "message_delta":
-                            msg_delta = _as_obj(data.get("delta"))
-                            stop_reason = msg_delta.get("stop_reason", "end_turn")
-                            finish = "stop"
-                            if stop_reason == "tool_use":
-                                finish = "tool_calls"
-                            elif stop_reason == "max_tokens":
-                                finish = "length"
-
-                            # Aggregate usage from message_start + message_delta
-                            _usage = data.get("usage") or {}
-                            if _usage:
-                                if _usage.get("prompt_tokens"):
-                                    prompt_tokens_inclusive = int(_usage["prompt_tokens"])
-                                if _usage.get("input_tokens"):
-                                    input_tokens = int(_usage["input_tokens"])
-                                if _usage.get("cache_read_input_tokens"):
-                                    cache_read_tokens = int(_usage["cache_read_input_tokens"])
-                                if _usage.get("cache_creation_input_tokens"):
-                                    cache_write_tokens = int(_usage["cache_creation_input_tokens"])
-                                if _usage.get("output_tokens") is not None:
-                                    output_tokens = int(_usage.get("output_tokens") or output_tokens)
-                                elif _usage.get("completion_tokens") is not None:
-                                    output_tokens = int(_usage.get("completion_tokens") or output_tokens)
-                            _finish_payload: Dict[str, Any] = {
-                                "id": stream_id,
-                                "object": "chat.completion.chunk",
-                                "created": created,
-                                "model": self.model_name,
-                                "choices": [{
-                                    "index": 0,
-                                    "delta": {},
-                                    "finish_reason": finish,
-                                }],
-                            }
-                            _final_prompt = (
-                                prompt_tokens_inclusive
-                                if prompt_tokens_inclusive > 0
-                                else (input_tokens + cache_read_tokens + cache_write_tokens)
-                            )
-                            if _final_prompt or output_tokens or cache_read_tokens or cache_write_tokens:
-                                _u_out: Dict[str, Any] = {
-                                    "prompt_tokens": _final_prompt,
-                                    "completion_tokens": output_tokens,
-                                    "total_tokens": _final_prompt + output_tokens,
-                                }
-                                if cache_read_tokens > 0 or cache_write_tokens > 0:
-                                    _u_out["prompt_tokens_details"] = {
-                                        **({"cached_tokens": cache_read_tokens} if cache_read_tokens > 0 else {}),
-                                        **({"cache_write_tokens": cache_write_tokens} if cache_write_tokens > 0 else {}),
+                            if event_type in ("error", "response.failed"):
+                                deliverable_block_closed_at = None
+                                error_seen = True
+                                _err_obj = data.get("error")
+                                if not isinstance(_err_obj, dict):
+                                    _err_obj = {
+                                        "message": str(_err_obj or data.get("message") or "upstream stream error"),
+                                        "type": "upstream_error",
                                     }
-                                _finish_payload["usage"] = _u_out
-                            yield self._encode_openai_chunk(_finish_payload)
-                            finished_emitted = True
+                                yield self._encode_openai_chunk({"error": _err_obj})
+                                finished_emitted = True
+                                continue
 
-            except Exception as exc:
-                logger.warning("SSE chunk parse/emit failed (stream_normalizer): %s", exc, exc_info=True)
+                            if event_type == "message_start":
+                                _msg = _as_obj(data.get("message"))
+                                if _msg.get("id"):
+                                    stream_id = str(_msg["id"])
+                                _start_usage = _msg.get("usage") or {}
+                                if _start_usage:
+                                    if _start_usage.get("prompt_tokens"):
+                                        prompt_tokens_inclusive = int(_start_usage["prompt_tokens"])
+                                    if _start_usage.get("input_tokens") is not None:
+                                        input_tokens = int(_start_usage.get("input_tokens") or 0)
+                                    if _start_usage.get("cache_read_input_tokens"):
+                                        cache_read_tokens = int(_start_usage["cache_read_input_tokens"])
+                                    if _start_usage.get("cache_creation_input_tokens"):
+                                        cache_write_tokens = int(_start_usage["cache_creation_input_tokens"])
 
-        if not finished_emitted:
-            # Fallback for providers (like vsllm-claude/grok-4.5) that drop the message_delta terminal
+                            elif event_type == "content_block_delta":
+                                deliverable_block_closed_at = None
+                                delta = _as_obj(data.get("delta"))
+                                delta_type = delta.get("type", "")
+
+                                if delta_type == "text_delta":
+                                    _txt_d = delta.get("text", "")
+                                    if _txt_d:
+                                        streamed_output_chars += len(_txt_d)
+                                    yield self._encode_openai_chunk({
+                                        "id": stream_id,
+                                        "object": "chat.completion.chunk",
+                                        "created": created,
+                                        "model": self.model_name,
+                                        "choices": [{
+                                            "index": 0,
+                                            "delta": {"content": _txt_d},
+                                            "finish_reason": None,
+                                        }],
+                                    })
+
+                                elif delta_type == "thinking_delta":
+                                    # Anthropic extended-thinking block → OpenAI reasoning_content
+                                    # This keeps Gemini thought parts alive during long thinking phases
+                                    # so the IDE sees SSE frames instead of silence.
+                                    thinking_text = delta.get("thinking", "")
+                                    if thinking_text:
+                                        streamed_output_chars += len(thinking_text)
+                                        yield self._encode_openai_chunk({
+                                            "id": stream_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": created,
+                                            "model": self.model_name,
+                                            "choices": [{
+                                                "index": 0,
+                                                "delta": {"reasoning_content": thinking_text},
+                                                "finish_reason": None,
+                                            }],
+                                        })
+
+                                elif delta_type == "input_json_delta":
+                                    # Tool call argument delta
+                                    partial = delta.get("partial_json", "")
+                                    if partial and current_tool_id:
+                                        streamed_output_chars += len(partial)
+                                        yield self._encode_openai_chunk({
+                                            "id": stream_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": created,
+                                            "model": self.model_name,
+                                            "choices": [{
+                                                "index": 0,
+                                                "delta": {
+                                                    "tool_calls": [{
+                                                        "index": current_tool_index,
+                                                        "function": {"arguments": partial},
+                                                    }],
+                                                },
+                                                "finish_reason": None,
+                                            }],
+                                        })
+
+                            elif event_type == "content_block_start":
+                                deliverable_block_closed_at = None
+                                block = _as_obj(data.get("content_block"))
+                                _blk_idx = data.get("index")
+                                if isinstance(_blk_idx, int):
+                                    block_types[_blk_idx] = str(block.get("type") or "")
+                                if block.get("type") == "tool_use":
+                                    current_tool_index += 1
+                                    current_tool_name = block.get("name", "")
+                                    current_tool_id = bound_tool_call_id(block.get("id") or _mint_tool_call_id(current_tool_name or 'function', current_tool_index))
+                                    # Preserve the provider ID: clients echo it in tool_result.
+                                    # Synthesize only when the upstream omitted one.
+                                    # Emit start chunk (arguments: "" init slot in accumulator)
+                                    yield self._encode_openai_chunk({
+                                        "id": stream_id,
+                                        "object": "chat.completion.chunk",
+                                        "created": created,
+                                        "model": self.model_name,
+                                        "choices": [{
+                                            "index": 0,
+                                            "delta": {
+                                                "tool_calls": [{
+                                                    "index": current_tool_index,
+                                                    "id": current_tool_id,
+                                                    "type": "function",
+                                                    "function": {"name": current_tool_name, "arguments": ""},
+                                                }],
+                                            },
+                                            "finish_reason": None,
+                                        }],
+                                    })
+                                    # Some providers (xAI/Grok) put the full tool
+                                    # input directly in content_block_start instead
+                                    # of streaming it via input_json_delta.  Capture
+                                    # it here so the args aren't silently lost.
+                                    existing_input = block.get("input")
+                                    if existing_input:
+                                        args_str = json.dumps(existing_input, ensure_ascii=False)
+                                        streamed_output_chars += len(args_str)
+                                        yield self._encode_openai_chunk({
+                                            "id": stream_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": created,
+                                            "model": self.model_name,
+                                            "choices": [{
+                                                "index": 0,
+                                                "delta": {
+                                                    "tool_calls": [{
+                                                        "index": current_tool_index,
+                                                        "function": {"arguments": args_str},
+                                                    }],
+                                                },
+                                                "finish_reason": None,
+                                            }],
+                                        })
+
+                            elif event_type == "content_block_stop":
+                                _stop_idx = data.get("index")
+                                _stop_type = block_types.get(_stop_idx, "") if isinstance(_stop_idx, int) else ""
+                                if _stop_type in ("text", "tool_use"):
+                                    deliverable_block_closed_at = time.monotonic()
+
+                            elif event_type == "message_delta":
+                                deliverable_block_closed_at = None
+                                msg_delta = _as_obj(data.get("delta"))
+                                stop_reason = msg_delta.get("stop_reason", "end_turn")
+                                finish = "stop"
+                                if stop_reason == "tool_use":
+                                    finish = "tool_calls"
+                                elif stop_reason == "max_tokens":
+                                    finish = "length"
+                                elif stop_reason in ("refusal", "content_filter"):
+                                    finish = "content_filter"
+
+                                # Aggregate usage from message_start + message_delta
+                                _usage = data.get("usage") or {}
+                                if _usage:
+                                    if _usage.get("prompt_tokens"):
+                                        prompt_tokens_inclusive = int(_usage["prompt_tokens"])
+                                    if _usage.get("input_tokens"):
+                                        input_tokens = int(_usage["input_tokens"])
+                                    if _usage.get("cache_read_input_tokens"):
+                                        cache_read_tokens = int(_usage["cache_read_input_tokens"])
+                                    if _usage.get("cache_creation_input_tokens"):
+                                        cache_write_tokens = int(_usage["cache_creation_input_tokens"])
+                                    if _usage.get("output_tokens") is not None:
+                                        output_tokens = int(_usage.get("output_tokens") or output_tokens)
+                                    elif _usage.get("completion_tokens") is not None:
+                                        output_tokens = int(_usage.get("completion_tokens") or output_tokens)
+                                _finish_payload: Dict[str, Any] = {
+                                    "id": stream_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created,
+                                    "model": self.model_name,
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {},
+                                        "finish_reason": finish,
+                                    }],
+                                }
+                                _u_dict = _build_usage_dict()
+                                if _u_dict:
+                                    _finish_payload["usage"] = _u_dict
+                                yield self._encode_openai_chunk(_finish_payload)
+                                finished_emitted = True
+
+                except Exception as exc:
+                    logger.warning("SSE chunk parse/emit failed (stream_normalizer): %s", exc, exc_info=True)
+                if ping_tail_terminated:
+                    break
+        finally:
+            if _nt is not None and not _nt.done():
+                _nt.cancel()
+                try:
+                    await _nt
+                except BaseException:
+                    pass
+                _nt = None
+            if ping_tail_terminated:
+                _ac = getattr(anthropic_stream, "aclose", None)
+                if callable(_ac):
+                    try:
+                        _ct = asyncio.ensure_future(_ac())
+                        _d, _p = await asyncio.wait({_ct}, timeout=1.5)
+                        if _p:
+                            _ct.cancel()
+                            _ct.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+                    except BaseException:
+                        pass
+
+        if not finished_emitted and not error_seen:
+            # Fallback for providers (like vsllm-claude/grok-4.5 or Kiro ping-tail)
+            # that drop the message_delta terminal — preserve message_start usage +
+            # estimated completion_tokens so downstream meters & logs stay accurate.
             finish = "tool_calls" if current_tool_index >= 0 else "stop"
-            yield self._encode_openai_chunk({
+            _fallback_finish: Dict[str, Any] = {
                 "id": stream_id,
                 "object": "chat.completion.chunk",
                 "created": created,
@@ -877,7 +996,11 @@ class StreamNormalizer:
                     "delta": {},
                     "finish_reason": finish,
                 }],
-            })
+            }
+            _u_dict = _build_usage_dict()
+            if _u_dict:
+                _fallback_finish["usage"] = _u_dict
+            yield self._encode_openai_chunk(_fallback_finish)
 
         # Emit DONE
         yield b"data: [DONE]\n\n"

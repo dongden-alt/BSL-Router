@@ -90,6 +90,7 @@ _FINISH_MAP = {
     "length": "MAX_TOKENS",
     "tool_calls": "STOP",
     "content_filter": "SAFETY",
+    "refusal": "SAFETY",
     "function_call": "FUNCTION_CALL",
 }
 
@@ -155,7 +156,7 @@ def terminal_error_frame(code: int, message: str, model: str = "") -> Dict[str, 
                 {
                     "content": {
                         "role": "model",
-                        "parts": [{"text": f"\n\n[BSL Router] upstream error {code}: {label}"}],
+                        "parts": [{"text": f"\n\n[BSL Router] upstream error {code if isinstance(code, int) and code >= 400 else 502}: {label}"}],
                     },
                     "finishReason": "STOP",
                     "index": 0,
@@ -979,6 +980,56 @@ def _sanitize_parameters(params: Any) -> Dict[str, Any]:
     return _sanitize_schema(params)
 
 
+# Bound native tool media before decoding; never hydrate paths or remote URIs.
+MAX_TOOL_IMAGE_BYTES = 20 * 1024 * 1024
+_TOOL_IMAGE_MIMES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+
+def _function_response_content(fr: Any, call_id: str, budget: list) -> list:
+    import base64
+    import binascii
+
+    parts = fr.get("parts") if isinstance(fr, dict) else None
+    if not isinstance(parts, list):
+        return []
+    content = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if isinstance(part.get("text"), str):
+            content.append({"type": "text", "text": part["text"]})
+        inline = part.get("inlineData", part.get("inline_data"))
+        if not isinstance(inline, dict):
+            continue
+        mime = inline.get("mimeType", inline.get("mime_type"))
+        data = inline.get("data")
+        if not isinstance(mime, str) or mime not in _TOOL_IMAGE_MIMES:
+            continue
+        if not isinstance(data, str) or not data or len(data) > 4 * ((budget[0] + 2) // 3):
+            continue
+        try:
+            decoded = base64.b64decode(data, validate=True)
+        except (ValueError, binascii.Error):
+            continue
+        if not decoded or len(decoded) > budget[0]:
+            continue
+        # Reject mismatched or non-image bytes rather than claiming image delivery.
+        valid = (
+            (mime == "image/png" and decoded.startswith(b"\x89PNG\r\n\x1a\n"))
+            or (mime == "image/jpeg" and decoded.startswith(b"\xff\xd8\xff"))
+            or (mime == "image/gif" and decoded[:6] in (b"GIF87a", b"GIF89a"))
+            or (mime == "image/webp" and decoded[:4] == b"RIFF" and decoded[8:12] == b"WEBP")
+        )
+        if not valid:
+            continue
+        budget[0] -= len(decoded)
+        content.extend([
+            {"type": "text", "text": f"[Image from tool call {call_id}]"},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}},
+        ])
+    return content if any(p["type"] == "image_url" for p in content) else []
+
+
 def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
     """Translate a Gemini (Cloud Code) request into an OpenAI ChatCompletion dict.
 
@@ -986,6 +1037,8 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
     `_process_chat_completion`; BSL's own thinking patch re-applies per-provider
     thinking downstream, so the `reasoning_effort` hint here is advisory.
     """
+    from app.middleware.image_delivery_trace import trace as _image_trace
+    _image_trace("adapter_before", req)
     req = req if isinstance(req, dict) else {}
     openai_body: Dict[str, Any] = {
         "model": model,
@@ -1063,6 +1116,8 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
     _tool_call_seq = 0
     _pending_calls: list = []  # FIFO of (name, call_id) awaiting a functionResponse
     _req_tool_schemas = extract_openai_tool_schemas(openai_tools)
+    _tool_media_budget = [MAX_TOOL_IMAGE_BYTES]
+    _tool_followups: list = []
 
     def _flush_orphaned_pending_calls() -> None:
         while _pending_calls:
@@ -1081,6 +1136,8 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
         role = content.get("role", "user")
         # §8.1: a content carrying functionResponse is re-roled to user.
         parts = content.get("parts") or []
+        if not isinstance(parts, list):
+            parts = []
         has_fn_response = any(
             isinstance(p, dict) and "functionResponse" in p for p in parts
         )
@@ -1202,6 +1259,9 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
                 if isinstance(_rsig, str) and _rsig:
                     _tr["thought_signature"] = _rsig
                 tool_results.append(_tr)
+                _media = _function_response_content(fr, _matched_id, _tool_media_budget)
+                if _media:
+                    _tool_followups.append({"role": "user", "content": _media})
                 continue
 
             # inlineData → image_url data URI (§3)
@@ -1274,7 +1334,12 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
                     _follow_msg["content"] = _clist
                 else:
                     _follow_msg["content"] = "\n".join(text_parts)
-                openai_body["messages"].append(_follow_msg)
+                _tool_followups.append(_follow_msg)
+            # Delay companions (including mixed user content) across split parallel
+            # response blocks until every real/synthetic tool result is contiguous.
+            if not _next_has_fn_resp:
+                openai_body["messages"].extend(_tool_followups)
+                _tool_followups.clear()
             continue
 
         # Assemble the main message for this content block.
@@ -1303,6 +1368,7 @@ def gemini_request_to_openai(req: Dict[str, Any], model: str) -> Dict[str, Any]:
             # content is already "" from above.
         openai_body["messages"].append(msg)
 
+    _image_trace("adapter_after", openai_body)
     return openai_body
 
 
@@ -1410,12 +1476,13 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
             obj["usageMetadata"] = _usage_metadata(state["usage"])
             state["usage"] = None
             return {"response": obj}
+
         return None
 
     choice = choices[0] if isinstance(choices[0], dict) else {}
     delta = choice.get("delta") or {}
     finish = choice.get("finish_reason")
-    if isinstance(finish, str) and finish.lower() == "content_filter":
+    if isinstance(finish, str) and finish.lower() in ("content_filter", "refusal", "safety"):
         state["sawContentFilter"] = True
 
     parts: list = []
@@ -1431,11 +1498,36 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
         for _existing_slot in state["toolCallAccum"].values():
             _existing_slot["from_reasoning"] = True
 
-    # content → {text} (§4a)
+    # content → {text} (§4a), with delimiter-driven text-form tool-call rescue
+    # when the request declared tools (`tools_in_request` or `tool_schemas`).
+    # Rescues K2-Horizon IFM (`<ifm|tool_calls>` & stripped-opener `</ifm|arg_key>...`),
+    # GLM `<tool_call>` / unicode `｜tool▁calls▁begin｜`, and `<tool_use><invoke>`
+    # while preserving markdown ```...``` code fences verbatim.
     content = delta.get("content")
+    _rescue_enabled = bool(state.get("tools_in_request") or state.get("tool_schemas"))
     if content:
-        parts.append({"text": content})
-        state["hasVisibleContent"] = True
+        if _rescue_enabled:
+            _rsm = state.get("_text_tool_rescue")
+            if _rsm is None:
+                from app.middleware.glm_tools import StreamTextToolRescue
+                _rsm = StreamTextToolRescue(max_hold=96, max_block=131072)
+                state["_text_tool_rescue"] = _rsm
+            _safe_txt, _rescued_tcs = _rsm.push(content)
+            if _safe_txt:
+                parts.append({"text": _safe_txt})
+                state["hasVisibleContent"] = True
+            for _rtc in _rescued_tcs:
+                _rfn = (_rtc.get("function") or {}) if isinstance(_rtc, dict) else {}
+                _rseq = state.get("toolCallRescueSeq", 0)
+                state["toolCallRescueSeq"] = _rseq + 1
+                state["toolCallAccum"][("r", _rseq)] = {
+                    "id": _rtc.get("id", ""),
+                    "name": _rfn.get("name", ""),
+                    "args": _rfn.get("arguments", "{}"),
+                }
+        else:
+            parts.append({"text": content})
+            state["hasVisibleContent"] = True
 
     # tool_calls accumulate by index across chunks (§4a)
     #
@@ -1537,9 +1629,25 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
         if isinstance(_tsig, str) and _tsig:
             slot["sig"] = _tsig
 
-    # On finish: flush accumulated tool calls to functionCall parts.
+    # On finish: flush held streaming rescue tail + accumulated tool calls to functionCall parts.
     truncated_tool_call = False
     if finish:
+        state["_finishFlushed"] = True
+        _rsm_eof = state.get("_text_tool_rescue")
+        if _rsm_eof is not None:
+            _eof_txt, _eof_tcs = _rsm_eof.flush_eof()
+            if _eof_txt:
+                parts.append({"text": _eof_txt})
+                state["hasVisibleContent"] = True
+            for _rtc in _eof_tcs:
+                _rfn = (_rtc.get("function") or {}) if isinstance(_rtc, dict) else {}
+                _rseq = state.get("toolCallRescueSeq", 0)
+                state["toolCallRescueSeq"] = _rseq + 1
+                state["toolCallAccum"][("r", _rseq)] = {
+                    "id": _rtc.get("id", ""),
+                    "name": _rfn.get("name", ""),
+                    "args": _rfn.get("arguments", "{}"),
+                }
         _tool_schemas = state.get("tool_schemas")
         _dedup_seen: set = set()
         _has_post_reasoning_calls = any(
@@ -1687,6 +1795,22 @@ def openai_chunk_to_gemini(chunk: Dict[str, Any], state: Dict[str, Any]) -> Opti
 
     return {"response": obj}
 
+
+
+def flush_openai_to_gemini_eof(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Flush held rescue text or un-flushed tool calls when an upstream stream
+    ends (`data: [DONE]`) without having sent an explicit `finish_reason` chunk."""
+    if not isinstance(state, dict) or state.get("_finishFlushed"):
+        return None
+    rescue_sm = state.get("_text_tool_rescue")
+    has_pending_rescue = bool(rescue_sm is not None and getattr(rescue_sm, "hold", ""))
+    has_pending_tools = bool(state.get("toolCallAccum"))
+    if not has_pending_rescue and not has_pending_tools:
+        return None
+    return openai_chunk_to_gemini(
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+        state,
+    )
 
 def gemini_frame_has_content(frame: Dict[str, Any]) -> bool:
     """True only if a Gemini frame carries something the CLIENT CAN RENDER.
@@ -1853,6 +1977,33 @@ def openai_response_to_gemini(
     choices = openai_resp.get("choices") or []
     choice = choices[0] if choices and isinstance(choices[0], dict) else {}
     message = choice.get("message") or {} if isinstance(choice, dict) else {}
+    if (
+        isinstance(message, dict)
+        and isinstance(message.get("content"), str)
+        and message["content"]
+        and not message.get("tool_calls")
+    ):
+        _low_c = message["content"].lower()
+        if any(m in _low_c for m in ("ifm|", "<tool_call", "<tool_use", "tool▁calls", "tool|calls", "tool｜calls")):
+            try:
+                from app.middleware.glm_tools import normalize_glm_tool_calls
+                _norm_copy, _norm_changed = normalize_glm_tool_calls(
+                    {
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": dict(message),
+                                "finish_reason": choice.get("finish_reason") or "stop",
+                            }
+                        ]
+                    },
+                    model=model or "",
+                )
+                if _norm_changed:
+                    choice = _norm_copy["choices"][0]
+                    message = choice.get("message") or {}
+            except Exception:
+                pass
 
     parts: list = []
     text = message.get("content")
@@ -1920,5 +2071,6 @@ def openai_response_to_gemini(
         "responseId": openai_resp.get("id") or f"resp_{int(time.time() * 1000)}",
     }
     return {"response": obj}
+
 
 

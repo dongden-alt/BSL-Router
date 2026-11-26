@@ -1,4 +1,4 @@
-﻿"""Remove provably-garbage frozen authenticity standards before re-harvest.
+"""Remove provably-garbage frozen authenticity standards before re-harvest.
 
 A standard is junk when it carries NO usable forensic signal:
   - a hallucinated knowledge cutoff (year < 2019 or year > current+1)
